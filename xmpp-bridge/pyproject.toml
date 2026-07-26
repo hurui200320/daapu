@@ -1,0 +1,11 @@
+[project]
+name = "xmpp-bridge"
+version = "0.1.0"
+description = "XMPP + OMEMO sidecar for the daapu bot, bridging to NATS JetStream"
+requires-python = ">=3.14"
+license = { text = "AGPL-3.0-or-later" }
+dependencies = [
+    "slixmpp>=1.17.0",
+    "slixmpp-omemo>=2.2.0",
+    "nats-py>=2.15.0",
+]

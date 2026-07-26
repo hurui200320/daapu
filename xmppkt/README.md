@@ -6,3 +6,7 @@ This module largely reuse the [Smack](https://github.com/igniterealtime/Smack/) 
 smack-core, smack-tcp, etc. And only rewrite the parts that fail to satisfy this project.
 
 About the license, the original code is Apache 2.0 and GPL v3, this project is AGPL, so should be fine.
+
+## Deprecation
+
+Since Smack is too buggy, I decided to use python sidecar for XMPP. This module will be deprecated and removed soon.
