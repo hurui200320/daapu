@@ -1,0 +1,443 @@
+"""The XMPP bridge client.
+
+Slixmpp routes all incoming ``<message/>``
+stanzas through a single handler, which branches on whether the stanza is
+OMEMO-encrypted.
+
+MUC (XEP-0045) is intentionally not registered — only 1:1 DMs are handled.
+Carbons and own-JID reflections are dropped with warning.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import socket
+import sys
+from typing import cast
+
+import oldmemo
+from omemo.session_manager import MessageNotForUs, SessionManager
+from omemo.types import DeviceInformation
+from python_socks import ProxyError as _ProxyError
+from python_socks.async_.asyncio import Proxy as _Proxy
+from slixmpp.clientxmpp import ClientXMPP
+from slixmpp.jid import JID
+from slixmpp.plugins import register_plugin  # pyright: ignore[reportUnknownVariableType]
+from slixmpp.stanza import Message
+from slixmpp.xmlstream.handler import CoroutineCallback
+from slixmpp.xmlstream.matcher import MatchXPath
+from slixmpp_omemo import XEP_0384
+
+from .omemo_plugin import XEP_0384Impl
+
+# Register the concrete OMEMO plugin subclass as the "xep_0384" plugin
+# globally, before any ClientXMPP is instantiated. The ``module`` kwarg used
+# at ``register_plugin("xep_0384", ...)`` time points slixmpp here.
+register_plugin(XEP_0384Impl)
+
+log = logging.getLogger(__name__)
+
+
+class BridgeBot(ClientXMPP):
+    """XMPP+OMEMO bot: prints incoming DMs to the console and echoes them back.
+
+    Replaces the NATS publishing pipeline of the future design with a simple
+    console-print + ``"Got it: ..."`` echo, mirroring ``Main.kt``'s main loop.
+    """
+
+    def __init__(
+        self,
+        jid: str,
+        password: str,
+        omemo_json_path: str,
+        server_host: str | None = None,
+        proxy_url: str | None = None,
+    ) -> None:
+        super().__init__(jid, password)  # pyright: ignore[reportUnknownMemberType]
+
+        self._omemo_json_path = omemo_json_path
+        self._server_host = server_host
+        self._proxy_url = proxy_url
+        self._omemo_ready = asyncio.Event()
+
+        # Connection lifecycle flags.
+        # _intentional_disconnect: True when we initiated shutdown (SIGTERM/SIGINT
+        #   or a fatal auth failure); the `disconnected` handler then stops the
+        #   loop instead of reconnecting.
+        # _fatal_exit: True when the process should exit non-zero so docker
+        #   restarts it (currently only set on permanent auth failure).
+        self._intentional_disconnect: bool = False
+        self._fatal_exit: bool = False
+
+        # OMEMO plugin + a couple of useful optional companions.
+        # xep_0384 pulls in xep_0004/0030/0060/0163/0280/0334 automatically.
+        # MUC (xep_0045) is deliberately NOT registered.
+        self.register_plugin(  # pyright: ignore[reportUnknownMemberType]
+            "xep_0384",
+            {"json_file_path": self._omemo_json_path},
+            module=sys.modules[__name__],
+        )
+        # XMPP Ping keepalive. keepalive lets slixmpp detect silent mid-session
+        # TCP drops (half-open links, server killed without FIN) and auto-reconnect
+        # on ping timeout. Without it the bot would hang forever waiting for stanzas
+        # that never arrive. 60s interval / 30s timeout detects a dead link within ~90s.
+        self.register_plugin(  # pyright: ignore[reportUnknownMemberType]
+            "xep_0199",
+            {"keepalive": True, "interval": 60, "timeout": 30},
+        )
+        # Explicit Message Encryption (<eme/>)
+        self.register_plugin("xep_0380")  # pyright: ignore[reportUnknownMemberType]
+
+        self.add_event_handler("session_start", self._on_session_start)
+        self.add_event_handler("omemo_initialized", self._on_omemo_ready)
+
+        # Connection lifecycle handlers.
+        # `connection_failed` is fired per failed TCP/DNS attempt; slixmpp's own
+        # _connect_loop retries with backoff, so we only log for visibility.
+        # `disconnected` is fired on any disconnect; slixmpp does NOT auto-reconnect
+        # on clean server disconnects (only keepalive ping-timeout does), so we
+        # reconnect here unless the disconnect was intentional.
+        # `failed_all_auth` / `no_auth` fire when all SASL mechanisms are exhausted
+        # — slixmpp then disconnects and halts (retrying won't help), so we mark
+        # the exit fatal and let the resulting `disconnected` stop the loop.
+        self.add_event_handler("connection_failed", self._on_connection_failed)
+        self.add_event_handler("disconnected", self._on_disconnected)
+        self.add_event_handler("failed_all_auth", self._on_fatal_auth_failure)
+        self.add_event_handler("no_auth", self._on_fatal_auth_failure)
+
+        # Single handler for every incoming <message/> (plain + encrypted + carbons).
+        self.register_handler(
+            CoroutineCallback(
+                "Messages",
+                MatchXPath(f"{{{self.default_ns}}}message"),
+                self.message_handler,  # pyright: ignore[reportArgumentType]
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # Connection / proxy
+    # ------------------------------------------------------------------ #
+
+    def connect(self, host: str | None = None, port: int | None = None) -> asyncio.Future[object]:
+        """Connect, optionally overriding the resolved host."""
+        if self._server_host:
+            host = self._server_host
+            port = port or 5222
+        # slixmpp stubs are incomplete; the Future's parameter type is Unknown.
+        return cast(
+            asyncio.Future[object],
+            super().connect(host=host, port=port),  # pyright: ignore[reportUnknownMemberType]
+        )
+
+    async def _attempt_connection(
+        self, host: str, port: int, tls: bool, server_hostname: str | None
+    ) -> bool:
+        """Override to tunnel through a proxy when configured."""
+        if self._proxy_url is None:
+            return await super()._attempt_connection(host, port, tls, server_hostname)
+        return await self._attempt_connection_via_proxy(host, port, tls, server_hostname)
+
+    async def _attempt_connection_via_proxy(
+        self, host: str, port: int, tls: bool, server_hostname: str | None
+    ) -> bool:
+        """Tunnel an XMPP connection through a SOCKS4/5 or HTTP proxy.
+
+        Delegates the proxy handshake to ``python-socks`` (supports SOCKS4(a),
+        SOCKS5(h) with optional username/password auth, and HTTP CONNECT). The
+        returned non-blocking socket is handed to slixmpp with optional TLS.
+        """
+        self.event_when_connected = "connected"
+        self._connect_loop_wait += 1
+
+        if self._current_connection_attempt is None:  # pyright: ignore[reportUnknownMemberType]
+            return False
+
+        loop = self.loop or asyncio.get_event_loop()
+
+        ssl_context = self.get_ssl_context() if tls else None
+
+        sock: socket.socket | None = None
+        try:
+            proxy = _Proxy.from_url(cast(str, self._proxy_url))  # pyright: ignore[reportUnknownMemberType]
+            sock = await proxy.connect(dest_host=host, dest_port=port)
+
+            # Tunnel is up; hand the socket off to slixmpp with optional TLS.
+            await loop.create_connection(
+                lambda: self,
+                sock=sock,
+                ssl=ssl_context,
+                server_hostname=server_hostname,
+            )
+            sock = None  # ownership transferred
+            self._connect_loop_wait = 0
+            log.info("Connected via proxy %s", self._proxy_url)
+            return True
+        except (OSError, _ProxyError) as e:
+            log.debug("Proxy connection to %s failed: %s", self._proxy_url, e)
+            self.event("connection_failed", e)
+            return False
+        except Exception as e:  # noqa: BLE001
+            log.error("Unexpected error during proxy connection: %s", e, exc_info=True)
+            self.event("connection_failed", e)
+            return False
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    # ------------------------------------------------------------------ #
+    # Event handlers
+    # ------------------------------------------------------------------ #
+
+    async def _on_session_start(self, _event: object) -> None:
+        self.send_presence()
+        await self.get_roster()  # pyright: ignore[reportUnknownMemberType]
+        log.info("XMPP session started")
+
+    async def _on_omemo_ready(self, _event: object) -> None:
+        try:
+            xep_0384 = cast(XEP_0384, self["xep_0384"])
+            session_manager = await xep_0384.get_session_manager()
+            own_device, other_devices = await session_manager.get_own_device_information()
+            log.info("Bot device id: %s", own_device.device_id)
+            fingerprint = " ".join(SessionManager.format_identity_key(own_device.identity_key))
+            log.info("Bot key fingerprint: %s", fingerprint)
+
+            # The bridge exclusively owns this account: ensure the server-published
+            # device lists contain only this device, purging any stale entries.
+            await self._purge_other_devices(session_manager, own_device, other_devices)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Failed to read own OMEMO device info: %s", e)
+        self._omemo_ready.set()
+        log.info("OMEMO ready; listening for incoming DMs.")
+
+    async def _purge_other_devices(
+        self,
+        session_manager: SessionManager,
+        own_device: DeviceInformation,
+        other_devices: frozenset[DeviceInformation],
+    ) -> None:
+        """Ensure the server-published OMEMO device lists contain only this device.
+
+        The bridge is the sole owner of the XMPP account, so any other device id
+        registered on the server is leftover from a previous run or another client.
+        ``clear_device_lists`` wipes the PEP device list nodes for all backends
+        (twomemo + oldmemo); ``set_own_label`` then re-downloads the now-empty list,
+        adds only this device back, and uploads it. Net result: exactly one entry
+        (this device) on every backend's device list node.
+        """
+        if other_devices:
+            log.info(
+                "Purging %d stale device(s) from OMEMO device list: %s",
+                len(other_devices),
+                ", ".join(str(d.device_id) for d in other_devices),
+            )
+
+        try:
+            await session_manager.clear_device_lists()
+            # set_own_label re-downloads the (now empty) list, adds this device
+            # back with its existing label, and re-uploads — yielding a server
+            # list of exactly one entry.
+            await session_manager.set_own_label(own_device.label)
+            log.info(
+                "OMEMO device list now contains only this device (%s)",
+                own_device.device_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("Failed to purge stale OMEMO devices from server: %s", e)
+
+    # ------------------------------------------------------------------ #
+    # Connection lifecycle
+    # ------------------------------------------------------------------ #
+
+    def _on_connection_failed(self, error: object) -> None:
+        """Log only — slixmpp's `_connect_loop` retries TCP/DNS failures with
+        exponential backoff (capped at 300s) and never gives up, so we must not
+        crash here or we'd pre-empt its retry loop.
+        """
+        log.warning("XMPP connection attempt failed (slixmpp will retry): %s", error)
+
+    def _on_disconnected(self, _event: object) -> None:
+        """Reconnect on unplanned disconnects; stop the loop on intentional ones.
+
+        slixmpp does NOT auto-reconnect on a clean server-side disconnect (only
+        the xep_0199 keepalive plugin does, on ping timeout), so we drive that
+        path here. Auth failures mark `_intentional_disconnect` before slixmpp
+        calls `disconnect()`, so they take the stop-loop branch instead of
+        looping back into a connect that will just fail again.
+        """
+        if self._intentional_disconnect:
+            log.info("XMPP disconnected (intentional); exiting.")
+            self.loop.call_soon(self.loop.stop)
+            return
+        log.warning("XMPP disconnected unexpectedly; reconnecting.")
+        # Our connect() override reuses self._server_host. slixmpp's connect()
+        # cancels any in-flight attempt first, so overlap with keepalive's
+        # ping-timeout reconnect is harmless.
+        self.connect()  # pyright: ignore[reportUnknownMemberType]
+
+    def _on_fatal_auth_failure(self, _event: object) -> None:
+        """All SASL mechanisms exhausted — slixmpp will disconnect and halt.
+
+        Retry won't change credentials, so mark the exit fatal and let the
+        subsequent `disconnected` event stop the loop. Setting
+        `_intentional_disconnect` here makes `_on_disconnected` take the
+        stop-loop branch (instead of reconnecting into a known-failing auth).
+        """
+        log.error(
+            "XMPP authentication failed permanently (no usable SASL mechanism); "
+            "exiting for docker restart."
+        )
+        self._fatal_exit = True
+        self._intentional_disconnect = True
+
+    def request_shutdown(self) -> None:
+        """Initiate graceful shutdown (called from SIGTERM/SIGINT handlers).
+
+        Marks the next `disconnected` event as intentional so `_on_disconnected`
+        stops the loop instead of reconnecting, then kicks off a clean disconnect.
+        """
+        log.info("Shutdown requested; disconnecting from XMPP...")
+        self._intentional_disconnect = True
+        self.disconnect()  # pyright: ignore[reportUnknownMemberType]
+
+    @property
+    def fatal_exit(self) -> bool:
+        """True if the process should exit non-zero so docker restarts it."""
+        return self._fatal_exit
+
+    async def message_handler(self, stanza: Message) -> None:
+        """Single handler for plain, encrypted and carbon-wrapped messages."""
+        xep_0384 = cast(XEP_0384, self["xep_0384"])
+
+        mfrom: JID = stanza["from"]
+        mtype = stanza.get_type()
+
+        # DM-only: skip groupchat (MUC), error, headline, etc.
+        if mtype not in {"chat", "normal"}:
+            return
+
+        # Drop carbons / own-message reflections
+        if (
+            stanza.xml.find("{urn:xmpp:carbons:2}sent") is not None
+            or stanza.xml.find("{urn:xmpp:carbons:2}received") is not None
+        ):
+            log.warning(
+                "Received carbon copy; current impl does NOT support HA setup "
+                "(may cause desync). Ignoring carbon message."
+            )
+            return
+        if mfrom.bare == self.boundjid.bare:
+            log.debug("Skip our own message")
+            return
+
+        namespaces: set[str] = xep_0384.is_encrypted(stanza)
+        if len(namespaces) == 0:
+            # Plaintext message
+            body = stanza["body"]
+            if not body:
+                return
+            log.info("[plain] %s: %s", mfrom, body)
+            await self._dispatch_incoming(mfrom, body, encrypted=False)
+            return
+
+        # Encrypted message
+        log.debug("Encrypted message in namespaces %s from %s", namespaces, mfrom)
+        try:
+            decrypted, device_information = await xep_0384.decrypt_message(stanza)
+        except MessageNotForUs:
+            xep_0384 = cast(XEP_0384, self["xep_0384"])
+            session_manager = await xep_0384.get_session_manager()
+            # pull sender's latest device info for encryption
+            await session_manager.get_device_information(mfrom.bare)
+            # if target support OMEMO, this should exchange our key to them
+            # so from next message, they should encrypt for us
+            # TODO reply to failed message?
+            await self.send_text_message(
+                mfrom,
+                (
+                    "Failed to decrypt previous message because your client doesn't "
+                    "encrypt for my device.\n\nIf this message is encrypted for you, "
+                    "then your device should now have my device key. You can retry the "
+                    "last message"
+                ),
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            log.warning("Failed to decrypt message from %s: %s", mfrom, e)
+            return
+
+        body = decrypted["body"]
+        if not body:
+            # Key-transport message (no plaintext body)
+            log.debug("Skip key transportation message (no body)")
+            return
+
+        log.info("[omemo] %s (device %s): %s", mfrom, device_information.device_id, body)
+        await self._dispatch_incoming(mfrom, body, encrypted=True)
+
+    async def _dispatch_incoming(self, sender: JID, body: str, encrypted: bool) -> None:
+        """Print to console and echo back, matching Main.kt's main loop."""
+        tag = "omemo" if encrypted else "plain"
+        print(f"[{tag}] {sender}: {body}", flush=True)
+        try:
+            await self.send_text_message(sender, f"Got it: {body}", encrypted)
+        except Exception as e:  # noqa: BLE001
+            log.error("Failed to echo back to %s: %s", sender, e)
+
+    # ------------------------------------------------------------------ #
+    # Sending
+    # ------------------------------------------------------------------ #
+
+    async def send_text_message(self, to: JID, text: str, force_encrypted: bool = False) -> None:
+        """Port of ``XMPPChatClient.sendTextMessage``.
+
+        If the contact supports OMEMO (or ``force_encrypted`` is set), the
+        message is encrypted; otherwise it is sent as plain text.
+        """
+        await self._omemo_ready.wait()
+
+        xep_0384 = cast(XEP_0384, self["xep_0384"])
+        session_manager = await xep_0384.get_session_manager()
+
+        supports_omemo = False
+        try:
+            devices = await session_manager.get_device_information(to.bare)
+            supports_omemo = len(devices) > 0
+        except Exception:  # noqa: BLE001
+            supports_omemo = False
+
+        if not supports_omemo and not force_encrypted:
+            # Plaintext path
+            msg = self.make_message(mto=to, mtype="chat")
+            msg["body"] = text
+            msg.send()
+            return
+
+        if not supports_omemo and force_encrypted:
+            raise RuntimeError("Contact doesn't support OMEMO but encryption is enforced")
+
+        # Encrypted path: encrypt_message refreshes device lists internally.
+        stanza = self.make_message(mto=to, mtype="chat")
+        stanza["body"] = text
+
+        recipient_set: set[JID] = {to}
+        encrypted_message, encryption_errors = await xep_0384.encrypt_message(stanza, recipient_set)
+
+        if len(encryption_errors) > 0:
+            log.warning("Non-critical encryption errors: %s", encryption_errors)
+
+        if encrypted_message is None:
+            log.warning("Nothing to encrypt in message to %s; skipping send", to)
+            return
+
+        # Tag with <eme/> so plain-only clients render a hint.
+        encrypted_message["eme"]["namespace"] = oldmemo.oldmemo.NAMESPACE
+        encrypted_message["eme"]["name"] = self["xep_0380"].mechanisms[  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+            oldmemo.oldmemo.NAMESPACE
+        ]
+
+        encrypted_message.send()

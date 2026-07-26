@@ -11,5 +11,6 @@ COPY pyproject.toml ./
 RUN uv sync
 
 COPY . .
+RUN uv sync
 
-CMD ["python", "main.py"]
+CMD ["python", "-m", "xmpp_bridge"]

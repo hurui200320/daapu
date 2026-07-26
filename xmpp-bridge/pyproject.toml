@@ -8,4 +8,39 @@ dependencies = [
     "slixmpp>=1.17.0",
     "slixmpp-omemo>=2.2.0",
     "nats-py>=2.15.0",
+    "python-socks[asyncio]>=2.8.2",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.411",
+    "ruff>=0.16.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xmpp_bridge"]
+
+[project.scripts]
+xmpp-bridge = "xmpp_bridge.__main__:main"
+
+[tool.pyright]
+include = ["src"]
+exclude = [".venv", "**/__pycache__"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = "none"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["ANN", "E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

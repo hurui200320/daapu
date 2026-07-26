@@ -1,0 +1,15 @@
+{
+    "python.defaultInterpreterPath": ".venv/bin/python",
+    "python.analysis.extraPaths": ["src"],
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+        }
+    },
+    "ruff.importStrategy": "fromEnvironment",
+    "ruff.fixAll": true,
+    "ruff.organizeImports": true
+}
