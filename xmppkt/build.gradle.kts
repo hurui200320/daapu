@@ -6,7 +6,7 @@ group = "info.skyblond"
 version = "1.0-SNAPSHOT"
 
 // The latest release is 4.4.8 from 2024 Apr
-// The 4.5.0-rc1 is release at 2025 Nov
+// The 4.5.0-rc1 is release at 2025 Nov (commit 0fcac958b)
 val smackVersion = "4.5.0-rc1"
 
 dependencies {
