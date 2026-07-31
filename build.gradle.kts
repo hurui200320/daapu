@@ -7,7 +7,6 @@ version = "1.0-SNAPSHOT"
 
 dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.38")
-    implementation(project(":xmppkt"))
     testImplementation(kotlin("test"))
 }
 

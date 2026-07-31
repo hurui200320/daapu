@@ -12,5 +12,3 @@ dependencyResolutionManagement {
         }
     }
 }
-
-include("xmppkt")
