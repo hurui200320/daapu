@@ -33,6 +33,8 @@ The bridge reads its configuration from environment variables (in development, p
 | `XMPP_ACCOUNT_PASSWORD` | yes      | Account password.                                                                                                                                                              |
 | `XMPP_OMEMO_STORE_DIR`  | no       | Directory for the OMEMO JSON store (default `./omemo-store`).                                                                                                                  |
 | `XMPP_PROXY`            | no       | Full proxy URL to tunnel the XMPP connection through, e.g. `socks5://user:pass@host:port`. Accepted schemes: `socks5`, `socks5h`, `socks4`, `socks4a`, `http`. Off by default. |
+| `NATS_URL`              | yes      | NATS server URL, e.g. `nats://nats:4222`.                                                                                                                                      |
+| `NATS_PREFIX`           | yes      | Per-instance subject/stream prefix. Streams to `<prefix>.stream`; incoming messages to `<prefix>.message`; RPC commands to `<prefix>.command.*`. Must be unique per running instance. |
 
 ## Coding style
 

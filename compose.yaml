@@ -16,6 +16,7 @@ services:
       - .env
     environment:
       - NATS_URL=nats://nats:4222
+      - NATS_PREFIX=daapu
       - XMPP_OMEMO_STORE_DIR=/data/omemo-store
       - XMPP_CLEAR_STALE_DEVICES=true
     volumes:

@@ -14,6 +14,7 @@ import asyncio
 import logging
 import socket
 import sys
+import time
 from typing import cast
 
 import oldmemo
@@ -29,7 +30,16 @@ from slixmpp.xmlstream.handler import CoroutineCallback
 from slixmpp.xmlstream.matcher import MatchXPath
 from slixmpp_omemo import XEP_0384
 
+from .nats_bridge import NatsBridge
 from .omemo_plugin import XEP_0384Impl
+from .schemas import (
+    AddReactionRequest,
+    CommandReply,
+    IncomingMessage,
+    ReplyToMessageRequest,
+    SendMucMessageRequest,
+    SendTextMessageRequest,
+)
 
 # Register the concrete OMEMO plugin subclass as the "xep_0384" plugin
 # globally, before any ClientXMPP is instantiated. The ``module`` kwarg used
@@ -40,10 +50,14 @@ log = logging.getLogger(__name__)
 
 
 class BridgeBot(ClientXMPP):
-    """XMPP+OMEMO bot: prints incoming DMs to the console and echoes them back.
+    """XMPP+OMEMO bot that bridges incoming DMs to NATS and services RPC commands.
 
-    Replaces the NATS publishing pipeline of the future design with a simple
-    console-print + ``"Got it: ..."`` echo, mirroring ``Main.kt``'s main loop.
+    Incoming decrypted/plaintext DMs are published to NATS via the
+    :class:`NatsBridge` (``<prefix>.message`` JetStream subject). Outbound
+    sends happen through ``<prefix>.command.*`` RPC handlers registered against
+    the same bridge. MUC (XEP-0045) is intentionally not registered — only
+    1:1 DMs are handled. Carbons and own-JID reflections are dropped with
+    warning.
     """
 
     def __init__(
@@ -51,6 +65,7 @@ class BridgeBot(ClientXMPP):
         jid: str,
         password: str,
         omemo_json_path: str,
+        nats_bridge: NatsBridge,
         server_host: str | None = None,
         proxy_url: str | None = None,
     ) -> None:
@@ -60,6 +75,7 @@ class BridgeBot(ClientXMPP):
         self._server_host = server_host
         self._proxy_url = proxy_url
         self._omemo_ready = asyncio.Event()
+        self._nats = nats_bridge
 
         # Connection lifecycle flags.
         # _intentional_disconnect: True when we initiated shutdown (SIGTERM/SIGINT
@@ -268,16 +284,27 @@ class BridgeBot(ClientXMPP):
         path here. Auth failures mark `_intentional_disconnect` before slixmpp
         calls `disconnect()`, so they take the stop-loop branch instead of
         looping back into a connect that will just fail again.
+
+        On an intentional disconnect, the NATS connection is drained (in-flight
+        subscriptions flushed) before the loop stops; the drain runs as a task
+        on the still-running loop and stops the loop once done.
         """
         if self._intentional_disconnect:
-            log.info("XMPP disconnected (intentional); exiting.")
-            self.loop.call_soon(self.loop.stop)
+            log.info("XMPP disconnected (intentional); draining NATS before exit.")
+            asyncio.ensure_future(self._drain_nats_and_stop())
             return
         log.warning("XMPP disconnected unexpectedly; reconnecting.")
         # Our connect() override reuses self._server_host. slixmpp's connect()
         # cancels any in-flight attempt first, so overlap with keepalive's
         # ping-timeout reconnect is harmless.
         self.connect()  # pyright: ignore[reportUnknownMemberType]
+
+    async def _drain_nats_and_stop(self) -> None:
+        """Drain the NATS connection, then stop the event loop."""
+        try:
+            await self._nats.close()
+        finally:
+            self.loop.call_soon(self.loop.stop)
 
     def _on_fatal_auth_failure(self, _event: object) -> None:
         """All SASL mechanisms exhausted — slixmpp will disconnect and halt.
@@ -341,7 +368,7 @@ class BridgeBot(ClientXMPP):
             if not body:
                 return
             log.info("[plain] %s: %s", mfrom, body)
-            await self._dispatch_incoming(mfrom, body, encrypted=False)
+            await self._dispatch_incoming(stanza, mfrom, body, encrypted=False)
             return
 
         # Encrypted message
@@ -377,16 +404,70 @@ class BridgeBot(ClientXMPP):
             return
 
         log.info("[omemo] %s (device %s): %s", mfrom, device_information.device_id, body)
-        await self._dispatch_incoming(mfrom, body, encrypted=True)
+        await self._dispatch_incoming(stanza, mfrom, body, encrypted=True)
 
-    async def _dispatch_incoming(self, sender: JID, body: str, encrypted: bool) -> None:
-        """Print to console and echo back, matching Main.kt's main loop."""
-        tag = "omemo" if encrypted else "plain"
-        print(f"[{tag}] {sender}: {body}", flush=True)
+    async def _dispatch_incoming(
+        self, stanza: Message, sender: JID, body: str, encrypted: bool
+    ) -> None:
+        """Publish the decrypted incoming DM to NATS for the kotlin bot to consume."""
+        stanza_id: str | None = stanza["id"] or None
+        msg = IncomingMessage(
+            account=self.boundjid.bare,
+            from_=str(sender),
+            body=body,
+            encrypted=encrypted,
+            type="DM",
+            timestamp=int(time.time()),
+            stanza_id=stanza_id,
+        )
         try:
-            await self.send_text_message(sender, f"Got it: {body}", encrypted)
+            await self._nats.publish_incoming(msg)
         except Exception as e:  # noqa: BLE001
-            log.error("Failed to echo back to %s: %s", sender, e)
+            log.error("Failed to publish incoming message from %s to NATS: %s", sender, e)
+
+    # ------------------------------------------------------------------ #
+    # NATS RPC commands (kotlin -> bridge)
+    # ------------------------------------------------------------------ #
+
+    async def register_nats_commands(self) -> None:
+        """Register all ``<prefix>.command.*`` RPC handlers on the NATS bridge.
+
+        Handlers block on OMEMO readiness internally (via
+        :meth:`send_text_message`), so RPCs received before OMEMO is ready
+        will queue up; the kotlin caller's RPC timeout must accommodate that.
+        """
+        nats = self._nats
+        await nats.serve_command(
+            "sendTextMessage", SendTextMessageRequest, self._handle_send_text_message
+        )
+        await nats.serve_command(
+            "replyToMessage", ReplyToMessageRequest, self._handle_reply_to_message
+        )
+        await nats.serve_command(
+            "sendMucMessage", SendMucMessageRequest, self._handle_send_muc_message
+        )
+        await nats.serve_command("addReaction", AddReactionRequest, self._handle_add_reaction)
+
+    async def _handle_send_text_message(self, req: SendTextMessageRequest) -> CommandReply:
+        """RPC: send a 1:1 DM to ``req.to``."""
+        try:
+            await self.send_text_message(JID(req.to), req.text, req.force_encrypted)
+            return CommandReply(ok=True)
+        except Exception as e:  # noqa: BLE001
+            log.error("sendTextMessage RPC failed: %s", e)
+            return CommandReply(ok=False, error=str(e))
+
+    async def _handle_reply_to_message(self, req: ReplyToMessageRequest) -> CommandReply:
+        """RPC: reply to a stanza (XEP-0359). Scaffolded — not implemented."""
+        return CommandReply(ok=False, error="not implemented")
+
+    async def _handle_send_muc_message(self, req: SendMucMessageRequest) -> CommandReply:
+        """RPC: send a MUC message. Scaffolded — MUC is not supported yet."""
+        return CommandReply(ok=False, error="not implemented")
+
+    async def _handle_add_reaction(self, req: AddReactionRequest) -> CommandReply:
+        """RPC: add an emoji reaction (XEP-0444). Scaffolded — not implemented."""
+        return CommandReply(ok=False, error="not implemented")
 
     # ------------------------------------------------------------------ #
     # Sending

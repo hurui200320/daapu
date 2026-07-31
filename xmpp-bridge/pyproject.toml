@@ -9,6 +9,7 @@ dependencies = [
     "slixmpp-omemo>=2.2.0",
     "nats-py>=2.15.0",
     "python-socks[asyncio]>=2.8.2",
+    "msgspec>=0.21.1",
 ]
 
 [project.optional-dependencies]

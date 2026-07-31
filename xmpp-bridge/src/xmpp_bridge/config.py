@@ -26,6 +26,8 @@ class BridgeConfig:
     xmpp_server_host: str
     omemo_store_dir: Path
     proxy_url: str | None
+    nats_url: str
+    nats_prefix: str
 
     @property
     def omemo_data_path(self) -> Path:
@@ -52,10 +54,15 @@ class BridgeConfig:
                 )
             proxy_url = proxy_env
 
+        nats_url = _require_env("NATS_URL")
+        nats_prefix = _require_env("NATS_PREFIX")
+
         return cls(
             xmpp_jid=jid,
             xmpp_server_host=host,
             xmpp_password=password,
             omemo_store_dir=store_dir,
             proxy_url=proxy_url,
+            nats_url=nats_url,
+            nats_prefix=nats_prefix,
         )
