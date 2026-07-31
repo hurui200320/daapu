@@ -25,7 +25,18 @@ services:
       - nats
     restart: unless-stopped
 
-# TODO: main chatbot
+  daapu:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      - NATS_URL=nats://nats:4222
+      - NATS_PREFIX=daapu
+    depends_on:
+      - nats
+      - xmpp-bridge
+    restart: unless-stopped
 
 volumes:
   nats-data:
