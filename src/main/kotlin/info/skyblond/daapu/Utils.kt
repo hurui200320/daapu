@@ -2,13 +2,35 @@ package info.skyblond.daapu
 
 import java.io.File
 
-fun readEnv(key: String): String? {
-    return File("./.env").useLines { lines ->
-        lines.map { it.split("#")[0].trim() }
+/**
+ * Read a configuration value from the process environment first (used by
+ * docker compose via `environment:`/`env_file:`), falling back to the local
+ * `./.env` file for development.
+ */
+fun readEnv(key: String): String? = System.getenv(key) ?: readEnvFile(key)
+
+/**
+ * Parse a minimal `.env` file (comments after `#` are stripped; lines without
+ * an `=` are skipped).
+ */
+private fun readEnvFile(key: String): String? {
+    val envFile = File("./.env")
+    // A missing file is the same as a missing key; without this check the
+    // FileNotFoundException below would escape requireEnv() and report an
+    // unhelpful I/O error instead of the intended "key not present" message.
+    if (!envFile.exists()) return null
+    return envFile.useLines { lines ->
+        lines.asSequence()
+            .map { it.split('#')[0].trim() }
             .filter { it.isNotBlank() }
-            .map { l -> l.split("=", limit = 2).let { it[0] to it[1] } }
-            .associate { it }
-    }[key]
+            .mapNotNull { line ->
+                val separator = line.indexOf('=')
+                if (separator <= 0) return@mapNotNull null
+                line.substring(0, separator).trim() to line.substring(separator + 1)
+            }
+            .toMap()[key]
+    }
 }
 
-fun requireEnv(key: String): String = readEnv(key) ?: throw IllegalArgumentException("$key is not present in .env")
+fun requireEnv(key: String): String =
+    readEnv(key) ?: throw IllegalArgumentException("$key is not present in the environment or .env")

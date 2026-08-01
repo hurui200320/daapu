@@ -12,19 +12,32 @@ fun main() {
 
     val client = NatsClient(natsUrl, natsPrefix)
 
-    runBlocking {
-        client.connect()
-        logger.info("Bot online; consuming {} incoming messages", natsPrefix)
+    // SIGTERM (docker stop) / SIGINT (Ctrl-C) -> graceful NATS shutdown:
+    // close() drains the consumer and connection, which closes the incoming
+    // channel and lets the runBlocking loop below exit normally.
+    Runtime.getRuntime().addShutdownHook(Thread({
+        client.close()
+    }, "daapu-shutdown"))
 
-        for (message in client.incomingMessages) {
-            logger.info("[{}]{}({}): {}", message.type, message.from, message.stanzaId, message.body)
-            client.sendTextMessage(
-                to = message.from,
-                text = "Got it: ${message.body}",
-                forceEncrypted = message.encrypted,
-            )
+    runBlocking {
+        try {
+            client.connect()
+            logger.info("Bot online; consuming {} incoming messages", natsPrefix)
+
+            for (envelope in client.incomingMessages) {
+                val message = envelope.message
+                logger.info("[{}]{}({}): {}", message.type, message.from, message.stanzaId, message.body)
+                client.sendTextMessage(
+                    to = message.from,
+                    text = "Got it: ${message.body}",
+                    forceEncrypted = message.encrypted,
+                )
+                // Ack only after the reply was dispatched; an unacked message is
+                // redelivered on reconnect (at-least-once).
+                envelope.ack()
+            }
+        } finally {
+            client.close()
         }
     }
-
-    client.close()
 }

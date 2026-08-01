@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "pyright>=1.1.411",
     "ruff>=0.16.0",
+    "pytest>=8.0.0",
 ]
 
 [build-system]
@@ -29,7 +30,7 @@ packages = ["src/xmpp_bridge"]
 xmpp-bridge = "xmpp_bridge.__main__:main"
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "tests"]
 exclude = [".venv", "**/__pycache__"]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
@@ -38,10 +39,13 @@ reportMissingTypeStubs = "none"
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["src"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["ANN", "E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,15 +1,13 @@
 package info.skyblond.daapu.nats
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
  * NATS wire-format schemas for talking to the xmpp-bridge sidecar.
  *
  * Kotlin mirror of `xmpp-bridge/src/xmpp_bridge/schemas.py`. The bridge uses
- * msgspec with `rename="camel"`, so JSON keys are camelCase; we match that with
- * explicit [@SerialName][SerialName] overrides where the Kotlin property name
- * differs (notably `from`, a Kotlin keyword).
+ * msgspec with `rename="camel"`, so JSON keys are camelCase; kotlinx matches
+ * that by default for data-class property names (e.g. `forceEncrypted`).
  *
  * Contract (per-instance `[NATS_PREFIX]`):
  * - `<prefix>.message`               -> [IncomingMessage] published by the bridge (JetStream, durable)
@@ -28,7 +26,7 @@ enum class MessageType {
 data class IncomingMessage(
     /** Bare JID of the bridge account that received the message. */
     val account: String,
-    /** Sender JID (bare for DM, room-nick for MUC). */
+    /** Bare JID of the sender. MUC (room-nick) is not produced yet. */
     val from: String,
     /** Decrypted (or plaintext) message body. */
     val body: String,

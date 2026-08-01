@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
-import sys
 import time
 from typing import cast
 
@@ -41,9 +40,10 @@ from .schemas import (
     SendTextMessageRequest,
 )
 
-# Register the concrete OMEMO plugin subclass as the "xep_0384" plugin
-# globally, before any ClientXMPP is instantiated. The ``module`` kwarg used
-# at ``register_plugin("xep_0384", ...)`` time points slixmpp here.
+# Register the concrete OMEMO plugin subclass in slixmpp's global plugin
+# registry, replacing the stock `xep_0384` implementation. This is the single
+# registration point; per-instance `register_plugin("xep_0384", ...)` below
+# only *enables* the class already registered here.
 register_plugin(XEP_0384Impl)
 
 log = logging.getLogger(__name__)
@@ -68,8 +68,13 @@ class BridgeBot(ClientXMPP):
         nats_bridge: NatsBridge,
         server_host: str | None = None,
         proxy_url: str | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
-        super().__init__(jid, password)  # pyright: ignore[reportUnknownMemberType]
+        super().__init__(  # pyright: ignore[reportUnknownMemberType]
+            jid,
+            password,
+            loop=loop,  # slixmpp stubs are incomplete; the kwarg is forwarded to XMLStream
+        )
 
         self._omemo_json_path = omemo_json_path
         self._server_host = server_host
@@ -86,13 +91,13 @@ class BridgeBot(ClientXMPP):
         self._intentional_disconnect: bool = False
         self._fatal_exit: bool = False
 
-        # OMEMO plugin + a couple of useful optional companions.
-        # xep_0384 pulls in xep_0004/0030/0060/0163/0280/0334 automatically.
+        # Enable the OMEMO plugin (the class itself is registered globally at
+        # import time above) with its JSON-file storage config. xep_0384 pulls
+        # in xep_0004/0030/0060/0163/0280/0334 automatically.
         # MUC (xep_0045) is deliberately NOT registered.
         self.register_plugin(  # pyright: ignore[reportUnknownMemberType]
             "xep_0384",
             {"json_file_path": self._omemo_json_path},
-            module=sys.modules[__name__],
         )
         # XMPP Ping keepalive. keepalive lets slixmpp detect silent mid-session
         # TCP drops (half-open links, server killed without FIN) and auto-reconnect
@@ -169,7 +174,7 @@ class BridgeBot(ClientXMPP):
         if self._current_connection_attempt is None:  # pyright: ignore[reportUnknownMemberType]
             return False
 
-        loop = self.loop or asyncio.get_event_loop()
+        loop = self.loop or asyncio.get_running_loop()
 
         ssl_context = self.get_ssl_context() if tls else None
 
@@ -193,7 +198,7 @@ class BridgeBot(ClientXMPP):
             log.debug("Proxy connection to %s failed: %s", self._proxy_url, e)
             self.event("connection_failed", e)
             return False
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.error("Unexpected error during proxy connection: %s", e, exc_info=True)
             self.event("connection_failed", e)
             return False
@@ -225,7 +230,7 @@ class BridgeBot(ClientXMPP):
             # The bridge exclusively owns this account: ensure the server-published
             # device lists contain only this device, purging any stale entries.
             await self._purge_other_devices(session_manager, own_device, other_devices)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.warning("Failed to read own OMEMO device info: %s", e)
         self._omemo_ready.set()
         log.info("OMEMO ready; listening for incoming DMs.")
@@ -240,10 +245,12 @@ class BridgeBot(ClientXMPP):
 
         The bridge is the sole owner of the XMPP account, so any other device id
         registered on the server is leftover from a previous run or another client.
-        ``clear_device_lists`` wipes the PEP device list nodes for all backends
-        (twomemo + oldmemo); ``set_own_label`` then re-downloads the now-empty list,
-        adds only this device back, and uploads it. Net result: exactly one entry
-        (this device) on every backend's device list node.
+        Only when stale devices exist is the list wiped (``clear_device_lists``
+        for all backends, twomemo + oldmemo). ``set_own_label`` then re-downloads
+        the (possibly empty) list, adds this device back with its existing label,
+        and uploads it — yielding a server list of exactly one entry. Running it
+        unconditionally also recovers from a crash during a previous purge, where
+        the server list may be empty.
         """
         if other_devices:
             log.info(
@@ -251,19 +258,16 @@ class BridgeBot(ClientXMPP):
                 len(other_devices),
                 ", ".join(str(d.device_id) for d in other_devices),
             )
+            await session_manager.clear_device_lists()
 
         try:
-            await session_manager.clear_device_lists()
-            # set_own_label re-downloads the (now empty) list, adds this device
-            # back with its existing label, and re-uploads — yielding a server
-            # list of exactly one entry.
             await session_manager.set_own_label(own_device.label)
             log.info(
                 "OMEMO device list now contains only this device (%s)",
                 own_device.device_id,
             )
-        except Exception as e:  # noqa: BLE001
-            log.warning("Failed to purge stale OMEMO devices from server: %s", e)
+        except Exception as e:
+            log.warning("Failed to ensure own OMEMO device in server list: %s", e)
 
     # ------------------------------------------------------------------ #
     # Connection lifecycle
@@ -376,7 +380,6 @@ class BridgeBot(ClientXMPP):
         try:
             decrypted, device_information = await xep_0384.decrypt_message(stanza)
         except MessageNotForUs:
-            xep_0384 = cast(XEP_0384, self["xep_0384"])
             session_manager = await xep_0384.get_session_manager()
             # pull sender's latest device info for encryption
             await session_manager.get_device_information(mfrom.bare)
@@ -393,11 +396,11 @@ class BridgeBot(ClientXMPP):
                 ),
             )
             return
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.warning("Failed to decrypt message from %s: %s", mfrom, e)
             return
 
-        body = decrypted["body"]
+        body = decrypted.get("body", "")
         if not body:
             # Key-transport message (no plaintext body)
             log.debug("Skip key transportation message (no body)")
@@ -409,11 +412,15 @@ class BridgeBot(ClientXMPP):
     async def _dispatch_incoming(
         self, stanza: Message, sender: JID, body: str, encrypted: bool
     ) -> None:
-        """Publish the decrypted incoming DM to NATS for the kotlin bot to consume."""
+        """Publish the decrypted incoming DM to NATS for the kotlin bot to consume.
+
+        ``from`` is the sender's bare JID (matches the schema contract); the
+        kotlin bot addresses replies to it, which is correct for OMEMO routing.
+        """
         stanza_id: str | None = stanza["id"] or None
         msg = IncomingMessage(
             account=self.boundjid.bare,
-            from_=str(sender),
+            from_=sender.bare,
             body=body,
             encrypted=encrypted,
             type="DM",
@@ -422,7 +429,7 @@ class BridgeBot(ClientXMPP):
         )
         try:
             await self._nats.publish_incoming(msg)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.error("Failed to publish incoming message from %s to NATS: %s", sender, e)
 
     # ------------------------------------------------------------------ #
@@ -453,7 +460,7 @@ class BridgeBot(ClientXMPP):
         try:
             await self.send_text_message(JID(req.to), req.text, req.force_encrypted)
             return CommandReply(ok=True)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.error("sendTextMessage RPC failed: %s", e)
             return CommandReply(ok=False, error=str(e))
 
@@ -488,14 +495,14 @@ class BridgeBot(ClientXMPP):
         try:
             devices = await session_manager.get_device_information(to.bare)
             supports_omemo = len(devices) > 0
-        except Exception:  # noqa: BLE001
+        except Exception:
             supports_omemo = False
 
         if not supports_omemo and not force_encrypted:
             # Plaintext path
             msg = self.make_message(mto=to, mtype="chat")
             msg["body"] = text
-            msg.send()
+            self._send_or_raise(msg)
             return
 
         if not supports_omemo and force_encrypted:
@@ -512,8 +519,10 @@ class BridgeBot(ClientXMPP):
             log.warning("Non-critical encryption errors: %s", encryption_errors)
 
         if encrypted_message is None:
-            log.warning("Nothing to encrypt in message to %s; skipping send", to)
-            return
+            # encrypt_message returns None when there is nothing to encrypt (e.g.
+            # every recipient device failed). Surface it as an error so the RPC
+            # caller sees ok=False instead of us silently reporting success.
+            raise RuntimeError(f"Nothing to encrypt for {to}; message not sent")
 
         # Tag with <eme/> so plain-only clients render a hint.
         encrypted_message["eme"]["namespace"] = oldmemo.oldmemo.NAMESPACE
@@ -521,4 +530,18 @@ class BridgeBot(ClientXMPP):
             oldmemo.oldmemo.NAMESPACE
         ]
 
-        encrypted_message.send()
+        self._send_or_raise(encrypted_message)
+
+    def _send_or_raise(self, stanza: Message) -> None:
+        """Send a stanza, raising on failures we can detect synchronously.
+
+        slixmpp's ``send()`` is fire-and-forget: the stanza is queued for the
+        writer coroutine, so transport-level errors (e.g. ``NotConnectedError``
+        when the socket dropped) surface asynchronously in slixmpp's logs, not
+        at the call site. What we *can* catch here is a missing
+        session/transport, where ``send()`` would otherwise queue the stanza
+        and drop it silently.
+        """
+        if not self._session_started or self.transport is None:  # pyright: ignore[reportUnknownMemberType]
+            raise RuntimeError("XMPP session is not active; message not sent")
+        stanza.send()

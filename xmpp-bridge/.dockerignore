@@ -1,0 +1,9 @@
+# Local tooling / caches — must not be copied into the image.
+# The .venv from the build context would otherwise clobber the one created by
+# `RUN uv sync` in the Dockerfile, and .env would bake secrets into the image.
+.venv/
+**/__pycache__/
+.ruff_cache/
+.pytest_cache/
+omemo-store/
+.env

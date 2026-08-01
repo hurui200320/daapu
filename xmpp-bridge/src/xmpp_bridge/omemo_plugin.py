@@ -21,8 +21,11 @@ from .storage import OmemoJsonFileStorage
 log = logging.getLogger(__name__)
 
 
-class XEP_0384Impl(XEP_0384):  # pylint: disable=invalid-name
+class XEP_0384Impl(XEP_0384):
     """Concrete OMEMO plugin for the daapu bot.
+
+    Class name intentionally matches the slixmpp plugin key ``xep_0384`` so it
+    can be registered under that name and looked up via ``self["xep_0384"]``.
 
     Configuration (passed via ``register_plugin("xep_0384", {...})``):
 

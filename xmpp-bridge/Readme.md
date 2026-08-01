@@ -15,6 +15,10 @@ Currently **only 1:1 DM** is supported. MUC (group chat) support is planned for 
 Currently, the XMPP bridge does NOT have any HA cluster set up. Each account should be owned by one
 and only one instance exclusively.
 
+The Kotlin bot is single-instance too: it consumes a fixed durable JetStream consumer per prefix.
+The NATS server auto-releases that consumer shortly after the bot's connection is gone (its
+`inactive_threshold` is 60s), so restarts and crashes need no manual consumer cleanup.
+
 > Note on OMEMO protocol versions: slixmpp-omemo 2.2.0 fully supports
 > decrypting `eu.siacs.conversations.axolotl` (a.k.a. oldmemo / legacy
 > OMEMO) DMs. The newer `omemo:2` (twomemo) DM path raises
@@ -34,7 +38,7 @@ The bridge reads its configuration from environment variables (in development, p
 | `XMPP_OMEMO_STORE_DIR`  | no       | Directory for the OMEMO JSON store (default `./omemo-store`).                                                                                                                  |
 | `XMPP_PROXY`            | no       | Full proxy URL to tunnel the XMPP connection through, e.g. `socks5://user:pass@host:port`. Accepted schemes: `socks5`, `socks5h`, `socks4`, `socks4a`, `http`. Off by default. |
 | `NATS_URL`              | yes      | NATS server URL, e.g. `nats://nats:4222`.                                                                                                                                      |
-| `NATS_PREFIX`           | yes      | Per-instance subject/stream prefix. Streams to `<prefix>.stream`; incoming messages to `<prefix>.message`; RPC commands to `<prefix>.command.*`. Must be unique per running instance. |
+| `NATS_PREFIX`           | yes      | Per-instance subject/stream prefix. Streams to `<prefix>-stream`; incoming messages to `<prefix>.message`; RPC commands to `<prefix>.command.*`. Must be unique per running instance. |
 
 ## Coding style
 
@@ -59,7 +63,7 @@ For Coding agents.
 ### NATS
 
 + nats-py https://github.com/nats-io/nats.py
-  +Docs https://docs.nats.io
+  + Docs https://docs.nats.io
 
 ### XMPP
 

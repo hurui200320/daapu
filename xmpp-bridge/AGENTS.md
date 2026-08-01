@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents (and humans) working in this repository.
+Guidance for AI agents (and humans) working in this python project.
 
 ## Project
 
@@ -14,19 +14,20 @@ uv sync --extra dev          # install runtime + dev deps (pyright, ruff)
 
 ## Verification commands
 
-Run **all three** after any source change. They must exit clean.
+Run **all four** after any source change. They must exit clean.
 
 ```bash
-uv run --extra dev pyright src/                       # type check (strict)
-uv run --extra dev ruff check src/                   # lint
-uv run --extra dev ruff format --check src/          # format check
+uv run --extra dev pyright src/ tests/            # type check (strict)
+uv run --extra dev ruff check src/ tests/        # lint
+uv run --extra dev ruff format --check src/ tests/  # format check
+uv run --extra dev pytest                         # unit tests
 ```
 
 To auto-fix lint + format:
 
 ```bash
-uv run --extra dev ruff check --fix src/
-uv run --extra dev ruff format src/
+uv run --extra dev ruff check --fix src/ tests/
+uv run --extra dev ruff format src/ tests/
 ```
 
 ## Type-checking policy

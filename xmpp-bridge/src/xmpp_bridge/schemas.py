@@ -14,7 +14,7 @@ Contract:
 
 Subject/Stream naming (per-instance ``prefix``):
 
-* ``<prefix>.stream``                     JetStream stream binding ``<prefix>.message``
+* ``<prefix>-stream``                     JetStream stream binding ``<prefix>.message``
 * ``<prefix>.message``                    incoming DM (bridge -> kotlin)
 * ``<prefix>.command.sendTextMessage``     RPC: send a 1:1 DM
 * ``<prefix>.command.replyToMessage``     RPC: reply to a stanza (scaffold/stub)
@@ -40,7 +40,7 @@ class IncomingMessage(msgspec.Struct, rename="camel"):
     """Bare JID of the bridge account that received the message."""
 
     from_: str = msgspec.field(name="from")
-    """Sender JID (bare for DM, room-nick for MUC)."""
+    """Bare JID of the sender. MUC (room-nick) is not produced yet."""
 
     body: str
     """Decrypted (or plaintext) message body."""

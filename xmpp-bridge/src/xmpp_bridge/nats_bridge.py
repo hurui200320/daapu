@@ -127,6 +127,8 @@ class NatsBridge:
             resp = await self._nc.request(
                 self.presence_subject, b"ping", timeout=_PRESENCE_PROBE_TIMEOUT
             )
+        # PEP 758 (py3.14): a bare comma-separated except tuple is valid here;
+        # ruff formats it this way because the project targets Python 3.14.
         except NatsTimeoutError, NoRespondersError:
             resp = None
 
@@ -243,7 +245,7 @@ class NatsBridge:
         except msgspec.DecodeError as e:
             log.warning("Bad RPC request on %s: %s", msg.subject, e)
             return msgspec.json.encode(CommandReply(ok=False, error=f"bad request: {e}"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception("RPC handler on %s failed", msg.subject)
             return msgspec.json.encode(CommandReply(ok=False, error=str(e)))
 
@@ -256,6 +258,6 @@ class NatsBridge:
         self._js = None
         try:
             await nc.drain()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.warning("Error draining NATS connection: %s", e)
         log.info("NATS connection closed")
