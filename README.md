@@ -16,11 +16,17 @@ There is deliberately **no multi-instance support** yet. The stack is meant to r
 instance per `NATS_PREFIX`; two instances would drain the same JetStream queue / OMEMO account and
 desync. The bridge enforces this at startup via a presence probe on `<prefix>.presence`.
 
-The bot's durable consumer `<prefix>-consumer` is auto-released by the NATS server shortly after
-the bot's connection dies (its `inactive_threshold` is 60s), so restarts and crashes never
-accumulate stale consumers and need no manual cleanup. A restart that happens within the threshold
-reuses the old consumer and resumes its position. See
+The bot's durable consumer `<prefix>-consumer` is persistent (no `inactive_threshold`): the NATS
+server never auto-deletes it. On every (re)start the bot reuses the same durable and resumes from
+its last acked position, which gives at-least-once delivery across restarts without replaying or
+losing the stream backlog. Single-instance-per-prefix is the operator's responsibility — two bots
+on the same durable would compete for deliveries and desync. See
 `src/main/kotlin/info/skyblond/daapu/nats/NatsClient.kt` and `xmpp-bridge/Readme.md`.
+
+NATS operations are best-effort: once a message is published into JetStream and acked, it has
+at-least-once delivery. If the publish fails or the ack is lost (we don't know if it's published),
+the bridge reacts to the sender's message with ⚠️ so nothing is silently dropped; the sender should
+check whether they got a bot reply and resend if not.
 
 ## References
 

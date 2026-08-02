@@ -15,9 +15,11 @@ Currently **only 1:1 DM** is supported. MUC (group chat) support is planned for 
 Currently, the XMPP bridge does NOT have any HA cluster set up. Each account should be owned by one
 and only one instance exclusively.
 
-The Kotlin bot is single-instance too: it consumes a fixed durable JetStream consumer per prefix.
-The NATS server auto-releases that consumer shortly after the bot's connection is gone (its
-`inactive_threshold` is 60s), so restarts and crashes need no manual consumer cleanup.
+The Kotlin bot consumes a fixed durable JetStream consumer per prefix. That durable is persistent
+(it has no inactive threshold, so the server never auto-deletes it): on every (re)start the bot
+reuses it and resumes from the last acked position, which gives at-least-once delivery across
+restarts without replaying or losing the stream backlog. Single-instance-per-prefix is the
+operator's responsibility — two bots on the same durable would compete for deliveries and desync.
 
 > Note on OMEMO protocol versions: slixmpp-omemo 2.2.0 fully supports
 > decrypting `eu.siacs.conversations.axolotl` (a.k.a. oldmemo / legacy
@@ -63,7 +65,7 @@ For Coding agents.
 ### NATS
 
 + nats-py https://github.com/nats-io/nats.py
-  + Docs https://docs.nats.io
+    + Docs https://docs.nats.io
 
 ### XMPP
 

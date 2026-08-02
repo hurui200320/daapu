@@ -27,14 +27,28 @@ fun main() {
             for (envelope in client.incomingMessages) {
                 val message = envelope.message
                 logger.info("[{}]{}({}): {}", message.type, message.from, message.stanzaId, message.body)
-                client.sendTextMessage(
+                val reply = client.sendTextMessage(
                     to = message.from,
                     text = "Got it: ${message.body}",
                     forceEncrypted = message.encrypted,
                 )
-                // Ack only after the reply was dispatched; an unacked message is
-                // redelivered on reconnect (at-least-once).
-                envelope.ack()
+                if (reply.ok) {
+                    // Ack only after the reply was dispatched; an unacked message
+                    // is redelivered on reconnect (at-least-once).
+                    envelope.ack()
+                } else {
+                    // The reply failed, so the user didn't see our response.
+                    // Nack so JetStream redelivers the message and we retry.
+                    // Future LLM chatbot note: on such a failed reply, do NOT
+                    // include this round in the chat history — the user never
+                    // saw the response, so the failed turn must not pollute the
+                    // context; the redelivered message restarts the turn.
+                    // If the nack also fails, the message was still not acked,
+                    // so JetStream redelivers it anyway; the envelope already
+                    // dropped the message from the in-process dedup set, so the
+                    // redelivery is reprocessed instead of suppressed.
+                    envelope.nack()
+                }
             }
         } finally {
             client.close()

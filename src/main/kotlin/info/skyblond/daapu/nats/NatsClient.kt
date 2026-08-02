@@ -4,18 +4,16 @@ import io.nats.client.*
 import io.nats.client.api.AckPolicy
 import io.nats.client.api.ConsumerConfiguration
 import io.nats.client.api.DeliverPolicy
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.system.exitProcess
 
 /**
  * NATS client for the main daapu bot.
@@ -25,11 +23,23 @@ import java.time.Duration
  * `depends_on` in compose only waits for the bridge container to *start*, not
  * for the stream to exist, so consumer creation is retried until it succeeds.
  *
- * The bot is strictly single-instance per NATS prefix (two instances draining
- * the same durable consumer would split the queue and desync; enforced at the
- * stack level via the bridge's `<prefix>.presence` claim). The consumer itself
- * is auto-released by the server once the bot's connection is gone for a while,
- * so restarts never accumulate stale consumers. See [ensureConsumer].
+ * The consumer is a *persistent* durable: it has no inactive threshold, so the
+ * server never auto-deletes it. On every (re)start the bot reuses the same
+ * durable and resumes from its last acked position, which gives at-least-once
+ * delivery across restarts without replaying or losing the stream backlog.
+ *
+ * Single-instance-per-prefix is the operator's responsibility: two bots on the
+ * same durable would compete for deliveries (each message goes to only one of
+ * them) and desync. The bridge's `<prefix>.presence` probe only guards XMPP /
+ * OMEMO account uniqueness, not this consumer. If you misconfigure two
+ * consumers against the same stream, that's on you.
+ *
+ * In-process redelivery duplicates (e.g. when ackWait fires during a slow
+ * downstream) are suppressed by a bounded in-memory dedup set keyed by stream
+ * sequence. A sequence is forgotten when its envelope is acked or nacked, so a
+ * redelivery of a message whose ack was lost is processed again; the set does
+ * not survive a crash, so a redelivery after a restart is also processed again
+ * (true at-least-once).
  */
 class NatsClient(
     private val url: String,
@@ -72,6 +82,17 @@ class NatsClient(
     @Volatile
     private var closed = false
 
+    // Guards against concurrent resume triggers. Only one resume runs at a time.
+    private val resumeInProgress = AtomicBoolean(false)
+
+    // Bounded in-memory record of stream sequences currently in-process, to
+    // suppress redeliveries that arrive when ackWait fires during a slow
+    // downstream (the main cause of duplicate echoes). A sequence is forgotten
+    // when the envelope is acked/nacked, so a lost ack still leads to a
+    // redelivery that is reprocessed (at-least-once). Lost on crash, so a
+    // redelivery after a restart is also reprocessed.
+    private val dedup = StreamSeqDedup(capacity = 512)
+
     private val messageSubject: String get() = "$prefix.message"
     private val streamName: String get() = "$prefix-stream"
     private val consumerName: String get() = "$prefix-consumer"
@@ -92,6 +113,19 @@ class NatsClient(
                 .maxReconnects(-1)
                 .connectionTimeout(Duration.ofSeconds(10))
                 .connectionName("daapu-bot:$prefix")
+                .connectionListener { _, event ->
+                    when (event) {
+                        ConnectionListener.Events.DISCONNECTED ->
+                            logger.warn("NATS connection disconnected; will attempt to reconnect")
+
+                        ConnectionListener.Events.RESUBSCRIBED -> {
+                            logger.info("NATS reconnected and subscriptions re-established; resuming consumer")
+                            resumeConsumer()
+                        }
+
+                        else -> logger.debug("NATS connection event: {}", event)
+                    }
+                }
                 .build()
             natsConn = withContext(Dispatchers.IO) { Nats.connect(opts) }
             val connection = natsConn!!
@@ -103,22 +137,18 @@ class NatsClient(
     }
 
     /**
-     * Create a durable consumer on `<prefix>-stream` and start pushing decoded
-     * [IncomingMessage]s into [incomingMessages].
+     * Create (or reuse) the durable consumer on `<prefix>-stream` and start
+     * pushing decoded [IncomingMessage]s into [incomingMessages].
      *
-     * The consumer has a fixed durable name per prefix and an `inactiveThreshold`
-     * of 60s: once the bot's connection dies and no message activity arrives for
-     * that long, the server deletes the consumer on its own. Restarts therefore
-     * never leave stale consumers behind. A restart while the old consumer is
-     * still around (within the threshold) simply reuses it — `createConsumer`
-     * is idempotent for an identical config on current servers — and resumes its
-     * ack position (at-least-once). After the consumer was auto-released, a fresh
-     * one is created that starts from "new" so the stream backlog is not replayed.
+     * The durable has no inactive threshold, so it is never auto-deleted by the
+     * server. `createConsumer` is an add-or-update upsert: a restart reuses the
+     * existing durable and resumes from its last acked position (at-least-once
+     * across restarts, no backlog replay, no message loss). [DeliverPolicy.New]
+     * only matters at first-ever creation (when the stream is empty anyway), so
+     * it is left as-is to avoid the non-updatable migration a change would force.
      *
-     * The bot is strictly single-instance per prefix: two instances draining the
-     * same durable consumer would split the queue and desync. That invariant is
-     * enforced at the stack level (the bridge claims `<prefix>.presence`), not
-     * by this client.
+     * Single-instance-per-prefix is the operator's responsibility; this client
+     * does not detect or prevent a duplicate bot on the same durable.
      *
      * Only a missing stream (the bridge hasn't created it yet) is retried; any
      * other JetStream error is a permanent condition and fails fast instead of
@@ -130,18 +160,11 @@ class NatsClient(
             .durable(consumerName)
             .ackPolicy(AckPolicy.Explicit)
             .ackWait(Duration.ofSeconds(30))
-            // The server auto-deletes the consumer once it has seen no activity
-            // (pulls/acks/deliveries) for this long — i.e. shortly after the
-            // bot's connection dies (crash or graceful shutdown). This is what
-            // lets a restarted bot get a fresh consumer instead of accumulating
-            // stale ones. Must stay comfortably above the 30s JetStream pull
-            // expiry (which the consume loop keeps refreshing while connected),
-            // so an idle-but-connected bot is never mistaken for dead.
-            .inactiveThreshold(Duration.ofSeconds(60))
-            // A freshly created consumer only receives messages published after
-            // its creation. When the old consumer was auto-released while the bot
-            // was down, the fresh one must not replay the whole stream backlog
-            // (which would re-echo every historical message).
+            // No inactiveThreshold: the durable is persistent and never
+            // auto-deleted by the server. A restart reuses it and resumes from
+            // the last acked position (at-least-once across restarts), instead of
+            // being recreated from "new" and skipping messages published while
+            // the bot was down.
             .deliverPolicy(DeliverPolicy.New)
             .build()
 
@@ -150,7 +173,7 @@ class NatsClient(
         // it even though connect() holds the lock while retrying.
         while (!closed) {
             try {
-                jsm.createConsumer(streamName, cc)
+                jsm.addOrUpdateConsumer(streamName, cc)
                 break
             } catch (e: CancellationException) {
                 throw e
@@ -178,6 +201,33 @@ class NatsClient(
                 safeAck(msg)
                 return@consume
             }
+            // Suppress in-process redelivery duplicates: if ackWait fires while a
+            // slow downstream is still processing, JetStream redelivers the same
+            // stream sequence. The set is bounded and in-memory only, so it guards
+            // the ackWait race without surviving a crash (at-least-once across
+            // restarts comes from the persistent durable resuming its ack
+            // position, not from this set). The sequence stays in the set until
+            // the envelope is acked/nacked (see [IncomingEnvelope]), so a
+            // redelivery of an already-finished message is processed again.
+            val seq = runCatching { msg.metaData().streamSequence() }.getOrDefault(-1L)
+            if (seq >= 0 && !dedup.shouldProcess(seq)) {
+                // inProgress, not ack: acking a redelivery would commit the
+                // stream sequence before the original finishes processing,
+                // so a crash in between would silently drop the message
+                // (at-least-once violation). inProgress only resets the ack
+                // timer, leaving the commit to the original's deferred
+                // envelope.ack().
+                logger.debug("In-progress for redelivered seq={} on {}", seq, msg.subject)
+                try {
+                    msg.inProgress()
+                } catch (e: Exception) {
+                    logger.warn(
+                        "Failed to mark in-progress for seq={} on {}: {}",
+                        seq, msg.subject, e.toString()
+                    )
+                }
+                return@consume
+            }
             try {
                 val incoming =
                     json.decodeFromString<IncomingMessage>(String(msg.data, Charsets.UTF_8))
@@ -186,7 +236,13 @@ class NatsClient(
                 // message has been processed, so a crash in between redelivers the
                 // message instead of silently dropping it (at-least-once). Blocking
                 // on a full channel is the backpressure that bounds the queue.
-                val envelope = IncomingEnvelope(incoming) { safeAck(msg) }
+                val envelope = IncomingEnvelope(
+                    incoming,
+                    seq,
+                    dedup,
+                    ackAction = { safeAck(msg) },
+                    nackAction = { safeNak(msg) },
+                )
                 runBlocking(Dispatchers.IO) { _incomingMessages.send(envelope) }
             } catch (e: CancellationException) {
                 throw e
@@ -202,12 +258,77 @@ class NatsClient(
                 } else {
                     // Undecodable/unqueueable message: we can't do anything with
                     // it, so ack (discard) instead of nak, which would redeliver
-                    // forever.
+                    // forever. Forget the sequence so a redelivery of a lost ack
+                    // is not suppressed (see [StreamSeqDedup]).
                     logger.warn(
                         "Failed to decode/queue incoming message on {}: {}",
                         msg.subject, e.toString()
                     )
+                    dedup.forget(seq)
                     safeAck(msg)
+                }
+            }
+        }
+    }
+
+    /**
+     * Re-attach the durable JetStream consumer after a NATS reconnect.
+     *
+     * jnats does not transparently resume JetStream consumers across a server
+     * restart — the [MessageConsumer] goes silently dead (known issue:
+     * nats.java #892, #997). On `RESUBSCRIBED` (reconnect complete), we stop the old
+     * consumer and re-create it via [ensureConsumer].
+     *
+     * The durable is persistent, so re-binding resumes from the last acked
+     * position (at-least-once, no message loss). If re-creation fails after
+     * bounded retries, the process exits so Docker's `restart: unless-stopped`
+     * brings it back fresh.
+     *
+     * Safe to call from jnats callback threads: [runBlocking] enters the
+     * coroutine [connectionMutex], and [resumeInProgress] prevents concurrent
+     * triggers from stacking.
+     */
+    private fun resumeConsumer() {
+        if (closed) return
+        if (!resumeInProgress.compareAndSet(false, true)) {
+            logger.debug("Consumer resume already in progress; skipping")
+            return
+        }
+        runBlocking {
+            connectionMutex.withLock {
+                try {
+                    if (closed) return@withLock
+                    val connection = natsConn ?: return@withLock
+                    logger.info("Recovering JetStream consumer...")
+                    // Stop the old (dead) consumer before re-creating so the
+                    // server releases the deliver subscription.
+                    consumer?.let { old ->
+                        consumer = null
+                        try {
+                            old.stop()
+                            old.close()
+                        } catch (e: Exception) {
+                            logger.warn(
+                                "Error stopping old consumer during resume: {}",
+                                e.toString()
+                            )
+                        }
+                    }
+                    try {
+                        ensureConsumer(connection, Duration.ofSeconds(2))
+                        // ensureConsumer returns silently if `closed` flipped during
+                        // its retry loop (shutdown race). Don't log "recovered" then.
+                        if (!closed) logger.info("JetStream consumer recovered")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // TODO: make a cleaner exit
+                        logger.error("Failed to recover consumer, crashing intentionally", e)
+                        closed = true
+                        exitProcess(1)
+                    }
+                } finally {
+                    resumeInProgress.set(false)
                 }
             }
         }
@@ -283,6 +404,19 @@ class NatsClient(
         }
     }
 
+    /**
+     * Nack a JetStream message, swallowing errors. A message that was neither
+     * acked nor nacked is redelivered by JetStream on the next reconnect, so a
+     * failed nak does not lose the message (at-least-once).
+     */
+    private fun safeNak(msg: Message) {
+        try {
+            msg.nak()
+        } catch (e: Exception) {
+            logger.warn("Failed to nack message on {}: {}", msg.subject, e.toString())
+        }
+    }
+
     override fun close() {
         if (closed) return
         closed = true
@@ -329,18 +463,99 @@ class NatsClient(
 }
 
 /**
- * A decoded [IncomingMessage] together with a handle to acknowledge the
+ * A decoded [IncomingMessage] together with a handle to acknowledge or nack the
  * underlying JetStream message.
  *
- * Acking is deferred until the message has been fully processed (i.e. the
- * reply was dispatched), which gives at-least-once delivery: a message that
- * was never acked is redelivered to the durable consumer after [NatsClient]'s
- * consumer reconnects.
+ * Acking is deferred until the message has been fully processed (i.e. the reply
+ * was dispatched), which gives at-least-once delivery: a message that was never
+ * acked is redelivered to the durable consumer after [NatsClient]'s consumer
+ * reconnects. Nacking signals the processing failed, so JetStream redelivers the
+ * message for a retry.
+ *
+ * Both [ack] and [nack] first drop the stream sequence from the in-process dedup
+ * set, then fire the underlying JetStream ack/nak. Forgetting the sequence even
+ * when the ack/nak itself fails keeps at-least-once true: the message stays
+ * unacked and is redelivered, and because it is no longer in the dedup set it is
+ * processed again (re-acked or re-nacked) instead of being suppressed forever.
  */
 class IncomingEnvelope internal constructor(
     val message: IncomingMessage,
+    private val seq: Long,
+    private val dedup: StreamSeqDedup,
     private val ackAction: () -> Unit,
+    private val nackAction: () -> Unit,
 ) {
-    /** Acknowledge the underlying JetStream message. Idempotent. */
-    fun ack() = ackAction()
+    /**
+     * Acknowledge the underlying JetStream message. Idempotent; also removes the
+     * message from the in-process dedup set.
+     */
+    fun ack() {
+        dedup.forget(seq)
+        ackAction()
+    }
+
+    /**
+     * Nack the underlying JetStream message, requesting a redelivery (used when
+     * the reply could not be delivered). Idempotent; also removes the message
+     * from the in-process dedup set.
+     */
+    fun nack() {
+        dedup.forget(seq)
+        nackAction()
+    }
+}
+
+/**
+ * Bounded in-memory set of stream sequences currently being processed by the
+ * downstream, used by [NatsClient] to suppress redeliveries of a message that
+ * is still in-flight within the same process lifetime.
+ *
+ * The typical cause is the ackWait race: a message whose ack is delayed (e.g.
+ * by a slow downstream RPC) is redelivered by JetStream after the ackWait
+ * timeout. Without this set the downstream would process the duplicate and emit
+ * a duplicate side effect (e.g. echo the message twice).
+ *
+ * A sequence is admitted by [shouldProcess] when the message is first delivered
+ * and forgotten by [forget] once the envelope is acked or nacked. The latter is
+ * what keeps at-least-once true: if the ack/nak itself fails or is lost, the
+ * sequence is already out of the set, so the next redelivery is processed (and
+ * re-acked/re-nacked) instead of being suppressed forever.
+ *
+ * The set is bounded to [capacity] entries (FIFO eviction of the oldest) and
+ * is intentionally in-memory only: it does not survive a crash, so a
+ * redelivery after a restart is processed again. That keeps at-least-once true
+ * across restarts (the persistent durable's ack position is the source of
+ * truth) while collapsing in-process duplicates cheaply.
+ */
+internal class StreamSeqDedup(private val capacity: Int) {
+    private val seen = object : LinkedHashMap<Long, Unit>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Unit>?): Boolean =
+            this.size > this@StreamSeqDedup.capacity
+    }
+
+    /**
+     * Record [seq] and return `true` if it has not been seen before (i.e. the
+     * caller should process it), or `false` if it is a duplicate (the caller
+     * should mark in-progress and skip). Thread-safe: jnats may invoke the
+     * consume callback on multiple dispatcher threads.
+     */
+    fun shouldProcess(seq: Long): Boolean = synchronized(seen) {
+        if (seen.containsKey(seq)) {
+            false
+        } else {
+            seen[seq] = Unit
+            true
+        }
+    }
+
+    /**
+     * Forget [seq], i.e. mark its message as no longer in-flight. Call this when
+     * the envelope is acked or nacked so a later redelivery (e.g. after a lost
+     * ack) is processed again instead of suppressed. Thread-safe.
+     */
+    fun forget(seq: Long) {
+        synchronized(seen) {
+            seen.remove(seq)
+        }
+    }
 }

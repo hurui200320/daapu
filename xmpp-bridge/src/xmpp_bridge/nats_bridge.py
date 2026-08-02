@@ -18,7 +18,8 @@ persisted lock. A crashed instance's NATS subscription dies with its
 connection, so it cannot hold the prefix hostage (unlike a KV lock, which
 would need an explicit TTL). The trade-off is a small simultaneous-start
 race window within the probe timeout; acceptable for operator-managed
-sidecars.
+sidecars. The probe only guards XMPP/OMEMO account uniqueness, not the
+Kotlin consumer (single-instance there is the operator's responsibility).
 """
 
 from __future__ import annotations
@@ -189,10 +190,24 @@ class NatsBridge:
             log.debug("JetStream stream %r already configured", name)
 
     async def publish_incoming(self, msg: IncomingMessage) -> None:
-        """Publish a decrypted incoming message to ``<prefix>.message`` (durable)."""
+        """Publish a decrypted incoming message to ``<prefix>.message`` (durable).
+
+        Publishes exactly once and re-raises on failure so the caller can signal
+        the sender via a ⚠️ reaction instead of silently dropping the message.
+        There is no retry: the publish is driven from an XMPP callback, and
+        retrying would either block the callback for backoff * max_retries or
+        let later messages overtake the retried one in the stream. The ⚠️
+        reaction tells the sender the at-least-once guarantee may be broken:
+        since JetStream may have stored the message before the ack was lost,
+        the reaction does not assert "discarded" — the sender should check
+        whether they got a bot reply and resend if not.
+        """
         if self._js is None:
             raise RuntimeError("connect() must be called first")
-        ack = await self._js.publish(self.message_subject, msgspec.json.encode(msg))
+        ack = await self._js.publish(  # pyright: ignore[reportUnknownMemberType]
+            self.message_subject,
+            msgspec.json.encode(msg),
+        )
         log.debug(
             "Published incoming message from %s to %s (seq=%d)",
             msg.from_,

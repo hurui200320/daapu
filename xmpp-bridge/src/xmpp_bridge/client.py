@@ -24,6 +24,7 @@ from python_socks.async_.asyncio import Proxy as _Proxy
 from slixmpp.clientxmpp import ClientXMPP
 from slixmpp.jid import JID
 from slixmpp.plugins import register_plugin  # pyright: ignore[reportUnknownVariableType]
+from slixmpp.plugins.xep_0444 import XEP_0444
 from slixmpp.stanza import Message
 from slixmpp.xmlstream.handler import CoroutineCallback
 from slixmpp.xmlstream.matcher import MatchXPath
@@ -109,6 +110,15 @@ class BridgeBot(ClientXMPP):
         )
         # Explicit Message Encryption (<eme/>)
         self.register_plugin("xep_0380")  # pyright: ignore[reportUnknownMemberType]
+        # Message Reactions (<reactions/>). Used to react with ⚠️ on the
+        # sender's message when publishing to NATS fails, signaling that the
+        # at-least-once guarantee may be broken (JetStream may have stored the
+        # message before the ack was lost). Reactions are sent in plain text:
+        # slixmpp_omemo only encrypts the <body/> (oldmemo) and has no SCE
+        # plugin for full-stanza encryption (twomemo), so an encrypted reaction
+        # would require implementing the missing upstream feature. The metadata
+        # leak (a ⚠️ appeared) is negligible.
+        self.register_plugin("xep_0444")  # pyright: ignore[reportUnknownMemberType]
 
         self.add_event_handler("session_start", self._on_session_start)
         self.add_event_handler("omemo_initialized", self._on_omemo_ready)
@@ -416,6 +426,13 @@ class BridgeBot(ClientXMPP):
 
         ``from`` is the sender's bare JID (matches the schema contract); the
         kotlin bot addresses replies to it, which is correct for OMEMO routing.
+
+        Publishes exactly once with no retry (see ``NatsBridge.publish_incoming``).
+        On failure the sender's message is reacted to with ⚠️, signaling that
+        the at-least-once guarantee may be broken: JetStream may have stored
+        the message before the ack was lost, so the reaction does not assert
+        "discarded" — the sender should check whether they got a bot reply and
+        resend if not.
         """
         stanza_id: str | None = stanza["id"] or None
         msg = IncomingMessage(
@@ -430,7 +447,37 @@ class BridgeBot(ClientXMPP):
         try:
             await self._nats.publish_incoming(msg)
         except Exception as e:
-            log.error("Failed to publish incoming message from %s to NATS: %s", sender, e)
+            log.error(
+                "Failed to publish incoming message from %s to NATS: %s",
+                sender,
+                e,
+            )
+            # XEP-0444 reactions anchor on a target id. Prefer the XEP-0359
+            # origin-id (the sender's own stable id for their outgoing message),
+            # then fall back to the legacy stanza id. Without either we can't
+            # anchor a reaction; log and skip rather than falling back to a
+            # plain-text DM (noisier and still can't confirm delivery state).
+            origin_id_el = stanza.xml.find("{urn:xmpp:sid:0}origin-id")
+            reaction_target: str | None = (
+                origin_id_el.get("id") if origin_id_el is not None else None
+            ) or stanza_id
+            if reaction_target is None:
+                log.warning(
+                    "Cannot react to message from %s (no origin-id or stanza id); skipping",
+                    sender,
+                )
+                return
+            try:
+                reaction = self.make_message(mto=sender, mtype="chat")
+                XEP_0444.set_reactions(reaction, reaction_target, ["⚠️"])
+                reaction.enable("store")
+                self._send_or_raise(reaction)
+            except Exception as ne:
+                log.error(
+                    "Also failed to react to %s's message: %s",
+                    sender,
+                    ne,
+                )
 
     # ------------------------------------------------------------------ #
     # NATS RPC commands (kotlin -> bridge)
