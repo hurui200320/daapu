@@ -7,23 +7,22 @@ import ai.koog.agents.core.dsl.builder.node
 import ai.koog.agents.core.dsl.builder.strategy
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.executor.clients.openai.OpenAIChatParams
 import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
-import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.message.Message
-import ai.koog.prompt.params.LLMParams
 import ai.koog.prompt.streaming.StreamFrame
 import ai.koog.prompt.streaming.requireEndFrame
 import ai.koog.prompt.streaming.toMessageResponse
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.llm.FlagTool
 import info.skyblond.daapu.llm.PostgresChatHistoryProvider
+import info.skyblond.daapu.llm.client.CustomOpenAILLMClient
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 private val logger = KotlinLogging.logger("Application")
@@ -52,8 +51,8 @@ fun main() {
             LLMCapability.OpenAIEndpoint.Completions,
             LLMCapability.Thinking,
         ),
-        contextLength = 400_000,
-        maxOutputTokens = 128_000,
+        contextLength = 262144,
+        maxOutputTokens = 131072,
     )
 
     val strategy = strategy<String, Message.Assistant>("daapu-chat-stream") {
@@ -129,7 +128,7 @@ fun main() {
 
     val agent = AIAgent(
         promptExecutor = MultiLLMPromptExecutor(
-            OpenAILLMClient(
+            CustomOpenAILLMClient(
                 // API key of the locally deployed bifrost (LLM gateway); safe to keep here.
                 "sk-bf-cc5e85a8-72c7-4ba5-8903-600cc276e8a0",
                 OpenAIClientSettings(
@@ -140,7 +139,7 @@ fun main() {
         agentConfig = AIAgentConfig(
             prompt = prompt(
                 id = "chat",
-                params = LLMParams(
+                params = OpenAIChatParams(
                     additionalProperties = mapOf(
                         "reasoning_effort" to JsonPrimitive("high")
                     )
