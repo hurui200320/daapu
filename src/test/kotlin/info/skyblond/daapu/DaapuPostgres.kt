@@ -9,8 +9,6 @@ import com.zaxxer.hikari.HikariDataSource
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.llm.ChatAgentService
 import info.skyblond.daapu.llm.PostgresChatHistoryProvider
-import io.ktor.server.testing.ApplicationTestBuilder
-import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.flow.Flow
 import org.testcontainers.postgresql.PostgreSQLContainer
 
@@ -28,13 +26,6 @@ class DaapuPostgres : PostgreSQLContainer("pgvector/pgvector:pg18-trixie") {
         withUsername("postgres")
         withPassword("postgres")
     }
-
-    fun appConfig(): AppConfig = AppConfig(
-        databaseUrl = jdbcUrl,
-        databaseUser = username,
-        databasePassword = password,
-        sessionCookieKey = "test-session-cookie-key",
-    )
 
     companion object {
         private var container: DaapuPostgres? = null
@@ -58,9 +49,8 @@ class DaapuPostgres : PostgreSQLContainer("pgvector/pgvector:pg18-trixie") {
 }
 
 /**
- * A koog agent service backed by a MockExecutor, so integration tests exercise
- * the full chat flow (ownership, SSE streaming, koog-managed history) without a
- * real LLM.
+ * A koog agent service backed by a MockExecutor, so tests exercise the koog
+ * chat flow (streaming, koog-managed history) without a real LLM.
  *
  * The mock matches any request (empty pattern is contained in every message) and
  * streams a reply, so the streaming strategy's TextDelta collection is exercised.
@@ -83,30 +73,10 @@ private fun replyStream(): Flow<StreamFrame> = buildStreamFrameFlow {
 }
 
 /**
- * Boot the application against the shared pgvector container and run [block].
- *
- * The container is shared across all tests in the JVM, so tables are truncated
- * before each test to keep test classes independent (usernames are UNIQUE).
+ * Remove all rows so each test starts from an empty database. `chats` cascades
+ * to `messages`.
  */
-fun withDb(block: suspend ApplicationTestBuilder.() -> Unit) {
-    val db = DaapuPostgres.shared()
-    val dataSource = DaapuPostgres.sharedDataSource()
-    testApplication {
-        application {
-            val historyProvider = PostgresChatHistoryProvider()
-            configureApp(db.appConfig(), dataSource, mockChatAgentService(historyProvider))
-            // Remove all rows so each test starts from an empty database.
-            truncateAll()
-        }
-        block()
-    }
-}
-
-/**
- * Remove all rows so each test starts from an empty database. `users` cascades
- * to `chats` and `messages`.
- */
-private fun truncateAll() {
+fun truncateAll() {
     val connection = java.sql.DriverManager.getConnection(
         DaapuPostgres.shared().jdbcUrl,
         DaapuPostgres.shared().username,
@@ -114,7 +84,7 @@ private fun truncateAll() {
     )
     connection.use {
         it.createStatement().use { stmt ->
-            stmt.execute("TRUNCATE TABLE users CASCADE")
+            stmt.execute("TRUNCATE TABLE chats CASCADE")
         }
     }
 }

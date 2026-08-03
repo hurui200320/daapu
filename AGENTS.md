@@ -4,30 +4,27 @@ Guidance for AI agents (and humans) working in this project.
 
 ## Project
 
-Web-based LLM ChatBot with a memory system.
+PoC of a chatbot with a memory system, built on PostgreSQL and koog.
 
-The project is a Kotlin/Ktor backend serving a React frontend (Vite, in
-`frontend/`), backed by PostgreSQL with the pgvector extension. Multi-user
-accounts per instance; chats are first-class (ChatGPT-style); the memory
-system is a later phase.
+The project is a Kotlin/JVM application (Gradle). The two pieces of
+infrastructure:
+
+- **PostgreSQL with pgvector** — accessed through Exposed, schema managed by
+  Flyway migrations in `src/main/resources/db/migration/`.
+- **koog** — the LLM agent framework; its `ChatMemory` feature owns the
+  conversation history.
+
+The web server, HTTP API, and frontend were removed as LLM-generated boilerplate
+that didn't fit the project's idea; the PoC is built around the koog + Postgres
+pipeline only (`Main.kt` currently initializes the stack and exits).
 
 ## Verification commands
-
-Backend:
 
 ```bash
 ./gradlew test
 ```
 
-Frontend (from `frontend/`):
-
-```bash
-npm run typecheck
-npm run lint
-npm test
-```
-
-Run all of them after any relevant source change. They must exit clean.
+Run them after any relevant source change. They must exit clean.
 
 ## Code quality and style rules
 
@@ -43,9 +40,6 @@ When writing or reviewing code, looking for bugs with the following perspectives
 
 - Coroutine-native: DB access goes through Exposed `suspendTransaction` wrapped
   in `withContext(Dispatchers.IO)`; never call blocking JDBC on the event loop.
-- All API routes live under `/api/*`; static frontend assets are served from
-  `src/main/resources/static/`.
-- Plain HTTP only — TLS is terminated by an external reverse proxy.
 - Never log secrets (passwords, API keys, session cookies).
 
 ## Chat history is koog-managed
@@ -59,17 +53,8 @@ hand-rolled message tables:
 - `PostgresChatHistoryProvider` implements koog's `ChatHistoryProvider`: it
   serializes koog `Message` objects into the `messages` table, one row per
   message, keyed by `chat_id`.
-- `ChatService.listMessages` reads through the same provider and projects only
-  user/assistant messages for the UI (system/tool messages stay hidden).
-- The streaming strategy's node collects `TextDelta` frames, relays them to the
-  SSE writer, and returns a `Message.Assistant` so koog appends it to history.
+- Tests exercise the pipeline end-to-end through the provider
+  (`PostgresChatHistoryProviderTest`) against a shared pgvector Testcontainer.
 
 When adding chat features, manipulate history via koog (its `ChatHistoryProvider`
 and features) rather than inserting message rows directly.
-
-## Frontend style
-
-- TypeScript strict mode is on. Do not use `any`.
-- API access goes through `frontend/src/api/`; streaming reads the SSE
-  response body via `fetch` + `ReadableStream` (see `client.ts`).
-- Dev server proxies `/api/*` to the backend on port 8080; do not hardcode URLs.

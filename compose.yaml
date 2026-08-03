@@ -1,20 +1,4 @@
 services:
-  daapu:
-    build:
-      context: .
-    env_file:
-      - .env
-    environment:
-      # Inside the compose network the database is reachable as `db`, not
-      # `localhost` (which would point at this container). Other settings come
-      # from .env.
-      - DATABASE_URL=jdbc:postgresql://db:5432/postgres
-    ports:
-      - "8080:8080"
-    depends_on:
-      - db
-    restart: unless-stopped
-
   db:
     image: pgvector/pgvector:pg18-trixie
     ports:
