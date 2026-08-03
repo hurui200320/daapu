@@ -47,14 +47,12 @@ When writing or reviewing code, looking for bugs with the following perspectives
 The conversation history is owned by koog's `ChatMemory` feature, not by
 hand-rolled message tables:
 
-- `ChatAgentService` builds a koog agent per request with `ChatMemory` installed.
-  It loads the chat's history before each run and stores the updated
-  conversation (including the new user message and assistant reply) after.
+- A koog `AIAgent` with `ChatMemory` installed + chat history provider allows the agent 
+  to load chat history before each run and stores the updated conversation (including the
+  new user message and assistant reply) after.
 - `PostgresChatHistoryProvider` implements koog's `ChatHistoryProvider`: it
-  serializes koog `Message` objects into the `messages` table, one row per
-  message, keyed by `chat_id`.
-- Tests exercise the pipeline end-to-end through the provider
-  (`PostgresChatHistoryProviderTest`) against a shared pgvector Testcontainer.
+  serializes the full koog `Message` list into the chat row's `history_json`
+  column as one JSON array, keyed by `chat_id`.
 
 When adding chat features, manipulate history via koog (its `ChatHistoryProvider`
 and features) rather than inserting message rows directly.

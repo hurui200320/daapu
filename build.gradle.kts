@@ -18,6 +18,7 @@ val koogVersion = "1.1.1"
 
 dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.38")
+    implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")

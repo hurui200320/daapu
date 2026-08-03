@@ -2,18 +2,10 @@
 -- vector columns without a schema migration later.
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- koog's ChatMemory owns the conversation history: the full message list is
+-- serialized into history_json as one JSON array, loaded and stored as a unit.
 CREATE TABLE chats
 (
-    id         BIGSERIAL PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id           TEXT PRIMARY KEY,
+    history_json TEXT NOT NULL DEFAULT '[]'
 );
-
-CREATE TABLE messages
-(
-    id           BIGSERIAL PRIMARY KEY,
-    chat_id      BIGINT      NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
-    message_json TEXT        NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS messages_chat_id_idx ON messages (chat_id, id);

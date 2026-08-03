@@ -2,21 +2,21 @@ package info.skyblond.daapu.db
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.flywaydb.core.Flyway
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.transactions.inTopLevelSuspendTransaction
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * Set up the connection pool, run Flyway migrations, and connect Exposed.
  *
  * Migrations run before Exposed connects so that the schema always exists by the
- * time any query is issued. The [HikariDataSource] is intentionally not closed
+ * time any query is issued. The HikariDataSource is intentionally not closed
  * here: it lives for the whole process and is released on JVM shutdown.
  */
-fun initDatabase(url: String, user: String, password: String): HikariDataSource {
+fun initDatabase(url: String, user: String, password: String) {
     val config = HikariConfig().apply {
         jdbcUrl = url
         username = user
@@ -31,7 +31,6 @@ fun initDatabase(url: String, user: String, password: String): HikariDataSource 
         .migrate()
 
     Database.connect(dataSource)
-    return dataSource
 }
 
 /**
