@@ -1,40 +1,31 @@
 services:
-  nats:
-    image: nats:2-alpine
-    command: ["-js", "-sd", "/data"]
-    ports:
-      - "4222:4222"
-    volumes:
-      - nats-data:/data
-    restart: unless-stopped
-
-  xmpp-bridge:
-    build:
-      context: ./xmpp-bridge
-    env_file:
-      - .env
-    environment:
-      - NATS_URL=nats://nats:4222
-      - NATS_PREFIX=daapu
-      - XMPP_OMEMO_STORE_DIR=/data/omemo-store
-    volumes:
-      - ./omemo-store:/data/omemo-store
-    depends_on:
-      - nats
-    restart: unless-stopped
-
   daapu:
     build:
       context: .
     env_file:
       - .env
     environment:
-      - NATS_URL=nats://nats:4222
-      - NATS_PREFIX=daapu
+      # Inside the compose network the database is reachable as `db`, not
+      # `localhost` (which would point at this container). Other settings come
+      # from .env.
+      - DATABASE_URL=jdbc:postgresql://db:5432/postgres
+    ports:
+      - "8080:8080"
     depends_on:
-      - nats
-      - xmpp-bridge
+      - db
+    restart: unless-stopped
+
+  db:
+    image: pgvector/pgvector:pg18-trixie
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - pg-data:/var/lib/postgresql
     restart: unless-stopped
 
 volumes:
-  nats-data:
+  pg-data:

@@ -1,17 +1,13 @@
 # Local tooling / caches / secrets — must not be copied into the build image.
 # .env would otherwise bake credentials into the build-stage image layer, and
-# .git/.gradle/.venv bloat the build context.
+# .git/.gradle/build bloat the build context.
 .git
 .gradle
 .kotlin
 build/
 .idea/
-.venv/
-**/.venv/
-omemo-store/
-**/omemo-store/
-**/__pycache__/
-.ruff_cache/
-.pytest_cache/
 .env
 **/.env
+frontend/node_modules
+frontend/dist
+frontend/.vite
