@@ -1,9 +1,17 @@
 package info.skyblond.daapu
 
+import ai.koog.agents.testing.tools.getMockExecutor
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.message.ResponseMetaInfo
+import ai.koog.prompt.streaming.StreamFrame
+import ai.koog.prompt.streaming.buildStreamFrameFlow
 import com.zaxxer.hikari.HikariDataSource
 import info.skyblond.daapu.db.initDatabase
+import info.skyblond.daapu.llm.ChatAgentService
+import info.skyblond.daapu.llm.PostgresChatHistoryProvider
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.flow.Flow
 import org.testcontainers.postgresql.PostgreSQLContainer
 
 /**
@@ -50,6 +58,31 @@ class DaapuPostgres : PostgreSQLContainer("pgvector/pgvector:pg18-trixie") {
 }
 
 /**
+ * A koog agent service backed by a MockExecutor, so integration tests exercise
+ * the full chat flow (ownership, SSE streaming, koog-managed history) without a
+ * real LLM.
+ *
+ * The mock matches any request (empty pattern is contained in every message) and
+ * streams a reply, so the streaming strategy's TextDelta collection is exercised.
+ */
+fun mockChatAgentService(historyProvider: PostgresChatHistoryProvider): ChatAgentService {
+    val executor = getMockExecutor {
+        mockLLMStream(replyStream()) onRequestContains ""
+    }
+    return ChatAgentService(
+        promptExecutor = executor,
+        llmModel = OpenAIModels.Chat.GPT4oMini,
+        systemPrompt = "You are a helpful assistant.",
+        historyProvider = historyProvider,
+    )
+}
+
+private fun replyStream(): Flow<StreamFrame> = buildStreamFrameFlow {
+    emitTextDelta("Reply to: ")
+    emitEnd("stop", ResponseMetaInfo.Empty)
+}
+
+/**
  * Boot the application against the shared pgvector container and run [block].
  *
  * The container is shared across all tests in the JVM, so tables are truncated
@@ -60,7 +93,8 @@ fun withDb(block: suspend ApplicationTestBuilder.() -> Unit) {
     val dataSource = DaapuPostgres.sharedDataSource()
     testApplication {
         application {
-            configureApp(db.appConfig(), dataSource)
+            val historyProvider = PostgresChatHistoryProvider()
+            configureApp(db.appConfig(), dataSource, mockChatAgentService(historyProvider))
             // Remove all rows so each test starts from an empty database.
             truncateAll()
         }

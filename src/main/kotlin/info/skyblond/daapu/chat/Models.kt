@@ -1,14 +1,19 @@
 package info.skyblond.daapu.chat
 
-import info.skyblond.daapu.db.MessageRole
 import kotlinx.serialization.Serializable
 
+/**
+ * Role of a chat message as shown in the UI. The persisted role is owned by
+ * koog's message model; this enum is only the display projection.
+ */
+enum class MessageRole {
+    USER,
+    ASSISTANT,
+}
 
 data class Chat(
-    // TODO: use uuid?
     val id: Long,
     val title: String,
-    // TODO: use timestamp?
     val createdAt: java.time.OffsetDateTime,
     val updatedAt: java.time.OffsetDateTime,
 )

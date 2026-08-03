@@ -34,26 +34,17 @@ object Chats : Table("chats") {
     override val primaryKey = PrimaryKey(id)
 }
 
-enum class MessageRole(val dbValue: String) {
-    USER("user"),
-    ASSISTANT("assistant");
-
-    companion object {
-        fun fromDbValue(value: String): MessageRole = entries.first { it.dbValue == value }
-    }
-}
-
 /**
- * Mirror of the `messages` table created by `V2__chats_messages.sql`.
+ * Mirror of the `messages` table created by `V3__messages_koog.sql`.
  *
- * `role` is stored as a string and mapped to [MessageRole] in the service layer;
- * a custom column type keeps this table definition simple.
+ * Each row stores a serialized koog `Message` object; the role/content columns
+ * were removed because koog's ChatMemory feature owns the conversation history.
+ * The row still carries `chat_id` so we know which message belongs to which chat.
  */
 object Messages : Table("messages") {
     val id = long("id").autoIncrement()
     val chatId = long("chat_id").references(Chats.id, onDelete = ReferenceOption.CASCADE)
-    val role = varchar("role", 16)
-    val content = text("content")
+    val messageJson = text("message_json")
     val createdAt = timestampWithTimeZone("created_at").defaultExpression(CurrentTimestampWithTimeZone)
 
     override val primaryKey = PrimaryKey(id)

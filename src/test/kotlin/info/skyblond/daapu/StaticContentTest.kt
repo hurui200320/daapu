@@ -1,5 +1,6 @@
 package info.skyblond.daapu
 
+import info.skyblond.daapu.llm.PostgresChatHistoryProvider
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
@@ -20,7 +21,13 @@ class StaticContentTest {
         // when the frontend hasn't been built locally.
         assumeTrue(spaExists(), "frontend build output not present")
         val db = DaapuPostgres.shared()
-        application { configureApp(db.appConfig(), DaapuPostgres.sharedDataSource()) }
+        application {
+            configureApp(
+                db.appConfig(),
+                DaapuPostgres.sharedDataSource(),
+                mockChatAgentService(PostgresChatHistoryProvider()),
+            )
+        }
         val response = client.get("/")
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(response.bodyAsText().contains("<div id=\"root\"></div>"))
@@ -30,7 +37,13 @@ class StaticContentTest {
     fun `client-side route falls back to the SPA index`() = testApplication {
         assumeTrue(spaExists(), "frontend build output not present")
         val db = DaapuPostgres.shared()
-        application { configureApp(db.appConfig(), DaapuPostgres.sharedDataSource()) }
+        application {
+            configureApp(
+                db.appConfig(),
+                DaapuPostgres.sharedDataSource(),
+                mockChatAgentService(PostgresChatHistoryProvider()),
+            )
+        }
         val response = client.get("/login")
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(response.bodyAsText().contains("<div id=\"root\"></div>"))

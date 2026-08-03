@@ -15,6 +15,7 @@ val ktorVersion = "3.5.1"
 val exposedVersion = "1.3.1"
 val flywayVersion = "13.1.0"
 val testContainerVersion = "2.0.5"
+val koogVersion = "1.1.1"
 
 dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.38")
@@ -42,9 +43,15 @@ dependencies {
 
     implementation("org.mindrot:jbcrypt:0.4")
 
+    implementation("ai.koog:koog-agents:$koogVersion")
+    implementation("ai.koog:agents-features-memory:$koogVersion")
+    implementation("io.ktor:ktor-client-core:$ktorVersion")
+    implementation("io.ktor:ktor-client-cio:$ktorVersion")
+
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host:$ktorVersion")
     testImplementation("org.testcontainers:testcontainers-postgresql:$testContainerVersion")
+    testImplementation("ai.koog:agents-test:$koogVersion")
 }
 
 kotlin {

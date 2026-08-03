@@ -40,6 +40,10 @@ data class AppConfig(
     val databaseUser: String,
     val databasePassword: String,
     val sessionCookieKey: String,
+    val llmApiKey: String? = null,
+    val llmBaseUrl: String = "https://api.openai.com",
+    val llmModel: String = "gpt-4o-mini",
+    val llmSystemPrompt: String = "You are a helpful assistant.",
 )
 
 fun appConfigFromEnv(): AppConfig = AppConfig(
@@ -47,4 +51,9 @@ fun appConfigFromEnv(): AppConfig = AppConfig(
     databaseUser = requireEnv("DATABASE_USER"),
     databasePassword = requireEnv("DATABASE_PASSWORD"),
     sessionCookieKey = requireEnv("SESSION_COOKIE_KEY"),
+    llmApiKey = readEnv("LLM_API_KEY")?.takeIf { it.isNotBlank() },
+    llmBaseUrl = readEnv("LLM_BASE_URL") ?: "https://api.openai.com",
+    llmModel = readEnv("LLM_MODEL") ?: "gpt-4o-mini",
+    // TODO: make this configurable for each chat
+    llmSystemPrompt = readEnv("LLM_SYSTEM_PROMPT") ?: "You are a helpful assistant.",
 )

@@ -7,6 +7,9 @@ import info.skyblond.daapu.auth.authRoutes
 import info.skyblond.daapu.chat.ChatService
 import info.skyblond.daapu.chat.chatRoutes
 import info.skyblond.daapu.db.initDatabase
+import info.skyblond.daapu.llm.ChatAgentService
+import info.skyblond.daapu.llm.LlmFactory
+import info.skyblond.daapu.llm.PostgresChatHistoryProvider
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -47,8 +50,15 @@ fun Application.module(config: AppConfig) {
 /**
  * Wire up plugins and routes against an already-connected [HikariDataSource].
  * Kept separate from [module] so tests can reuse a single shared data source.
+ *
+ * [chatAgentService] is optional so tests can inject a koog MockExecutor based
+ * service without a real LLM API key.
  */
-fun Application.configureApp(config: AppConfig, dataSource: HikariDataSource) {
+fun Application.configureApp(
+    config: AppConfig,
+    dataSource: HikariDataSource,
+    chatAgentService: ChatAgentService? = null,
+) {
     install(CallLogging)
     install(ContentNegotiation) {
         json()
@@ -69,7 +79,10 @@ fun Application.configureApp(config: AppConfig, dataSource: HikariDataSource) {
     }
 
     val authService = AuthService()
-    val chatService = ChatService()
+    val historyProvider = PostgresChatHistoryProvider()
+    val chatService = ChatService(historyProvider)
+    val resolvedAgentService = chatAgentService
+        ?: createChatAgentService(config, historyProvider)
 
     routing {
         get("/api/health") {
@@ -79,7 +92,7 @@ fun Application.configureApp(config: AppConfig, dataSource: HikariDataSource) {
             authRoutes(authService)
         }
         route("/api") {
-            chatRoutes(chatService)
+            chatRoutes(chatService, resolvedAgentService)
         }
 
         // Serve the built SPA from the classpath. The fallback to index.html
@@ -88,4 +101,27 @@ fun Application.configureApp(config: AppConfig, dataSource: HikariDataSource) {
             default("index.html")
         }
     }
+}
+
+/**
+ * Build the koog-backed agent service from configuration.
+ *
+ * The executor is only created when an API key is configured; otherwise the
+ * agent service still runs but every request will fail with a clear error,
+ * which keeps the app bootable during development without an LLM provider.
+ */
+private fun createChatAgentService(
+    config: AppConfig,
+    historyProvider: PostgresChatHistoryProvider,
+): ChatAgentService {
+    val apiKey = config.llmApiKey
+        ?: throw IllegalArgumentException("LLM_API_KEY is not set; the LLM agent cannot be created")
+    val executor = LlmFactory.createExecutor(apiKey, config.llmBaseUrl)
+    val model = LlmFactory.createModel(config.llmModel)
+    return ChatAgentService(
+        promptExecutor = executor,
+        llmModel = model,
+        systemPrompt = config.llmSystemPrompt,
+        historyProvider = historyProvider,
+    )
 }

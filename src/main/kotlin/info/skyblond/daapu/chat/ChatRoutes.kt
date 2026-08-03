@@ -1,14 +1,22 @@
 package info.skyblond.daapu.chat
 
 import info.skyblond.daapu.auth.SessionData
-import info.skyblond.daapu.db.MessageRole
-import io.ktor.http.*
-import io.ktor.server.application.*
-import io.ktor.server.request.*
-import io.ktor.server.response.*
-import io.ktor.server.routing.*
-import io.ktor.server.sessions.*
-import kotlinx.coroutines.delay
+import info.skyblond.daapu.llm.ChatAgentService
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.request.receive
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondTextWriter
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
+import io.ktor.server.routing.patch
+import io.ktor.server.routing.post
+import io.ktor.server.routing.route
+import io.ktor.server.sessions.get
+import io.ktor.server.sessions.sessions
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 private val json = Json { encodeDefaults = true }
@@ -19,7 +27,7 @@ private val json = Json { encodeDefaults = true }
 private fun ApplicationCall.chatIdOrNull(): Long? =
     parameters["chatId"]?.toLongOrNull()
 
-fun Route.chatRoutes(chatService: ChatService) {
+fun Route.chatRoutes(chatService: ChatService, chatAgentService: ChatAgentService) {
     route("/chats") {
         get {
             val session = call.sessions.get<SessionData>()
@@ -44,7 +52,7 @@ fun Route.chatRoutes(chatService: ChatService) {
             get { call.chatMessagesHandler(chatService) }
             patch { call.renameHandler(chatService) }
             delete { call.deleteHandler(chatService) }
-            post("/messages") { call.sendMessageHandler(chatService) }
+            post("/messages") { call.sendMessageHandler(chatService, chatAgentService) }
         }
     }
 }
@@ -105,7 +113,10 @@ private suspend fun ApplicationCall.deleteHandler(chatService: ChatService) {
     }
 }
 
-private suspend fun ApplicationCall.sendMessageHandler(chatService: ChatService) {
+private suspend fun ApplicationCall.sendMessageHandler(
+    chatService: ChatService,
+    chatAgentService: ChatAgentService,
+) {
     val chatId = chatIdOrNull()
     val userId = requireUserId()
     when {
@@ -115,57 +126,47 @@ private suspend fun ApplicationCall.sendMessageHandler(chatService: ChatService)
             val body = receive<SendMessageRequest>()
             if (body.content.isBlank()) {
                 respond(HttpStatusCode.BadRequest, ChatError("content is required"))
+            } else if (!chatService.ownsChat(userId, chatId)) {
+                respond(HttpStatusCode.NotFound, ChatError("chat not found"))
             } else {
-                val userMessage =
-                    chatService.appendMessage(userId, chatId, MessageRole.USER, body.content)
-                if (userMessage == null) {
-                    respond(HttpStatusCode.NotFound, ChatError("chat not found"))
-                } else {
-                    streamEchoReply(this, chatService, userId, chatId, body.content)
-                }
+                streamAgentReply(this, chatAgentService, chatId, body.content)
             }
         }
     }
 }
 
 /**
- * Stream an SSE reply and persist the assistant message when streaming finishes.
- *
- * The echo implementation streams the input back one word at a time so the
- * streaming path (SSE framing, client disconnect, persistence on completion) is
- * fully exercised before the real LLM lands in phase 5.
+ * Stream the koog agent's reply as SSE. koog's ChatMemory loads the chat's
+ * history before the run and persists the updated conversation (including the
+ * new user message and this reply) after the run completes.
  */
-private suspend fun streamEchoReply(
+private suspend fun streamAgentReply(
     call: ApplicationCall,
-    chatService: ChatService,
-    userId: Long,
+    chatAgentService: ChatAgentService,
     chatId: Long,
-    userText: String,
+    content: String,
 ) {
-    val replyText = "Got it: $userText"
-
     call.respondTextWriter(
         contentType = ContentType.Text.EventStream,
         status = HttpStatusCode.OK,
     ) {
         var emitted = ""
-        for (word in replyText.split(" ")) {
-            if (emitted.isNotEmpty()) emitted += " "
-            emitted += word
-            val frame = MessageResponse(
-                id = -1,
-                role = "assistant",
-                content = emitted,
-                createdAt = "",
-            )
-            write("data: ${json.encodeToString(frame)}\n\n")
-            flush()
-            // Small delay so the incremental frames are visible; removed in phase 5.
-            delay(30)
-        }
+        chatAgentService.streamReply(
+            chatId = chatId,
+            content = content,
+            onDelta = { delta ->
+                emitted += delta
+                val frame = MessageResponse(
+                    id = -1,
+                    role = "assistant",
+                    content = emitted,
+                    createdAt = "",
+                )
+                write("data: ${json.encodeToString(frame)}\n\n")
+                flush()
+            },
+        )
         write("data: [DONE]\n\n")
         flush()
     }
-
-    chatService.appendMessage(userId, chatId, MessageRole.ASSISTANT, replyText)
 }

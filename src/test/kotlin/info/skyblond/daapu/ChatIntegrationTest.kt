@@ -86,7 +86,7 @@ class ChatIntegrationTest {
     }
 
     @Test
-    fun `send message streams an SSE echo reply`() = withDb {
+    fun `send message streams an SSE reply`() = withDb {
         val client = createClient { install(HttpCookies) }
         client.register("carol")
         val id = client.createChat()
@@ -101,13 +101,12 @@ class ChatIntegrationTest {
         val body = response.bodyAsText()
         assertTrue(body.contains("data: "))
         assertTrue(body.contains("[DONE]"))
-        // The echo streams words incrementally: first frame is a prefix.
-        assertTrue(body.contains("\"content\":\"Got it:\""))
-        assertTrue(body.contains("\"content\":\"Got it: hello there\""))
+        // The mock streams "Reply to: " as a text delta.
+        assertTrue(body.contains("\"content\":\"Reply to: \""))
     }
 
     @Test
-    fun `echo reply is persisted after streaming`() = withDb {
+    fun `reply is persisted after streaming`() = withDb {
         val client = createClient { install(HttpCookies) }
         client.register("dave")
         val id = client.createChat()
@@ -122,6 +121,7 @@ class ChatIntegrationTest {
         assertEquals(2, arr.size)
         assertEquals("USER", arr[0].jsonObject["role"]!!.jsonPrimitive.content)
         assertEquals("ASSISTANT", arr[1].jsonObject["role"]!!.jsonPrimitive.content)
-        assertTrue(arr[1].jsonObject["content"]!!.jsonPrimitive.content.contains("hi"))
+        assertTrue(arr[0].jsonObject["content"]!!.jsonPrimitive.content.contains("hi"))
+        assertTrue(arr[1].jsonObject["content"]!!.jsonPrimitive.content.contains("Reply to: "))
     }
 }

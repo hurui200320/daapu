@@ -48,6 +48,25 @@ When writing or reviewing code, looking for bugs with the following perspectives
 - Plain HTTP only — TLS is terminated by an external reverse proxy.
 - Never log secrets (passwords, API keys, session cookies).
 
+## Chat history is koog-managed
+
+The conversation history is owned by koog's `ChatMemory` feature, not by
+hand-rolled message tables:
+
+- `ChatAgentService` builds a koog agent per request with `ChatMemory` installed.
+  It loads the chat's history before each run and stores the updated
+  conversation (including the new user message and assistant reply) after.
+- `PostgresChatHistoryProvider` implements koog's `ChatHistoryProvider`: it
+  serializes koog `Message` objects into the `messages` table, one row per
+  message, keyed by `chat_id`.
+- `ChatService.listMessages` reads through the same provider and projects only
+  user/assistant messages for the UI (system/tool messages stay hidden).
+- The streaming strategy's node collects `TextDelta` frames, relays them to the
+  SSE writer, and returns a `Message.Assistant` so koog appends it to history.
+
+When adding chat features, manipulate history via koog (its `ChatHistoryProvider`
+and features) rather than inserting message rows directly.
+
 ## Frontend style
 
 - TypeScript strict mode is on. Do not use `any`.

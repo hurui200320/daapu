@@ -1,9 +1,9 @@
 package info.skyblond.daapu.chat
 
+import ai.koog.prompt.message.Message
 import info.skyblond.daapu.db.Chats
-import info.skyblond.daapu.db.MessageRole
-import info.skyblond.daapu.db.Messages
 import info.skyblond.daapu.db.withTransaction
+import info.skyblond.daapu.llm.PostgresChatHistoryProvider
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -12,7 +12,18 @@ import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.update
 
-class ChatService {
+/**
+ * Chat metadata CRUD, plus a read view over the koog-managed message history.
+ *
+ * koog's `ChatMemory` owns the actual conversation (load before a run, store
+ * after it completes) via [PostgresChatHistoryProvider]. This service only:
+ * - manages the `chats` table (ownership, title, timestamps);
+ * - verifies chat ownership;
+ * - exposes a display view of the stored messages for the frontend.
+ */
+class ChatService(
+    private val historyProvider: PostgresChatHistoryProvider,
+) {
 
     /**
      * List the chats owned by [userId], newest first.
@@ -82,63 +93,43 @@ class ChatService {
     }
 
     /**
-     * Fetch the messages of [chatId]. Returns `null` when the chat does not
-     * belong to [userId].
+     * Whether [chatId] belongs to [userId].
      */
-    suspend fun listMessages(userId: Long, chatId: Long): List<ChatMessage>? = withTransaction {
-        val owns = Chats.selectAll()
+    suspend fun ownsChat(userId: Long, chatId: Long): Boolean = withTransaction {
+        Chats.selectAll()
             .where { (Chats.id eq chatId) and (Chats.userId eq userId) }
             .any()
-        if (!owns) {
-            return@withTransaction null
-        }
-        Messages.selectAll()
-            .where { Messages.chatId eq chatId }
-            .orderBy(Messages.id, SortOrder.ASC)
-            .map { row ->
-                ChatMessage(
-                    id = row[Messages.id],
-                    role = MessageRole.fromDbValue(row[Messages.role]),
-                    content = row[Messages.content],
-                    createdAt = row[Messages.createdAt],
-                )
-            }
     }
 
     /**
-     * Append a message to a chat. Returns the persisted message, or `null` when
-     * the chat does not belong to [userId]. Touches `updated_at` so the chat
-     * bubbles to the top of the list.
+     * Fetch the display messages of [chatId]. Returns `null` when the chat does
+     * not belong to [userId].
+     *
+     * Only user/assistant messages are surfaced; system and tool messages that
+     * koog persisted for its own history are hidden from the chat view.
      */
-    suspend fun appendMessage(
-        userId: Long,
-        chatId: Long,
-        role: MessageRole,
-        content: String
-    ): ChatMessage? =
-        withTransaction {
-            val owns = Chats.selectAll()
-                .where { (Chats.id eq chatId) and (Chats.userId eq userId) }
-                .any()
-            if (!owns) {
-                null
-            } else {
-                Chats.update(
-                    where = { Chats.id eq chatId }
-                ) {
-                    it[Chats.updatedAt] = java.time.OffsetDateTime.now()
-                }
-                val id = Messages.insert {
-                    it[Messages.chatId] = chatId
-                    it[Messages.role] = role.dbValue
-                    it[Messages.content] = content
-                } get Messages.id
-                ChatMessage(
-                    id = id,
-                    role = role,
-                    content = content,
-                    createdAt = java.time.OffsetDateTime.now(),
+    suspend fun listMessages(userId: Long, chatId: Long): List<ChatMessage>? {
+        if (!ownsChat(userId, chatId)) {
+            return null
+        }
+        return historyProvider.listByChat(chatId).mapNotNull { stored ->
+            when (val message = stored.message) {
+                is Message.User -> ChatMessage(
+                    id = stored.id,
+                    role = MessageRole.USER,
+                    content = message.textContent(),
+                    createdAt = stored.createdAt,
                 )
+
+                is Message.Assistant -> ChatMessage(
+                    id = stored.id,
+                    role = MessageRole.ASSISTANT,
+                    content = message.textContent(),
+                    createdAt = stored.createdAt,
+                )
+
+                else -> null
             }
         }
+    }
 }
