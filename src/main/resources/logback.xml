@@ -9,9 +9,6 @@
         </encoder>
     </appender>
 
-    <!-- block jetty mess debug message-->
-    <logger name="net.bramp.ffmpeg" level="WARN"/>
-
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
     </root>

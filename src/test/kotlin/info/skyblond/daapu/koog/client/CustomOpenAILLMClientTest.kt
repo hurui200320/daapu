@@ -1,5 +1,7 @@
-package info.skyblond.daapu.llm.client
+package info.skyblond.daapu.koog.client
 
+import ai.koog.agents.core.tools.ToolDescriptor
+import ai.koog.http.client.KoogHttpClientException
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIChatParams
 import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
@@ -8,15 +10,16 @@ import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.MessagePart
+import ai.koog.prompt.streaming.IncompleteStreamException
 import ai.koog.prompt.streaming.StreamFrame
 import ai.koog.prompt.streaming.requireEndFrame
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import java.net.InetSocketAddress
@@ -48,6 +51,9 @@ class CustomOpenAILLMClientTest {
     ) {
         user("Hello")
     }
+
+    // the test model deliberately lacks LLMCapability.Tools
+    private val testTool = ToolDescriptor(name = "test_tool", description = "A tool for tests")
 
     @Test
     fun `non-streaming keeps reasoning_content`() {
@@ -241,12 +247,271 @@ class CustomOpenAILLMClientTest {
         }
     }
 
+    @Test
+    fun `streaming assembles a multi-chunk tool call without id`() {
+        // real gateways split tool_call arguments across chunks and send
+        // index-only deltas after the first one; koog's builder assembles
+        // them into one ToolCallComplete (its comment references koog #2002),
+        // and this client re-implements the chunk handling, so pin it
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"tool_calls":[{"index":0,"type":"function","function":{"name":"flag","arguments":"{\"fl"}}]}"""),
+                chunk("""{"tool_calls":[{"index":0,"function":{"arguments":"ag\":true}"}}]}"""),
+                chunk("""{}""", finishReason = "tool_calls"),
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val frames = runBlocking {
+                client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+            }
+
+            val completed = frames.filterIsInstance<StreamFrame.ToolCallComplete>()
+            assertEquals(1, completed.size)
+            // no id was streamed: it stays null here and is generated later
+            // by withGeneratedToolCallIds (in Main's execution node)
+            assertEquals(null, completed[0].id)
+            assertEquals("flag", completed[0].name)
+            assertEquals("""{"flag":true}""", completed[0].content)
+        }
+    }
+
+    @Test
+    fun `streaming assembles two sequential tool calls`() {
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"first","arguments":"{\"a\":"}}]}"""),
+                chunk("""{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}"""),
+                chunk("""{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"second","arguments":"{}"}}]}"""),
+                chunk("""{}""", finishReason = "tool_calls"),
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val frames = runBlocking {
+                client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+            }
+
+            val completed = frames.filterIsInstance<StreamFrame.ToolCallComplete>()
+            assertEquals(2, completed.size)
+            assertEquals("call_1", completed[0].id)
+            assertEquals("first", completed[0].name)
+            assertEquals("""{"a":1}""", completed[0].content)
+            assertEquals("call_2", completed[1].id)
+            assertEquals("second", completed[1].name)
+            assertEquals("{}", completed[1].content)
+        }
+    }
+
+    @Test
+    fun `streaming keeps reasoning_details with plain string entries`() {
+        // some gateways emit reasoning_details as bare strings instead of
+        // {"type":"reasoning.text","text":...} objects
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"reasoning_details":["Plain ","strings"]}"""),
+                chunk("""{"content":"Hello"}"""),
+                chunk("""{}""", finishReason = "stop"),
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val frames = runBlocking {
+                client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+            }
+
+            assertEquals(
+                listOf("Plain strings"),
+                frames.filterIsInstance<StreamFrame.ReasoningDelta>().map { it.text },
+            )
+        }
+    }
+
+    @Test
+    fun `streaming skips empty content deltas`() {
+        val body = chatCompletionChunks(
+            listOf(
+                // OpenAI-style streams open with an empty content chunk
+                chunk("""{"role":"assistant","content":""}"""),
+                chunk("""{"content":"Hello"}"""),
+                chunk("""{}""", finishReason = "stop"),
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val frames = runBlocking {
+                client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+            }
+
+            assertEquals(listOf("Hello"), frames.filterIsInstance<StreamFrame.TextDelta>().map { it.text })
+            assertIs<StreamFrame.End>(frames.last())
+        }
+    }
+
+    @Test
+    fun `streaming without finish_reason do not emit end frame`() {
+        // a dropped connection can surface as a normal flow completion; the
+        // missing finish_reason means the stream is truncated and must not
+        // be accepted as a complete response
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"content":"Hello"}"""),
+                chunk("""{"content":" world"}"""),
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            assertFailsWith<IncompleteStreamException> {
+                runBlocking {
+                    client.executeStreaming(testPrompt, model, emptyList())
+                        .requireEndFrame().toList()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `execute with tools on tool-incapable model fails fast`() {
+        val body = chatCompletionBody(
+            message = """{"role":"assistant","content":"Hello back"}"""
+        )
+        withClientAndServer(streamingBody = "", nonStreamingBody = body) { client ->
+            assertFailsWith<IllegalArgumentException> {
+                runBlocking { client.execute(testPrompt, model, listOf(testTool)) }
+            }
+        }
+    }
+
+    @Test
+    fun `streaming with tools on tool-incapable model fails fast`() {
+        withClientAndServer(streamingBody = "", nonStreamingBody = "") { client ->
+            // the check is eager: it throws before the returned flow is collected
+            assertFailsWith<IllegalArgumentException> {
+                client.executeStreaming(testPrompt, model, listOf(testTool))
+            }
+        }
+    }
+
+    @Test
+    fun `streaming usage chunk populates End metaInfo`() {
+        // with stream_options.include_usage, the usage arrives as a final
+        // chunk with empty choices; Main's length-classification depends on
+        // these counts, so a parsing regression would silently degrade it
+        // to the fail-fast no-usage path
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"content":"Hello"}"""),
+                chunk("""{}""", finishReason = "stop"),
+                """{"id":"chatcmpl-2","object":"chat.completion.chunk","created":1234,"model":"test-model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}""",
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val frames = runBlocking {
+                client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+            }
+
+            val end = frames.filterIsInstance<StreamFrame.End>().single()
+            assertEquals("stop", end.finishReason)
+            assertEquals(10, end.metaInfo.inputTokensCount)
+            assertEquals(5, end.metaInfo.outputTokensCount)
+            assertEquals(15, end.metaInfo.totalTokensCount)
+        }
+    }
+
+    @Test
+    fun `streaming http error keeps KoogHttpClientException with status code`() {
+        // Main's retry guard rethrows permanent 4xx but retries 429/5xx, so
+        // the status code must survive the SSE-specific error path
+        withClientAndServer(
+            streamingBody = """{"error":{"message":"Rate limited"}}""",
+            nonStreamingBody = "",
+            statusCode = 429,
+        ) { client ->
+            val e = assertFailsWith<KoogHttpClientException> {
+                runBlocking {
+                    client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+                }
+            }
+            assertEquals(429, e.statusCode)
+        }
+    }
+
+    @Test
+    fun `streaming mid-stream error chunk throws instead of completing empty`() {
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"content":"Hello"}"""),
+                // gateways may deliver failures as a mid-stream SSE data chunk
+                // instead of an HTTP error status
+                """{"error":{"message":"upstream connection reset","type":"server_error"}}""",
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            // exceptions thrown while collecting the SSE flow surface at the
+            // http client's emit() and get wrapped into KoogHttpClientException
+            val e = assertFailsWith<KoogHttpClientException> {
+                runBlocking {
+                    client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+                }
+            }
+            assertTrue(e.message!!.contains("upstream connection reset"), "Unexpected message: ${e.message}")
+            // Main's retry guard rethrows permanent 4xx; a mid-stream error
+            // must NOT look like one, or it would never be retried
+            assertTrue(
+                e.statusCode == null || e.statusCode !in 400..499,
+                "Mid-stream error must not carry a permanent 4xx status, got ${e.statusCode}"
+            )
+        }
+    }
+
+    @Test
+    fun `non-streaming generates a stable id for tool calls without one`() {
+        val body = chatCompletionBody(
+            message = """{"role":"assistant","content":null,"tool_calls":[{"type":"function","function":{"name":"flag","arguments":"{\"flag\":true}"}}]}""",
+            finishReason = "tool_calls",
+        )
+        withClientAndServer(streamingBody = "", nonStreamingBody = body) { client ->
+            val response = runBlocking { client.execute(testPrompt, model, emptyList()) }
+
+            val toolCall = response.parts.filterIsInstance<MessagePart.Tool.Call>().single()
+            assertTrue(toolCall.id?.startsWith("call_") == true, "Expected a generated id, got ${toolCall.id}")
+            assertEquals("flag", toolCall.tool)
+        }
+    }
+
+    @Test
+    fun `non-streaming replaces a blank tool call id with a generated one`() {
+        // some gateways send "id": ""; a blank id never matches a
+        // tool_call_id, so it must be treated as missing
+        val body = chatCompletionBody(
+            message = """{"role":"assistant","content":null,"tool_calls":[{"id":"","type":"function","function":{"name":"flag","arguments":"{}"}}]}""",
+            finishReason = "tool_calls",
+        )
+        withClientAndServer(streamingBody = "", nonStreamingBody = body) { client ->
+            val response = runBlocking { client.execute(testPrompt, model, emptyList()) }
+
+            val toolCall = response.parts.filterIsInstance<MessagePart.Tool.Call>().single()
+            assertTrue(toolCall.id?.startsWith("call_") == true, "Expected a generated id, got ${toolCall.id}")
+            assertEquals("flag", toolCall.tool)
+        }
+    }
+
+    @Test
+    fun `non-streaming http error keeps KoogHttpClientException with status code`() {
+        withClientAndServer(
+            streamingBody = "",
+            nonStreamingBody = """{"error":{"message":"Invalid API key"}}""",
+            statusCode = 401,
+        ) { client ->
+            val e = assertFailsWith<KoogHttpClientException> {
+                runBlocking { client.execute(testPrompt, model, emptyList()) }
+            }
+            assertEquals(401, e.statusCode)
+        }
+    }
+
     private fun withClientAndServer(
         streamingBody: String,
         nonStreamingBody: String,
+        statusCode: Int = 200,
         block: (CustomOpenAILLMClient) -> Unit,
     ) {
-        MockChatCompletionsServer(streamingBody, nonStreamingBody).use { server ->
+        MockChatCompletionsServer(streamingBody, nonStreamingBody, statusCode).use { server ->
             CustomOpenAILLMClient("test-key", OpenAIClientSettings(baseUrl = server.baseUrl)).use { client ->
                 block(client)
             }
@@ -312,6 +577,7 @@ class CustomOpenAILLMClientTest {
 private class MockChatCompletionsServer(
     private val streamingBody: String,
     private val nonStreamingBody: String,
+    private val statusCode: Int = 200,
 ) : AutoCloseable {
     private val executor = Executors.newCachedThreadPool()
 
@@ -327,7 +593,7 @@ private class MockChatCompletionsServer(
             val bytes = response.toByteArray(Charsets.UTF_8)
             // SSE responses use chunked encoding (length 0); the fixed-length
             // form is not reliably streamed by all HTTP client engines.
-            exchange.sendResponseHeaders(200, if (isStreaming) 0 else bytes.size.toLong())
+            exchange.sendResponseHeaders(statusCode, if (isStreaming) 0 else bytes.size.toLong())
             exchange.responseBody.use { it.write(bytes) }
         }
         setExecutor(this@MockChatCompletionsServer.executor)

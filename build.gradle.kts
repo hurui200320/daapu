@@ -13,7 +13,6 @@ repositories {
 
 val exposedVersion = "1.3.1"
 val flywayVersion = "13.1.0"
-val testContainerVersion = "2.0.5"
 val koogVersion = "1.1.1"
 
 dependencies {
@@ -37,8 +36,6 @@ dependencies {
     implementation("ai.koog:agents-features-memory:$koogVersion")
 
     testImplementation(kotlin("test"))
-    testImplementation("org.testcontainers:testcontainers-postgresql:$testContainerVersion")
-    testImplementation("ai.koog:agents-test:$koogVersion")
 }
 
 kotlin {

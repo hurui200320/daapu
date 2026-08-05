@@ -9,3 +9,12 @@ CREATE TABLE chats
     id           TEXT PRIMARY KEY,
     history_json TEXT NOT NULL DEFAULT '[]'
 );
+
+-- Shared short term memories
+-- content is raw text, no escape.
+CREATE TABLE sstms
+(
+    id BIGSERIAL PRIMARY KEY,
+    last_update TIMESTAMP NOT NULL DEFAULT now(),
+    content TEXT NOT NULL
+)

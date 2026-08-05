@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <!-- root node: injection -->
+    <xs:element name="injection">
+        <xs:complexType>
+            <xs:sequence>
+
+                <!-- real-time-info -->
+                <xs:element name="real-time-info">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <!-- localtime, string -->
+                            <xs:element name="localtime" type="xs:string"/>
+                            <!-- sstm-updated, boolean -->
+                            <xs:element name="sstm-updated" type="xs:boolean"/>
+                            <!-- eltm-updated, boolean -->
+                            <xs:element name="eltm-updated" type="xs:boolean"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+                <!-- memories -->
+                <xs:element name="memories">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <!-- memory, 0 to unlimited items, aka unbounded -->
+                            <xs:element name="memory" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+</xs:schema>

@@ -10,8 +10,9 @@ infrastructure:
   Postgres-backed `ChatHistoryProvider` — see `AGENTS.md`
 
 There is deliberately no web server, frontend, or HTTP API yet: the entry point
-(`Main.kt`) initializes the database and builds the koog agent stack. The actual
-PoC loop comes later, with boilerplate added around it once the idea is proven.
+(`Main.kt`) runs a single agent turn with a hardcoded debug message and a
+hardcoded session id, so the same chat is resumed across runs. A real input
+loop comes later, with boilerplate added around it once the idea is proven.
 
 ## Development
 
@@ -40,9 +41,10 @@ a `.env` file):
 | `DATABASE_USER`      | yes      | Database user.                                                              |
 | `DATABASE_PASSWORD`  | yes      | Database password.                                                          |
 | `LLM_API_KEY`        | yes      | LLM provider API key (OpenAI-compatible).                                   |
-| `LLM_BASE_URL`       | no       | LLM provider base URL. Defaults to `https://api.openai.com`.                |
-| `LLM_MODEL`          | no       | LLM model id. Defaults to `gpt-4o-mini`.                                   |
-| `LLM_SYSTEM_PROMPT`  | no       | System prompt for the agent. Defaults to `You are a helpful assistant.`     |
+| `LLM_BASE_URL`       | yes      | LLM provider base URL.                                                      |
+
+The model id and system prompt are hardcoded in `Main.kt`: each model needs an
+explicit capability list, so swapping models is a code change, not a config one.
 
 ### Verification
 

@@ -1,6 +1,8 @@
 package info.skyblond.daapu.db
 
 import org.jetbrains.exposed.v1.core.Table
+import org.jetbrains.exposed.v1.javatime.CurrentTimestamp
+import org.jetbrains.exposed.v1.javatime.timestamp
 
 /**
  * Mirror of the `chats` table created by `V1__init.sql`.
@@ -13,6 +15,18 @@ import org.jetbrains.exposed.v1.core.Table
 object Chats : Table("chats") {
     val id = text("id")
     val historyJson = text("history_json").default("[]")
+
+    override val primaryKey = PrimaryKey(id)
+}
+
+/**
+ * Shared Short Term Memories.
+ */
+object SSTMs : Table("sstms") {
+    val id = long("id").autoIncrement()
+    val lastUpdate = timestamp("last_update")
+        .defaultExpression(CurrentTimestamp)
+    val content = text("content")
 
     override val primaryKey = PrimaryKey(id)
 }

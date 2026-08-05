@@ -1,8 +1,9 @@
-package info.skyblond.daapu.llm.client
+package info.skyblond.daapu.koog.client
 
 import ai.koog.agents.core.tools.ToolDescriptor
 import ai.koog.http.client.HttpClientFactoryResolver
 import ai.koog.http.client.KoogHttpClient
+import ai.koog.http.client.KoogHttpClientException
 import ai.koog.http.client.post
 import ai.koog.prompt.Prompt
 import ai.koog.prompt.executor.clients.LLMClientException
@@ -19,6 +20,7 @@ import ai.koog.prompt.streaming.StreamFrame
 import ai.koog.prompt.streaming.buildStreamFrameFlow
 import ai.koog.prompt.streaming.requireEndFrame
 import ai.koog.utils.time.KoogClock
+import info.skyblond.daapu.koog.withGeneratedToolCallIds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.*
@@ -59,6 +61,7 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
         }
 
         model.requireCapability(LLMCapability.Completion)
+        if (tools.isNotEmpty()) model.requireCapability(LLMCapability.Tools)
 
         val messages = convertPromptToMessages(prompt, model)
         val request = serializeProviderChatRequest(
@@ -70,60 +73,74 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
             stream = true
         )
 
-        return try {
-            buildStreamFrameFlow {
-                var finishReason: String? = null
-                var metaInfo: ResponseMetaInfo? = null
+        // The flow is cold: the SSE request runs at collection time, so errors
+        // (including KoogHttpClientException with its status code) propagate to
+        // the collector unwrapped.
+        return buildStreamFrameFlow {
+            var finishReason: String? = null
+            var metaInfo: ResponseMetaInfo? = null
 
-                httpClient.sse(
-                    path = chatCompletionsPath,
-                    requestBody = request,
-                    requestBodyType = String::class,
-                    dataFilter = { it != "[DONE]" },
-                    decodeStreamingResponse = { line ->
-                        json.parseToJsonElement(line).jsonObject
-                    },
-                    processStreamingChunk = { it }
-                ).collect { chunk ->
-                    val choice = (chunk["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
-                    if (choice != null) {
-                        val index = choice["index"].asIntOrNull()
-                        (choice["delta"] as? JsonObject)?.let { delta ->
-                            delta.reasoningTextOrNull()?.let { text ->
-                                emitReasoningDelta(text = text, index = index)
-                            }
-                            delta["content"].asStringOrNull()?.let { text ->
-                                emitTextDelta(text, index)
-                            }
-                            (delta["tool_calls"] as? JsonArray)?.forEach { element ->
-                                val toolCall = element as? JsonObject ?: return@forEach
-                                val function = toolCall["function"] as? JsonObject
-                                emitToolCallDelta(
-                                    id = toolCall["id"].asStringOrNull(),
-                                    name = function?.get("name").asStringOrNull(),
-                                    args = function?.get("arguments").asStringOrNull(),
-                                    index = toolCall["index"].asIntOrNull()
-                                )
-                            }
-                        }
-                        choice["finish_reason"].asStringOrNull()?.let { finishReason = it }
-                    }
-                    (chunk["usage"] as? JsonObject)?.let { usage ->
-                        metaInfo = ResponseMetaInfo.create(
-                            clock = clock,
-                            totalTokensCount = usage["total_tokens"].asIntOrNull(),
-                            inputTokensCount = usage["prompt_tokens"].asIntOrNull(),
-                            outputTokensCount = usage["completion_tokens"].asIntOrNull(),
-                        )
-                    }
+            httpClient.sse(
+                path = chatCompletionsPath,
+                requestBody = request,
+                requestBodyType = String::class,
+                dataFilter = { it != "[DONE]" },
+                decodeStreamingResponse = { line ->
+                    json.parseToJsonElement(line).jsonObject
+                },
+                processStreamingChunk = { it }
+            ).collect { chunk ->
+                // Some gateways deliver errors as a mid-stream SSE data chunk
+                // instead of an HTTP error status. Without this check the error
+                // chunk is silently ignored and the failure looks like a clean,
+                // empty completion.
+                (chunk["error"] as? JsonObject)?.let { error ->
+                    throw LLMClientException(
+                        clientName,
+                        "Mid-stream error from provider: ${error["message"].asStringOrNull() ?: error}"
+                    )
                 }
+                val choice = (chunk["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
+                if (choice != null) {
+                    val index = choice["index"].asIntOrNull()
+                    (choice["delta"] as? JsonObject)?.let { delta ->
+                        delta.reasoningTextOrNull()?.let { text ->
+                            emitReasoningDelta(text = text, index = index)
+                        }
+                        // skip empty deltas: OpenAI-style streams open with
+                        // {"delta":{"role":"assistant","content":""}}, which
+                        // would otherwise fabricate an empty text part
+                        delta["content"].asStringOrNull()?.takeIf { it.isNotEmpty() }?.let { text ->
+                            emitTextDelta(text, index)
+                        }
+                        (delta["tool_calls"] as? JsonArray)?.forEach { element ->
+                            val toolCall = element as? JsonObject ?: return@forEach
+                            val function = toolCall["function"] as? JsonObject
+                            emitToolCallDelta(
+                                id = toolCall["id"].asStringOrNull(),
+                                name = function?.get("name").asStringOrNull(),
+                                args = function?.get("arguments").asStringOrNull(),
+                                index = toolCall["index"].asIntOrNull()
+                            )
+                        }
+                    }
+                    choice["finish_reason"].asStringOrNull()?.let { finishReason = it }
+                }
+                (chunk["usage"] as? JsonObject)?.let { usage ->
+                    metaInfo = ResponseMetaInfo.create(
+                        clock = clock,
+                        totalTokensCount = usage["total_tokens"].asIntOrNull(),
+                        inputTokensCount = usage["prompt_tokens"].asIntOrNull(),
+                        outputTokensCount = usage["completion_tokens"].asIntOrNull(),
+                    )
+                }
+            }
 
-                emitEnd(finishReason, metaInfo)
-            }.requireEndFrame()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw LLMClientException(clientName, e.message, e)
+            // Only a stream that delivered finish_reason is complete. A
+            // dropped connection can surface as a normal flow completion;
+            // without an End frame. Downstream user can use requireEndFrame()
+            // to check, or they accept the partial response.
+            finishReason?.let { emitEnd(it, metaInfo) }
         }
     }
 
@@ -145,6 +162,7 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
             "Only OpenAIChatParams is supported in prompt (for Chat Completions API)"
         }
         model.requireCapability(LLMCapability.Completion)
+        if (tools.isNotEmpty()) model.requireCapability(LLMCapability.Tools)
 
         return try {
             val response = postChatCompletions(prompt, model, tools)
@@ -152,6 +170,10 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
                 ?: throw LLMClientException(clientName, "Empty choices in response")
             choice.toAssistantMessage(response.toResponseMetaInfo())
         } catch (e: CancellationException) {
+            throw e
+        } catch (e: KoogHttpClientException) {
+            // keep the status code so callers can tell permanent 4xx from
+            // transient errors (e.g. the retry guard in Main.kt)
             throw e
         } catch (e: Exception) {
             throw LLMClientException(clientName, e.message, e)
@@ -167,16 +189,23 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
             "Only OpenAIChatParams is supported in prompt (for Chat Completions API)"
         }
         model.requireCapability(LLMCapability.MultipleChoices)
+        if (tools.isNotEmpty()) model.requireCapability(LLMCapability.Tools)
 
         return try {
             val response = postChatCompletions(prompt, model, tools)
             val choices = (response["choices"] as? JsonArray)
                 ?: throw LLMClientException(clientName, "Empty choices in response")
             val metaInfo = response.toResponseMetaInfo()
-            choices.mapNotNull { choice ->
-                (choice as? JsonObject)?.toAssistantMessage(metaInfo)
+            choices.map { choice ->
+                val choiceObj = choice as? JsonObject
+                    ?: throw LLMClientException(clientName, "Malformed choice in response")
+                choiceObj.toAssistantMessage(metaInfo)
             }
         } catch (e: CancellationException) {
+            throw e
+        } catch (e: KoogHttpClientException) {
+            // keep the status code so callers can tell permanent 4xx from
+            // transient errors (e.g. the retry guard in Main.kt)
             throw e
         } catch (e: Exception) {
             throw LLMClientException(clientName, e.message, e)
@@ -263,7 +292,7 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
             parts = parts,
             metaInfo = metaInfo,
             finishReason = get("finish_reason").asStringOrNull(),
-        )
+        ).withGeneratedToolCallIds()
     }
 
     /**
@@ -272,6 +301,11 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
      * 1. `reasoning_details` — structured list of `reasoning.text` entries (bifrost)
      * 2. `reasoning` — plain text (bifrost)
      * 3. `reasoning_content` — plain text (Novita/DeepSeek style)
+     *
+     * Each chunk is treated as an *incremental delta* and appended verbatim to
+     * the accumulated reasoning. This matches the streaming contract of the
+     * OpenAI-compatible gateways we use, but a gateway that echoes the full
+     * accumulated reasoning in every chunk would duplicate the output N times.
      *
      * Returns null when the chunk carries no (non-empty) reasoning.
      */
