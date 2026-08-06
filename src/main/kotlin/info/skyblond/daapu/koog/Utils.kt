@@ -7,19 +7,7 @@ import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.MessagePart
 import java.util.UUID
 
-fun createModel(
-    id: String,
-    capabilities: List<LLMCapability>,
-    contextLength: Long,
-    maxOutputTokens: Long,
-) = LLModel(
-    // TODO: maybe should create our own provider?
-    provider = LLMProvider.OpenAI,
-    id = id,
-    capabilities = capabilities,
-    contextLength = contextLength,
-    maxOutputTokens = maxOutputTokens,
-)
+
 
 /**
  * Give every tool call a stable id.

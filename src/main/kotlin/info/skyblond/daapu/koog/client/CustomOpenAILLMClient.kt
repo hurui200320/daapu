@@ -12,6 +12,7 @@ import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.base.OpenAICompatibleToolDescriptorSchemaGenerator
 import ai.koog.prompt.llm.LLMCapability
+import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.MessagePart
@@ -50,6 +51,8 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
 ) : OpenAILLMClient(apiKey, settings, httpClientFactory, clock, toolsConverter) {
 
     private val chatCompletionsPath: String = settings.chatCompletionsPath
+
+    override fun llmProvider(): LLMProvider = CustomLLMProvider
 
     override fun executeStreaming(
         prompt: Prompt,

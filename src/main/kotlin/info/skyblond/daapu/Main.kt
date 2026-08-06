@@ -13,7 +13,6 @@ import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIChatParams
 import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
 import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
-import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.MessagePart
 import ai.koog.prompt.message.RequestMetaInfo
@@ -25,8 +24,8 @@ import info.skyblond.daapu.db.SSTMs
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.koog.PostgresChatHistoryProvider
+import info.skyblond.daapu.koog.client.Cerebras
 import info.skyblond.daapu.koog.client.CustomOpenAILLMClient
-import info.skyblond.daapu.koog.createModel
 import info.skyblond.daapu.koog.withGeneratedToolCallIds
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.delay
@@ -61,33 +60,10 @@ fun main() {
     val config = appConfigFromEnv()
     initDatabase(config.databaseUrl, config.databaseUser, config.databasePassword)
 
+    val model = Cerebras.GPT_OSS_120B
     val historyProvider = PostgresChatHistoryProvider()
 
-    // The model id stays hardcoded on purpose: each model needs an explicit
-    // capability list, so a different model is a code change, not a config one.
-    val model = createModel(
-        // TODO: maybe also give GPT OSS 120B a try? but it's a pure text model
-        id = "cerebras/gemma-4-31b",
-        capabilities = listOf(
-            LLMCapability.ToolChoice,
-            LLMCapability.Schema.JSON.Basic,
-            LLMCapability.Schema.JSON.Standard,
-            LLMCapability.Tools,
-            LLMCapability.Vision.Image,
-            LLMCapability.Completion,
-            LLMCapability.MultipleChoices,
-            LLMCapability.OpenAIEndpoint.Completions,
-            LLMCapability.Thinking,
-        ),
-//        contextLength = 262144,
-//        maxOutputTokens = 131072,
-        // cerebras has lower context
-        contextLength = 131072,
-        maxOutputTokens = 40000,
-    )
-
     val systemPrompt = renderSystemPrompt("Raven", true)
-    logger.info { "========== System prompt START ==========\n$systemPrompt\n========== System prompt END ==========" }
 
     val contextInjection = ContextInjection()
 
