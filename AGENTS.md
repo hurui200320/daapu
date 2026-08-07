@@ -2,6 +2,46 @@
 
 Guidance for AI agents (and humans) working in this project.
 
+## Migration in progress: koog → langchain4j
+
+The project is migrating off koog onto langchain4j (with its `langchain4j-mcp`
+module). **Status: decided, not yet started — the rest of this document still
+describes the current koog implementation.** The work is tracked as GitHub
+issues with blocking relationships (`gh issue list`, `gh issue view N`):
+
+- Spikes first: #1 (streaming/reasoning parity against the live gateways),
+  #2 (mid-stream SSE error-chunk classification — **go/no-go for the whole
+  migration**), #3 (MCP tools end-to-end). Spike code lives on throwaway
+  branches; outcomes are recorded as comments on the issue.
+- #4 (neutral chat-history format, decoupling the DB/API/frontend from koog's
+  serialization) is independent of the spikes and worth doing even if the
+  migration is abandoned.
+- Then in dependency order: #5 (model catalog on langchain4j), #6 (core turn
+  loop — the heart of the migration), #7 (retire `CustomOpenAILLMClient`,
+  porting its gateway-quirk test suite), #8 (MCP feature), #9 (remove koog,
+  final cleanup + docs).
+
+Why: koog's fix turnaround for OpenAI-compatible gateway quirks is too slow
+for this project (e.g. reasoning silently dropped in streaming,
+JetBrains/koog#2148 — we carry a ~350-line client subclass patching such
+bugs), its MCP module is tools-only, and it has no pgvector/RAG ecosystem for
+the planned long-term-memory experiments. langchain4j covers all three and is
+considerably more active.
+
+Rules while the migration is underway:
+
+- Pick up issues in dependency order; each issue body is self-contained
+  (context, file paths, checklists, acceptance criteria).
+- Do NOT add new koog API surface beyond what an issue explicitly asks for.
+  New LLM-facing code follows the langchain4j target design.
+- The behaviors documented in "Chat history is koog-managed" and "Streaming
+  execution and recovery" below are **invariants to preserve**, not koog
+  accidents — port them to the new stack (fail-fast history loads,
+  never-store-history-on-failure, retry classification, full-prompt
+  capability checks, injection strip, SSE protocol byte-compatibility, ...).
+- If #2 comes out no-go, the migration is off: resume plain koog work and
+  delete this section.
+
 ## Project
 
 PoC of a chatbot with a memory system, built on PostgreSQL and koog.

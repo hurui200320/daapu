@@ -9,6 +9,11 @@ infrastructure:
 - **koog**'s `ChatMemory` feature for conversation history, persisted through a
   Postgres-backed `ChatHistoryProvider` — see `AGENTS.md`
 
+> **Status: migrating from koog to langchain4j.** Tracked in GitHub issues
+> #1–#9 (spikes first; #2 is the go/no-go). This document describes the
+> current koog-based implementation until the migration lands — see
+> `AGENTS.md` for the plan and the rules while it is underway.
+
 The input loop is a small **ktor HTTP API** (`Main.kt` → `src/main/kotlin/.../server/`)
 plus a minimal **Svelte frontend** (`frontend/`, inspired by llama.cpp's own
 webui but deliberately tiny). The frontend dev server proxies `/api` to ktor;
@@ -112,4 +117,11 @@ For Coding agents.
 ### koog
 
 + Repo https://github.com/JetBrains/koog
-    + Docs https://docs.koog.ai
+  + Docs https://docs.koog.ai
+
+### langchain4j (migration target)
+
++ Repo https://github.com/langchain4j/langchain4j
+  + Docs https://docs.langchain4j.dev
+  + MCP https://github.com/langchain4j/langchain4j/blob/main/docs/docs/tutorials/mcp.md
+  + Kotlin extensions https://docs.langchain4j.dev/tutorials/kotlin/
