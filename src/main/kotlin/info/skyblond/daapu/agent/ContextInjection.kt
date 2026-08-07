@@ -21,22 +21,23 @@ import javax.xml.validation.SchemaFactory
 class ContextInjection {
     companion object {
         private const val XSD_RESOURCE_PATH = "/agent/injectionSchema.xsd"
-    }
 
-    private val schema: Schema
-
-    init {
-        this::class.java.getResourceAsStream(XSD_RESOURCE_PATH)?.use { ins ->
-            val schemaSource = StreamSource(ins)
-            val schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI)
-            // isInjection() validates untrusted-looking text (e.g. the first
-            // part of a user message), so forbid external DTD/entity and
-            // schema access to avoid XXE-style resolution.
-            schemaFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
-            schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "")
-            schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
-            schema = schemaFactory.newSchema(schemaSource)
-        } ?: error("Failed to load XML schema from $XSD_RESOURCE_PATH")
+        // Compiled once per JVM: a Schema is thread-safe for newValidator()
+        // (only the Validator instances are single-threaded), so the
+        // per-request ContextInjection instances don't each pay an XSD parse.
+        private val schema: Schema = run {
+            ContextInjection::class.java.getResourceAsStream(XSD_RESOURCE_PATH)?.use { ins ->
+                val schemaSource = StreamSource(ins)
+                val schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI)
+                // isInjection() validates untrusted-looking text (e.g. the first
+                // part of a user message), so forbid external DTD/entity and
+                // schema access to avoid XXE-style resolution.
+                schemaFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+                schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+                schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
+                schemaFactory.newSchema(schemaSource)
+            } ?: error("Failed to load XML schema from $XSD_RESOURCE_PATH")
+        }
     }
 
     // Similar to ISO_OFFSET_DATE_TIME but only down to seconds

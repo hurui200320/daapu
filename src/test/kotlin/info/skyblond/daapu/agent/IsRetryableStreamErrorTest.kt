@@ -46,6 +46,14 @@ class IsRetryableStreamErrorTest {
     }
 
     @Test
+    fun `model capability violation is not retryable`() {
+        // the model cannot handle content present in the prompt (e.g. images
+        // with a text-only model): the identical request would fail
+        // identically forever
+        assertFalse(isRetryableStreamError(ModelCapabilityException("model lacks vision")))
+    }
+
+    @Test
     fun `transient empty response is retryable`() {
         // an empty response with NO finish reason is treated as a gateway
         // hiccup and retried
@@ -88,6 +96,64 @@ class IsRetryableStreamErrorTest {
         // a null status means the failure happened before a response arrived
         // or mid-stream (e.g. a gateway's error chunk): transient by nature
         assertTrue(isRetryableStreamError(httpError(null)))
+    }
+
+    @Test
+    fun `wrapped mid-stream error keeps its permanent 4xx classification`() {
+        // ktor's SSE plugin wraps exceptions thrown while streaming in an
+        // SSEClientException carrying the (successful) response, and koog
+        // re-wraps that with its status: the chain is
+        // KoogHttpClientException(200) → SSEClientException →
+        // KoogHttpClientException(code). The policy must look past the 2xx
+        // (CustomOpenAILLMClient throws a coded exception for mid-stream
+        // provider error chunks).
+        listOf(400, 401, 403, 404, 422).forEach { status ->
+            val wrapped = KoogHttpClientException(
+                clientName = "test",
+                statusCode = 200,
+                message = "Exception during streaming",
+                cause = httpError(status),
+            )
+            assertFalse(isRetryableStreamError(wrapped), "status $status should not be retryable")
+        }
+    }
+
+    @Test
+    fun `wrapped mid-stream timeout and rate limit stay retryable`() {
+        listOf(408, 429).forEach { status ->
+            val wrapped = KoogHttpClientException(
+                clientName = "test",
+                statusCode = 200,
+                message = "Exception during streaming",
+                cause = httpError(status),
+            )
+            assertTrue(isRetryableStreamError(wrapped), "status $status should be retryable")
+        }
+    }
+
+    @Test
+    fun `wrapped mid-stream error without a code is retryable`() {
+        // an error chunk with no numeric code carries only the stream's own
+        // 2xx response status, which is not an error code: transient by
+        // nature, same as a null status
+        val wrapped = KoogHttpClientException(
+            clientName = "test",
+            statusCode = 200,
+            message = "Exception during streaming",
+            cause = httpError(null),
+        )
+        assertTrue(isRetryableStreamError(wrapped))
+    }
+
+    @Test
+    fun `plain 2xx wrapped error is retryable`() {
+        // no coded cause at all: only the stream's own 200 response status
+        val wrapped = KoogHttpClientException(
+            clientName = "test",
+            statusCode = 200,
+            message = "Exception during streaming",
+        )
+        assertTrue(isRetryableStreamError(wrapped))
     }
 
     @Test

@@ -14,6 +14,7 @@ repositories {
 val exposedVersion = "1.3.1"
 val flywayVersion = "13.1.0"
 val koogVersion = "1.1.1"
+val ktorVersion = "3.3.3"
 
 dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.38")
@@ -35,7 +36,14 @@ dependencies {
     implementation("ai.koog:koog-agents:$koogVersion")
     implementation("ai.koog:agents-features-memory:$koogVersion")
 
+    implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-netty-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-status-pages-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktorVersion")
+
     testImplementation(kotlin("test"))
+    testImplementation("io.ktor:ktor-server-test-host-jvm:$ktorVersion")
 }
 
 kotlin {

@@ -1,5 +1,7 @@
 package info.skyblond.daapu.koog
 
+import ai.koog.prompt.message.AttachmentContent
+import ai.koog.prompt.message.AttachmentSource
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.MessagePart
 import ai.koog.prompt.message.RequestMetaInfo
@@ -43,6 +45,20 @@ class PostgresChatHistoryProviderTest {
             listOf(MessagePart.Tool.Result(id = "call_1", tool = "flag", output = "ok")),
             RequestMetaInfo.Empty,
         ),
+        Message.User(
+            listOf(
+                // base64 image attachment: pins the discriminator/field names
+                // the frontend's types.ts relies on for history image rendering
+                MessagePart.Attachment(
+                    source = AttachmentSource.Image(
+                        content = AttachmentContent.Binary.Base64("AAAA"),
+                        format = "png",
+                        mimeType = "image/png",
+                    )
+                ),
+            ),
+            RequestMetaInfo.Empty,
+        ),
     )
 
     @Test
@@ -57,7 +73,7 @@ class PostgresChatHistoryProviderTest {
      * histories would break at load time; this test fails first.
      */
     private val goldenJson =
-        """[{"type":"ai.koog.prompt.message.Message.System","parts":[{"text":"You are Raven."}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"}},{"type":"ai.koog.prompt.message.Message.User","parts":[{"type":"ai.koog.prompt.message.MessagePart.Text","text":"<injection><real-time-info/></injection>"},{"type":"ai.koog.prompt.message.MessagePart.Text","text":"Hello!"}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"}},{"type":"ai.koog.prompt.message.Message.Assistant","parts":[{"type":"ai.koog.prompt.message.MessagePart.Reasoning","content":["thinking..."]},{"type":"ai.koog.prompt.message.MessagePart.Text","text":"Hi there"},{"type":"ai.koog.prompt.message.MessagePart.Tool.Call","id":"call_1","tool":"flag","args":"{\"flag\":true}"}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"},"finishReason":"tool_calls"},{"type":"ai.koog.prompt.message.Message.User","parts":[{"type":"ai.koog.prompt.message.MessagePart.Tool.Result","id":"call_1","tool":"flag","parts":[{"type":"ai.koog.prompt.message.MessagePart.Text","text":"ok"}]}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"}}]"""
+        """[{"type":"ai.koog.prompt.message.Message.System","parts":[{"text":"You are Raven."}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"}},{"type":"ai.koog.prompt.message.Message.User","parts":[{"type":"ai.koog.prompt.message.MessagePart.Text","text":"<injection><real-time-info/></injection>"},{"type":"ai.koog.prompt.message.MessagePart.Text","text":"Hello!"}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"}},{"type":"ai.koog.prompt.message.Message.Assistant","parts":[{"type":"ai.koog.prompt.message.MessagePart.Reasoning","content":["thinking..."]},{"type":"ai.koog.prompt.message.MessagePart.Text","text":"Hi there"},{"type":"ai.koog.prompt.message.MessagePart.Tool.Call","id":"call_1","tool":"flag","args":"{\"flag\":true}"}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"},"finishReason":"tool_calls"},{"type":"ai.koog.prompt.message.Message.User","parts":[{"type":"ai.koog.prompt.message.MessagePart.Tool.Result","id":"call_1","tool":"flag","parts":[{"type":"ai.koog.prompt.message.MessagePart.Text","text":"ok"}]}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"}},{"type":"ai.koog.prompt.message.Message.User","parts":[{"type":"ai.koog.prompt.message.MessagePart.Attachment","source":{"type":"ai.koog.prompt.message.AttachmentSource.Image","content":{"type":"ai.koog.prompt.message.AttachmentContent.Binary.Base64","base64":"AAAA"},"format":"png"}}],"metaInfo":{"timestamp":"-100001-12-31T23:59:59.999999999Z"}}]"""
 
     @Test
     fun `golden json from koog 1_1_1 still decodes`() {

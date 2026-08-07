@@ -98,9 +98,21 @@ class CustomOpenAILLMClient @JvmOverloads constructor(
                 // chunk is silently ignored and the failure looks like a clean,
                 // empty completion.
                 (chunk["error"] as? JsonObject)?.let { error ->
-                    throw LLMClientException(
-                        clientName,
-                        "Mid-stream error from provider: ${error["message"].asStringOrNull() ?: error}"
+                    // Gateways like OpenRouter deliver permanent failures (e.g.
+                    // moderation rejections) this way, carrying an HTTP-ish
+                    // numeric `code`. Surface it as the exception's status code
+                    // so the retry policy can tell a permanent 4xx from a
+                    // transient hiccup instead of retrying forever. The code
+                    // survives the wrapping chain (ktor's SSE plugin re-wraps
+                    // with the stream's own 2xx response status, koog re-wraps
+                    // once more): isRetryableStreamError walks the cause chain
+                    // for the first non-2xx status.
+                    val code = error["code"].asIntOrNull()
+                        ?: error["code"].asStringOrNull()?.toIntOrNull()
+                    throw KoogHttpClientException(
+                        clientName = clientName,
+                        statusCode = code,
+                        message = "Mid-stream error from provider: ${error["message"].asStringOrNull() ?: error}",
                     )
                 }
                 val choice = (chunk["choices"] as? JsonArray)?.firstOrNull() as? JsonObject

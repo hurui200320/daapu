@@ -48,6 +48,7 @@ data class AppConfig(
     val databasePassword: String,
     val llmApiKey: String,
     val llmBaseUrl: String,
+    val httpPort: Int,
 )
 
 fun appConfigFromEnv(): AppConfig = AppConfig(
@@ -56,4 +57,5 @@ fun appConfigFromEnv(): AppConfig = AppConfig(
     databasePassword = requireEnv("DATABASE_PASSWORD"),
     llmApiKey = requireEnv("LLM_API_KEY"),
     llmBaseUrl = requireEnv("LLM_BASE_URL"),
+    httpPort = readEnv("HTTP_PORT")?.toIntOrNull() ?: 8080,
 )

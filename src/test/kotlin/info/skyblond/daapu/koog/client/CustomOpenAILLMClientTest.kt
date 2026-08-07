@@ -459,6 +459,79 @@ class CustomOpenAILLMClientTest {
         }
     }
 
+    // ktor's SSE plugin wraps exceptions from the session body in an
+    // SSEClientException carrying the (successful) response, and koog re-wraps
+    // that with its status — so the chain is KoogHttpClientException(200) →
+    // SSEClientException → KoogHttpClientException(code). The 2xx is the HTTP
+    // response status of the otherwise-successful stream, not an error code;
+    // skip it like isRetryableStreamError does.
+    private fun KoogHttpClientException.effectiveStatusCode(): Int? =
+        generateSequence(this as Throwable) { it.cause }
+            .filterIsInstance<KoogHttpClientException>()
+            .mapNotNull { it.statusCode }
+            .firstOrNull { it !in 200..299 }
+
+    @Test
+    fun `streaming mid-stream error chunk with a numeric code carries it through the wrapper`() {
+        // OpenRouter-style permanent failure delivered as a mid-stream error
+        // chunk with an HTTP-ish numeric `code` (e.g. a moderation rejection
+        // mapped to 403): the code must survive koog's SSE re-wrap so the
+        // retry policy can fail the run instead of retrying forever
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"content":"Hello"}"""),
+                """{"error":{"message":"Content policy violation","type":"moderation","code":403}}""",
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val e = assertFailsWith<KoogHttpClientException> {
+                runBlocking {
+                    client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+                }
+            }
+            assertEquals(403, e.effectiveStatusCode())
+        }
+    }
+
+    @Test
+    fun `streaming mid-stream error chunk with a transient code stays retryable`() {
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"content":"Hello"}"""),
+                """{"error":{"message":"Rate limited","type":"rate_limit","code":429}}""",
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val e = assertFailsWith<KoogHttpClientException> {
+                runBlocking {
+                    client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+                }
+            }
+            assertEquals(429, e.effectiveStatusCode())
+        }
+    }
+
+    @Test
+    fun `streaming mid-stream error chunk with a string code stays retryable`() {
+        // OpenAI-style errors carry string codes (e.g. "content_policy_violation");
+        // without a numeric code the policy treats them as transient, same as
+        // an uncoded error chunk
+        val body = chatCompletionChunks(
+            listOf(
+                chunk("""{"content":"Hello"}"""),
+                """{"error":{"message":"Content policy violation","type":"invalid_request_error","code":"content_policy_violation"}}""",
+            )
+        )
+        withClientAndServer(streamingBody = body, nonStreamingBody = "") { client ->
+            val e = assertFailsWith<KoogHttpClientException> {
+                runBlocking {
+                    client.executeStreaming(testPrompt, model, emptyList()).requireEndFrame().toList()
+                }
+            }
+            assertEquals(null, e.effectiveStatusCode())
+        }
+    }
+
     @Test
     fun `non-streaming generates a stable id for tool calls without one`() {
         val body = chatCompletionBody(

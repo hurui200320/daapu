@@ -19,9 +19,8 @@ import org.jetbrains.exposed.v1.jdbc.upsert
  *
  * [ChatHistoryProvider.load] and [ChatHistoryProvider.store] receive koog's
  * opaque conversation id (its `runId`, i.e. the `sessionId` passed to
- * `AIAgent.run`), used verbatim as the `chats.id` primary key.
- * [info.skyblond.daapu.db.newChatId] is the intended generator for real chat
- * ids; `Main` currently passes a hardcoded session id for debugging.
+ * `AIAgent.run`), used verbatim as the `chats.id` primary key. Real chat ids
+ * come from [info.skyblond.daapu.db.newChatId] via `POST /api/chats`.
  *
  * Loading fails fast: an undecodable `history_json` (corrupt row, or a koog
  * upgrade that changed the `Message` format) throws rather than silently

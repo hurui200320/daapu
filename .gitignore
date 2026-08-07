@@ -43,3 +43,7 @@ bin/
 .DS_Store
 
 **/.env
+
+### Frontend ###
+frontend/node_modules/
+frontend/dist/

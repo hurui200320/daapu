@@ -1,0 +1,53 @@
+:root {
+  --bg: #17181c;
+  --bg-elevated: #1f2127;
+  --input-bg: #26282f;
+  --border: #33363f;
+  --text: #e8e9ec;
+  --text-muted: #9ba0ab;
+  --accent: #4f8cff;
+  --accent-fg: #ffffff;
+  --accent-muted: #3d4a63;
+  --bubble-user: #2a3a56;
+  --bubble-assistant: #22242b;
+  --bubble-tool: #26282f;
+  --code-bg: #101116;
+  --danger-bg: #3d2226;
+  --danger-fg: #ff9c9c;
+  --danger-border: #6b3338;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+}
+
+textarea,
+input,
+button,
+select {
+  font-family: inherit;
+}
+
+pre,
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}

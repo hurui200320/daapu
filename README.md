@@ -9,10 +9,13 @@ infrastructure:
 - **koog**'s `ChatMemory` feature for conversation history, persisted through a
   Postgres-backed `ChatHistoryProvider` — see `AGENTS.md`
 
-There is deliberately no web server, frontend, or HTTP API yet: the entry point
-(`Main.kt`) runs a single agent turn with a hardcoded debug message and a
-hardcoded session id, so the same chat is resumed across runs. A real input
-loop comes later, with boilerplate added around it once the idea is proven.
+The input loop is a small **ktor HTTP API** (`Main.kt` → `src/main/kotlin/.../server/`)
+plus a minimal **Svelte frontend** (`frontend/`, inspired by llama.cpp's own
+webui but deliberately tiny). The frontend dev server proxies `/api` to ktor;
+ktor serves the API only. Chat history is stored per chat id — pick an
+existing chat from the dropdown to resume it, or click "new chat". Text and
+image messages are supported; images only work with a vision-capable model
+(the strategy rejects them with a clear error otherwise — see `AGENTS.md`).
 
 ## Development
 
@@ -20,15 +23,27 @@ loop comes later, with boilerplate added around it once the idea is proven.
 
 - Docker + Docker Compose
 - JDK 25
+- Node.js (for the frontend)
 
 ### Run
 
-Start PostgreSQL, then run the entry point:
+Start PostgreSQL, then run the API server:
 
 ```bash
 docker compose up -d db
-./gradlew run
+./gradlew run        # ktor API on http://localhost:8080
 ```
+
+In a second terminal, start the frontend dev server:
+
+```bash
+cd frontend
+npm install
+npm run dev          # Svelte app on http://localhost:5173, proxies /api to :8080
+```
+
+Open http://localhost:5173, pick a chat from the dropdown (or click "new
+chat"), pick a model, and chat.
 
 ### Configuration
 
@@ -42,9 +57,13 @@ a `.env` file):
 | `DATABASE_PASSWORD`  | yes      | Database password.                                                          |
 | `LLM_API_KEY`        | yes      | LLM provider API key (OpenAI-compatible).                                   |
 | `LLM_BASE_URL`       | yes      | LLM provider base URL.                                                      |
+| `HTTP_PORT`          | no       | API server port (default `8080`).                                           |
 
-The model id and system prompt are hardcoded in `Main.kt`: each model needs an
-explicit capability list, so swapping models is a code change, not a config one.
+The system prompt and the model catalog are hardcoded in code: `agent/SystemPrompt.kt`
+and `koog/client/LLMs.kt` + `koog/client/ModelCatalog.kt` (each model needs an
+explicit capability list). The web UI can switch between the catalog models per
+message; the model is sent with every message (the UI defaults to the first
+catalog entry — the server has no default).
 
 ### Verification
 
@@ -52,8 +71,34 @@ explicit capability list, so swapping models is a code change, not a config one.
 ./gradlew test
 ```
 
+Frontend (in `frontend/`):
+
+```bash
+npm run check       # svelte-check
+npm run build       # production build
+```
+
 Note: the schema is a fresh migration (`V1__init.sql`); if you had an older
 database, drop the volume (`docker compose down -v`) before starting again.
+
+## API
+
+All endpoints are under `/api` (see `server/WebServer.kt`):
+
+| Method & path                           | Purpose                                                      |
+|-----------------------------------------|--------------------------------------------------------------|
+| `GET /api/models`                       | Model catalog (`vision`, context, output limits).            |
+| `GET /api/chats`                        | Existing chat ids (newest first, capped).                    |
+| `POST /api/chats`                       | Create a chat id.                                            |
+| `DELETE /api/chats/{id}`                | Delete a chat (409 while a run is active).                   |
+| `GET /api/chats/{id}/history`           | Full history as koog JSON (raw `history_json`).              |
+| `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |
+| `GET /api/memories`                     | Shared short-term memories (in injection order).             |
+| `POST /api/memories`                    | Create a memory.                                             |
+| `PUT /api/memories/{id}`                | Update a memory (bumps `last_update`).                       |
+| `DELETE /api/memories/{id}`             | Delete a memory.                                             |
+
+`POST /api/chats/{id}/messages` accepts `{"text": "...", "images": [{"dataUrl": "data:image/png;base64,..."}], "model": "..."}` (text and/or images required, model required) and streams SSE events: `reasoning`, `text`, `tool_call`, `tool_result`, `retry` (transient hiccup, the run will be retried), `done`, or `error` (terminal). Validation errors are plain `400`/`409` responses before the stream starts.
 
 ## References
 

@@ -146,6 +146,10 @@ internal fun isRetryableStreamError(t: Throwable): Boolean = when (t) {
     // the provider ended the response deliberately (e.g. content_filter):
     // the identical request would fail identically forever.
     is EmptyPermanentResponseException,
+    // the model cannot handle content present in the prompt (e.g. images
+    // with a text-only model, possibly from earlier history): the identical
+    // request would fail identically forever.
+    is ModelCapabilityException,
     // deterministic guard failures like `check()`/`error()`
     is IllegalStateException -> false
 
@@ -160,8 +164,21 @@ internal fun isRetryableStreamError(t: Throwable): Boolean = when (t) {
     // are transient. A null status means the failure happened before a response
     // arrived or mid-stream (e.g. a gateway's error chunk), which is transient
     // by nature.
-    is KoogHttpClientException ->
-        t.statusCode == null || t.statusCode !in 400..499 || t.statusCode == 408 || t.statusCode == 429
+    //
+    // koog's SSE wrapper re-wraps exceptions thrown while streaming, and ktor's
+    // SSE plugin wraps them once more with the (successful) response: the chain
+    // can look like KoogHttpClientException(200) → SSEClientException →
+    // KoogHttpClientException(403) for a mid-stream error chunk carrying a
+    // numeric `code` (thrown by CustomOpenAILLMClient). Walk the cause chain for
+    // the first non-2xx status code: the 2xx is the HTTP response status of the
+    // otherwise-successful stream, never a meaningful error code.
+    is KoogHttpClientException -> {
+        val statusCode = generateSequence(t as Throwable) { it.cause }
+            .filterIsInstance<KoogHttpClientException>()
+            .mapNotNull { it.statusCode }
+            .firstOrNull { it !in 200..299 }
+        statusCode == null || statusCode !in 400..499 || statusCode == 408 || statusCode == 429
+    }
 
     // everything else
     else -> true
