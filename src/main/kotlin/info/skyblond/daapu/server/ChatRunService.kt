@@ -18,6 +18,8 @@ import info.skyblond.daapu.agent.renderSystemPrompt
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
+import info.skyblond.daapu.history.HistoryCodec
+import info.skyblond.daapu.history.HistoryMessage
 import info.skyblond.daapu.koog.PostgresChatHistoryProvider
 import info.skyblond.daapu.koog.client.CustomOpenAILLMClient
 import info.skyblond.daapu.koog.client.findModel
@@ -130,17 +132,18 @@ class ChatRunService(config: AppConfig) {
     }
 
     /**
-     * The stored history for a chat as raw JSON — the exact bytes koog
-     * serialized (same codec as the golden-format tests pin), `[]` when the
-     * chat doesn't exist yet.
+     * The stored history for a chat as the neutral format
+     * ([HistoryMessage]s). The stored JSON is decoded with [HistoryCodec]
+     * before serving, so a corrupt row fails fast with a clear error instead
+     * of leaking invalid JSON to the API. `[]` when the chat doesn't exist yet.
      */
-    suspend fun history(chatId: String): String = withTransaction {
+    suspend fun history(chatId: String): List<HistoryMessage> = withTransaction {
         Chats.selectAll()
             .where { Chats.id eq chatId }
             .singleOrNull()
             ?.get(Chats.historyJson)
             ?: "[]"
-    }
+    }.let { HistoryCodec.decodeHistory(chatId, it) }
 
     /**
      * Validate and map an incoming message. Throws ktor's
@@ -283,14 +286,12 @@ internal fun streamEventCallback(
         results.forEach { result ->
             sendEvent(
                 "tool_result",
-                PostgresChatHistoryProvider.json.encodeToString(
-                    buildJsonObject {
-                        put("id", result.id ?: "")
-                        put("name", result.tool)
-                        put("content", result.output)
-                        put("isError", result.isError)
-                    }
-                )
+                buildJsonObject {
+                    put("id", result.id ?: "")
+                    put("name", result.tool)
+                    put("content", result.output)
+                    put("isError", result.isError)
+                }.toString()
             )
         }
     }
@@ -308,6 +309,4 @@ internal fun streamEventCallback(
 }
 
 private fun sseData(vararg pairs: Pair<String, String>): String =
-    PostgresChatHistoryProvider.json.encodeToString(
-        buildJsonObject { pairs.forEach { (k, v) -> put(k, v) } }
-    )
+    buildJsonObject { pairs.forEach { (k, v) -> put(k, v) } }.toString()

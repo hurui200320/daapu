@@ -1,7 +1,6 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
-import info.skyblond.daapu.koog.PostgresChatHistoryProvider
 import info.skyblond.daapu.koog.client.Cerebras
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -12,6 +11,8 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -36,11 +37,13 @@ class WebServerTest {
 
     private val model = Cerebras.GPT_OSS_120B.id
 
+    private val json = Json { explicitNulls = false }
+
     private fun messageBody(
         text: String = "hi",
         model: String = this.model,
         images: List<String> = emptyList(),
-    ): String = PostgresChatHistoryProvider.json.encodeToString(
+    ): String = json.encodeToString(
         SendMessageRequest(text = text, model = model, images = images.map { ImagePart(it) })
     )
 

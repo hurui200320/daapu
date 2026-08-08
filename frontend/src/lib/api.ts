@@ -1,4 +1,4 @@
-import type { KoogMessage, MemoryDto, ModelInfo, StreamEvent } from './types'
+import type { HistoryMessage, MemoryDto, ModelInfo, StreamEvent } from './types'
 
 async function parseError(res: Response): Promise<string> {
   try {
@@ -34,7 +34,7 @@ export async function deleteChat(chatId: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw new Error(await parseError(res))
 }
 
-export async function loadHistory(chatId: string): Promise<KoogMessage[]> {
+export async function loadHistory(chatId: string): Promise<HistoryMessage[]> {
   const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/history`)
   if (!res.ok) throw new Error(await parseError(res))
   return res.json()

@@ -5,8 +5,8 @@ import ai.koog.prompt.message.MessagePart
 import ai.koog.prompt.message.ResponseMetaInfo
 import ai.koog.prompt.streaming.StreamFrame
 import info.skyblond.daapu.agent.StreamExecutionCallback
-import info.skyblond.daapu.koog.PostgresChatHistoryProvider
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
@@ -27,7 +27,7 @@ class StreamEventMappingTest {
     }
 
     private fun payload(json: String): JsonObject =
-        PostgresChatHistoryProvider.json.parseToJsonElement(json).jsonObject
+        Json.parseToJsonElement(json).jsonObject
 
     /** Reads a JSON string field verbatim (unlike `toString()`, no re-escaping). */
     private fun str(body: JsonObject, key: String): String =

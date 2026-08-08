@@ -1,54 +1,75 @@
 /**
- * Loose mirror of the koog `Message` JSON that the backend serves verbatim
- * (see PostgresChatHistoryProvider + its golden-format tests). Only the
- * fields the UI renders are modeled; the `type` discriminators are pinned
- * against koog 1.1.1 in the golden tests.
+ * Loose mirror of the framework-neutral chat history format the backend
+ * serves (see history/HistoryMessage.kt + the golden-format tests in
+ * HistoryCodecTest). The `type`/`role` discriminators are our own short
+ * lowercase names — no koog or langchain4j type strings cross the API.
  */
 
-export const MSG_SYSTEM = 'ai.koog.prompt.message.Message.System'
-export const MSG_USER = 'ai.koog.prompt.message.Message.User'
-export const MSG_ASSISTANT = 'ai.koog.prompt.message.Message.Assistant'
+export type Role = 'system' | 'user' | 'assistant' | 'tool'
 
-export const PART_TEXT = 'ai.koog.prompt.message.MessagePart.Text'
-export const PART_REASONING = 'ai.koog.prompt.message.MessagePart.Reasoning'
-export const PART_ATTACHMENT = 'ai.koog.prompt.message.MessagePart.Attachment'
-export const PART_TOOL_CALL = 'ai.koog.prompt.message.MessagePart.Tool.Call'
-export const PART_TOOL_RESULT = 'ai.koog.prompt.message.MessagePart.Tool.Result'
+export interface HistoryMeta {
+  timestamp?: string
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  modelId?: string
+}
 
-export const ATTACH_IMAGE = 'ai.koog.prompt.message.AttachmentSource.Image'
-export const CONTENT_BASE64 = 'ai.koog.prompt.message.AttachmentContent.Binary.Base64'
-export const CONTENT_URL = 'ai.koog.prompt.message.AttachmentContent.URL'
-
-export interface KoogMessage {
-  type: string
-  parts: KoogPart[]
+export interface HistoryMessage {
+  role: Role
+  parts: HistoryPart[]
+  meta?: HistoryMeta
   finishReason?: string
 }
 
-export interface KoogPart {
-  type: string
-  text?: string
-  content?: string[]
-  id?: string
-  tool?: string
-  args?: string
-  output?: string
-  parts?: KoogPart[]
-  source?: KoogAttachmentSource
+export type HistoryPart = TextPart | ReasoningPart | ToolCallPart | ToolResultPart | AttachmentPart
+
+export interface TextPart {
+  type: 'text'
+  text: string
 }
 
-export interface KoogAttachmentSource {
-  type: string
-  format?: string
-  mimeType?: string
-  fileName?: string
-  content?: {
-    type: string
-    base64?: string
-    url?: string
-    text?: string
-  }
+export interface ReasoningPart {
+  type: 'reasoning'
+  content: string[]
 }
+
+export interface ToolCallPart {
+  type: 'tool_call'
+  /** required by the format: a blank id would brick the chat on re-send */
+  id: string
+  tool: string
+  args: string
+}
+
+export interface ToolResultPart {
+  type: 'tool_result'
+  /** required by the format: the id of the tool_call this result answers */
+  id: string
+  tool: string
+  parts: HistoryContentPart[]
+  isError?: boolean
+}
+
+/** Text and attachments may also appear nested inside a tool_result. */
+export type HistoryContentPart = TextPart | AttachmentPart
+
+export type AttachmentKind = 'image' | 'video' | 'audio' | 'file'
+
+export interface AttachmentPart {
+  type: 'attachment'
+  kind: AttachmentKind
+  content: AttachmentContent
+  format: string
+  mimeType: string
+  fileName?: string
+}
+
+// URL attachment content is deliberately not supported (blocked at the
+// backend boundary) until a real use case exists.
+export type AttachmentContent =
+  | { type: 'base64'; base64: string }
+  | { type: 'text'; text: string }
 
 export interface ModelInfo {
   id: string

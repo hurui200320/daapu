@@ -5,9 +5,10 @@ Guidance for AI agents (and humans) working in this project.
 ## Migration in progress: koog → langchain4j
 
 The project is migrating off koog onto langchain4j (with its `langchain4j-mcp`
-module). **Status: decided, not yet started — the rest of this document still
-describes the current koog implementation.** The work is tracked as GitHub
-issues with blocking relationships (`gh issue list`, `gh issue view N`):
+module). **Status: decided; #4 done (neutral history format), the rest of this
+document still describes the current koog implementation.** The work is
+tracked as GitHub issues with blocking relationships (`gh issue list`,
+`gh issue view N`):
 
 - Spikes first: #1 (streaming/reasoning parity against the live gateways),
   #2 (mid-stream SSE error-chunk classification — **go/no-go for the whole
@@ -15,7 +16,8 @@ issues with blocking relationships (`gh issue list`, `gh issue view N`):
   branches; outcomes are recorded as comments on the issue.
 - #4 (neutral chat-history format, decoupling the DB/API/frontend from koog's
   serialization) is independent of the spikes and worth doing even if the
-  migration is abandoned.
+  migration is abandoned. **Done**: `chats.history_json` now stores the
+  neutral format (see "Chat history is koog-managed" below).
 - Then in dependency order: #5 (model catalog on langchain4j), #6 (core turn
   loop — the heart of the migration), #7 (retire `CustomOpenAILLMClient`,
   porting its gateway-quirk test suite), #8 (MCP feature), #9 (remove koog,
@@ -107,24 +109,34 @@ When writing or reviewing code, looking for bugs with the following perspectives
   while those objects' init calls `createModel` back into the same class),
   silently leaving catalog entries null.
 
-## Chat history is koog-managed
+## Chat history is koog-managed, stored in a project-owned format
 
-The conversation history is owned by koog's `ChatMemory` feature, not by
-hand-rolled message tables:
+koog's `ChatMemory` feature owns the conversation history lifecycle (not
+hand-rolled message tables), but the serialized format is ours:
 
 - A koog `AIAgent` with `ChatMemory` installed + chat history provider allows the agent 
   to load chat history before each run and stores the updated conversation (including the
   new user message and assistant reply) after.
+- `chats.history_json` stores a **framework-neutral** JSON array
+  (`history/HistoryMessage.kt`): roles system/user/assistant/tool, parts
+  text / reasoning / tool_call / tool_result / attachment, plus per-message
+  meta (timestamp, token usage) and `finishReason`. No koog or langchain4j
+  type names cross the DB or the API boundary (`GET /api/chats/{id}/history`
+  serves this format).
 - `PostgresChatHistoryProvider` implements koog's `ChatHistoryProvider`: it
-  serializes the full koog `Message` list into the chat row's `history_json`
-  column as one JSON array. The key is koog's opaque conversation id (its
+  converts koog's `Message` list ↔ the neutral DTOs (`koog/KoogHistoryConverters.kt`)
+  and stores the neutral list. The key is koog's opaque conversation id (its
   `runId`, i.e. the `sessionId` passed to `AIAgent.run`), stored verbatim as
-  the `chats.id` primary key.
-- Loading fails fast: an undecodable `history_json` (corrupt row, or a koog
-  upgrade that changed the `Message` format) throws instead of silently
-  resetting the chat to empty. The golden-JSON tests in
-  `PostgresChatHistoryProviderTest` pin the current serialization format so a
-  breaking koog upgrade fails in tests first.
+  the `chats.id` primary key. This converter goes away later in the core
+  migration (#6), replaced by a langchain4j-side one; see the mapping notes in
+  `history/HistoryMessage.kt`'s KDoc.
+- Loading fails fast: an undecodable `history_json` (corrupt row, or an
+  incompatible format change) throws instead of silently resetting the chat
+  to empty. The golden-JSON tests in `HistoryCodecTest` pin the neutral format
+  and `KoogHistoryConvertersTest` pins the koog↔neutral mapping (round-trip),
+  so a breaking change to either fails in tests first.
+- Existing koog-format rows were **discarded** when this format landed
+  (issue #4 decision for this PoC: fresh DB, no migration path).
 
 When adding chat features, manipulate history via koog (its `ChatHistoryProvider`
 and features) rather than inserting message rows directly.

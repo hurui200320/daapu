@@ -2,8 +2,10 @@
 -- vector columns without a schema migration later.
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- koog's ChatMemory owns the conversation history: the full message list is
--- serialized into history_json as one JSON array, loaded and stored as a unit.
+-- The conversation history is stored in history_json as one JSON array in the
+-- project-owned framework-neutral format (history/HistoryMessage.kt); the
+-- koog-facing provider converts to/from koog's Message types at the boundary.
+-- The whole chat's history is loaded and stored as a single unit.
 CREATE TABLE chats
 (
     id           TEXT PRIMARY KEY,

@@ -1,20 +1,11 @@
 <script lang="ts">
   import { renderMarkdown } from './markdown'
-  import {
-    ATTACH_IMAGE,
-    CONTENT_BASE64,
-    CONTENT_URL,
-    MSG_ASSISTANT,
-    MSG_SYSTEM,
-    MSG_USER,
-    PART_ATTACHMENT,
-    PART_REASONING,
-    PART_TEXT,
-    PART_TOOL_CALL,
-    PART_TOOL_RESULT,
-    type KoogAttachmentSource,
-    type KoogMessage,
-    type KoogPart,
+  import type {
+    AttachmentPart,
+    HistoryMessage,
+    HistoryPart,
+    ReasoningPart,
+    ToolResultPart,
   } from './types'
 
   let {
@@ -27,7 +18,7 @@
     retrying = false,
     streamError = null,
   }: {
-    messages: KoogMessage[]
+    messages: HistoryMessage[]
     streaming: boolean
     streamReasoning?: string
     streamText?: string
@@ -37,60 +28,54 @@
     streamError?: string | null
   } = $props()
 
-  function imageSrc(source: KoogAttachmentSource): string | null {
-    const content = source.content
-    if (!content) return null
-    if (content.type === CONTENT_BASE64 && content.base64) {
-      const mime = source.mimeType ?? `image/${source.format ?? 'png'}`
-      return `data:${mime};base64,${content.base64}`
+  function imageSrc(part: AttachmentPart): string | null {
+    const content = part.content
+    if (content.type === 'base64' && content.base64) {
+      return `data:${part.mimeType};base64,${content.base64}`
     }
-    if (content.type === CONTENT_URL && content.url) return content.url
     return null
   }
 
-  function isImage(part: KoogPart): boolean {
-    return part.type === PART_ATTACHMENT && part.source?.type === ATTACH_IMAGE
+  function isImage(part: HistoryPart): part is AttachmentPart {
+    return part.type === 'attachment' && part.kind === 'image'
   }
 
-  function showReasoning(part: KoogPart): string {
-    return (part.content ?? []).join('')
+  function showReasoning(part: ReasoningPart): string {
+    return part.content.join('')
   }
 
   /**
-   * koog serializes a tool result as nested parts (usually a single Text);
-   * join those instead of dumping the raw JSON (with koog type names) like
-   * the streaming path does.
+   * A tool result carries its text as nested text parts; join those instead
+   * of dumping the raw JSON.
    */
-  function toolResultText(part: KoogPart): string {
-    const textParts = (part.parts ?? []).filter((p) => p.type === PART_TEXT && p.text)
-    if (textParts.length > 0) return textParts.map((p) => p.text).join('')
-    return part.output ?? ''
+  function toolResultText(part: ToolResultPart): string {
+    return part.parts.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
   }
 </script>
 
 <div class="message-list">
   {#each messages as message}
-    {#if message.type !== MSG_SYSTEM}
-      <div class="message {message.type === MSG_USER ? 'user' : message.type === MSG_ASSISTANT ? 'assistant' : 'other'}">
+    {#if message.role !== 'system'}
+      <div class="message {message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : 'other'}">
         {#each message.parts as part}
-          {#if part.type === PART_TEXT && part.text}
+          {#if part.type === 'text' && part.text}
             <div class="text">{@html renderMarkdown(part.text)}</div>
-          {:else if part.type === PART_REASONING}
+          {:else if part.type === 'reasoning'}
             <details class="reasoning">
               <summary>Reasoning</summary>
               <div class="text reasoning-text">{@html renderMarkdown(showReasoning(part))}</div>
             </details>
           {:else if isImage(part)}
-            {@const src = imageSrc(part.source!)}
+            {@const src = imageSrc(part)}
             {#if src}
               <img class="attachment" src={src} alt="attachment" />
             {/if}
-          {:else if part.type === PART_TOOL_CALL}
+          {:else if part.type === 'tool_call'}
             <div class="tool-call">
               <div class="tool-name">tool: {part.tool}</div>
               <pre>{part.args}</pre>
             </div>
-          {:else if part.type === PART_TOOL_RESULT}
+          {:else if part.type === 'tool_result'}
             <div class="tool-result">
               <div class="tool-name">tool result: {part.tool}</div>
               <pre>{toolResultText(part)}</pre>

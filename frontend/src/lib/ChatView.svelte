@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { deleteChat, listChats, listModels, loadHistory, newChat, streamChat } from './api'
-  import type { KoogMessage, ModelInfo } from './types'
+  import type { HistoryMessage, ModelInfo } from './types'
   import Composer from './Composer.svelte'
   import MessageList from './MessageList.svelte'
 
   let chatId = $state('')
   let knownChats = $state<string[]>([])
   let models = $state<ModelInfo[]>([])
-  let messages = $state<KoogMessage[]>([])
+  let messages = $state<HistoryMessage[]>([])
   let error = $state<string | null>(null)
 
   let streaming = $state(false)
