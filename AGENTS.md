@@ -22,6 +22,17 @@ tracked as GitHub issues with blocking relationships (`gh issue list`,
   loop — the heart of the migration), #7 (retire `CustomOpenAILLMClient`,
   porting its gateway-quirk test suite), #8 (MCP feature), #9 (remove koog,
   final cleanup + docs).
+- #5 (**Done**): the langchain4j-side catalog (`langchain4j/ModelCatalog.kt`,
+  `ModelMetadata`, `StreamingChatModelFactory`, framework-agnostic
+  `checkPromptContentCapabilities`) exists with tests, **alongside** the koog
+  catalog — the runtime (API, agent strategy) still resolves models via koog's
+  `findModel` until #6 switches it over and deletes `koog/client/LLMs.kt` +
+  `koog/client/ModelCatalog.kt`. Both catalogs must list the same models;
+  `ModelCatalogTest` pins the langchain4j side by value. Builder knobs are
+  pinned by the #1 spike (see `StreamingChatModelFactory.kt`'s KDoc for the
+  deferred caveats: truncation via `finishReason()==null`, the Cerebras
+  `delta.reasoning` decorator, and the Novita inline-`<think>` load-balancing
+  quirk).
 
 Why: koog's fix turnaround for OpenAI-compatible gateway quirks is too slow
 for this project (e.g. reasoning silently dropped in streaming,

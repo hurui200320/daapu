@@ -14,6 +14,7 @@ repositories {
 val exposedVersion = "1.3.1"
 val flywayVersion = "13.1.0"
 val koogVersion = "1.1.1"
+val langchain4jVersion = "1.18.1"
 val ktorVersion = "3.3.3"
 
 dependencies {
@@ -35,6 +36,8 @@ dependencies {
 
     implementation("ai.koog:koog-agents:$koogVersion")
     implementation("ai.koog:agents-features-memory:$koogVersion")
+
+    implementation("dev.langchain4j:langchain4j-open-ai:$langchain4jVersion")
 
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty-jvm:$ktorVersion")
