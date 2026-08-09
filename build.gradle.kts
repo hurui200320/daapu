@@ -15,6 +15,8 @@ val exposedVersion = "1.3.1"
 val flywayVersion = "13.1.0"
 val koogVersion = "1.1.1"
 val langchain4jVersion = "1.18.1"
+// the MCP module is still on the beta version line while core is GA
+val langchain4jMcpVersion = "1.18.1-beta28"
 val ktorVersion = "3.3.3"
 
 dependencies {
@@ -41,6 +43,8 @@ dependencies {
     // explicit: the reasoning-dialect rewrite wraps JdkHttpClient (the
     // default SSE transport langchain4j-open-ai already pulls in at runtime)
     implementation("dev.langchain4j:langchain4j-http-client-jdk:$langchain4jVersion")
+    // MCP tools (#8): pinned per the #3 spike (still beta while core is GA)
+    implementation("dev.langchain4j:langchain4j-mcp:$langchain4jMcpVersion")
 
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty-jvm:$ktorVersion")

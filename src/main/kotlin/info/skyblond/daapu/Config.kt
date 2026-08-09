@@ -59,3 +59,58 @@ fun appConfigFromEnv(): AppConfig = AppConfig(
     llmBaseUrl = requireEnv("LLM_BASE_URL"),
     httpPort = readEnv("HTTP_PORT")?.toIntOrNull() ?: 8080,
 )
+
+enum class McpTransportType {
+    Http,
+    Stdio,
+}
+
+/**
+ * One MCP tool server, hardcoded in `Main.kt` (PoC choice — see AGENTS.md);
+ * only its API keys come from the environment/`.env` (e.g. the exa server's
+ * `Authorization` header built from the optional `EXA_API_KEY`). Maps 1:1
+ * to the langchain4j-mcp builders (see the #3 spike's config surface notes):
+ *
+ * - `http`: a Streamable-HTTP server ([url], optional [headers]).
+ * - `stdio`: a local subprocess ([command] list; [environment] extra
+ *   variables merged onto the inherited environment).
+ *
+ * [name] is used to namespace the advertised tool names (`{name}_{tool}`), so
+ * tools from different servers never collide in the model request.
+ */
+data class McpServerConfig(
+    val name: String,
+    val type: McpTransportType,
+    val url: String? = null,
+    val headers: Map<String, String> = emptyMap(),
+    val command: List<String> = emptyList(),
+    val environment: Map<String, String> = emptyMap(),
+    val initializationTimeoutSeconds: Long? = null,
+    val toolExecutionTimeoutSeconds: Long? = null,
+) {
+    /**
+     * Fail fast on a config that cannot work: the name becomes part of the
+     * advertised tool name (`{name}_{tool}`, which OpenAI-compatible gateways
+     * only accept in `[a-zA-Z0-9_-]`), and each transport requires its own
+     * fields.
+     */
+    fun validate() {
+        if (name.isBlank()) throw IllegalArgumentException("MCP server config is missing a name")
+        if (!name.matches(Regex("[a-zA-Z0-9_-]+"))) {
+            throw IllegalArgumentException(
+                "MCP server name '$name' is invalid: tool names are prefixed with it, so only [a-zA-Z0-9_-] is allowed"
+            )
+        }
+        when (type) {
+            McpTransportType.Http -> if (url.isNullOrBlank()) {
+                throw IllegalArgumentException("MCP server '$name': type 'http' requires a url")
+            }
+            McpTransportType.Stdio -> if (command.isEmpty()) {
+                throw IllegalArgumentException("MCP server '$name': type 'stdio' requires a command")
+            }
+        }
+        if (url != null && !url.startsWith("http://") && !url.startsWith("https://")) {
+            throw IllegalArgumentException("MCP server '$name': url must start with http:// or https://, got '$url'")
+        }
+    }
+}

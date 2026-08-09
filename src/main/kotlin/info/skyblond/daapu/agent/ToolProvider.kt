@@ -7,13 +7,16 @@ import dev.langchain4j.agent.tool.ToolSpecification
  * The tool loop seam: which tools the model may call in one chat run.
  *
  * The turn loop advertises [specifications] in the request and executes
- * accepted tool calls via [execute]. The MCP feature (#8) will provide a
- * real implementation behind this interface; until then [EmptyToolProvider]
- * is used, so a model that emits tool calls anyway gets an explicit error
- * result back and can recover in the next round instead of failing the run.
+ * accepted tool calls via [execute]. [specifications] is suspend because a
+ * real provider may need to connect to tool servers before the first use
+ * (the MCP provider `mcp/McpToolProvider.kt` connects lazily); the turn loop
+ * calls it from a coroutine context. [EmptyToolProvider] is the no-tools
+ * fallback (used in tests): a model that emits tool calls anyway gets an
+ * explicit error result back and can recover in the next round instead of
+ * failing the run.
  */
 interface ToolProvider {
-    fun specifications(): List<ToolSpecification>
+    suspend fun specifications(): List<ToolSpecification>
 
     suspend fun execute(request: ToolExecutionRequest): ToolResultInfo
 }
@@ -24,7 +27,7 @@ interface ToolProvider {
  * continue.
  */
 object EmptyToolProvider : ToolProvider {
-    override fun specifications(): List<ToolSpecification> = emptyList()
+    override suspend fun specifications(): List<ToolSpecification> = emptyList()
 
     override suspend fun execute(request: ToolExecutionRequest): ToolResultInfo =
         ToolResultInfo(

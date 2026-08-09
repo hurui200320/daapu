@@ -5,9 +5,9 @@ Guidance for AI agents (and humans) working in this project.
 ## Migration in progress: koog → langchain4j
 
 The project is migrating off koog onto langchain4j (with its `langchain4j-mcp`
-module). **Status: #7 done — the runtime (API, turn loop, history) runs on
-langchain4j, the last koog client code is gone, and only the koog dependency
-remains (#9).** The work is tracked as GitHub issues with blocking
+module). **Status: #8 done — the runtime (API, turn loop, history, MCP tools)
+runs on langchain4j, the last koog client code is gone, and only the koog
+dependency remains (#9).** The work is tracked as GitHub issues with blocking
 relationships (`gh issue list`, `gh issue view N`):
 
 - Spikes first: #1 (streaming/reasoning parity against the live gateways —
@@ -41,9 +41,22 @@ relationships (`gh issue list`, `gh issue view N`):
   parity verdict per quirk; `reasoning_details` is consciously dropped, the
   `withGeneratedToolCallIds` sanitizer's end-to-end guarantee is pinned by
   `ChatTurnLoopTest`'s id-less tool-call test).
-- Remaining, in dependency order: #8 (MCP feature — the
-  `agent/ToolProvider.kt` seam already landed with #6), #9 (remove koog,
-  final cleanup + docs).
+- #8 (**Done**): MCP tools. `mcp/McpToolProvider.kt` implements the
+  `agent/ToolProvider.kt` seam against `langchain4j-mcp:1.18.1-beta28`:
+  per-server config hardcoded in `Main.kt` (PoC choice — only API keys come
+  from env/`.env`, e.g. the exa server's `EXA_API_KEY`), lazy connect +
+  cached clients (per-request runs share them; a connect failure skips only
+  that server with a 30s retry cooldown), tool names advertised as
+  `{server}_{tool}` (unique `tools` arrays), error policy (server-side
+  `isError` → error tool-result so the model can react; transport failures —
+  connect refused, stdio process death — drop the client, fail the run with
+  a clear SSE `error` event, and reconnect on the next run), graceful close
+  via a JVM shutdown hook in `startWebServer`. Pinned by `McpToolProviderTest`
+  (mock streamable-HTTP + stdio subprocess servers) and
+  `ChatTurnLoopTest`'s end-to-end MCP tool round. Tools in history were
+  already handled: the neutral `tool_call`/`tool_result` id pairing landed
+  with #6.
+- Remaining: #9 (remove koog, final cleanup + docs).
 
 Why: koog's fix turnaround for OpenAI-compatible gateway quirks is too slow
 for this project (e.g. reasoning silently dropped in streaming,
@@ -252,11 +265,15 @@ classifies the result (`classifyStreamResult` in
   from the latest user message after the round (identified by XSD validation,
   see `agent/ContextInjection.kt`).
 - Tool rounds: an accepted response with tool calls executes them through
-  `agent/ToolProvider.kt` (currently `EmptyToolProvider` — no tools are
-  advertised, and any tool call a model emits anyway is answered with an
-  explicit error result so the loop can continue; the MCP feature #8 plugs in
-  behind this interface), appends the results as `tool` messages, and starts
-  the next round.
+  `agent/ToolProvider.kt` (the MCP implementation `mcp/McpToolProvider.kt` is
+  used whenever `Main.kt` hardcodes MCP servers — currently the exa search
+  server; `EmptyToolProvider` — no tools advertised, any call answered with
+  an explicit error result — remains the no-MCP fallback), appends the
+  results as `tool` messages, and starts the next round. Tool execution
+  happens OUTSIDE the streaming retry loop: a tool-level failure (server-side
+  `isError`, bad arguments) becomes an error tool-result for the model, while
+  a transport failure (`McpTransportException`) fails the run immediately
+  with a clear SSE `error` event — no retry of the whole LLM round.
 - **Parallel tool calls in ONE streaming round are fragile upstream.** The
   OpenAI streaming parser (langchain4j 1.18.1) accumulates tool-call chunks
   in ONE shared `ToolCallBuilder` and flushes it as "complete" whenever the
@@ -270,17 +287,17 @@ classifies the result (`classifyStreamResult` in
   (interleaved blocks corrupt the Anthropic client — same shape), #4528/#4544
   (DeepSeek/Qwen repeat the full tool-call id every chunk — fixed via
   `accumulateToolCallId(false)` builder flag, default true),
-  #4900 (Claude-via-OpenAI-proxy: two calls merged). It cannot fire today
-  (`EmptyToolProvider` advertises nothing), but when #8 lands real tools,
-  investigate a "parallel calls never execute / args corrupted / tool-call id
-  duplicated" report by capturing the raw SSE chunks for the failing round:
-  check chunk order per `index` (interleaved?) and whether ids repeat per
-  chunk (DeepSeek-family). Fixes in order of preference: upstream fix/version
-  bump (per-index builder map, cf. #4937), `accumulateToolCallId` per-model
-  knob in `StreamingChatModelFactory` for id-repeat gateways, or a local
-  patch in the style of `ReasoningDialect`/the old `CustomOpenAILLMClient`.
-  Note: none of this affects the round-level agentic interleave (think → tool
-  → think → tool → conclude), which is ordinary multi-round loop behavior —
+  #4900 (Claude-via-OpenAI-proxy: two calls merged). Now that #8 landed real
+  tools, investigate a "parallel calls never execute / args corrupted /
+  tool-call id duplicated" report by capturing the raw SSE chunks for the
+  failing round: check chunk order per `index` (interleaved?) and whether ids
+  repeat per chunk (DeepSeek-family). Fixes in order of preference: upstream
+  fix/version bump (per-index builder map, cf. #4937),
+  `accumulateToolCallId` per-model knob in `StreamingChatModelFactory` for
+  id-repeat gateways, or a local patch in the style of
+  `ReasoningDialect`/the old `CustomOpenAILLMClient`.
+  Note: none of this affects the round-level agentic interleave (think →
+  think → tool → conclude), which is ordinary multi-round loop behavior —
   within ONE OpenAI-protocol response, reasoning deltas always come before
   the terminal tool-call chunks; "thinking again" happens on the next round
   via `sendThinking`.

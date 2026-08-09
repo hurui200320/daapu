@@ -1,7 +1,9 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
+import info.skyblond.daapu.McpServerConfig
 import info.skyblond.daapu.history.HistoryCodec
+import info.skyblond.daapu.mcp.McpToolProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -45,9 +47,13 @@ data class ErrorResponse(val error: String)
 /**
  * Start the HTTP API server (the frontend is a separate dev server that
  * proxies `/api` here; this process only serves the API).
+ *
+ * [mcpServers] are the hardcoded MCP tool servers from `Main.kt`.
  */
-fun startWebServer(config: AppConfig) {
-    val service = ChatRunService(config)
+fun startWebServer(config: AppConfig, mcpServers: List<McpServerConfig> = emptyList()) {
+    val service = ChatRunService(config, McpToolProvider(mcpServers))
+    // graceful close of the MCP clients (stdio subprocesses, HTTP sessions)
+    Runtime.getRuntime().addShutdownHook(Thread { service.close() })
     val sstmService = SstmService()
     embeddedServer(Netty, port = config.httpPort, host = "0.0.0.0") {
         module(service, sstmService)

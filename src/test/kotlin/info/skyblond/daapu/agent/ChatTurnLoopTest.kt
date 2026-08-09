@@ -3,6 +3,8 @@ package info.skyblond.daapu.agent
 import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.agent.tool.ToolSpecification
 import dev.langchain4j.exception.HttpException
+import info.skyblond.daapu.McpServerConfig
+import info.skyblond.daapu.McpTransportType
 import info.skyblond.daapu.history.AttachmentContent
 import info.skyblond.daapu.history.AttachmentKind
 import info.skyblond.daapu.history.HistoryMessage
@@ -16,12 +18,17 @@ import info.skyblond.daapu.langchain4j.SSE_DONE
 import info.skyblond.daapu.langchain4j.toStreamingChatModel
 import info.skyblond.daapu.langchain4j.sseChunk
 import info.skyblond.daapu.langchain4j.sseEvent
+import info.skyblond.daapu.mcp.McpToolProvider
+import info.skyblond.daapu.mcp.MockMcpServer
+import info.skyblond.daapu.mcp.MockTool
+import info.skyblond.daapu.mcp.MockToolReply
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -540,6 +547,65 @@ class ChatTurnLoopTest {
     }
 
     @Test
+    fun `tool call round executes through the MCP provider with paired history`() {
+        // end-to-end for issue #8: the loop advertises the MCP server's tools
+        // (namespaced), executes the model's call against the server, and
+        // stores the result as a tool message whose id pairs with the call
+        val mcpServer = MockMcpServer(listOf(mcpAddTool()))
+        val mcpProvider = McpToolProvider(
+            listOf(McpServerConfig(name = "calc", type = McpTransportType.Http, url = mcpServer.baseUrl))
+        )
+        val toolCall1 = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calc_add","arguments":""}}]}"""
+        val toolCall2 = """{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1,\"b\":2}"}}]}"""
+        val server = MockSseServer { attempt ->
+            if (attempt == 1) {
+                MockSseResponse(
+                    200,
+                    listOf(
+                        sseEvent(sseChunk(delta = toolCall1)),
+                        sseEvent(sseChunk(delta = toolCall2)),
+                        sseEvent(sseChunk(finishReason = "tool_calls")),
+                        SSE_DONE,
+                    )
+                )
+            } else {
+                MockSseResponse(200, stopStream())
+            }
+        }
+        try {
+            val outcome = run(server, toolProvider = mcpProvider)
+            assertNull(outcome.error)
+
+            // the call streamed with the advertised name, the server executed
+            // the raw tool with the parsed arguments
+            assertEquals(listOf("calc_add" to """{"a":1,"b":2}"""), outcome.callback.toolCalls)
+            val (rawName, args) = mcpServer.toolCalls.single()
+            assertEquals("add", rawName)
+            assertEquals("1", args["a"]?.jsonPrimitive?.let { it.content })
+
+            // the result streamed and stored, paired with the call id
+            val toolResult = outcome.callback.toolResults.single()
+            assertEquals("call_1", toolResult.id)
+            assertEquals("calc_add", toolResult.name)
+            assertEquals("1 + 2 = 3", toolResult.content)
+            assertTrue(!toolResult.isError)
+
+            val stored = assertNotNull(outcome.store.stored)
+            val call = assertIs<HistoryPart.ToolCall>(stored[2].parts.single())
+            assertEquals("call_1", call.id)
+            assertEquals("calc_add", call.tool)
+            val result = assertIs<HistoryPart.ToolResult>(stored[3].parts.single())
+            assertEquals("call_1", result.id, "the stored result must pair with the stored call id")
+            assertEquals(listOf(HistoryPart.Text("1 + 2 = 3")), result.parts)
+            assertEquals(listOf(HistoryPart.Text("ok")), stored[4].parts)
+        } finally {
+            mcpProvider.close()
+            mcpServer.close()
+            server.close()
+        }
+    }
+
+    @Test
     fun `existing history is loaded and extended`() {
         val server = MockSseServer { MockSseResponse(200, stopStream()) }
         try {
@@ -575,6 +641,15 @@ private class TurnOutcome(
     val callback: RecordingCallback,
 )
 
+private fun mcpAddTool(): MockTool = MockTool(
+    name = "add",
+    description = "Add two numbers a and b",
+    handler = { args ->
+        fun num(key: String) = args[key]?.jsonPrimitive?.let { it.content.toLongOrNull() } ?: 0L
+        MockToolReply("${num("a")} + ${num("b")} = ${num("a") + num("b")}")
+    },
+)
+
 private class InMemoryHistoryStore(seed: List<HistoryMessage>? = null) : HistoryStore {
     var stored: List<HistoryMessage>? = seed
         private set
@@ -603,7 +678,7 @@ private class RendezvousToolProvider(
     private val inFlight = AtomicInteger(0)
     private val arrived = CountDownLatch(expectedCalls)
 
-    override fun specifications(): List<ToolSpecification> = emptyList()
+    override suspend fun specifications(): List<ToolSpecification> = emptyList()
 
     override suspend fun execute(request: ToolExecutionRequest): ToolResultInfo =
         withContext(Dispatchers.IO) {

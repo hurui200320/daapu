@@ -1,7 +1,6 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
-import info.skyblond.daapu.agent.EmptyToolProvider
 import info.skyblond.daapu.agent.StreamExecutionCallback
 import info.skyblond.daapu.agent.ToolResultInfo
 import info.skyblond.daapu.agent.renderSystemPrompt
@@ -21,6 +20,7 @@ import info.skyblond.daapu.langchain4j.ModelCapability
 import info.skyblond.daapu.langchain4j.ModelCatalog
 import info.skyblond.daapu.langchain4j.ModelMetadata
 import info.skyblond.daapu.langchain4j.toStreamingChatModel
+import info.skyblond.daapu.mcp.McpToolProvider
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.json.buildJsonObject
@@ -47,9 +47,17 @@ class ChatRunSetup(
  * One streaming chat model is built per request (cheap: the model holds
  * configuration only, no connections), so per-request model selection comes
  * for free; only the expensive pieces — the model catalog, the history store,
- * the system prompt — are shared.
+ * the system prompt, and the MCP tool provider (cached clients, #8) — are
+ * shared.
  */
-class ChatRunService(config: AppConfig) {
+class ChatRunService(
+    config: AppConfig,
+    // the MCP clients are cached in the provider (lazy connect, see
+    // mcp/McpToolProvider.kt): per-request runs must not reconnect per turn.
+    // The default builds no clients, so a service constructed without MCP
+    // servers (tests) behaves like the old EmptyToolProvider path.
+    private val toolProvider: McpToolProvider = McpToolProvider(emptyList()),
+) : AutoCloseable {
 
     private val apiKey = config.llmApiKey
     // koog's OpenAIClientSettings defaulted its chat completions path to
@@ -233,9 +241,17 @@ class ChatRunService(config: AppConfig) {
                         .map { it[SSTMs.content] }
                 }
             },
-            toolProvider = EmptyToolProvider,
+            toolProvider = toolProvider,
             callback = streamEventCallback(sendEvent),
         )
+    }
+
+    /**
+     * Close the shared MCP clients (called from the JVM shutdown hook
+     * registered in `WebServer.startWebServer`).
+     */
+    override fun close() {
+        toolProvider.close()
     }
 
     companion object {

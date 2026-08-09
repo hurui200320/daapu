@@ -6,13 +6,12 @@ A PoC for an LLM chatbot with a memory system, built on two pieces of
 infrastructure:
 
 - **PostgreSQL** (with the pgvector extension) via Exposed + Flyway
-- **koog**'s `ChatMemory` feature for conversation history, persisted through a
-  Postgres-backed `ChatHistoryProvider` — see `AGENTS.md`
+- **langchain4j** for the LLM runtime (streaming chat, MCP tools) — see
+  `AGENTS.md` for the architecture
 
-> **Status: migrating from koog to langchain4j.** Tracked in GitHub issues
-> #1–#9 (spikes first; #2 is the go/no-go). This document describes the
-> current koog-based implementation until the migration lands — see
-> `AGENTS.md` for the plan and the rules while it is underway.
+> **Status: migrating from koog to langchain4j — runtime migrated.** The API,
+> turn loop, history, and MCP tool support run on langchain4j (#1–#8 done);
+> only the koog dependency removal remains (#9). See `AGENTS.md` for details.
 
 The input loop is a small **ktor HTTP API** (`Main.kt` → `src/main/kotlin/.../server/`)
 plus a minimal **Svelte frontend** (`frontend/`, inspired by llama.cpp's own
@@ -63,6 +62,28 @@ a `.env` file):
 | `LLM_API_KEY`        | yes      | LLM provider API key (OpenAI-compatible).                                   |
 | `LLM_BASE_URL`       | yes      | LLM provider base URL.                                                      |
 | `HTTP_PORT`          | no       | API server port (default `8080`).                                           |
+| `EXA_API_KEY`        | no       | API key for the hardcoded exa MCP search server (default: no tools).        |
+
+MCP tool servers are **hardcoded in `Main.kt`** (PoC choice); only their API
+keys come from the environment/`.env` — e.g. the exa search server is wired
+with an `Authorization: Bearer $EXA_API_KEY` header. Both Streamable HTTP and
+stdio transports are supported, e.g. to add a local filesystem server:
+
+```kotlin
+McpServerConfig(
+    name = "fs",
+    type = McpTransportType.Stdio,
+    command = listOf("npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"),
+)
+```
+
+Each entry needs a `name` (used to namespace the advertised tool names,
+e.g. `exa_search`), a `type` (`http` needs `url` + optional `headers`; `stdio`
+needs `command` + optional `environment`), and may set
+`initializationTimeoutSeconds` / `toolExecutionTimeoutSeconds`. A server that
+cannot be reached is skipped with a warning (its tools are not advertised,
+other chats are unaffected) and retried on a later chat run; killing a server
+mid-session fails only the chat that called its tools.
 
 The system prompt and the model catalog are hardcoded in code: `agent/SystemPrompt.kt`
 and `koog/client/LLMs.kt` + `koog/client/ModelCatalog.kt` (each model needs an
