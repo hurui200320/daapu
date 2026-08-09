@@ -1,7 +1,6 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
-import info.skyblond.daapu.koog.client.Cerebras
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -35,7 +34,7 @@ class WebServerTest {
         )
     )
 
-    private val model = Cerebras.GPT_OSS_120B.id
+    private val model = "cerebras/gpt-oss-120b"
 
     private val json = Json { explicitNulls = false }
 

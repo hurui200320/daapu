@@ -154,7 +154,7 @@ class HistoryCodecTest {
 
     @Test
     fun `non-assistant message with finishReason fails fast`() {
-        // finishReason is assistant-only; the koog converter silently drops
+        // finishReason is assistant-only; the converter silently drops
         // it on non-assistant messages, so a stored row carrying one is a
         // broken invariant
         val e = assertFailsWith<IllegalStateException> {
@@ -171,7 +171,7 @@ class HistoryCodecTest {
 
     @Test
     fun `system message with a non-text part fails fast`() {
-        // the koog converter maps system messages to text parts only; a
+        // the converter maps system messages to text parts only; a
         // stored row violating that fails here with the chat named instead
         // of a generic converter error at load
         val e = assertFailsWith<IllegalStateException> {

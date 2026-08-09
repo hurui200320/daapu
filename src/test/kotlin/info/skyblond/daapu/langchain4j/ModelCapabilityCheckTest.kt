@@ -8,9 +8,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Pins the prompt-vs-model capability check (framework-agnostic port of the
- * koog-typed check in `agent/ModelCapabilityCheck.kt`, which stays live until
- * the runtime switches over in #6).
+ * Pins the prompt-vs-model capability check.
  *
  * The check takes the set of attachment kinds extracted from the FULL prompt
  * (loaded history + new input): images can enter the prompt from the request

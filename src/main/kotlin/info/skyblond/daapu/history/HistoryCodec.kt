@@ -48,21 +48,21 @@ object HistoryCodec {
      * provider (a chat whose history cannot load can never run again anyway):
      *
      * - an assistant message without `finishReason`: the streaming path only
-     *   emits the terminal frame when the gateway sent a `finish_reason`
-     *   (see `CustomOpenAILLMClient`), so its absence means the row was
-     *   written by something that violated that invariant — e.g. a future
-     *   non-streaming node appending an assistant message without one.
+     *   accepts responses that carried a `finish_reason` (the turn loop's
+     *   truncation check), so its absence means the row was written by
+     *   something that violated that invariant — e.g. a future non-streaming
+     *   node appending an assistant message without one.
      * - a non-assistant message with a `finishReason`: `finishReason` is
-     *   assistant-only, and the koog converter silently drops it on re-send,
-     *   so a row carrying one is a broken invariant.
-     * - a non-parseable `meta.timestamp`: the koog converter would fail on
-     *   load with an opaque `Instant.parse` error instead of a clear one.
+     *   assistant-only, and the converter silently drops it on re-send, so a
+     *   row carrying one is a broken invariant.
+     * - a non-parseable `meta.timestamp`: the converter would fail on load
+     *   with an opaque `Instant.parse` error instead of a clear one.
      * - a part its role cannot carry (e.g. a `reasoning` part in a `user`
-     *   message): the koog converter would fail with a generic
-     *   `error(...)` message not naming the chat.
-     * - a blank `tool_call`/`tool_result` id: koog would assign mismatched
-     *   random ids on re-send, and strict providers reject the request with a
-     *   400 — the history would be rejected forever.
+     *   message): the converter would fail with a generic `error(...)`
+     *   message not naming the chat.
+     * - a blank `tool_call`/`tool_result` id: the re-sent history would carry
+     *   mismatched ids (or none), and strict providers reject the request
+     *   with a 400 — the history would be rejected forever.
      */
     private fun validateHistory(conversationId: String, history: List<HistoryMessage>) {
         history.forEachIndexed { index, message ->
@@ -104,9 +104,10 @@ object HistoryCodec {
     }
 
     /**
-     * The parts a role may carry, mirroring the koog converter's per-role part
-     * mapping (`koog/KoogHistoryConverters.kt`): anything else would fail
-     * there with a generic `error(...)` message instead of one naming the chat.
+     * The parts a role may carry, mirroring the converter's per-role part
+     * mapping (`langchain4j/Langchain4jHistoryConverters.kt`): anything else
+     * would fail there with a generic `error(...)` message instead of one
+     * naming the chat.
      */
     private fun HistoryRole.allowsPart(part: HistoryPart): Boolean = when (this) {
         HistoryRole.System -> part is HistoryPart.Text

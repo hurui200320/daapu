@@ -1,15 +1,17 @@
 package info.skyblond.daapu.agent
 
-import ai.koog.prompt.message.Message
-import ai.koog.prompt.message.MessagePart
-import ai.koog.prompt.message.ResponseMetaInfo
+import dev.langchain4j.agent.tool.ToolExecutionRequest
+import dev.langchain4j.data.message.AiMessage
+import dev.langchain4j.model.chat.response.ChatResponse
+import dev.langchain4j.model.output.FinishReason
+import dev.langchain4j.model.output.TokenUsage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 /**
- * Verifies the routing classification of streamed assistant messages:
- * only messages with user-visible content or tool calls may be accepted;
+ * Verifies the routing classification of streamed chat responses:
+ * only responses with user-visible content or tool calls may be accepted;
  * everything else must be retried (transient, only when no finish reason was
  * given), compacted (the prompt crowds the context window) or failed (the
  * output cap bound on its own, or the provider ended the response with a
@@ -25,42 +27,53 @@ class StreamExecutionResultTest {
     // prompt tokens above this means the input is crowding the output room
     private val threshold = contextLength - maxOutputTokens // 91072
 
-    private fun assistant(
-        parts: List<MessagePart.ResponsePart>,
-        finishReason: String? = null,
+    private fun response(
+        text: String? = null,
+        thinking: String? = null,
+        toolCalls: List<Triple<String, String, String>> = emptyList(),
+        finishReason: FinishReason? = null,
         promptTokens: Int? = null,
-    ) = Message.Assistant(
-        parts = parts,
-        metaInfo = ResponseMetaInfo.Empty.copy(inputTokensCount = promptTokens),
-        finishReason = finishReason,
-    )
+    ): ChatResponse {
+        val ai = AiMessage.builder()
+            .text(text)
+            .thinking(thinking)
+            .toolExecutionRequests(
+                toolCalls.map { (id, name, args) ->
+                    ToolExecutionRequest.builder().id(id).name(name).arguments(args).build()
+                }
+            )
+            .build()
+        return ChatResponse.builder()
+            .aiMessage(ai)
+            .tokenUsage(TokenUsage(promptTokens, null, null))
+            .finishReason(finishReason)
+            .build()
+    }
 
-    private fun classify(message: Message.Assistant) =
+    private fun classify(message: ChatResponse) =
         classifyStreamResult(message, contextLength, maxOutputTokens)
 
     @Test
     fun `text response is completed`() {
-        val message = assistant(listOf(MessagePart.Text("Hello")), finishReason = "stop")
+        val message = response(text = "Hello", finishReason = FinishReason.STOP)
         assertEquals(StreamExecutionResult.Completed(message), classify(message))
     }
 
     @Test
     fun `tool call response is completed`() {
-        val message = assistant(
-            listOf(MessagePart.Tool.Call(id = "call_1", tool = "flag", args = "{}")),
-            finishReason = "tool_calls",
+        val message = response(
+            toolCalls = listOf(Triple("call_1", "flag", "{}")),
+            finishReason = FinishReason.TOOL_EXECUTION,
         )
         assertEquals(StreamExecutionResult.Completed(message), classify(message))
     }
 
     @Test
     fun `reasoning plus text is completed`() {
-        val message = assistant(
-            listOf(
-                MessagePart.Reasoning(content = listOf("thinking")),
-                MessagePart.Text("Answer"),
-            ),
-            finishReason = "stop",
+        val message = response(
+            thinking = "thinking",
+            text = "Answer",
+            finishReason = FinishReason.STOP,
         )
         assertEquals(StreamExecutionResult.Completed(message), classify(message))
     }
@@ -69,32 +82,28 @@ class StreamExecutionResultTest {
     fun `length with usable content is completed`() {
         // a truncated but usable response is accepted as-is: the text may
         // end mid-sentence, but it is real content worth keeping
-        val message = assistant(
-            listOf(MessagePart.Text("Partial answer")),
-            finishReason = "length",
-            promptTokens = 100_000,
-        )
+        val message = response(text = "Partial answer", finishReason = FinishReason.LENGTH, promptTokens = 100_000)
         assertEquals(StreamExecutionResult.Completed(message), classify(message))
     }
 
     @Test
     fun `length with a prompt above the threshold is context exhaustion`() {
         // the input crowds the output room: compaction frees room, retry helps
-        val message = assistant(emptyList(), finishReason = "length", promptTokens = 100_000)
+        val message = response(finishReason = FinishReason.LENGTH, promptTokens = 100_000)
         assertEquals(StreamExecutionResult.ContextExhausted, classify(message))
     }
 
     @Test
     fun `length with a prompt below the threshold is output budget exhaustion`() {
         // the output cap bound on its own: compaction cannot free output room
-        val message = assistant(emptyList(), finishReason = "length", promptTokens = 20_000)
+        val message = response(finishReason = FinishReason.LENGTH, promptTokens = 20_000)
         assertEquals(StreamExecutionResult.OutputBudgetExhausted, classify(message))
     }
 
     @Test
     fun `length with a prompt exactly at the threshold is output budget exhaustion`() {
         // at the threshold the output room equals the cap, so the cap binds
-        val message = assistant(emptyList(), finishReason = "length", promptTokens = 91_072)
+        val message = response(finishReason = FinishReason.LENGTH, promptTokens = 91_072)
         assertEquals(StreamExecutionResult.OutputBudgetExhausted, classify(message))
     }
 
@@ -103,7 +112,7 @@ class StreamExecutionResultTest {
         // we cannot tell which limit bound, so fail fast: output exhaustion
         // breaks the retry loop with a clear error instead of compacting
         // blindly
-        val message = assistant(emptyList(), finishReason = "length", promptTokens = null)
+        val message = response(finishReason = FinishReason.LENGTH, promptTokens = null)
         assertEquals(StreamExecutionResult.OutputBudgetExhausted, classify(message))
     }
 
@@ -111,17 +120,13 @@ class StreamExecutionResultTest {
     fun `reasoning-only response with length below the threshold is output budget exhaustion`() {
         // the model burned the whole output budget on reasoning: nothing
         // usable was produced, and a small prompt means compaction won't help
-        val message = assistant(
-            listOf(MessagePart.Reasoning(content = listOf("thinking"))),
-            finishReason = "length",
-            promptTokens = 20_000,
-        )
+        val message = response(thinking = "thinking", finishReason = FinishReason.LENGTH, promptTokens = 20_000)
         assertEquals(StreamExecutionResult.OutputBudgetExhausted, classify(message))
     }
 
     @Test
     fun `empty response without a reason is a transient hiccup`() {
-        val message = assistant(emptyList(), finishReason = null)
+        val message = response(finishReason = null)
         assertEquals(StreamExecutionResult.EmptyTransient, classify(message))
     }
 
@@ -132,11 +137,11 @@ class StreamExecutionResultTest {
         // identical prompt would spin forever, so the run must fail
         assertEquals(
             StreamExecutionResult.EmptyPermanent("content_filter"),
-            classify(assistant(emptyList(), finishReason = "content_filter")),
+            classify(response(finishReason = FinishReason.CONTENT_FILTER)),
         )
         assertEquals(
             StreamExecutionResult.EmptyPermanent("stop"),
-            classify(assistant(emptyList(), finishReason = "stop")),
+            classify(response(finishReason = FinishReason.STOP)),
         )
     }
 
@@ -147,12 +152,12 @@ class StreamExecutionResultTest {
         // transient hiccup, retry.
         assertEquals(
             StreamExecutionResult.EmptyTransient,
-            classify(assistant(listOf(MessagePart.Text("")), finishReason = null)),
+            classify(response(text = "")),
         )
         // A named reason makes the blank response definitive: fail fast.
         assertEquals(
             StreamExecutionResult.EmptyPermanent("stop"),
-            classify(assistant(listOf(MessagePart.Text("  \n")), finishReason = "stop")),
+            classify(response(text = "  \n", finishReason = FinishReason.STOP)),
         )
     }
 
@@ -160,10 +165,7 @@ class StreamExecutionResultTest {
     fun `reasoning-only response without a reason is a transient hiccup`() {
         // reasoning-only would serialize back as an assistant message with
         // content=null, which strict providers reject: never accept it
-        val message = assistant(
-            listOf(MessagePart.Reasoning(content = listOf("thinking"))),
-            finishReason = null,
-        )
+        val message = response(thinking = "thinking", finishReason = null)
         assertEquals(StreamExecutionResult.EmptyTransient, classify(message))
     }
 
@@ -171,10 +173,7 @@ class StreamExecutionResultTest {
     fun `reasoning-only response with a named reason fails fast`() {
         // same as above, but the named finish reason makes it definitive:
         // the run fails instead of retrying the identical prompt forever
-        val message = assistant(
-            listOf(MessagePart.Reasoning(content = listOf("thinking"))),
-            finishReason = "stop",
-        )
+        val message = response(thinking = "thinking", finishReason = FinishReason.STOP)
         assertEquals(StreamExecutionResult.EmptyPermanent("stop"), classify(message))
     }
 
@@ -182,19 +181,20 @@ class StreamExecutionResultTest {
     fun `length with a complete tool call is completed`() {
         // a truncated stream that still produced a complete tool call is
         // accepted: the tool call is usable output worth executing
-        val message = assistant(
-            listOf(MessagePart.Tool.Call(id = "call_1", tool = "flag", args = "{}")),
-            finishReason = "length",
+        val message = response(
+            toolCalls = listOf(Triple("call_1", "flag", "{}")),
+            finishReason = FinishReason.LENGTH,
             promptTokens = 100_000,
         )
         assertEquals(StreamExecutionResult.Completed(message), classify(message))
     }
 
     @Test
-    fun `completed result wraps the assistant message`() {
-        val message = assistant(listOf(MessagePart.Text("Hi")))
+    fun `completed result wraps the response`() {
+        val message = response(text = "Hi", finishReason = FinishReason.STOP)
         val result = classify(message)
         assertIs<StreamExecutionResult.Completed>(result)
-        assertEquals(message, result.assistant)
+        assertEquals(message, result.response)
+        assertEquals("Hi", result.assistant.text())
     }
 }

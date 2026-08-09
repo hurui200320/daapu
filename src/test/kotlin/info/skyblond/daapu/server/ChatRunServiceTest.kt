@@ -1,10 +1,9 @@
 package info.skyblond.daapu.server
 
-import ai.koog.prompt.message.AttachmentContent
-import ai.koog.prompt.message.AttachmentSource
-import ai.koog.prompt.message.MessagePart
 import info.skyblond.daapu.AppConfig
-import info.skyblond.daapu.koog.client.Cerebras
+import info.skyblond.daapu.history.AttachmentContent
+import info.skyblond.daapu.history.AttachmentKind
+import info.skyblond.daapu.history.HistoryPart
 import io.ktor.server.plugins.BadRequestException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -13,7 +12,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 
 /**
- * Pins the request → koog parts mapping done by [ChatRunService.prepareRun].
+ * Pins the request → neutral parts mapping done by [ChatRunService.prepareRun].
  */
 class ChatRunServiceTest {
 
@@ -31,14 +30,14 @@ class ChatRunServiceTest {
     private fun request(
         text: String? = null,
         images: List<String> = emptyList(),
-        model: String = Cerebras.GPT_OSS_120B.id,
+        model: String = "cerebras/gpt-oss-120b",
     ) = SendMessageRequest(text = text, images = images.map { ImagePart(it) }, model = model)
 
     @Test
     fun `text only maps to a text part`() {
         val setup = service.prepareRun("chat-1", request(text = "hello"))
-        assertEquals(listOf(MessagePart.Text("hello")), setup.parts)
-        assertEquals(Cerebras.GPT_OSS_120B, setup.model)
+        assertEquals(listOf(HistoryPart.Text("hello")), setup.parts)
+        assertEquals("cerebras/gpt-oss-120b", setup.model.id)
     }
 
     @Test
@@ -46,32 +45,32 @@ class ChatRunServiceTest {
         val dataUrl = "data:image/png;base64,AAAA"
         val setup = service.prepareRun("chat-1", request(text = "look", images = listOf(dataUrl)))
         assertEquals(2, setup.parts.size)
-        val attachment = assertIs<MessagePart.Attachment>(setup.parts[1])
-        val source = assertIs<AttachmentSource.Image>(attachment.source)
-        assertEquals("png", source.format)
-        assertEquals("image/png", source.mimeType)
-        assertEquals(AttachmentContent.Binary.Base64("AAAA"), source.content)
+        val attachment = assertIs<HistoryPart.Attachment>(setup.parts[1])
+        assertEquals(AttachmentKind.Image, attachment.kind)
+        assertEquals("png", attachment.format)
+        assertEquals("image/png", attachment.mimeType)
+        assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
     }
 
     @Test
     fun `image only is allowed`() {
-        // an image-only message is valid; the strategy's capability check
+        // an image-only message is valid; the turn loop's capability check
         // (not the API) decides whether the model can handle it
         val setup = service.prepareRun("chat-1", request(images = listOf("data:image/jpeg;base64,BBBB")))
         assertEquals(1, setup.parts.size)
-        assertIs<MessagePart.Attachment>(setup.parts[0])
+        assertIs<HistoryPart.Attachment>(setup.parts[0])
     }
 
     @Test
     fun `image with a text-only model is NOT rejected at the API`() {
-        // deliberate: capability enforcement lives in the strategy's preprocess
-        // node, so history-sourced images are covered too. Pinned here so the
+        // deliberate: capability enforcement lives in the turn loop's pre-send
+        // step, so history-sourced images are covered too. Pinned here so the
         // API layer doesn't grow a partial validation that misses history.
         val setup = service.prepareRun(
             "chat-1",
-            request(images = listOf("data:image/png;base64,AAAA"), model = Cerebras.GPT_OSS_120B.id),
+            request(images = listOf("data:image/png;base64,AAAA"), model = "cerebras/gpt-oss-120b"),
         )
-        assertEquals(Cerebras.GPT_OSS_120B, setup.model)
+        assertEquals("cerebras/gpt-oss-120b", setup.model.id)
         assertEquals(1, setup.parts.size)
     }
 
@@ -123,9 +122,8 @@ class ChatRunServiceTest {
         // data URLs produced by FileReader are single-line, but folded base64
         // (whitespace-separated) is legal; whitespace must be stripped
         val setup = service.prepareRun("chat-1", request(images = listOf("data:image/png;base64,AAA\nA")))
-        val attachment = assertIs<MessagePart.Attachment>(setup.parts[0])
-        val source = assertIs<AttachmentSource.Image>(attachment.source)
-        assertEquals(AttachmentContent.Binary.Base64("AAAA"), source.content)
+        val attachment = assertIs<HistoryPart.Attachment>(setup.parts[0])
+        assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
     }
 
     @Test
@@ -138,10 +136,21 @@ class ChatRunServiceTest {
 
     @Test
     fun `known models are accepted`() {
-        listOf(Cerebras.GPT_OSS_120B.id, Cerebras.Gemma4_31B.id, "novita/google/gemma-4-31b-it")
+        listOf("cerebras/gpt-oss-120b", "cerebras/gemma-4-31b", "novita/google/gemma-4-31b-it")
             .forEach { id ->
                 val setup = service.prepareRun("chat-1", request(text = "hi", model = id))
                 assertEquals(id, setup.model.id)
             }
+    }
+
+    @Test
+    fun `llm base url gains the v1 api root when missing`() {
+        // koog's default chat completions path was "v1/chat/completions";
+        // langchain4j appends "chat/completions" to its baseUrl, so the root
+        // must carry /v1 to hit the same endpoint (verified live in the #6
+        // smoke: without it the gateway answers 405 Method Not Allowed)
+        assertEquals("http://localhost:9/v1", "http://localhost:9".openAiApiRoot())
+        assertEquals("http://localhost:9/v1", "http://localhost:9/".openAiApiRoot())
+        assertEquals("https://api.example.com/v1", "https://api.example.com/v1".openAiApiRoot())
     }
 }

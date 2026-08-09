@@ -1,6 +1,6 @@
 package info.skyblond.daapu.agent
 
-import ai.koog.prompt.message.MessagePart
+import info.skyblond.daapu.history.HistoryPart
 import java.io.StringReader
 import java.io.StringWriter
 import java.time.ZonedDateTime
@@ -76,7 +76,7 @@ class ContextInjection {
         sstmUpdated: Boolean,
         eltmUpdated: Boolean,
         memoryList: List<String>
-    ): MessagePart.Text {
+    ): HistoryPart.Text {
         val documentBuilderFactory = DocumentBuilderFactory.newInstance()
         val documentBuilder = documentBuilderFactory.newDocumentBuilder()
         val document = documentBuilder.newDocument()
@@ -120,14 +120,10 @@ class ContextInjection {
         transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes")
         val stringWriter = StringWriter()
         transformer.transform(DOMSource(document), StreamResult(stringWriter))
-        return MessagePart.Text(stringWriter.toString())
+        return HistoryPart.Text(stringWriter.toString())
     }
 
-    fun isInjection(part: MessagePart): Boolean {
-        return (part is MessagePart.Text) && isInjection(part /* smart cast as Text part */)
-    }
-
-    fun isInjection(part: MessagePart.Text): Boolean {
+    fun isInjection(part: HistoryPart.Text): Boolean {
         try {
             val validator = schema.newValidator()
             val xmlSource = StreamSource(StringReader(part.text))

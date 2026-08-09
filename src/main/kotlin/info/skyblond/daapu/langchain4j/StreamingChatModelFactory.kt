@@ -1,5 +1,6 @@
 package info.skyblond.daapu.langchain4j
 
+import dev.langchain4j.http.client.jdk.JdkHttpClient
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel
 import java.time.Duration
 
@@ -20,11 +21,11 @@ import java.time.Duration
  *   bucket.
  * - For one failure, both `onError` **and** `onCompleteResponse` can fire
  *   (parser `onError` + `onClose` race) — the turn loop must tolerate that.
- * - Cerebras streams reasoning as `delta.reasoning` (plain text), which
- *   langchain4j's `Delta` (hardcoded to `reasoning_content`) silently drops
- *   — the same bug class the old koog client patched. A custom decorator
- *   using the raw-SSE hooks (`onUnmappedRawEvent` + `rawServerSentEvents`)
- *   to feed `onPartialThinking` is deferred to #6.
+ * - The bifrost/Cerebras reasoning dialect (`delta.reasoning` plain text,
+ *   never `reasoning_content`) is normalized by [ReasoningRewriteHttpClient]
+ *   (wired via `httpClientBuilder`) — the #1 spike's deferred decorator,
+ *   landed with #6. Object-valued reasoning dialects and native
+ *   `reasoning_content` streams pass through untouched.
  * - Novita's `deepseek-r1` family is load-balanced across backends: ~1/3 of
  *   runs stream reasoning inline in `content` as `<think>...</think>` which
  *   cannot be separated from the answer.
@@ -50,6 +51,11 @@ fun ModelMetadata.toStreamingChatModel(
         .timeout(timeout)
         .returnThinking(hasReasoning())
         .sendThinking(hasReasoning())
+        // the bifrost gateway streams reasoning as delta.reasoning; the
+        // rewrite client normalizes it to reasoning_content so the stock
+        // parser accumulates AiMessage.thinking() (spike #1 finding)
+        .httpClientBuilder(ReasoningRewriteHttpClientBuilder(JdkHttpClient.builder()))
+    // FIXME: made this a parameter
     if (hasReasoning()) builder.reasoningEffort(REASONING_EFFORT)
     return builder.build()
 }

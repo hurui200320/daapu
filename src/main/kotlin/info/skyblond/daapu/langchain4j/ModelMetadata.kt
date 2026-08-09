@@ -40,8 +40,7 @@ enum class ModelCapability {
  * [id] is both the id the web UI sends and the model name sent to the gateway.
  *
  * [contextLength]/[maxOutputTokens] are always known for catalog entries, so
- * they are non-null here (koog's were nullable, and the turn loop had to
- * error on a missing value).
+ * they are non-null here.
  */
 data class ModelMetadata(
     val provider: ModelProvider,

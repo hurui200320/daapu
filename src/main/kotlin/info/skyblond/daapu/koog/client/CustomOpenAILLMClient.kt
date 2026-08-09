@@ -24,7 +24,16 @@ import ai.koog.utils.time.KoogClock
 import info.skyblond.daapu.koog.withGeneratedToolCallIds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
+
+/**
+ * The custom provider marker for this client. Was `koog/client/LLMs.kt`'s
+ * object before the catalog moved to the langchain4j side (#6); the client
+ * still needs it until #7 retires the client itself.
+ */
+@Serializable
+object CustomLLMProvider : LLMProvider("custom", "Custom")
 
 /**
  * Custom OpenAI chat-completions client that applies customized fixes.

@@ -38,6 +38,9 @@ dependencies {
     implementation("ai.koog:agents-features-memory:$koogVersion")
 
     implementation("dev.langchain4j:langchain4j-open-ai:$langchain4jVersion")
+    // explicit: the reasoning-dialect rewrite wraps JdkHttpClient (the
+    // default SSE transport langchain4j-open-ai already pulls in at runtime)
+    implementation("dev.langchain4j:langchain4j-http-client-jdk:$langchain4jVersion")
 
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty-jvm:$ktorVersion")

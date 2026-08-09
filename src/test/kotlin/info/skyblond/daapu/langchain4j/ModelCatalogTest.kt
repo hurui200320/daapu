@@ -11,10 +11,9 @@ class ModelCatalogTest {
     private val catalog = ModelCatalog("http://gateway.example/v1")
 
     @Test
-    fun `catalog exposes the same models as the koog catalog`() {
-        // ids and token limits must mirror koog/client/LLMs.kt until the
-        // runtime switches over in #6; pinned by value so a catalog edit
-        // without the switch is caught by tests first
+    fun `catalog exposes the pinned models`() {
+        // ids and token limits pinned by value so a catalog edit is caught by
+        // tests first
         assertEquals(
             listOf(
                 Triple("cerebras/gpt-oss-120b", 131000L, 40000L),

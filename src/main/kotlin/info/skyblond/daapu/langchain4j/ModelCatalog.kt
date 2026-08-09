@@ -2,16 +2,14 @@ package info.skyblond.daapu.langchain4j
 
 /**
  * All models the web UI can pick from, on the langchain4j side of the
- * migration (#5). This replaces the koog catalog
- * (`koog/client/LLMs.kt` + `koog/client/ModelCatalog.kt`) once the runtime
- * switches over in #6; until then both catalogs exist in parallel and must
- * list the same models (pinned by `ModelCatalogTest`).
+ * migration (#5). This is the single catalog now that the runtime switched
+ * over in #6 (the koog catalog in `koog/client/` was deleted); the entries
+ * are pinned by value in `ModelCatalogTest`.
  *
  * The catalog is a class (not top-level vals) because every entry's [baseUrl]
  * is stamped from the configured gateway at construction: the project routes
  * all models through the single `LLM_BASE_URL` gateway, so entries cannot be
- * framework-free constants. Unlike the koog catalog there is no JVM
- * class-init cycle hazard here (a plain data class, no cross-class init calls).
+ * framework-free constants.
  *
  * @param baseUrl the gateway every model is reached through
  *   (e.g. the bifrost endpoint from `LLM_BASE_URL`).

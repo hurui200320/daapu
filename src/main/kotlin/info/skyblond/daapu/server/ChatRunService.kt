@@ -1,32 +1,28 @@
 package info.skyblond.daapu.server
 
-import ai.koog.agents.chatMemory.feature.ChatHistoryProvider
-import ai.koog.prompt.executor.clients.openai.OpenAIChatParams
-import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
-import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
-import ai.koog.prompt.llm.LLMCapability
-import ai.koog.prompt.llm.LLModel
-import ai.koog.prompt.message.AttachmentContent
-import ai.koog.prompt.message.AttachmentSource
-import ai.koog.prompt.message.Message
-import ai.koog.prompt.message.MessagePart
-import ai.koog.prompt.streaming.StreamFrame
 import info.skyblond.daapu.AppConfig
+import info.skyblond.daapu.agent.EmptyToolProvider
 import info.skyblond.daapu.agent.StreamExecutionCallback
-import info.skyblond.daapu.agent.buildChatAgent
+import info.skyblond.daapu.agent.ToolResultInfo
 import info.skyblond.daapu.agent.renderSystemPrompt
+import info.skyblond.daapu.agent.runChatTurn
 import info.skyblond.daapu.db.Chats
+import info.skyblond.daapu.db.SSTMs
 import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
+import info.skyblond.daapu.history.AttachmentContent
+import info.skyblond.daapu.history.AttachmentKind
 import info.skyblond.daapu.history.HistoryCodec
 import info.skyblond.daapu.history.HistoryMessage
-import info.skyblond.daapu.koog.PostgresChatHistoryProvider
-import info.skyblond.daapu.koog.client.CustomOpenAILLMClient
-import info.skyblond.daapu.koog.client.findModel
-import info.skyblond.daapu.koog.client.modelCatalog
+import info.skyblond.daapu.history.HistoryPart
+import info.skyblond.daapu.history.HistoryStore
+import info.skyblond.daapu.history.PostgresHistoryStore
+import info.skyblond.daapu.langchain4j.ModelCapability
+import info.skyblond.daapu.langchain4j.ModelCatalog
+import info.skyblond.daapu.langchain4j.ModelMetadata
+import info.skyblond.daapu.langchain4j.toStreamingChatModel
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -41,34 +37,29 @@ import kotlin.io.encoding.Base64
  */
 class ChatRunSetup(
     val chatId: String,
-    val model: LLModel,
-    val parts: List<MessagePart.RequestPart>,
+    val model: ModelMetadata,
+    val parts: List<HistoryPart>,
 )
 
 /**
  * Service for executing an agent request.
  *
- * One agent is built per request (cheap: koog's `AIAgent.close()` is a no-op
- * and each `run()` gets a fresh session context), so per-request model and
- * callback selection comes for free; only the expensive pieces — the LLM
- * executor, the history provider, the system prompt — are shared.
+ * One streaming chat model is built per request (cheap: the model holds
+ * configuration only, no connections), so per-request model selection comes
+ * for free; only the expensive pieces — the model catalog, the history store,
+ * the system prompt — are shared.
  */
 class ChatRunService(config: AppConfig) {
 
-    private val promptExecutor = MultiLLMPromptExecutor(
-        CustomOpenAILLMClient(
-            config.llmApiKey,
-            OpenAIClientSettings(baseUrl = config.llmBaseUrl)
-        )
-    )
-
-    private val historyProvider: ChatHistoryProvider = PostgresChatHistoryProvider()
+    private val apiKey = config.llmApiKey
+    // koog's OpenAIClientSettings defaulted its chat completions path to
+    // "v1/chat/completions", so the runtime always hit
+    // LLM_BASE_URL/v1/chat/completions. langchain4j appends only
+    // "chat/completions" to its baseUrl, so the API root must carry the /v1
+    // prefix to keep hitting the same endpoint.
+    private val modelCatalog = ModelCatalog(config.llmBaseUrl.openAiApiRoot())
+    private val historyStore: HistoryStore = PostgresHistoryStore()
     private val systemPrompt = renderSystemPrompt("Raven", true)
-    private val llmParameter = OpenAIChatParams(
-        additionalProperties = mapOf(
-            "reasoning_effort" to JsonPrimitive("high")
-        )
-    )
 
     // one run per chat at a time: a chat's history is loaded and stored as a
     // whole, so concurrent runs would corrupt each other.
@@ -78,10 +69,10 @@ class ChatRunService(config: AppConfig) {
     // TODO: distributed lock in production
     private val chatLocks = ConcurrentHashMap<String, Mutex>()
 
-    fun models(): List<ModelInfo> = modelCatalog.map {
+    fun models(): List<ModelInfo> = modelCatalog.models.map {
         ModelInfo(
             id = it.id,
-            vision = it.supports(LLMCapability.Vision.Image),
+            vision = it.supports(ModelCapability.VisionImage),
             contextLength = it.contextLength,
             maxOutputTokens = it.maxOutputTokens,
         )
@@ -100,9 +91,9 @@ class ChatRunService(config: AppConfig) {
 
     /**
      * Delete a chat row. Refuses (throws [ChatRunConflictException]) while a
-     * run holds the chat lock: [PostgresChatHistoryProvider.store] is an
-     * upsert, so an in-flight run's final store would resurrect the deleted
-     * row. Returns false when the chat doesn't exist.
+     * run holds the chat lock: the history store's upsert would otherwise let
+     * an in-flight run's final store resurrect the deleted row. Returns false
+     * when the chat doesn't exist.
      *
      * The lock entry is taken and evicted atomically ([ConcurrentHashMap.compute]
      * serializes both map ops and the `tryLock`), so a delete and a run can never
@@ -155,19 +146,19 @@ class ChatRunService(config: AppConfig) {
             throw BadRequestException("Message must have text and/or images")
         }
         val model = request.model?.takeIf { it.isNotBlank() }?.let { id ->
-            findModel(id) ?: throw BadRequestException("Unknown model '$id'")
+            modelCatalog.findModel(id) ?: throw BadRequestException("Unknown model '$id'")
         } ?: throw BadRequestException("model is required")
-        val parts = mutableListOf<MessagePart.RequestPart>()
-        if (text.isNotBlank()) parts += MessagePart.Text(text)
+        val parts = mutableListOf<HistoryPart>()
+        if (text.isNotBlank()) parts += HistoryPart.Text(text)
         request.images.forEach { parts += parseImagePart(it) }
         return ChatRunSetup(chatId, model, parts)
     }
 
     /**
-     * Serialize a data URL (`data:image/png;base64,...`) into a koog image
+     * Serialize a data URL (`data:image/png;base64,...`) into a neutral image
      * attachment part.
      */
-    private fun parseImagePart(image: ImagePart): MessagePart.Attachment {
+    private fun parseImagePart(image: ImagePart): HistoryPart.Attachment {
         val match = dataUrlRegex.matchEntire(image.dataUrl.trim())
             ?: throw BadRequestException("Invalid image data URL")
         val mimeType = match.groupValues[1]
@@ -176,12 +167,11 @@ class ChatRunService(config: AppConfig) {
         // of an opaque gateway error mid-stream
         runCatching { Base64.decode(base64) }
             .getOrElse { throw BadRequestException("Invalid base64 in image data URL") }
-        return MessagePart.Attachment(
-            source = AttachmentSource.Image(
-                content = AttachmentContent.Binary.Base64(base64),
-                format = mimeType.substringAfter("image/"),
-                mimeType = mimeType,
-            )
+        return HistoryPart.Attachment(
+            kind = AttachmentKind.Image,
+            content = AttachmentContent.Base64(base64),
+            format = mimeType.substringAfter("image/"),
+            mimeType = mimeType,
         )
     }
 
@@ -221,18 +211,31 @@ class ChatRunService(config: AppConfig) {
     }
 
     /**
-     * Run one agent turn for [setup], forwarding stream events to [sendEvent]
-     * (an SSE writer). History is only stored by ChatMemory when the run
+     * Run one chat turn for [setup], forwarding stream events to [sendEvent]
+     * (an SSE writer). History is only stored by the turn loop when the run
      * completes, so a failed or aborted run leaves the chat untouched.
      */
     suspend fun runChat(
         setup: ChatRunSetup,
         sendEvent: suspend (event: String, data: String) -> Unit
     ) {
-        buildChatAgent(
-            promptExecutor, historyProvider, systemPrompt, setup.model, llmParameter,
-            streamEventCallback(sendEvent),
-        ).run(setup.parts, sessionId = setup.chatId)
+        runChatTurn(
+            chatId = setup.chatId,
+            model = setup.model,
+            streamingChatModel = setup.model.toStreamingChatModel(apiKey),
+            userParts = setup.parts,
+            systemPrompt = systemPrompt,
+            historyStore = historyStore,
+            loadMemories = {
+                withTransaction {
+                    SSTMs.selectAll()
+                        .orderBy(SSTMs.lastUpdate to SortOrder.ASC)
+                        .map { it[SSTMs.content] }
+                }
+            },
+            toolProvider = EmptyToolProvider,
+            callback = streamEventCallback(sendEvent),
+        )
     }
 
     companion object {
@@ -245,60 +248,56 @@ class ChatRunService(config: AppConfig) {
 }
 
 /**
- * The [StreamExecutionCallback] that maps stream frames and tool results to
- * SSE events — the contract the frontend (`frontend/src/lib/api.ts`) parses.
+ * The OpenAI-compatible API root langchain4j should hit for a configured
+ * `LLM_BASE_URL`: the base URL itself, plus `/v1` when it is missing
+ * (langchain4j appends `/chat/completions` to it).
+ */
+internal fun String.openAiApiRoot(): String {
+    val trimmed = trimEnd('/')
+    return if (trimmed.endsWith("/v1")) trimmed else "$trimmed/v1"
+}
+
+/**
+ * The [StreamExecutionCallback] that maps turn-loop stream events to SSE
+ * events — the contract the frontend (`frontend/src/lib/api.ts`) parses.
  * Extracted from [ChatRunService.runChat] so the exact event payloads can be
  * unit-tested.
  */
 internal fun streamEventCallback(
     sendEvent: suspend (event: String, data: String) -> Unit,
 ): StreamExecutionCallback = object : StreamExecutionCallback {
-    override suspend fun onFrame(frame: StreamFrame) {
-        // send delta frames to frontend so it provides realtime view of response
-        when (frame) {
-            is StreamFrame.ReasoningDelta -> sendEvent(
-                "reasoning",
-                sseData("delta" to frame.text.orEmpty())
-            )
-
-            is StreamFrame.TextDelta -> sendEvent(
-                "text",
-                sseData("delta" to frame.text)
-            )
-
-            is StreamFrame.ToolCallComplete ->
-                sendEvent(
-                    "tool_call",
-                    sseData(
-                        "name" to frame.name,
-                        "args" to frame.content
-                    )
-                )
-            // the remaining frames (completion markers, tool-call
-            // deltas, End) carry no user-visible content of their own
-            else -> Unit
-        }
+    override suspend fun onTextDelta(text: String) {
+        sendEvent("text", sseData("delta" to text))
     }
 
-    override suspend fun onToolResults(results: List<MessagePart.Tool.Result>) {
+    override suspend fun onReasoningDelta(text: String) {
+        sendEvent("reasoning", sseData("delta" to text))
+    }
+
+    override suspend fun onToolCall(name: String, args: String) {
+        sendEvent(
+            "tool_call",
+            sseData(
+                "name" to name,
+                "args" to args,
+            )
+        )
+    }
+
+    override suspend fun onToolResults(results: List<ToolResultInfo>) {
         // stream tool results as they are produced; the frontend shows
         // them live (the `done` history reload re-renders them anyway)
         results.forEach { result ->
             sendEvent(
                 "tool_result",
                 buildJsonObject {
-                    put("id", result.id ?: "")
-                    put("name", result.tool)
-                    put("content", result.output)
+                    put("id", result.id)
+                    put("name", result.name)
+                    put("content", result.content)
                     put("isError", result.isError)
                 }.toString()
             )
         }
-    }
-
-    override suspend fun onAssistantMessage(message: Message.Assistant) {
-        // no-op: the frontend syncs via the `done` event's history reload
-        // (a full-message `assistant` event had no consumer)
     }
 
     override suspend fun onStreamError(error: Throwable) {

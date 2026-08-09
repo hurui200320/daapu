@@ -6,16 +6,13 @@ import info.skyblond.daapu.history.AttachmentKind
 /**
  * Verify a prompt only contains content the model's capabilities cover.
  *
- * Framework-agnostic port of the koog-typed check that runs in the strategy's
- * preprocess node (the koog version still lives in
- * `agent/ModelCapabilityCheck.kt` until the runtime switches over in #6).
- *
  * [attachments] must be extracted from the **full prompt** — loaded history +
  * new user input — not from the request alone: images can enter the prompt
  * from either source (an image sent to a vision model is stored in history,
  * and a later run with a text-only model re-sends it from there, not from the
- * request). The caller (the turn loop, in #6) is responsible for scanning the
- * whole prompt; this check only maps kinds to required capabilities.
+ * request). The caller (the turn loop, `agent/ChatTurnLoop.kt`) is
+ * responsible for scanning the whole prompt; this check only maps kinds to
+ * required capabilities.
  *
  * Throws [ModelCapabilityException] (pinned non-retryable in
  * `isRetryableStreamError`): a model cannot process content it lacks the

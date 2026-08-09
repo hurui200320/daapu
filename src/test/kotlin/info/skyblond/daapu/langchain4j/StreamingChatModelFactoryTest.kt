@@ -9,16 +9,8 @@ import dev.langchain4j.model.chat.response.PartialThinking
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel
 import dev.langchain4j.model.output.FinishReason
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
-import java.nio.charset.StandardCharsets
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -38,7 +30,7 @@ class StreamingChatModelFactoryTest {
 
     @Test
     fun `request body carries model id, reasoning_effort and include_usage`() {
-        val server = MockSseServer { stopStream() }
+        val server = MockSseServer { MockSseResponse(200, stopStream()) }
         try {
             val catalog = ModelCatalog("http://127.0.0.1:${server.port}/v1")
             for (model in catalog.models) {
@@ -65,13 +57,13 @@ class StreamingChatModelFactoryTest {
     @Test
     fun `reasoning deltas land in onPartialThinking and the final message`() {
         val server = MockSseServer {
-            listOf(
-                sseEvent(chunk(delta = """{"reasoning_content":"Let me think"}""")),
-                sseEvent(chunk(delta = """{"reasoning_content":" step by step"}""")),
-                sseEvent(chunk(delta = """{"content":"17 * 23 = 391"}""")),
-                sseEvent(chunk(finishReason = "stop")),
-                DONE,
-            )
+            MockSseResponse(200, listOf(
+                sseEvent(sseChunk(delta = """{"reasoning_content":"Let me think"}""")),
+                sseEvent(sseChunk(delta = """{"reasoning_content":" step by step"}""")),
+                sseEvent(sseChunk(delta = """{"content":"17 * 23 = 391"}""")),
+                sseEvent(sseChunk(finishReason = "stop")),
+                SSE_DONE,
+            ))
         }
         try {
             val model = catalogModel(server, "cerebras/gpt-oss-120b")
@@ -88,7 +80,7 @@ class StreamingChatModelFactoryTest {
 
     @Test
     fun `sendThinking round-trips stored thinking as reasoning_content`() {
-        val server = MockSseServer { stopStream() }
+        val server = MockSseServer { MockSseResponse(200, stopStream()) }
         try {
             val model = catalogModel(server, "cerebras/gpt-oss-120b")
             val history = listOf<ChatMessage>(
@@ -111,12 +103,12 @@ class StreamingChatModelFactoryTest {
     @Test
     fun `usage chunk populates token usage`() {
         val server = MockSseServer {
-            listOf(
-                sseEvent(chunk(delta = """{"content":"hi"}""")),
-                sseEvent(chunk(usage = """{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17}""")),
-                sseEvent(chunk(finishReason = "stop")),
-                DONE,
-            )
+            MockSseResponse(200, listOf(
+                sseEvent(sseChunk(delta = """{"content":"hi"}""")),
+                sseEvent(sseChunk(usage = """{"prompt_tokens":12,"completion_tokens":5,"total_tokens":17}""")),
+                sseEvent(sseChunk(finishReason = "stop")),
+                SSE_DONE,
+            ))
         }
         try {
             val model = catalogModel(server, "cerebras/gemma-4-31b")
@@ -134,12 +126,12 @@ class StreamingChatModelFactoryTest {
     @Test
     fun `a model without reasoning capability gets no reasoning knobs`() {
         val server = MockSseServer {
-            listOf(
-                sseEvent(chunk(delta = """{"reasoning_content":"secret thinking"}""")),
-                sseEvent(chunk(delta = """{"content":"answer"}""")),
-                sseEvent(chunk(finishReason = "stop")),
-                DONE,
-            )
+            MockSseResponse(200, listOf(
+                sseEvent(sseChunk(delta = """{"reasoning_content":"secret thinking"}""")),
+                sseEvent(sseChunk(delta = """{"content":"answer"}""")),
+                sseEvent(sseChunk(finishReason = "stop")),
+                SSE_DONE,
+            ))
         }
         try {
             val metadata = ModelMetadata(
@@ -175,9 +167,9 @@ class StreamingChatModelFactoryTest {
             .toStreamingChatModel("test-key")
 
     private fun stopStream() = listOf(
-        sseEvent(chunk(delta = """{"content":"ok"}""")),
-        sseEvent(chunk(finishReason = "stop")),
-        DONE,
+        sseEvent(sseChunk(delta = """{"content":"ok"}""")),
+        sseEvent(sseChunk(finishReason = "stop")),
+        SSE_DONE,
     )
 
     private fun chat(model: OpenAiStreamingChatModel, messages: List<ChatMessage>): Recorder {
@@ -225,95 +217,4 @@ private class Recorder : StreamingChatResponseHandler {
     }
 }
 
-/**
- * Minimal SSE server on a random localhost port: captures the full request
- * (headers + body), then answers with the canned event lines.
- */
-private class MockSseServer(private val respondLines: (MockConnection) -> List<String>) {
-    private val server = ServerSocket().apply {
-        reuseAddress = true
-        bind(InetSocketAddress("127.0.0.1", 0))
-    }
-    private val capturedRequests = CopyOnWriteArrayList<String>()
-    val port: Int get() = server.localPort
 
-    init {
-        thread(isDaemon = true, name = "mock-sse") {
-            while (!server.isClosed) {
-                val socket = try {
-                    server.accept()
-                } catch (_: Exception) {
-                    return@thread
-                }
-                thread(isDaemon = true) {
-                    try {
-                        MockConnection(socket, capturedRequests).use { conn ->
-                            conn.respond(respondLines(conn))
-                        }
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-        }
-    }
-
-    fun lastRequest(): String? = capturedRequests.lastOrNull()
-
-    fun close() {
-        server.close()
-    }
-
-    class MockConnection(
-        private val socket: Socket,
-        private val captured: MutableList<String>,
-    ) : AutoCloseable {
-        private val input = BufferedReader(InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))
-        private val output = socket.getOutputStream()
-
-        init {
-            var contentLength = 0
-            val lines = mutableListOf<String>()
-            while (true) {
-                val line = input.readLine() ?: break
-                if (line.isBlank()) break
-                if (line.startsWith("Content-Length:", true)) {
-                    contentLength = line.substringAfter(':').trim().toIntOrNull() ?: 0
-                }
-                lines += line
-            }
-            val body = if (contentLength > 0) {
-                val buf = CharArray(contentLength)
-                var read = 0
-                while (read < contentLength) {
-                    val n = input.read(buf, read, contentLength - read)
-                    if (n < 0) break
-                    read += n
-                }
-                buf.concatToString()
-            } else ""
-            captured += lines.joinToString("\n") + "\n\n" + body
-        }
-
-        fun respond(lines: List<String>) {
-            val payload = lines.joinToString("\n\n") + "\n\n"
-            val response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n" +
-                "Content-Length: ${payload.toByteArray().size}\r\n\r\n" + payload
-            output.write(response.toByteArray())
-            output.flush()
-        }
-
-        override fun close() {
-            socket.close()
-        }
-    }
-}
-
-private fun sseEvent(json: String) = "data: $json"
-
-private const val DONE = "data: [DONE]"
-
-private fun chunk(delta: String = "{}", finishReason: String? = null, usage: String? = null): String {
-    val usagePart = usage?.let { ",\"usage\":$it" } ?: ""
-    return """{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"mock",""" +
-        """"choices":[{"index":0,"delta":$delta,"finish_reason":${if (finishReason == null) "null" else "\"$finishReason\""}}]$usagePart}"""
-}
