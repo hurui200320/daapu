@@ -5,10 +5,10 @@ Guidance for AI agents (and humans) working in this project.
 ## Migration in progress: koog → langchain4j
 
 The project is migrating off koog onto langchain4j (with its `langchain4j-mcp`
-module). **Status: #6 done — the runtime (API, turn loop, history) runs on
-langchain4j; only dead code and the dependency removal remain.** The work is
-tracked as GitHub issues with blocking relationships (`gh issue list`,
-`gh issue view N`):
+module). **Status: #7 done — the runtime (API, turn loop, history) runs on
+langchain4j, the last koog client code is gone, and only the koog dependency
+remains (#9).** The work is tracked as GitHub issues with blocking
+relationships (`gh issue list`, `gh issue view N`):
 
 - Spikes first: #1 (streaming/reasoning parity against the live gateways —
   **GO**), #2 (mid-stream SSE error-chunk classification — **GO**, the
@@ -33,9 +33,15 @@ tracked as GitHub issues with blocking relationships (`gh issue list`,
   (`langchain4j/ReasoningDialect.kt`: rewrites the gateway's `delta.reasoning`
   dialect to `reasoning_content` at the HTTP-SSE layer, so reasoning streams
   live and round-trips via `sendThinking`).
-- Remaining, in dependency order: #7 (retire `CustomOpenAILLMClient`,
-  porting its gateway-quirk test suite — the client is now dead code, kept
-  only because its tests pin behaviors that #7 ports), #8 (MCP feature — the
+- #7 (**Done**): `CustomOpenAILLMClient` and `koog/Utils.kt` (and their
+  tests) are deleted; the gateway-quirk test suite was re-expressed against
+  the langchain4j stack as `langchain4j/GatewayQuirkParityTest.kt` (the
+  quirk matrix: reasoning dialects, empty deltas, tool-call assembly,
+  usage, error chunks, HTTP status preservation — see its KDoc for the
+  parity verdict per quirk; `reasoning_details` is consciously dropped, the
+  `withGeneratedToolCallIds` sanitizer's end-to-end guarantee is pinned by
+  `ChatTurnLoopTest`'s id-less tool-call test).
+- Remaining, in dependency order: #8 (MCP feature — the
   `agent/ToolProvider.kt` seam already landed with #6), #9 (remove koog,
   final cleanup + docs).
 
@@ -52,10 +58,7 @@ Rules while the migration is underway:
   (context, file paths, checklists, acceptance criteria).
 - Do NOT add new koog API surface beyond what an issue explicitly asks for.
   New LLM-facing code follows the langchain4j target design. The only koog
-  code still alive is `koog/client/CustomOpenAILLMClient.kt` (dead, #7),
-  `koog/Utils.kt` (its `withGeneratedToolCallIds` is used by that client; the
-  langchain4j port lives in `langchain4j/Utils.kt`), and `llm/FlagTool.kt`
-  (koog-typed example tool, #8/#9).
+  code still alive is `llm/FlagTool.kt` (koog-typed example tool, #8/#9).
 - The behaviors documented in "Chat history is turn-loop-managed" and
   "Streaming execution and recovery" below are **invariants**, not koog
   accidents — preserved by the langchain4j port (fail-fast history loads,

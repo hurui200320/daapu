@@ -189,6 +189,13 @@ internal fun isRetryableStreamError(t: Throwable): Boolean {
     // the chain can look like RuntimeException → HttpException(403). Walk the
     // cause chain for the first non-2xx status: a 2xx is the stream's own
     // HTTP response status, never a meaningful error code.
+    //
+    // CAVEAT: the classification depends on ExceptionMapper keeping the
+    // HttpException as the cause of those typed exceptions. If a langchain4j
+    // upgrade stops wrapping it, a permanent 4xx (400/401/403/404) would walk
+    // to a null status here and be classified transient — retried forever
+    // instead of failing the run. `ChatTurnLoopTest`'s 401/429 tests pin this
+    // behavior; check them when bumping the dependency.
     val statusCode = generateSequence(t) { it.cause }
         .filterIsInstance<HttpException>()
         .map { it.statusCode() }

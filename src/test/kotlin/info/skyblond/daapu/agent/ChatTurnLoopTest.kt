@@ -211,6 +211,60 @@ class ChatTurnLoopTest {
     }
 
     @Test
+    fun `mid-stream error chunk with a transient numeric code is retried then succeeds`() {
+        // a numeric code is only permanent when it maps to a 4xx (except
+        // 408/429): a rate-limit 429 mid-stream must be retried, not fail
+        val server = MockSseServer { attempt ->
+            if (attempt == 1) {
+                MockSseResponse(
+                    200,
+                    listOf(
+                        sseEvent(sseChunk(delta = """{"content":"partial"}""")),
+                        sseEvent("""{"error":{"message":"Rate limited","type":"rate_limit","code":429}}"""),
+                        SSE_DONE,
+                    )
+                )
+            } else {
+                MockSseResponse(200, stopStream())
+            }
+        }
+        try {
+            val outcome = run(server)
+            assertNull(outcome.error)
+            assertEquals(1, outcome.callback.errors.size)
+            assertEquals(listOf("partial", "ok"), outcome.callback.texts)
+            assertNotNull(outcome.store.stored)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `http 401 fails the run without storing`() {
+        // the HTTP error status must survive langchain4j's exception mapping
+        // as an HttpException walkable in the cause chain, so the retry
+        // policy fails the run instead of retrying a config error forever
+        val server = MockSseServer { MockSseResponse(401, emptyList()) }
+        try {
+            // a chat with existing history: a failed run must leave it untouched
+            val seed = listOf(HistoryMessage(HistoryRole.User, listOf(HistoryPart.Text("old"))))
+            val store = InMemoryHistoryStore(seed)
+            val outcome = run(server, store = store)
+
+            val status = generateSequence(assertNotNull(outcome.error)) { it.cause }
+                .filterIsInstance<HttpException>()
+                .map { it.statusCode() }
+                .firstOrNull()
+            assertEquals(401, status)
+            assertEquals(1, server.count, "a permanent error must not be retried")
+            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+            assertEquals(seed, outcome.store.stored, "history stays at the last good state")
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
     fun `truncated stream without finish reason is retried then succeeds`() {
         // langchain4j silently accepts a clean EOF without finish_reason;
         // the turn loop must detect it itself (spike #1 finding)
@@ -373,6 +427,48 @@ class ChatTurnLoopTest {
             assertEquals("call_1", storedResult.id)
             assertEquals(true, storedResult.isError)
             assertEquals(listOf(HistoryPart.Text("ok")), stored[4].parts)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `id-less streamed tool call gets a generated id matching its result`() {
+        // gateways that stream tool_calls without id fields: langchain4j
+        // yields a blank id — `null` on the streamed `ToolCallDone` signal,
+        // `""` on the final ChatResponse's requests — so
+        // withGeneratedToolCallIds (the replacement for the koog sanitizer)
+        // must give the call a stable id — otherwise the stored history
+        // carries a tool_call_id that never matches, and strict providers
+        // reject every later run of the chat with a 400
+        val toolCall1 = """{"tool_calls":[{"index":0,"type":"function","function":{"name":"flag","arguments":"{\"fl"}}]}"""
+        val toolCall2 = """{"tool_calls":[{"index":0,"function":{"arguments":"ag\":true}"}}]}"""
+        val server = MockSseServer { attempt ->
+            if (attempt == 1) {
+                MockSseResponse(
+                    200,
+                    listOf(
+                        sseEvent(sseChunk(delta = toolCall1)),
+                        sseEvent(sseChunk(delta = toolCall2)),
+                        sseEvent(sseChunk(finishReason = "tool_calls")),
+                        SSE_DONE,
+                    )
+                )
+            } else {
+                MockSseResponse(200, stopStream())
+            }
+        }
+        try {
+            val outcome = run(server)
+            assertNull(outcome.error)
+
+            val stored = assertNotNull(outcome.store.stored)
+            val call = assertIs<HistoryPart.ToolCall>(stored[2].parts.single())
+            assertTrue(call.id.startsWith("call_"), "Expected a generated id, got ${call.id}")
+            assertEquals("flag", call.tool)
+            assertEquals("""{"flag":true}""", call.args)
+            val result = assertIs<HistoryPart.ToolResult>(stored[3].parts.single())
+            assertEquals(call.id, result.id, "the tool result must reference the generated id")
         } finally {
             server.close()
         }
