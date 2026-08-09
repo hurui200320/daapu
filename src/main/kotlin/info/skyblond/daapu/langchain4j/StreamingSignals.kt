@@ -2,7 +2,7 @@ package info.skyblond.daapu.langchain4j
 
 import dev.langchain4j.agent.tool.ToolSpecification
 import dev.langchain4j.data.message.ChatMessage
-import dev.langchain4j.model.chat.request.ChatRequest
+import dev.langchain4j.kotlin.model.chat.request.chatRequest
 import dev.langchain4j.model.chat.response.ChatResponse
 import dev.langchain4j.model.chat.response.CompleteToolCall
 import dev.langchain4j.model.chat.response.PartialResponse
@@ -102,12 +102,23 @@ fun OpenAiStreamingChatModel.streamSignals(
         }
     }
 
+    // a local copy: local declarations shadow implicit receiver members in
+    // Kotlin, so the function parameter name `toolSpecifications` is
+    // unusable on the right-hand side inside the builder's `parameters` block
+    val tools = toolSpecifications
+
     try {
         chat(
-            ChatRequest.builder()
-                .messages(messages)
-                .apply { if (toolSpecifications.isNotEmpty()) toolSpecifications(toolSpecifications) }
-                .build(),
+            chatRequest {
+                messages(messages)
+                // some providers reject a request carrying an empty `tools`
+                // array, so they are only attached when non-empty
+                if (tools.isNotEmpty()) {
+                    parameters {
+                        this.toolSpecifications = tools
+                    }
+                }
+            },
             handler,
         )
     } catch (t: Throwable) {
