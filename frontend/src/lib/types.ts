@@ -2,7 +2,7 @@
  * Loose mirror of the framework-neutral chat history format the backend
  * serves (see history/HistoryMessage.kt + the golden-format tests in
  * HistoryCodecTest). The `type`/`role` discriminators are our own short
- * lowercase names — no koog or langchain4j type strings cross the API.
+ * lowercase names — no framework type strings cross the API.
  */
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool'

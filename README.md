@@ -9,17 +9,13 @@ infrastructure:
 - **langchain4j** for the LLM runtime (streaming chat, MCP tools) — see
   `AGENTS.md` for the architecture
 
-> **Status: migrating from koog to langchain4j — runtime migrated.** The API,
-> turn loop, history, and MCP tool support run on langchain4j (#1–#8 done);
-> only the koog dependency removal remains (#9). See `AGENTS.md` for details.
-
 The input loop is a small **ktor HTTP API** (`Main.kt` → `src/main/kotlin/.../server/`)
 plus a minimal **Svelte frontend** (`frontend/`, inspired by llama.cpp's own
 webui but deliberately tiny). The frontend dev server proxies `/api` to ktor;
 ktor serves the API only. Chat history is stored per chat id — pick an
 existing chat from the dropdown to resume it, or click "new chat". Text and
 image messages are supported; images only work with a vision-capable model
-(the strategy rejects them with a clear error otherwise — see `AGENTS.md`).
+(the turn loop rejects them with a clear error otherwise — see `AGENTS.md`).
 
 ## Development
 
@@ -86,7 +82,7 @@ other chats are unaffected) and retried on a later chat run; killing a server
 mid-session fails only the chat that called its tools.
 
 The system prompt and the model catalog are hardcoded in code: `agent/SystemPrompt.kt`
-and `koog/client/LLMs.kt` + `koog/client/ModelCatalog.kt` (each model needs an
+and `langchain4j/ModelCatalog.kt` (each model needs an
 explicit capability list). The web UI can switch between the catalog models per
 message; the model is sent with every message (the UI defaults to the first
 catalog entry — the server has no default).
@@ -117,7 +113,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`):
 | `GET /api/chats`                        | Existing chat ids (newest first, capped).                    |
 | `POST /api/chats`                       | Create a chat id.                                            |
 | `DELETE /api/chats/{id}`                | Delete a chat (409 while a run is active).                   |
-| `GET /api/chats/{id}/history`           | Full history as koog JSON (raw `history_json`).              |
+| `GET /api/chats/{id}/history`           | Full history as neutral-format JSON (raw `history_json`).    |
 | `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |
 | `GET /api/memories`                     | Shared short-term memories (in injection order).             |
 | `POST /api/memories`                    | Create a memory.                                             |
@@ -135,12 +131,7 @@ For Coding agents.
 + Docs https://www.jetbrains.com/help/exposed
 + Repo https://github.com/JetBrains/Exposed
 
-### koog
-
-+ Repo https://github.com/JetBrains/koog
-  + Docs https://docs.koog.ai
-
-### langchain4j (migration target)
+### langchain4j
 
 + Repo https://github.com/langchain4j/langchain4j
   + Docs https://docs.langchain4j.dev

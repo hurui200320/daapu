@@ -2,82 +2,6 @@
 
 Guidance for AI agents (and humans) working in this project.
 
-## Migration in progress: koog → langchain4j
-
-The project is migrating off koog onto langchain4j (with its `langchain4j-mcp`
-module). **Status: #8 done — the runtime (API, turn loop, history, MCP tools)
-runs on langchain4j, the last koog client code is gone, and only the koog
-dependency remains (#9).** The work is tracked as GitHub issues with blocking
-relationships (`gh issue list`, `gh issue view N`):
-
-- Spikes first: #1 (streaming/reasoning parity against the live gateways —
-  **GO**), #2 (mid-stream SSE error-chunk classification — **GO**, the
-  go/no-go unknown), #3 (MCP tools end-to-end). Spike code lives on throwaway
-  branches; outcomes are recorded as comments on the issue.
-- #4 (**Done**): neutral chat-history format, decoupling the DB/API/frontend
-  from koog's serialization (see "Chat history is turn-loop-managed" below).
-- #5 (**Done**): the langchain4j model catalog (`langchain4j/ModelCatalog.kt`,
-  `ModelMetadata`, `StreamingChatModelFactory`, framework-agnostic
-  `checkPromptContentCapabilities`) with tests; the koog catalog was deleted
-  when #6 switched the runtime over. `ModelCatalogTest` pins the entries by
-  value. Builder knobs are pinned by the #1 spike (see
-  `StreamingChatModelFactory.kt`'s KDoc for the deferred caveats: truncation
-  via `finishReason()==null` and the Novita inline-`<think>` load-balancing
-  quirk; the Cerebras `delta.reasoning` dialect gap was closed in #6 by
-  `ReasoningRewriteHttpClient`).
-- #6 (**Done**): the core turn loop (`agent/ChatTurnLoop.kt`) — see
-  "Streaming execution and recovery" below. The koog strategy graph
-  (`agent/ChatAgentFactory.kt`), koog `ChatMemory`/`ChatHistoryProvider`,
-  `KoogHistoryConverters`, and the koog catalog are deleted. #6 also landed
-  the #1 spike's deferred reasoning decorator
-  (`langchain4j/ReasoningDialect.kt`: rewrites the gateway's `delta.reasoning`
-  dialect to `reasoning_content` at the HTTP-SSE layer, so reasoning streams
-  live and round-trips via `sendThinking`).
-- #7 (**Done**): `CustomOpenAILLMClient` and `koog/Utils.kt` (and their
-  tests) are deleted; the gateway-quirk test suite was re-expressed against
-  the langchain4j stack as `langchain4j/GatewayQuirkParityTest.kt` (the
-  quirk matrix: reasoning dialects, empty deltas, tool-call assembly,
-  usage, error chunks, HTTP status preservation — see its KDoc for the
-  parity verdict per quirk; `reasoning_details` is consciously dropped, the
-  `withGeneratedToolCallIds` sanitizer's end-to-end guarantee is pinned by
-  `ChatTurnLoopTest`'s id-less tool-call test).
-- #8 (**Done**): MCP tools. `mcp/McpToolProvider.kt` implements the
-  `agent/ToolProvider.kt` seam against `langchain4j-mcp:1.18.1-beta28`:
-  per-server config hardcoded in `Main.kt` (PoC choice — only API keys come
-  from env/`.env`, e.g. the exa server's `EXA_API_KEY`), lazy connect +
-  cached clients (per-request runs share them; a connect failure skips only
-  that server with a 30s retry cooldown), tool names advertised as
-  `{server}_{tool}` (unique `tools` arrays), error policy (server-side
-  `isError` → error tool-result so the model can react; transport failures —
-  connect refused, stdio process death — drop the client, fail the run with
-  a clear SSE `error` event, and reconnect on the next run), graceful close
-  via a JVM shutdown hook in `startWebServer`. Pinned by `McpToolProviderTest`
-  (mock streamable-HTTP + stdio subprocess servers) and
-  `ChatTurnLoopTest`'s end-to-end MCP tool round. Tools in history were
-  already handled: the neutral `tool_call`/`tool_result` id pairing landed
-  with #6.
-- Remaining: #9 (remove koog, final cleanup + docs).
-
-Why: koog's fix turnaround for OpenAI-compatible gateway quirks is too slow
-for this project (e.g. reasoning silently dropped in streaming,
-JetBrains/koog#2148 — we carried a ~350-line client subclass patching such
-bugs), its MCP module is tools-only, and it has no pgvector/RAG ecosystem for
-the planned long-term-memory experiments. langchain4j covers all three and is
-considerably more active.
-
-Rules while the migration is underway:
-
-- Pick up issues in dependency order; each issue body is self-contained
-  (context, file paths, checklists, acceptance criteria).
-- Do NOT add new koog API surface beyond what an issue explicitly asks for.
-  New LLM-facing code follows the langchain4j target design. The only koog
-  code still alive is `llm/FlagTool.kt` (koog-typed example tool, #8/#9).
-- The behaviors documented in "Chat history is turn-loop-managed" and
-  "Streaming execution and recovery" below are **invariants**, not koog
-  accidents — preserved by the langchain4j port (fail-fast history loads,
-  never-store-history-on-failure, retry classification, full-prompt
-  capability checks, injection strip, SSE protocol byte-compatibility, ...).
-
 ## Project
 
 PoC of a chatbot with a memory system, built on PostgreSQL and langchain4j.
@@ -90,8 +14,7 @@ The pieces:
 - **langchain4j** — the LLM framework; streaming via
   `OpenAiStreamingChatModel` built per run by `langchain4j/StreamingChatModelFactory.kt`
   from the catalog's `ModelMetadata`. The conversation-turn machinery is a
-  hand-rolled loop in `agent/ChatTurnLoop.kt` (the old koog strategy graph was
-  custom logic wearing a DSL costume).
+  hand-rolled loop in `agent/ChatTurnLoop.kt`.
 - **ktor HTTP API** (`server/`) — the input loop: `Main.kt` starts the database
   and the API server. One chat run per request: `ChatRunService.prepareRun`
   validates the request (the model is required per message — there is no
@@ -159,8 +82,8 @@ tables), and the serialized format is ours:
 - `chats.history_json` stores a **framework-neutral** JSON array
   (`history/HistoryMessage.kt`): roles system/user/assistant/tool, parts
   text / reasoning / tool_call / tool_result / attachment, plus per-message
-  meta (timestamp, token usage) and `finishReason`. No koog or langchain4j
-  type names cross the DB or the API boundary (`GET /api/chats/{id}/history`
+  meta (timestamp, token usage) and `finishReason`. No framework type names
+  cross the DB or the API boundary (`GET /api/chats/{id}/history`
   serves this format).
 - The neutral list is the canonical in-loop structure: each round builds its
   request from a fresh conversion (`langchain4j/Langchain4jHistoryConverters.kt`
@@ -173,8 +96,9 @@ tables), and the serialized format is ours:
   to empty. The golden-JSON tests in `HistoryCodecTest` pin the neutral format
   and `Langchain4jHistoryConvertersTest` pins the neutral↔langchain4j mapping,
   so a breaking change to either fails in tests first.
-- Existing koog-format rows were **discarded** when the neutral format landed
-  (issue #4 decision for this PoC: fresh DB, no migration path).
+- History rows in any pre-neutral format were **discarded**, not converted
+  (fresh-DB PoC decision): an old `history_json` row fails the fast load
+  rather than being silently reset.
 
 When adding chat features, manipulate history via the turn loop and the
 neutral DTOs rather than inserting message rows directly.

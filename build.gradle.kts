@@ -13,7 +13,6 @@ repositories {
 
 val exposedVersion = "1.3.1"
 val flywayVersion = "13.1.0"
-val koogVersion = "1.1.1"
 val langchain4jVersion = "1.18.1"
 // the MCP module is still on the beta version line while core is GA
 val langchain4jMcpVersion = "1.18.1-beta28"
@@ -35,9 +34,6 @@ dependencies {
 
     implementation("com.zaxxer:HikariCP:7.1.0")
     implementation("org.postgresql:postgresql:42.7.13")
-
-    implementation("ai.koog:koog-agents:$koogVersion")
-    implementation("ai.koog:agents-features-memory:$koogVersion")
 
     implementation("dev.langchain4j:langchain4j-open-ai:$langchain4jVersion")
     // explicit: the reasoning-dialect rewrite wraps JdkHttpClient (the

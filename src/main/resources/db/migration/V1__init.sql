@@ -3,9 +3,8 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- The conversation history is stored in history_json as one JSON array in the
--- project-owned framework-neutral format (history/HistoryMessage.kt); the
--- koog-facing provider converts to/from koog's Message types at the boundary.
--- The whole chat's history is loaded and stored as a single unit.
+-- project-owned framework-neutral format (history/HistoryMessage.kt); the turn
+-- loop reads and writes it as a single unit.
 CREATE TABLE chats
 (
     id           TEXT PRIMARY KEY,
