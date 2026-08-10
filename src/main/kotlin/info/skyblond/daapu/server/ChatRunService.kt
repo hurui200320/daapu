@@ -1,25 +1,19 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
-import info.skyblond.daapu.agent.StreamExecutionCallback
-import info.skyblond.daapu.agent.ToolResultInfo
+import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
+import info.skyblond.daapu.agent.lc4j.executor.Lc4jStreamingExecutor
+import info.skyblond.daapu.agent.lc4j.llm.LLM
+import info.skyblond.daapu.agent.lc4j.llm.LLMCapability
+import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
+import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
 import info.skyblond.daapu.agent.renderSystemPrompt
 import info.skyblond.daapu.agent.runChatTurn
+import info.skyblond.daapu.chat.*
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.SSTMs
 import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
-import info.skyblond.daapu.history.AttachmentContent
-import info.skyblond.daapu.history.AttachmentKind
-import info.skyblond.daapu.history.HistoryCodec
-import info.skyblond.daapu.history.HistoryMessage
-import info.skyblond.daapu.history.HistoryPart
-import info.skyblond.daapu.history.HistoryStore
-import info.skyblond.daapu.history.PostgresHistoryStore
-import info.skyblond.daapu.langchain4j.ModelCapability
-import info.skyblond.daapu.langchain4j.ModelCatalog
-import info.skyblond.daapu.langchain4j.ModelMetadata
-import info.skyblond.daapu.langchain4j.toStreamingChatModel
 import info.skyblond.daapu.mcp.McpToolProvider
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
@@ -37,8 +31,9 @@ import kotlin.io.encoding.Base64
  */
 class ChatRunSetup(
     val chatId: String,
-    val model: ModelMetadata,
-    val parts: List<HistoryPart>,
+    val model: LLM,
+    val parts: List<ChatMessagePart>,
+    val reasoningEffort: String
 )
 
 /**
@@ -59,14 +54,13 @@ class ChatRunService(
     private val toolProvider: McpToolProvider = McpToolProvider(emptyList()),
 ) : AutoCloseable {
 
-    private val apiKey = config.llmApiKey
-    // koog's OpenAIClientSettings defaulted its chat completions path to
-    // "v1/chat/completions", so the runtime always hit
-    // LLM_BASE_URL/v1/chat/completions. langchain4j appends only
-    // "chat/completions" to its baseUrl, so the API root must carry the /v1
-    // prefix to keep hitting the same endpoint.
-    private val modelCatalog = ModelCatalog(config.llmBaseUrl.openAiApiRoot())
-    private val historyStore: HistoryStore = PostgresHistoryStore()
+    private val bifrostProvider = BifrostProvider(
+        id = "bifrost",
+        baseUrl = config.llmBaseUrl.openAiApiRoot(),
+        apiKey = config.llmApiKey
+    )
+    private val modelCatalog = ModelCatalog(bifrostProvider)
+    private val chatStore: ChatStore = PostgresChatStore()
     private val systemPrompt = renderSystemPrompt("Raven", true)
 
     // one run per chat at a time: a chat's history is loaded and stored as a
@@ -80,7 +74,7 @@ class ChatRunService(
     fun models(): List<ModelInfo> = modelCatalog.models.map {
         ModelInfo(
             id = it.id,
-            vision = it.supports(ModelCapability.VisionImage),
+            vision = it.supports(LLMCapability.Input.Vision.Image),
             contextLength = it.contextLength,
             maxOutputTokens = it.maxOutputTokens,
         )
@@ -130,19 +124,7 @@ class ChatRunService(
         }
     }
 
-    /**
-     * The stored history for a chat as the neutral format
-     * ([HistoryMessage]s). The stored JSON is decoded with [HistoryCodec]
-     * before serving, so a corrupt row fails fast with a clear error instead
-     * of leaking invalid JSON to the API. `[]` when the chat doesn't exist yet.
-     */
-    suspend fun history(chatId: String): List<HistoryMessage> = withTransaction {
-        Chats.selectAll()
-            .where { Chats.id eq chatId }
-            .singleOrNull()
-            ?.get(Chats.historyJson)
-            ?: "[]"
-    }.let { HistoryCodec.decodeHistory(chatId, it) }
+    suspend fun history(chatId: String): List<ChatMessage> = chatStore.load(chatId)
 
     /**
      * Validate and map an incoming message. Throws ktor's
@@ -156,17 +138,18 @@ class ChatRunService(
         val model = request.model?.takeIf { it.isNotBlank() }?.let { id ->
             modelCatalog.findModel(id) ?: throw BadRequestException("Unknown model '$id'")
         } ?: throw BadRequestException("model is required")
-        val parts = mutableListOf<HistoryPart>()
-        if (text.isNotBlank()) parts += HistoryPart.Text(text)
+        val parts = mutableListOf<ChatMessagePart>()
+        if (text.isNotBlank()) parts += ChatMessagePart.Text(text)
         request.images.forEach { parts += parseImagePart(it) }
-        return ChatRunSetup(chatId, model, parts)
+        // TODO: hard coded reasoning effort
+        return ChatRunSetup(chatId, model, parts, "high")
     }
 
     /**
      * Serialize a data URL (`data:image/png;base64,...`) into a neutral image
      * attachment part.
      */
-    private fun parseImagePart(image: ImagePart): HistoryPart.Attachment {
+    private fun parseImagePart(image: ImagePart): ChatMessagePart.Attachment {
         val match = dataUrlRegex.matchEntire(image.dataUrl.trim())
             ?: throw BadRequestException("Invalid image data URL")
         val mimeType = match.groupValues[1]
@@ -175,10 +158,9 @@ class ChatRunService(
         // of an opaque gateway error mid-stream
         runCatching { Base64.decode(base64) }
             .getOrElse { throw BadRequestException("Invalid base64 in image data URL") }
-        return HistoryPart.Attachment(
+        return ChatMessagePart.Attachment(
             kind = AttachmentKind.Image,
             content = AttachmentContent.Base64(base64),
-            format = mimeType.substringAfter("image/"),
             mimeType = mimeType,
         )
     }
@@ -230,10 +212,10 @@ class ChatRunService(
         runChatTurn(
             chatId = setup.chatId,
             model = setup.model,
-            streamingChatModel = setup.model.toStreamingChatModel(apiKey),
+            streamingChatModel = setup.model.toStreamingChatModel(setup.reasoningEffort),
             userParts = setup.parts,
             systemPrompt = systemPrompt,
-            historyStore = historyStore,
+            chatStore = chatStore,
             loadMemories = {
                 withTransaction {
                     SSTMs.selectAll()
@@ -243,6 +225,7 @@ class ChatRunService(
             },
             toolProvider = toolProvider,
             callback = streamEventCallback(sendEvent),
+            executor = Lc4jStreamingExecutor()
         )
     }
 
@@ -274,14 +257,14 @@ internal fun String.openAiApiRoot(): String {
 }
 
 /**
- * The [StreamExecutionCallback] that maps turn-loop stream events to SSE
+ * The [StreamingExecutionCallback] that maps turn-loop stream events to SSE
  * events — the contract the frontend (`frontend/src/lib/api.ts`) parses.
  * Extracted from [ChatRunService.runChat] so the exact event payloads can be
  * unit-tested.
  */
 internal fun streamEventCallback(
     sendEvent: suspend (event: String, data: String) -> Unit,
-): StreamExecutionCallback = object : StreamExecutionCallback {
+): StreamingExecutionCallback = object : StreamingExecutionCallback {
     override suspend fun onTextDelta(text: String) {
         sendEvent("text", sseData("delta" to text))
     }
@@ -300,7 +283,7 @@ internal fun streamEventCallback(
         )
     }
 
-    override suspend fun onToolResults(results: List<ToolResultInfo>) {
+    override suspend fun onToolResults(results: List<ChatMessagePart.ToolResult>) {
         // stream tool results as they are produced; the frontend shows
         // them live (the `done` history reload re-renders them anyway)
         results.forEach { result ->
@@ -308,18 +291,25 @@ internal fun streamEventCallback(
                 "tool_result",
                 buildJsonObject {
                     put("id", result.id)
-                    put("name", result.name)
-                    put("content", result.content)
+                    put("name", result.tool)
+                    put("content", result.parts.joinToString("\n") {
+                        when (it) {
+                            is ChatMessagePart.Text -> it.text
+
+                            // TODO: non-text content?
+                            is ChatMessagePart.Attachment -> "Show attachment is not supported yet"
+                        }
+                    })
                     put("isError", result.isError)
                 }.toString()
             )
         }
     }
 
-    override suspend fun onStreamError(error: Throwable) {
+    override suspend fun onStreamError(error: String) {
         // the stream hit a transient error and will be retried
         // frontend should clear the current round (after previous tool call)
-        sendEvent("retry", sseData("message" to (error.message ?: error.toString())))
+        sendEvent("retry", sseData("message" to error))
     }
 }
 

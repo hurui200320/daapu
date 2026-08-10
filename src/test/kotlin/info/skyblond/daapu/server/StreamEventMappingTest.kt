@@ -1,7 +1,7 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.agent.StreamExecutionCallback
-import info.skyblond.daapu.agent.ToolResultInfo
+import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
+import info.skyblond.daapu.chat.ChatMessagePart
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -18,7 +18,7 @@ import kotlin.test.assertEquals
  */
 class StreamEventMappingTest {
 
-    private suspend fun eventsFor(block: suspend (StreamExecutionCallback) -> Unit): List<Pair<String, String>> {
+    private suspend fun eventsFor(block: suspend (StreamingExecutionCallback) -> Unit): List<Pair<String, String>> {
         val emitted = mutableListOf<Pair<String, String>>()
         val callback = streamEventCallback { event, data -> emitted += event to data }
         block(callback)
@@ -75,8 +75,17 @@ class StreamEventMappingTest {
             eventsFor { cb ->
                 cb.onToolResults(
                     listOf(
-                        ToolResultInfo(id = "call_1", name = "flag", content = "true", isError = false),
-                        ToolResultInfo(id = "call_2", name = "search", content = "boom", isError = true),
+                        ChatMessagePart.ToolResult(
+                            id = "call_1",
+                            tool = "flag",
+                            parts = listOf(ChatMessagePart.Text("true")),
+                        ),
+                        ChatMessagePart.ToolResult(
+                            id = "call_2",
+                            tool = "search",
+                            parts = listOf(ChatMessagePart.Text("boom")),
+                            isError = true,
+                        ),
                     )
                 )
             }
@@ -95,7 +104,7 @@ class StreamEventMappingTest {
     @Test
     fun `stream error maps to retry event with the message`() {
         val events = runBlocking {
-            eventsFor { cb -> cb.onStreamError(RuntimeException("upstream hiccup")) }
+            eventsFor { cb -> cb.onStreamError("upstream hiccup") }
         }
         assertEquals(listOf("retry"), events.map { it.first })
         assertEquals("upstream hiccup", str(payload(events[0].second), "message"))

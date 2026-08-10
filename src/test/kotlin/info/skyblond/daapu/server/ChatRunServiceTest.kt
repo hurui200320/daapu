@@ -1,9 +1,9 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
-import info.skyblond.daapu.history.AttachmentContent
-import info.skyblond.daapu.history.AttachmentKind
-import info.skyblond.daapu.history.HistoryPart
+import info.skyblond.daapu.chat.AttachmentContent
+import info.skyblond.daapu.chat.AttachmentKind
+import info.skyblond.daapu.chat.ChatMessagePart
 import io.ktor.server.plugins.BadRequestException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -30,14 +30,14 @@ class ChatRunServiceTest {
     private fun request(
         text: String? = null,
         images: List<String> = emptyList(),
-        model: String = "cerebras/gpt-oss-120b",
+        model: String = "bifrost/cerebras/gpt-oss-120b",
     ) = SendMessageRequest(text = text, images = images.map { ImagePart(it) }, model = model)
 
     @Test
     fun `text only maps to a text part`() {
         val setup = service.prepareRun("chat-1", request(text = "hello"))
-        assertEquals(listOf(HistoryPart.Text("hello")), setup.parts)
-        assertEquals("cerebras/gpt-oss-120b", setup.model.id)
+        assertEquals(listOf(ChatMessagePart.Text("hello")), setup.parts)
+        assertEquals("bifrost/cerebras/gpt-oss-120b", setup.model.id)
     }
 
     @Test
@@ -45,9 +45,8 @@ class ChatRunServiceTest {
         val dataUrl = "data:image/png;base64,AAAA"
         val setup = service.prepareRun("chat-1", request(text = "look", images = listOf(dataUrl)))
         assertEquals(2, setup.parts.size)
-        val attachment = assertIs<HistoryPart.Attachment>(setup.parts[1])
+        val attachment = assertIs<ChatMessagePart.Attachment>(setup.parts[1])
         assertEquals(AttachmentKind.Image, attachment.kind)
-        assertEquals("png", attachment.format)
         assertEquals("image/png", attachment.mimeType)
         assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
     }
@@ -58,7 +57,7 @@ class ChatRunServiceTest {
         // (not the API) decides whether the model can handle it
         val setup = service.prepareRun("chat-1", request(images = listOf("data:image/jpeg;base64,BBBB")))
         assertEquals(1, setup.parts.size)
-        assertIs<HistoryPart.Attachment>(setup.parts[0])
+        assertIs<ChatMessagePart.Attachment>(setup.parts[0])
     }
 
     @Test
@@ -68,9 +67,9 @@ class ChatRunServiceTest {
         // API layer doesn't grow a partial validation that misses history.
         val setup = service.prepareRun(
             "chat-1",
-            request(images = listOf("data:image/png;base64,AAAA"), model = "cerebras/gpt-oss-120b"),
+            request(images = listOf("data:image/png;base64,AAAA"), model = "bifrost/cerebras/gpt-oss-120b"),
         )
-        assertEquals("cerebras/gpt-oss-120b", setup.model.id)
+        assertEquals("bifrost/cerebras/gpt-oss-120b", setup.model.id)
         assertEquals(1, setup.parts.size)
     }
 
@@ -122,7 +121,7 @@ class ChatRunServiceTest {
         // data URLs produced by FileReader are single-line, but folded base64
         // (whitespace-separated) is legal; whitespace must be stripped
         val setup = service.prepareRun("chat-1", request(images = listOf("data:image/png;base64,AAA\nA")))
-        val attachment = assertIs<HistoryPart.Attachment>(setup.parts[0])
+        val attachment = assertIs<ChatMessagePart.Attachment>(setup.parts[0])
         assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
     }
 
@@ -136,7 +135,7 @@ class ChatRunServiceTest {
 
     @Test
     fun `known models are accepted`() {
-        listOf("cerebras/gpt-oss-120b", "cerebras/gemma-4-31b", "novita/google/gemma-4-31b-it")
+        listOf("bifrost/cerebras/gpt-oss-120b", "bifrost/cerebras/gemma-4-31b", "bifrost/novita/google/gemma-4-31b-it")
             .forEach { id ->
                 val setup = service.prepareRun("chat-1", request(text = "hi", model = id))
                 assertEquals(id, setup.model.id)

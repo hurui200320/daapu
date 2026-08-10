@@ -2,6 +2,8 @@ package info.skyblond.daapu
 
 import java.io.File
 
+// TODO: pull config from a jsonc file?
+
 /**
  * Read a configuration value from the process environment first (used by
  * docker compose via `environment:`/`env_file:`), falling back to the local

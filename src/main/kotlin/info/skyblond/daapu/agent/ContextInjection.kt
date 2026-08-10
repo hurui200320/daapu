@@ -1,6 +1,6 @@
 package info.skyblond.daapu.agent
 
-import info.skyblond.daapu.history.HistoryPart
+import info.skyblond.daapu.chat.ChatMessagePart
 import java.io.StringReader
 import java.io.StringWriter
 import java.time.ZonedDateTime
@@ -76,7 +76,7 @@ class ContextInjection {
         sstmUpdated: Boolean,
         eltmUpdated: Boolean,
         memoryList: List<String>
-    ): HistoryPart.Text {
+    ): ChatMessagePart.Text {
         val documentBuilderFactory = DocumentBuilderFactory.newInstance()
         val documentBuilder = documentBuilderFactory.newDocumentBuilder()
         val document = documentBuilder.newDocument()
@@ -120,10 +120,10 @@ class ContextInjection {
         transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes")
         val stringWriter = StringWriter()
         transformer.transform(DOMSource(document), StreamResult(stringWriter))
-        return HistoryPart.Text(stringWriter.toString())
+        return ChatMessagePart.Text(stringWriter.toString())
     }
 
-    fun isInjection(part: HistoryPart.Text): Boolean {
+    fun isInjection(part: ChatMessagePart.Text): Boolean {
         try {
             val validator = schema.newValidator()
             val xmlSource = StreamSource(StringReader(part.text))

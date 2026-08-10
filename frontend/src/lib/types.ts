@@ -1,13 +1,13 @@
 /**
  * Loose mirror of the framework-neutral chat history format the backend
- * serves (see history/HistoryMessage.kt + the golden-format tests in
- * HistoryCodecTest). The `type`/`role` discriminators are our own short
+ * serves (see chat/ChatMessage.kt + the golden-format tests in
+ * ChatCodecTest). The `type`/`role` discriminators are our own short
  * lowercase names — no framework type strings cross the API.
  */
 
-export type Role = 'system' | 'user' | 'assistant' | 'tool'
+export type Role = 'system' | 'user' | 'assistant' | 'tool_result'
 
-export interface HistoryMeta {
+export interface ChatMessageMeta {
   timestamp?: string
   inputTokens?: number
   outputTokens?: number
@@ -15,14 +15,14 @@ export interface HistoryMeta {
   modelId?: string
 }
 
-export interface HistoryMessage {
+export interface ChatMessage {
   role: Role
-  parts: HistoryPart[]
-  meta?: HistoryMeta
+  parts: ChatMessagePart[]
+  meta?: ChatMessageMeta
   finishReason?: string
 }
 
-export type HistoryPart = TextPart | ReasoningPart | ToolCallPart | ToolResultPart | AttachmentPart
+export type ChatMessagePart = TextPart | ReasoningPart | ToolCallPart | ChatToolResultPart | ChatAttachmentPart
 
 export interface TextPart {
   type: 'text'
@@ -42,27 +42,25 @@ export interface ToolCallPart {
   args: string
 }
 
-export interface ToolResultPart {
+export interface ChatToolResultPart {
   type: 'tool_result'
   /** required by the format: the id of the tool_call this result answers */
   id: string
   tool: string
-  parts: HistoryContentPart[]
+  parts: ChatContentPart[]
   isError?: boolean
 }
 
 /** Text and attachments may also appear nested inside a tool_result. */
-export type HistoryContentPart = TextPart | AttachmentPart
+export type ChatContentPart = TextPart | ChatAttachmentPart
 
 export type AttachmentKind = 'image' | 'video' | 'audio' | 'file'
 
-export interface AttachmentPart {
+export interface ChatAttachmentPart {
   type: 'attachment'
   kind: AttachmentKind
   content: AttachmentContent
-  format: string
   mimeType: string
-  fileName?: string
 }
 
 // URL attachment content is deliberately not supported (blocked at the

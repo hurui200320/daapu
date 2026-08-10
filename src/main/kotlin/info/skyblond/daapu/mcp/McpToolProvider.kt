@@ -2,6 +2,7 @@ package info.skyblond.daapu.mcp
 
 import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.agent.tool.ToolSpecification
+import dev.langchain4j.data.message.*
 import dev.langchain4j.exception.ToolArgumentsException
 import dev.langchain4j.exception.ToolExecutionException
 import dev.langchain4j.mcp.client.DefaultMcpClient
@@ -11,17 +12,19 @@ import dev.langchain4j.mcp.client.transport.http.StreamableHttpMcpTransport
 import dev.langchain4j.mcp.client.transport.stdio.StdioMcpTransport
 import info.skyblond.daapu.McpServerConfig
 import info.skyblond.daapu.McpTransportType
-import info.skyblond.daapu.agent.ToolProvider
-import info.skyblond.daapu.agent.ToolResultInfo
+import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
+import info.skyblond.daapu.chat.AttachmentContent
+import info.skyblond.daapu.chat.AttachmentKind
+import info.skyblond.daapu.chat.ChatMessagePart
 import io.github.oshai.kotlinlogging.KotlinLogging
-import java.time.Duration
-import java.util.concurrent.CompletionException
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.time.Duration
+import java.util.concurrent.CompletionException
+import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger("McpToolProvider")
 
@@ -99,32 +102,65 @@ class McpToolProvider(
         return advertised
     }
 
-    override suspend fun execute(request: ToolExecutionRequest): ToolResultInfo {
+    override suspend fun execute(request: ToolExecutionRequest): ChatMessagePart.ToolResult {
         val advertisedName = request.name()
-        val (serverName, rawName) = toolOwners[advertisedName] ?: return ToolResultInfo(
-            id = request.id(),
-            name = advertisedName,
-            content = "Error: tool '$advertisedName' is not advertised by any configured MCP server.",
-            isError = true,
+        val (serverName, rawName) = toolOwners[advertisedName] ?: return errorResult(
+            request.id(), advertisedName,
+            "tool '$advertisedName' is not advertised by any configured MCP server."
         )
-        val client = clients[serverName] ?: return ToolResultInfo(
-            id = request.id(),
-            name = advertisedName,
-            content = "Error: MCP server '$serverName' is not connected (it may have failed earlier; " +
-                    "the next chat run will try to reconnect).",
-            isError = true,
+        val client = clients[serverName] ?: return errorResult(
+            request.id(), advertisedName,
+            "MCP server '$serverName' is not connected " +
+                    "(it may have failed earlier; the next chat run will try to reconnect)."
+
         )
         return try {
             val result = withContext(Dispatchers.IO) {
                 client.executeTool(request.toBuilder().name(rawName).build())
             }
-            ToolResultInfo(
+            ChatMessagePart.ToolResult(
                 id = request.id(),
-                name = advertisedName,
+                tool = advertisedName,
                 // blank results become a placeholder: a stored tool message
                 // with empty content is a risk with strict providers
-                content = result.resultText()?.takeIf { it.isNotBlank() } ?: "(the tool returned no text content)",
-                isError = result.isError(),
+                parts = result.resultContents()?.mapNotNull {
+                    when (it) {
+                        // blank text contents are dropped: an empty text part
+                        // stores nothing useful and may trip strict providers
+                        is TextContent -> ChatMessagePart.Text(it.text())
+                            .takeIf { text -> text.text.isNotBlank() }
+
+                        is ImageContent -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.Image,
+                            content = AttachmentContent.Base64(it.image().base64Data()),
+                            mimeType = it.image().mimeType()
+                        )
+
+                        is VideoContent -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.Video,
+                            content = AttachmentContent.Base64(it.video().base64Data()),
+                            mimeType = it.video().mimeType()
+                        )
+
+                        is AudioContent -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.Audio,
+                            content = AttachmentContent.Base64(it.audio().base64Data()),
+                            mimeType = it.audio().mimeType()
+                        )
+
+                        is PdfFileContent -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.File,
+                            content = AttachmentContent.Base64(it.pdfFile().base64Data()),
+                            mimeType = it.pdfFile().mimeType()
+                        )
+
+                        else -> error("Unknown content (${it.javaClass}): $it")
+                    }
+                    // no contents at all, or nothing but blank text: placeholder
+                }?.takeIf { it.isNotEmpty() } ?: listOf(
+                    ChatMessagePart.Text("(the tool returned no text content)")
+                ),
+                isError = result.isError,
             )
         } catch (e: CancellationException) {
             throw e
@@ -141,27 +177,36 @@ class McpToolProvider(
             }
             // server-side failure (isError result, JSON-RPC error response):
             // the model gets the error text and can react in the next round
-            errorResult(request, advertisedName, e.message ?: "the tool failed")
+            errorResult(request.id(), advertisedName, e.message ?: "the tool failed")
         } catch (e: ToolArgumentsException) {
             // the model's arguments were rejected (parse failure or -32602):
             // the model can fix them on the next attempt
-            errorResult(request, advertisedName, e.message ?: "the tool rejected the arguments")
+            errorResult(
+                request.id(),
+                advertisedName,
+                e.message ?: "the tool rejected the arguments"
+            )
         } catch (e: McpException) {
-            errorResult(request, advertisedName, e.message ?: "MCP protocol error")
+            errorResult(request.id(), advertisedName, e.message ?: "MCP protocol error")
         } catch (e: RuntimeException) {
             // anything else escaping the client, e.g. a malformed response
             // ("Result contains neither 'result' nor 'error' element"): a
             // server-side failure the model can be told about
-            errorResult(request, advertisedName, e.message ?: "the tool call failed")
+            errorResult(request.id(), advertisedName, e.message ?: "the tool call failed")
         }
     }
 
-    private fun errorResult(request: ToolExecutionRequest, name: String, errorMessage: String) = ToolResultInfo(
-        id = request.id(),
-        name = name,
-        content = "Error: $errorMessage",
-        isError = true,
-    )
+    private fun errorResult(id: String, name: String, errorMessage: String) =
+        ChatMessagePart.ToolResult(
+            id = id, tool = name,
+            parts = listOf(
+                ChatMessagePart.Text(
+                    "Error: $errorMessage"
+                )
+            ),
+            isError = true,
+        )
+
 
     /**
      * Whether a [ToolExecutionException] means the MCP transport itself died
@@ -222,7 +267,7 @@ class McpToolProvider(
                 lastConnectFailureMs[config.name] = nowMillis()
                 logger.warn(t) {
                     "MCP server '${config.name}' is unavailable; its tools are not advertised. " +
-                        "A later chat run will retry."
+                            "A later chat run will retry."
                 }
                 null
             }
@@ -244,7 +289,13 @@ class McpToolProvider(
         val builder = DefaultMcpClient.builder()
             .key(config.name)
             .transport(transport)
-        config.initializationTimeoutSeconds?.let { builder.initializationTimeout(Duration.ofSeconds(it)) }
+        config.initializationTimeoutSeconds?.let {
+            builder.initializationTimeout(
+                Duration.ofSeconds(
+                    it
+                )
+            )
+        }
         config.toolExecutionTimeoutSeconds?.let { builder.toolExecutionTimeout(Duration.ofSeconds(it)) }
         return builder.build()
     }

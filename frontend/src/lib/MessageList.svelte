@@ -1,11 +1,11 @@
 <script lang="ts">
   import { renderMarkdown } from './markdown'
   import type {
-    AttachmentPart,
-    HistoryMessage,
-    HistoryPart,
+    ChatAttachmentPart,
+    ChatMessage,
+    ChatMessagePart,
     ReasoningPart,
-    ToolResultPart,
+    ChatToolResultPart,
   } from './types'
 
   let {
@@ -18,7 +18,7 @@
     retrying = false,
     streamError = null,
   }: {
-    messages: HistoryMessage[]
+    messages: ChatMessage[]
     streaming: boolean
     streamReasoning?: string
     streamText?: string
@@ -28,7 +28,7 @@
     streamError?: string | null
   } = $props()
 
-  function imageSrc(part: AttachmentPart): string | null {
+  function imageSrc(part: ChatAttachmentPart): string | null {
     const content = part.content
     if (content.type === 'base64' && content.base64) {
       return `data:${part.mimeType};base64,${content.base64}`
@@ -36,7 +36,7 @@
     return null
   }
 
-  function isImage(part: HistoryPart): part is AttachmentPart {
+  function isImage(part: ChatMessagePart): part is ChatAttachmentPart {
     return part.type === 'attachment' && part.kind === 'image'
   }
 
@@ -48,7 +48,7 @@
    * A tool result carries its text as nested text parts; join those instead
    * of dumping the raw JSON.
    */
-  function toolResultText(part: ToolResultPart): string {
+  function toolResultText(part: ChatToolResultPart): string {
     return part.parts.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('')
   }
 </script>

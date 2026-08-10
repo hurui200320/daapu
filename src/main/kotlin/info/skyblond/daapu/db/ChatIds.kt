@@ -15,5 +15,6 @@ const val DEFAULT_USER_ID = "0"
  * the same millisecond by the same user colliding. The id is only ever stored
  * as a string and used as the `chats` primary key, never parsed.
  */
+// TODO: remove default value when we have user system
 fun newChatId(userId: String = DEFAULT_USER_ID): String =
     "${System.currentTimeMillis()}-$userId-${Random.nextInt(0, Int.MAX_VALUE)}"

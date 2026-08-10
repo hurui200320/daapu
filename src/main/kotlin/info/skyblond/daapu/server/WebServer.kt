@@ -2,7 +2,7 @@ package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
 import info.skyblond.daapu.McpServerConfig
-import info.skyblond.daapu.history.HistoryCodec
+import info.skyblond.daapu.chat.ChatCodec
 import info.skyblond.daapu.mcp.McpToolProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.ContentType
@@ -119,7 +119,7 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                 }
                 get("/{chatId}/history") {
                     val history = service.history(call.chatIdParam())
-                    call.respondText(HistoryCodec.encodeHistory(history), ContentType.Application.Json)
+                    call.respondText(ChatCodec.encodeChat(history), ContentType.Application.Json)
                 }
                 post("/{chatId}/messages") {
                     handleChatMessage(call, service)

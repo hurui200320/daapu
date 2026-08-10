@@ -1,29 +1,21 @@
 package info.skyblond.daapu.agent
 
-import dev.langchain4j.exception.HttpException
-import dev.langchain4j.model.chat.response.ChatResponse
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel
-import info.skyblond.daapu.history.AttachmentKind
-import info.skyblond.daapu.history.HistoryMessage
-import info.skyblond.daapu.history.HistoryPart
-import info.skyblond.daapu.history.HistoryRole
-import info.skyblond.daapu.history.HistoryStore
-import info.skyblond.daapu.langchain4j.ModelMetadata
-import info.skyblond.daapu.langchain4j.StreamSignal
-import info.skyblond.daapu.langchain4j.checkPromptContentCapabilities
-import info.skyblond.daapu.langchain4j.findErrorChunk
-import info.skyblond.daapu.langchain4j.streamSignals
-import info.skyblond.daapu.langchain4j.toLangchain4jMessages
-import info.skyblond.daapu.langchain4j.toNeutralAssistantMessage
-import info.skyblond.daapu.langchain4j.withGeneratedToolCallIds
+import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
+import info.skyblond.daapu.agent.executor.StreamingExecutionResult
+import info.skyblond.daapu.agent.executor.StreamingExecutor
+import info.skyblond.daapu.agent.lc4j.llm.LLM
+import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
+import info.skyblond.daapu.chat.ChatMessage
+import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.chat.ChatMessageRole
+import info.skyblond.daapu.chat.ChatStore
 import io.github.oshai.kotlinlogging.KotlinLogging
-import java.time.ZonedDateTime
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
+import java.time.ZonedDateTime
 
 private val logger = KotlinLogging.logger("ChatTurnLoop")
 
@@ -32,33 +24,48 @@ private const val BACKOFF_BASE_MS = 100L
 private const val BACKOFF_MAX_EXPONENT = 6
 
 /**
+ * The model cannot handle content present in the prompt. This is a
+ * deterministic failure: the same prompt with the same model fails
+ * identically forever.
+ */
+class ModelCapabilityException(message: String) : Exception(message)
+
+fun checkPromptContentCapabilities(
+    chat: List<ChatMessage>,
+    model: LLM,
+) {
+    chat.flatMap { message ->
+        // attachments can also arrive nested inside tool results (e.g. an MCP
+        // tool returning an image), so descend into the result parts too
+        message.parts.flatMap { part ->
+            when (part) {
+                is ChatMessagePart.ToolResult -> part.parts
+                else -> listOf(part)
+            }
+        }
+    }
+        .filterIsInstance<ChatMessagePart.Attachment>()
+        .map { it.kind }
+        .toSet()
+        .forEach { kind ->
+            if (!model.supportAttachmentKind(kind)) {
+                throw ModelCapabilityException(
+                    "Model ${model.id} does not support ${kind.name.lowercase()} content."
+                )
+            }
+        }
+}
+
+/**
  * Run one chat turn on langchain4j, replacing the old koog strategy graph.
  *
- * The neutral history ([HistoryMessage]s) is the canonical in-loop structure:
- * it is loaded from [historyStore], extended with the injected user message
+ * The neutral history ([ChatMessage]s) is the canonical in-loop structure:
+ * it is loaded from [chatStore], extended with the injected user message
  * and each accepted round's messages, and — only when the whole turn
  * succeeded — stripped of the per-turn XML injection and stored back. A
- * failed or aborted run never reaches [HistoryStore.store], so history stays
+ * failed or aborted run never reaches [ChatStore.store], so history stays
  * at the last good state.
  *
- * Round loop (invariants ported from the koog strategy, see AGENTS.md):
- * 1. Pre-send: refresh the system prompt in place, prepend the XML injection
- *    to the new user message, and check the FULL prompt (loaded history + new
- *    input — images can re-enter from history after a model switch) against
- *    the model's capabilities before any LLM request.
- * 2. Stream the round (deltas forwarded to [callback] live). Before
- *    accepting anything: scan the raw SSE events for a mid-stream
- *    `{"error": ...}` chunk (spike #2 — a numeric code becomes an
- *    [HttpException] so the retry policy classifies it, a code-less chunk is
- *    transient), then treat a missing `finish_reason` as a truncated stream
- *    (spike #1 — langchain4j silently accepts clean EOF without one).
- * 3. Classify ([classifyStreamResult]): accept only non-blank text or tool
- *    calls; `length` routes by the usage math; named empty reasons fail the
- *    run; reason-less empties are transient.
- * 4. Transient failures ([isRetryableStreamError]) retry forever with
- *    exponential backoff; permanent ones fail the run.
- * 5. Accepted tool calls execute via [toolProvider] (results appended as
- *    `tool` messages), then the next round starts with the extended history.
  *
  * The injection is identified by XSD validation ([ContextInjection.isInjection])
  * and stripped only from the latest user message after the round (user input
@@ -66,14 +73,15 @@ private const val BACKOFF_MAX_EXPONENT = 6
  */
 suspend fun runChatTurn(
     chatId: String,
-    model: ModelMetadata,
+    model: LLM,
     streamingChatModel: OpenAiStreamingChatModel,
-    userParts: List<HistoryPart>,
+    userParts: List<ChatMessagePart>,
     systemPrompt: String,
-    historyStore: HistoryStore,
+    chatStore: ChatStore,
     loadMemories: suspend () -> List<String>,
     toolProvider: ToolProvider,
-    callback: StreamExecutionCallback,
+    callback: StreamingExecutionCallback,
+    executor: StreamingExecutor
 ) {
     val contextInjection = ContextInjection()
 
@@ -81,9 +89,15 @@ suspend fun runChatTurn(
     // user input would leave a lone injection message in history
     require(userParts.isNotEmpty()) { "Empty user message is not allowed" }
 
-    var history = historyStore.load(chatId)
+    var history = chatStore.load(chatId)
     history = history.refreshSystemPrompt(systemPrompt)
-    logAssistantTokenCount(history)
+
+    // TODO: pre-round compaction (detect topic? or just compaction?)
+    history.lastOrNull { it.role == ChatMessageRole.Assistant }?.meta?.let { meta ->
+        meta.totalTokens?.let { logger.info { "Usage so far: total:  $it" } }
+        meta.inputTokens?.let { logger.info { "Usage so far: input:  $it" } }
+        meta.outputTokens?.let { logger.info { "Usage so far: output: $it" } }
+    }
 
     // TODO: add a class for memories, use lock to block all readers when memory
     //       is too long and triggers compaction. Hold the lock until done.
@@ -97,155 +111,93 @@ suspend fun runChatTurn(
         eltmUpdated = false,
         memoryList = memories,
     )
-    history = history + HistoryMessage(
-        role = HistoryRole.User,
+    history = history + ChatMessage(
+        role = ChatMessageRole.User,
         parts = listOf(injection) + userParts,
     )
 
-    // the prompt is complete (history + system + new input): check the model
-    // can actually process its content. Images can come from history (stored
-    // when a vision model was used), not just from the request, so this must
-    // be checked on the full prompt rather than on the request alone.
-    checkPromptContentCapabilities(history.attachmentKinds(), model)
-
     var attempts = 0L
     while (true) {
-        val completed: StreamExecutionResult.Completed = try {
-            streamRoundOnce(streamingChatModel, history, toolProvider, callback, model)
-        } catch (t: Throwable) {
-            // the retry policy lives in isRetryableStreamError (unit-tested)
-            if (isRetryableStreamError(t)) {
-                callback.onStreamError(t)
-                logger.error(t) { "Error during execution, retrying..." }
+        // the prompt is complete (history + system + new input + any tool
+        // results from earlier rounds of this run): check the model can
+        // process its content before every request. Images can come from the
+        // request, from stored history (sent to a vision model earlier, then
+        // the chat switches to a text-only model), or from tool results
+        // (e.g. an MCP tool returning an image) — so the check must run per
+        // round against the current prompt, not once on the request alone.
+        checkPromptContentCapabilities(history, model)
+        val result = executor.executeOnce(
+            model = streamingChatModel,
+            modelContextLength = model.contextLength,
+            modelMaxOutputTokens = model.maxOutputTokens,
+            chat = history,
+            toolProvider = toolProvider,
+            callback = callback
+        )
+        when (result) { // TODO: http error like 429 rate limited? classified to EmptyTransient?
+            is StreamingExecutionResult.Completed -> {
+                // add to the history
+                history = history + result.assistant
+                // handle tool calls
+                if (result.toolCallRequests.isNotEmpty()) {
+                    // tool loop skeleton: execute each call in parallel,
+                    // stream the results, and run the next round with them appended
+                    val results = coroutineScope {
+                        result.toolCallRequests.map { request ->
+                            async { toolProvider.execute(request) }
+                        }.awaitAll()
+                    }
+                    callback.onToolResults(results)
+                    // add tool results to the history
+                    history = history + results.map { result ->
+                        ChatMessage(
+                            role = ChatMessageRole.ToolResult,
+                            parts = listOf(result),
+                        )
+                    }
+                } else {
+                    // no tool calls, end the turn
+                    break
+                }
+            }
+
+            // the prompt crowds the context window: compact to free output room, then retry
+            StreamingExecutionResult.ContextExhausted -> TODO("Compaction not implemented")
+
+            // the output cap bound on its own: compaction cannot help, fail the run
+            StreamingExecutionResult.OutputBudgetExhausted -> error(
+                "The model exhausted its output budget without producing usable content " +
+                        "while context is not exhausted. This suggest the model cannot " +
+                        "fulfill the request with the given output limit. Either give " +
+                        "a bigger output limit, or turn down the reasoning effort " +
+                        "(or thinking budget, whatever it calls), or change a model"
+            )
+
+            // the provider ended the response deliberately (e.g. content_filter):
+            // retrying the identical prompt would spin forever, fail the run
+            is StreamingExecutionResult.EmptyPermanent -> error(
+                "Stream completed with finish_reason=${result.finishReason} " +
+                        "but no usable content. The provider ended the response " +
+                        "deliberately, so retrying the identical prompt would spin " +
+                        "forever. Rephrase the message, or change the model/provider."
+            )
+
+            // empty result without a finish reason, network blip, should retry
+            StreamingExecutionResult.EmptyTransient -> {
+                callback.onStreamError(
+                    "Stream ended without a finish_reason, will retry (attempt ${attempts + 1})"
+                )
+                logger.warn { "Streaming completed with no clear finish reason, retrying..." }
                 val exponent = attempts.coerceAtMost(BACKOFF_MAX_EXPONENT.toLong())
                 delay(BACKOFF_BASE_MS shl exponent.toInt())
                 attempts++
-                if (attempts % 10L == 0L) {
-                    logger.warn { "Execution still failing after $attempts attempts (latest: ${t.message})" }
-                }
-                continue
-            } else throw t
-        }
-
-        // accepted: the assistant message keeps its reasoning part in stored
-        // history (reasoning stays visible for debugging); the gateway's
-        // reasoning field is re-sent on later requests via sendThinking.
-        val assistant = completed.assistant.withGeneratedToolCallIds()
-        history = history + completed.response.toNeutralAssistantMessage(assistant)
-
-        if (completed.hasToolCall()) {
-            // tool loop skeleton: execute each call in parallel (the MCP
-            // feature #8 only adds a real provider), stream the results, and
-            // run the next round with them appended
-            val results = coroutineScope {
-                assistant.toolExecutionRequests().map { request ->
-                    async { toolProvider.execute(request) }
-                }.awaitAll()
             }
-            callback.onToolResults(results)
-            history = history + results.toNeutralToolMessages()
-        } else {
-            break
         }
     }
 
     // only the success path stores: a failed run never reaches here
     history = history.stripInjection(contextInjection)
-    historyStore.store(chatId, history)
-}
-
-/**
- * Stream one round and classify the result, throwing for every non-accepted
- * outcome. The retry policy in the caller decides which throws are retried.
- */
-private suspend fun streamRoundOnce(
-    streamingChatModel: OpenAiStreamingChatModel,
-    history: List<HistoryMessage>,
-    toolProvider: ToolProvider,
-    callback: StreamExecutionCallback,
-    model: ModelMetadata,
-): StreamExecutionResult.Completed {
-    val response = streamingChatModel
-        .streamSignals(history.toLangchain4jMessages(), toolProvider.specifications())
-        .collectSignals(callback)
-
-    // spike #2: some gateways deliver errors as a mid-stream SSE
-    // {"error": ...} chunk after a 2xx response; langchain4j completes the
-    // stream normally and keeps the chunk in rawServerSentEvents(). Without
-    // this scan the response would look usable (non-blank text, no finish
-    // reason) and would be accepted. A numeric code becomes an HttpException
-    // (the retry policy walks the cause chain for the status); a code-less
-    // chunk is transient, matching the old koog client.
-    response.findErrorChunk()?.let { (code, data) ->
-        throw if (code != null) {
-            HttpException(code, data)
-        } else {
-            MidStreamErrorChunkException("Gateway sent a mid-stream error chunk: $data")
-        }
-    }
-
-    // spike #1: langchain4j has no requireEndFrame equivalent — a stream that
-    // ends without a finish_reason (clean EOF, or an unknown finish reason
-    // mapped to null) completes silently, so the truncation detection is ours.
-    if (response.finishReason() == null) {
-        throw EmptyStreamResponseException(
-            "Stream ended without a finish_reason (truncated stream or unknown finish reason)"
-        )
-    }
-
-    return when (val result = classifyStreamResult(response, model.contextLength, model.maxOutputTokens)) {
-        is StreamExecutionResult.Completed -> result
-
-        // the prompt crowds the context window: compact to free output room,
-        // then retry (compaction is a TODO, so this is unrecoverable for now)
-        StreamExecutionResult.ContextExhausted -> throw IllegalStateException(
-            "The prompt is crowding the context window (prompt tokens > " +
-                    "contextLength - maxOutputTokens), so the model ran out of output " +
-                    "room. History compaction is not implemented yet, making context " +
-                    "exhaustion unrecoverable: start a new chat or shorten the prompt."
-        )
-
-        // the output cap bound on its own: compaction cannot help, fail the run
-        StreamExecutionResult.OutputBudgetExhausted -> throw OutputExhaustionException(
-            "The model exhausted its output budget without producing usable content " +
-                    "while context is not exhausted. This suggest the model cannot " +
-                    "fulfill the request with the given output limit. Either give " +
-                    "a bigger output limit, or turn down the reasoning effort " +
-                    "(or thinking budget, whatever it calls), or change a model"
-        )
-
-        // the provider ended the response deliberately (e.g. content_filter):
-        // retrying the identical prompt would spin forever, fail the run
-        is StreamExecutionResult.EmptyPermanent -> throw EmptyPermanentResponseException(
-            "Stream completed with finish_reason=${result.finishReason} " +
-                    "but no usable content. The provider ended the response " +
-                    "deliberately, so retrying the identical prompt would spin " +
-                    "forever. Rephrase the message, or change the model/provider."
-        )
-
-        // only reachable if the truncation check above is ever relaxed
-        StreamExecutionResult.EmptyTransient -> throw EmptyStreamResponseException(
-            "Stream completed with no usable content (finishReason=${response.finishReason()})"
-        )
-    }
-}
-
-/**
- * Collect the streaming signals, forwarding deltas to [callback], returning
- * the final response or rethrowing the failure.
- */
-private suspend fun Flow<StreamSignal>.collectSignals(callback: StreamExecutionCallback): ChatResponse {
-    var result: ChatResponse? = null
-    collect { signal ->
-        when (signal) {
-            is StreamSignal.TextDelta -> callback.onTextDelta(signal.text)
-            is StreamSignal.ThinkingDelta -> callback.onReasoningDelta(signal.text)
-            is StreamSignal.ToolCallDone -> callback.onToolCall(signal.name, signal.args)
-            is StreamSignal.Completed -> result = signal.response
-            is StreamSignal.Failed -> throw signal.error
-        }
-    }
-    return result ?: error("Streaming round ended without a terminal signal")
+    chatStore.store(chatId, history)
 }
 
 /**
@@ -254,39 +206,19 @@ private suspend fun Flow<StreamSignal>.collectSignals(callback: StreamExecutionC
  * version before execution (identical text hits the provider cache), and a
  * missing system message is inserted at the front.
  */
-private fun List<HistoryMessage>.refreshSystemPrompt(systemPrompt: String): List<HistoryMessage> {
-    val refreshed = mapIndexedNotNull { index, message ->
-        when {
-            message.role == HistoryRole.System && index == 0 ->
-                message.copy(parts = listOf(HistoryPart.Text(systemPrompt)))
-            message.role == HistoryRole.System -> null
+private fun List<ChatMessage>.refreshSystemPrompt(systemPrompt: String): List<ChatMessage> {
+    val parts = listOf(ChatMessagePart.Text(systemPrompt))
+    val stripped = mapNotNull { message ->
+        when { // remove all system message
+            message.role == ChatMessageRole.System -> null
             else -> message
         }
     }
-    return if (refreshed.firstOrNull()?.role == HistoryRole.System) {
-        refreshed
-    } else {
-        listOf(HistoryMessage(role = HistoryRole.System, parts = listOf(HistoryPart.Text(systemPrompt)))) + refreshed
-    }
+    // re-append
+    return listOf(
+        ChatMessage(role = ChatMessageRole.System, parts = parts)
+    ) + stripped
 }
-
-// TODO: pre-round compaction (detect topic? or just compaction?) — currently
-//       only logs the last assistant message's token count.
-private fun logAssistantTokenCount(history: List<HistoryMessage>) {
-    val totalTokens = history.lastOrNull { it.role == HistoryRole.Assistant }?.meta?.totalTokens ?: return
-    if (totalTokens > 0) logger.info { "Last assistant message token total: $totalTokens" }
-}
-
-/**
- * The attachment kinds present in the top-level parts of the full prompt
- * (loaded history + new input). Mirrors the old koog check, which also
- * scanned only top-level message parts.
- */
-private fun List<HistoryMessage>.attachmentKinds(): Set<AttachmentKind> =
-    flatMap { it.parts }
-        .filterIsInstance<HistoryPart.Attachment>()
-        .map { it.kind }
-        .toSet()
 
 /**
  * Remove the latest user message's injection part. Only the latest matching
@@ -294,28 +226,16 @@ private fun List<HistoryMessage>.attachmentKinds(): Set<AttachmentKind> =
  * message may legitimately contain injection-shaped XML (validated against
  * the XSD, so user text that merely resembles the injection is kept).
  */
-private fun List<HistoryMessage>.stripInjection(contextInjection: ContextInjection): List<HistoryMessage> {
-    val index = indexOfLast { message ->
-        message.role == HistoryRole.User
+private fun List<ChatMessage>.stripInjection(contextInjection: ContextInjection): List<ChatMessage> {
+    val matchedIndex = indexOfLast { message ->
+        message.role == ChatMessageRole.User
                 && message.parts.size > 1
-                && message.parts.first() is HistoryPart.Text
-                && contextInjection.isInjection(message.parts.first() as HistoryPart.Text)
+                && message.parts.first() is ChatMessagePart.Text
+                && contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text)
     }
-    if (index < 0) return this
-    val message = this[index]
-    return toMutableList().also { it[index] = message.copy(parts = message.parts.drop(1)) }
-}
-
-private fun List<ToolResultInfo>.toNeutralToolMessages(): List<HistoryMessage> = map { result ->
-    HistoryMessage(
-        role = HistoryRole.Tool,
-        parts = listOf(
-            HistoryPart.ToolResult(
-                id = result.id,
-                tool = result.name,
-                parts = listOf(HistoryPart.Text(result.content)),
-                isError = result.isError,
-            )
-        ),
-    )
+    if (matchedIndex < 0) return this
+    return mapIndexed { index, message ->
+        if (matchedIndex != index) message
+        else message.copy(parts = message.parts.drop(1))
+    }
 }

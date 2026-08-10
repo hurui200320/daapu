@@ -4,6 +4,7 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.exception.ToolExecutionException
 import info.skyblond.daapu.McpServerConfig
 import info.skyblond.daapu.McpTransportType
+import info.skyblond.daapu.chat.ChatMessagePart
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.CompletionException
@@ -75,8 +76,8 @@ class McpToolProviderTest {
                 provider.execute(request("call-1", "calc_add", """{"a":1,"b":2}"""))
             }
             assertEquals("call-1", result.id)
-            assertEquals("calc_add", result.name)
-            assertEquals("1 + 2 = 3", result.content)
+            assertEquals("calc_add", result.tool)
+            assertEquals("1 + 2 = 3", result.text())
             assertFalse(result.isError)
             // the server saw the RAW tool name and the parsed arguments
             val (rawName, args) = server.toolCalls.single()
@@ -97,7 +98,7 @@ class McpToolProviderTest {
             runBlocking { provider.specifications() }
             val result = runBlocking { provider.execute(request("call-1", "calc_boom", "{}")) }
             assertTrue(result.isError, "the error must be surfaced as an error tool result")
-            assertTrue(result.content.contains("exploded"))
+            assertTrue(result.text().contains("exploded"))
             assertEquals("call-1", result.id, "the result must stay paired with its call id")
         } finally {
             provider.close()
@@ -114,7 +115,7 @@ class McpToolProviderTest {
             // a model hallucinating a tool name that is not advertised
             val result = runBlocking { provider.execute(request("call-1", "calc_nonexistent", "{}")) }
             assertTrue(result.isError)
-            assertTrue(result.content.contains("not advertised"))
+            assertTrue(result.text().contains("not advertised"))
             assertTrue(server.toolCalls.isEmpty(), "no server call must be made")
         } finally {
             provider.close()
@@ -131,7 +132,29 @@ class McpToolProviderTest {
             // malformed JSON arguments: the client throws ToolArgumentsException
             val result = runBlocking { provider.execute(request("call-1", "calc_add", "not json")) }
             assertTrue(result.isError)
-            assertTrue(result.content.startsWith("Error:"))
+            assertTrue(result.text().isNotBlank(), "the failure reason must reach the model")
+        } finally {
+            provider.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun `blank text result becomes the no-content placeholder`() {
+        // a stored tool message with empty content is a risk with strict
+        // providers: blank text is dropped and the placeholder stands in
+        val server = MockMcpServer(
+            listOf(MockTool(name = "blank", description = "returns nothing", handler = { MockToolReply("") }))
+        )
+        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        try {
+            runBlocking { provider.specifications() }
+            val result = runBlocking { provider.execute(request("call-1", "calc_blank", "{}")) }
+            assertFalse(result.isError)
+            assertEquals(
+                listOf(ChatMessagePart.Text("(the tool returned no text content)")),
+                result.parts,
+            )
         } finally {
             provider.close()
             server.close()
@@ -168,7 +191,7 @@ class McpToolProviderTest {
                 val result = runBlocking {
                     provider.execute(request("call-2", "calc_echo", """{"text":"hi"}"""))
                 }
-                assertEquals("hi", result.content)
+                assertEquals("hi", result.text())
                 assertFalse(result.isError)
             } finally {
                 restarted.close()
@@ -214,7 +237,7 @@ class McpToolProviderTest {
             val specs = runBlocking { provider.specifications() }
             assertEquals(listOf("good_echo"), specs.map { it.name() }, "only the reachable server's tools are advertised")
             val result = runBlocking { provider.execute(request("call-1", "good_echo", """{"text":"hi"}""")) }
-            assertEquals("hi", result.content)
+            assertEquals("hi", result.text())
             assertFalse(result.isError)
         } finally {
             provider.close()
@@ -283,7 +306,7 @@ class McpToolProviderTest {
             assertEquals(listOf("local_echo", "local_die"), runBlocking { provider.specifications() }.map { it.name() })
             assertEquals(2, countFile.readLines().count { it == "initialize" }, "a fresh subprocess must be spawned")
             val result = runBlocking { provider.execute(request("call-2", "local_echo", """{"text":"hello"}""")) }
-            assertEquals("hello", result.content)
+            assertEquals("hello", result.text())
         } finally {
             provider.close()
             countFile.delete()
@@ -328,6 +351,10 @@ class McpToolProviderTest {
 
     private fun request(id: String, name: String, argsJson: String): ToolExecutionRequest =
         ToolExecutionRequest.builder().id(id).name(name).arguments(argsJson).build()
+
+    /** The tool result's text content, joined like the SSE `tool_result` event. */
+    private fun ChatMessagePart.ToolResult.text(): String =
+        parts.filterIsInstance<ChatMessagePart.Text>().joinToString("") { it.text }
 
     private fun addTool(): MockTool = MockTool(
         name = "add",

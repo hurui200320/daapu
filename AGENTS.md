@@ -12,9 +12,12 @@ The pieces:
 - **PostgreSQL with pgvector** — accessed through Exposed, schema managed by
   Flyway migrations in `src/main/resources/db/migration/`.
 - **langchain4j** — the LLM framework; streaming via
-  `OpenAiStreamingChatModel` built per run by `langchain4j/StreamingChatModelFactory.kt`
-  from the catalog's `ModelMetadata`. The conversation-turn machinery is a
-  hand-rolled loop in `agent/ChatTurnLoop.kt`.
+  `OpenAiStreamingChatModel` built per run by `LLM.toStreamingChatModel`
+  (`agent/lc4j/llm/LLM.kt`) from the catalog's `LLM`. langchain4j-coupled
+  code lives under `agent/lc4j/` (`chat/` converters, `executor/` the
+  streaming bridge and round executor, `llm/` the catalog and model
+  metadata, `provider/` gateway config, `tool/` the tool-loop seam). The
+  conversation-turn machinery is a hand-rolled loop in `agent/ChatTurnLoop.kt`.
 - **ktor HTTP API** (`server/`) — the input loop: `Main.kt` starts the database
   and the API server. One chat run per request: `ChatRunService.prepareRun`
   validates the request (the model is required per message — there is no
@@ -22,13 +25,13 @@ The pieces:
   request (cheap — it holds configuration only, no connections, so
   per-request model selection has no shared state) and runs the turn loop; the
   model catalog, the history store, and the system prompt are built once and
-  shared. Stream progress reaches the client via a `StreamExecutionCallback`
+  shared. Stream progress reaches the client via a `StreamingExecutionCallback`
   implementation that writes SSE events (`server/WebServer.kt`), including
   `tool_result` events emitted when the loop appends locally-executed tool
   results back to the prompt. Memory CRUD lives in a separate `SstmService`
   (the turn loop's context injection reads the `sstms` table directly).
   Per-chat `Mutex` guards concurrent runs (409), and deleting a chat takes the
-  same lock: `PostgresHistoryStore.store` is an upsert, so deleting mid-run
+  same lock: `chat/PostgresChatStore.store` is an upsert, so deleting mid-run
   would let the in-flight run resurrect the row. Lock entries are created
   atomically with the `tryLock` (`ConcurrentHashMap.compute`) and evicted on
   run completion/delete, so dead chat ids don't accumulate.
@@ -64,9 +67,9 @@ When writing or reviewing code, looking for bugs with the following perspectives
   in `withContext(Dispatchers.IO)`; never call blocking JDBC on the event loop.
 - Never log secrets (passwords, API keys, session cookies).
 - The streaming bridge between langchain4j's callback-based handler and the
-  coroutine turn loop lives in `langchain4j/StreamingSignals.kt` as a
-  `channelFlow` of `StreamSignal`s — keep langchain4j-coupled code out of the
-  `agent/` package; the loop only consumes the flow and the neutral history
+  coroutine turn loop lives in `agent/lc4j/executor/StreamSignal.kt` as a
+  `channelFlow` of `StreamSignal`s — keep langchain4j-coupled code inside
+  `agent/lc4j/`; the loop only consumes the flow and the neutral history
   DTOs.
 
 ## Chat history is turn-loop-managed, stored in a project-owned format
@@ -75,25 +78,25 @@ The turn loop owns the conversation history lifecycle (not hand-rolled message
 tables), and the serialized format is ours:
 
 - `agent/ChatTurnLoop.kt` loads the full neutral history before a run
-  (`history/PostgresHistoryStore.kt`) and stores the updated conversation
+  (`chat/PostgresChatStore.kt`) and stores the updated conversation
   (including the new user message and assistant reply, plus any tool rounds)
   after the run **succeeds**. A failed or aborted run never reaches the store,
   so history stays at the last good state.
 - `chats.history_json` stores a **framework-neutral** JSON array
-  (`history/HistoryMessage.kt`): roles system/user/assistant/tool, parts
+  (`chat/ChatMessage.kt`): roles system/user/assistant/tool_result, parts
   text / reasoning / tool_call / tool_result / attachment, plus per-message
   meta (timestamp, token usage) and `finishReason`. No framework type names
   cross the DB or the API boundary (`GET /api/chats/{id}/history`
   serves this format).
 - The neutral list is the canonical in-loop structure: each round builds its
-  request from a fresh conversion (`langchain4j/Langchain4jHistoryConverters.kt`
+  request from a fresh conversion (`agent/lc4j/chat/Lc4jChatMessageConverters.kt`
   — neutral ↔ langchain4j `ChatMessage`s; see the mapping notes in
-  `history/HistoryMessage.kt`'s KDoc), and accepted responses are captured
+  `chat/ChatMessage.kt`'s KDoc), and accepted responses are captured
   back into neutral messages with their `ChatResponse` metadata (token usage,
   `finishReason` wire name) at accept time.
 - Loading fails fast: an undecodable `history_json` (corrupt row, or an
   incompatible format change) throws instead of silently resetting the chat
-  to empty. The golden-JSON tests in `HistoryCodecTest` pin the neutral format
+  to empty. The golden-JSON tests in `ChatCodecTest` pin the neutral format
   and `Langchain4jHistoryConvertersTest` pins the neutral↔langchain4j mapping,
   so a breaking change to either fails in tests first.
 - History rows in any pre-neutral format were **discarded**, not converted
@@ -106,60 +109,50 @@ neutral DTOs rather than inserting message rows directly.
 ## Streaming execution and recovery
 
 The turn loop (`agent/ChatTurnLoop.kt`) streams each LLM round through
-`langchain4j/StreamingSignals.kt` (a `channelFlow` bridging langchain4j's
+`agent/lc4j/executor/StreamSignal.kt` (a `channelFlow` bridging langchain4j's
 callback-based `StreamingChatResponseHandler` — the first terminal signal
 wins, and cancelling the flow aborts the in-flight HTTP request via the
-`StreamingHandle` captured from the context-carrying callback variants) and
-classifies the result (`classifyStreamResult` in
-`agent/StreamExecutionResult.kt`) before accepting it:
+`StreamingHandle` captured from the context-carrying callback variants and
+cancelled in `awaitClose`). `Lc4jStreamingExecutor.executeOnce`
+(`agent/lc4j/executor/Lc4jStreamingExecutor.kt`) classifies the outcome into
+a `StreamingExecutionResult` before the loop accepts it:
 
-- Transient hiccups (5xx, connection drops, malformed streams, empty responses
-  with no reason) retry forever with exponential backoff; permanent 4xx fail
-  the run. Some gateways deliver errors as a mid-stream SSE `{"error": ...}`
-  chunk instead of an HTTP error status; langchain4j completes such a stream
-  **normally** with `finishReason() == null`, so the loop scans the raw SSE
-  events (`langchain4j/ErrorChunkScan.kt`) **before** any acceptance check:
-  a numeric `code` (OpenRouter-style, e.g. a moderation rejection mapped to
-  403) is thrown as `dev.langchain4j.exception.HttpException(code, data)`, a
-  code-less chunk as `MidStreamErrorChunkException` (transient).
-  `isRetryableStreamError` walks the exception cause chain for the first
-  `HttpException` with a non-2xx status to classify it: a permanent code fails
-  the run instead of retrying forever, a transient one (408/429) is retried,
-  a 2xx or no code is transient (the 2xx is the stream's own HTTP status,
-  never a meaningful error code). Reasoning deltas arriving in the gateway's
-  native dialect (`delta.reasoning` plain text, via the bifrost proxy) are
-  rewritten to `reasoning_content` at the HTTP-SSE layer by
-  `langchain4j/ReasoningDialect.kt`, so the stock parser accumulates
-  `AiMessage.thinking()` and reasoning streams live. An empty, blank, or
-  reasoning-only response carrying a *named* `finish_reason` (e.g.
-  `content_filter`, or a deterministic empty `stop`) is definitive — the
-  provider ended it on purpose — so it fails the run with
-  `EmptyPermanentResponseException` instead of retrying forever; only an
-  empty response with NO reason is treated as transient. A stream that ends
-  without `finish_reason` is treated as truncated: langchain4j has no
-  `requireEndFrame` equivalent and silently accepts clean EOF, so the loop
-  throws `EmptyStreamResponseException` itself when `finishReason() == null`
-  (unknown/custom finish reasons like `model_length` map to null too, landing
-  in the same retryable bucket).
-  Deterministic guard failures (`check`/`error`, `IllegalStateException`) are
-  NOT retried — the identical request would fail identically forever. JVM
-  `Error`s (OOM, stack overflow) are NOT retried either — they would likely
-  recur and impede GC recovery, so crashing is more recoverable than an
-  infinite retry loop. `IllegalArgumentException` IS retried on purpose: LLM
-  output is stochastic, so e.g. malformed tool-call argument JSON can parse
-  fine on a fresh attempt. The retry policy lives in `isRetryableStreamError`
-  (`agent/StreamExecutionResult.kt`) and is pinned by
-  `IsRetryableStreamErrorTest`; the loop's round behavior is pinned end-to-end
-  by `ChatTurnLoopTest` (mock SSE server, no gateways).
+- The round is retried ONLY when the stream completed cleanly with no usable
+  output and NO `finish_reason` (`EmptyTransient`, backoff
+  100ms→6.4s). Everything else fails the run immediately with a clear SSE
+  `error` event: HTTP-level failures (5xx, 408/429, connection drops) throw
+  from the executor and are NOT retried, and a mid-stream SSE `{"error": ...}`
+  chunk (OpenRouter-style, e.g. a moderation rejection mapped to 403) is
+  thrown by `Lc4jStreamingExecutor.findErrorChunk` **before** any acceptance
+  check — a numeric `code` as `dev.langchain4j.exception.HttpException(code,
+  data)`, a code-less chunk as `MidStreamErrorChunkException`. (The old
+  exception-based retry policy with permanent-4xx classification was removed
+  in the executor refactor for simplicity; classifying HTTP failures back
+  into the transient bucket, e.g. 429 rate limits, is a TODO.) Reasoning
+  deltas arriving in the gateway's native dialect (`delta.reasoning` plain
+  text, via the bifrost proxy) are rewritten to `reasoning_content` at the
+  HTTP-SSE layer by `agent/lc4j/provider/client/ReasoningRewriteHttpClient.kt`,
+  so the stock parser accumulates `AiMessage.thinking()` and reasoning streams
+  live.
+- An empty, blank, or reasoning-only response carrying a *named* `finish_reason`
+  (e.g. `content_filter`, a deterministic empty `stop`, or any unknown
+  reason) is definitive — the provider ended it on purpose — so the loop
+  fails the run with `IllegalStateException` instead of retrying forever;
+  only an empty response with NO reason is treated as transient. A stream
+  that ends without `finish_reason` is treated as truncated: langchain4j has
+  no `requireEndFrame` equivalent and silently accepts clean EOF, so
+  `finishReason() == null` lands in the same retryable `EmptyTransient`
+  bucket (unknown/custom finish reasons like `model_length` map to null too).
 - Model-capability violations (e.g. images with a text-only model) are caught
   in the loop's pre-send step by `checkPromptContentCapabilities`
-  (`langchain4j/ModelCapabilityCheck.kt`), which scans the FULL prompt
-  (loaded history + new input — images can come from either: send an image
-  with a vision model, then switch the chat to a text-only model, and the
-  image re-enters the prompt from history) and throws `ModelCapabilityException`
+  (`agent/ChatTurnLoop.kt`), which runs **per round** against the current
+  prompt (loaded history + new input + any tool results of this run — images
+  can come from all three: send an image with a vision model, then switch the
+  chat to a text-only model and the image re-enters the prompt from history;
+  an MCP tool can return an image mid-run, and the check descends into
+  `tool_result` parts) and throws `ModelCapabilityException`
   BEFORE any LLM request. This must not be validated in the HTTP layer only
-  (it would miss history). The dedicated type is pinned as non-retryable in
-  `isRetryableStreamError`; the API layer accepts images with any model and
+  (it would miss history). The API layer accepts images with any model and
   lets the loop fail with a clear SSE `error` event instead.
 - A response is only accepted if it has non-blank text or tool-call parts — an
   empty, blank, or reasoning-only message would be stored as `content: null`
@@ -172,16 +165,18 @@ classifies the result (`classifyStreamResult` in
   `reasoning_content` on later requests. That works with the current gateway,
   but a provider that rejects the field would 400 every later run of that
   chat — strip reasoning in the loop's pre-send step if that ever happens.
-- `finish_reason == "length"` means the *output* budget ran out. Since input
+- `finish_reason == "length"` means the *output* budget ran out; the response
+  is never accepted (a truncated answer is not worth storing — a chat must
+  end with a clean `stop`, see `ChatCodec.validateChat`). Since input
   and output share the context window, compaction only helps when the prompt
   crowds it (`promptTokens > contextLength - maxOutputTokens`): those cases
-  fail the run with a descriptive `IllegalStateException` (history compaction
-  is a TODO, so context exhaustion is unrecoverable for now). At or below the
-  threshold the output cap bound on its own (e.g. reasoning burned the whole
-  budget), so the run fails fast with `OutputExhaustionException` — the fix is
+  surface as `ContextExhausted` (history compaction is a TODO, so context
+  exhaustion is unrecoverable for now). At or below the threshold the output
+  cap bound on its own (e.g. reasoning burned the whole budget), so the run
+  fails fast with `OutputBudgetExhausted` — the fix is
   the user's choice (different model, bigger output limit, lower thinking
   budget). When the provider sends no usage data, classification cannot tell
-  which limit bound, so it also fails fast with `OutputExhaustionException`
+  which limit bound, so it also fails with `OutputBudgetExhausted`
   rather than retrying or compacting blindly.
 - The system prompt is refreshed in place each run (only a system message at
   index 0 is kept and its text updated; a missing one is inserted), and the
@@ -189,11 +184,11 @@ classifies the result (`classifyStreamResult` in
   from the latest user message after the round (identified by XSD validation,
   see `agent/ContextInjection.kt`).
 - Tool rounds: an accepted response with tool calls executes them through
-  `agent/ToolProvider.kt` (the MCP implementation `mcp/McpToolProvider.kt` is
+  `agent/lc4j/tool/ToolProvider.kt` (the MCP implementation `mcp/McpToolProvider.kt` is
   used whenever `Main.kt` hardcodes MCP servers — currently the exa search
   server; `EmptyToolProvider` — no tools advertised, any call answered with
   an explicit error result — remains the no-MCP fallback), appends the
-  results as `tool` messages, and starts the next round. Tool execution
+  results as `tool_result` messages, and starts the next round. Tool execution
   happens OUTSIDE the streaming retry loop: a tool-level failure (server-side
   `isError`, bad arguments) becomes an error tool-result for the model, while
   a transport failure (`McpTransportException`) fails the run immediately
@@ -217,9 +212,9 @@ classifies the result (`classifyStreamResult` in
   failing round: check chunk order per `index` (interleaved?) and whether ids
   repeat per chunk (DeepSeek-family). Fixes in order of preference: upstream
   fix/version bump (per-index builder map, cf. #4937),
-  `accumulateToolCallId` per-model knob in `StreamingChatModelFactory` for
+  `accumulateToolCallId` per-model knob in `LLM.toStreamingChatModel` for
   id-repeat gateways, or a local patch in the style of
-  `ReasoningDialect`/the old `CustomOpenAILLMClient`.
+  `ReasoningRewriteHttpClient`/the old `CustomOpenAILLMClient`.
   Note: none of this affects the round-level agentic interleave (think →
   think → tool → conclude), which is ordinary multi-round loop behavior —
   within ONE OpenAI-protocol response, reasoning deltas always come before

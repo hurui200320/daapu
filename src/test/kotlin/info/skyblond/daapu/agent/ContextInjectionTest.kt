@@ -1,6 +1,6 @@
 package info.skyblond.daapu.agent
 
-import info.skyblond.daapu.history.HistoryPart
+import info.skyblond.daapu.chat.ChatMessagePart
 import java.time.ZonedDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -13,13 +13,13 @@ class ContextInjectionTest {
     @Test
     fun `test isInjection invalid`() {
         assertFalse {
-            contextInjection.isInjection(HistoryPart.Text("Normal string here..."))
+            contextInjection.isInjection(ChatMessagePart.Text("Normal string here..."))
         }
         assertFalse {
-            contextInjection.isInjection(HistoryPart.Text("<xml></xml> with string"))
+            contextInjection.isInjection(ChatMessagePart.Text("<xml></xml> with string"))
         }
         assertFalse {
-            contextInjection.isInjection(HistoryPart.Text("<a></a>"))
+            contextInjection.isInjection(ChatMessagePart.Text("<a></a>"))
         }
     }
 
@@ -33,7 +33,7 @@ class ContextInjectionTest {
             contextInjection.isInjection(injectionPart)
         }
         assertFalse {
-            contextInjection.isInjection(HistoryPart.Text(injectionPart.text + "<a></a>"))
+            contextInjection.isInjection(ChatMessagePart.Text(injectionPart.text + "<a></a>"))
         }
     }
 
@@ -42,15 +42,15 @@ class ContextInjectionTest {
         // the schema uses xs:sequence and declares no attributes: a future
         // relaxation would silently accept injections we did not generate,
         // so pin the strictness
-        val reordered = HistoryPart.Text("""<injection><memories/><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info></injection>""")
+        val reordered = ChatMessagePart.Text("""<injection><memories/><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info></injection>""")
         assertFalse {
             contextInjection.isInjection(reordered)
         }
-        val unexpectedElement = HistoryPart.Text("""<injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/><extra/></injection>""")
+        val unexpectedElement = ChatMessagePart.Text("""<injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/><extra/></injection>""")
         assertFalse {
             contextInjection.isInjection(unexpectedElement)
         }
-        val unexpectedAttribute = HistoryPart.Text("""<injection foo="bar"><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/></injection>""")
+        val unexpectedAttribute = ChatMessagePart.Text("""<injection foo="bar"><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/></injection>""")
         assertFalse {
             contextInjection.isInjection(unexpectedAttribute)
         }
@@ -83,7 +83,7 @@ class ContextInjectionTest {
             <!ENTITY xxe SYSTEM "file:///etc/passwd">
         ]><injection><real-time-info><localtime>&xxe;</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/></injection>"""
         assertFalse {
-            contextInjection.isInjection(HistoryPart.Text(payload))
+            contextInjection.isInjection(ChatMessagePart.Text(payload))
         }
     }
 

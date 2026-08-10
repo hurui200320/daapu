@@ -34,7 +34,7 @@ class WebServerTest {
         )
     )
 
-    private val model = "cerebras/gpt-oss-120b"
+    private val model = "bifrost/cerebras/gpt-oss-120b"
 
     private val json = Json { explicitNulls = false }
 
