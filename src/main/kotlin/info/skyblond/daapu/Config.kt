@@ -77,8 +77,9 @@ enum class McpTransportType {
  * - `stdio`: a local subprocess ([command] list; [environment] extra
  *   variables merged onto the inherited environment).
  *
- * [name] is used to namespace the advertised tool names (`{name}_{tool}`), so
- * tools from different servers never collide in the model request.
+ * [name] is used to namespace the advertised tool names (`{name}__{tool}`),
+ * so tools from different servers never collide in the model request. It
+ * must not contain `__` — that is the advertised-name separator.
  */
 data class McpServerConfig(
     val name: String,
@@ -89,18 +90,29 @@ data class McpServerConfig(
     val environment: Map<String, String> = emptyMap(),
     val initializationTimeoutSeconds: Long? = null,
     val toolExecutionTimeoutSeconds: Long? = null,
+    // total connect attempts including the first one (the provider connects
+    // eagerly at startup and reconnects in-turn on demand, see
+    // mcp/McpToolProvider.kt); 1 means no retry. 0 is rejected by validate()
+    val reconnectAttempts: Int = 3,
+    // delay between two connect attempts
+    val reconnectDelayMs: Long = 1000L
 ) {
     /**
      * Fail fast on a config that cannot work: the name becomes part of the
-     * advertised tool name (`{name}_{tool}`, which OpenAI-compatible gateways
-     * only accept in `[a-zA-Z0-9_-]`), and each transport requires its own
-     * fields.
+     * advertised tool name (`{name}__{tool}`, which OpenAI-compatible
+     * gateways only accept in `[a-zA-Z0-9_-]` and which must not contain the
+     * `__` separator), and each transport requires its own fields.
      */
     fun validate() {
         if (name.isBlank()) throw IllegalArgumentException("MCP server config is missing a name")
         if (!name.matches(Regex("[a-zA-Z0-9_-]+"))) {
             throw IllegalArgumentException(
                 "MCP server name '$name' is invalid: tool names are prefixed with it, so only [a-zA-Z0-9_-] is allowed"
+            )
+        }
+        if (name.contains("__")) {
+            throw IllegalArgumentException(
+                "MCP server name '$name' is invalid: it must not contain '__', which separates the parts of advertised tool names"
             )
         }
         when (type) {
@@ -113,6 +125,12 @@ data class McpServerConfig(
         }
         if (url != null && !url.startsWith("http://") && !url.startsWith("https://")) {
             throw IllegalArgumentException("MCP server '$name': url must start with http:// or https://, got '$url'")
+        }
+        require(reconnectAttempts >= 1) {
+            "MCP server '$name': reconnectAttempts must be at least 1 (it is the total number of connect attempts, the first one included)"
+        }
+        require(reconnectDelayMs >= 0) {
+            "MCP server '$name': reconnectDelayMs must be non-negative"
         }
     }
 }

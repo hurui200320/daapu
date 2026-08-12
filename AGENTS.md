@@ -191,8 +191,17 @@ a `StreamingExecutionResult` before the loop accepts it:
   results as `tool_result` messages, and starts the next round. Tool execution
   happens OUTSIDE the streaming retry loop: a tool-level failure (server-side
   `isError`, bad arguments) becomes an error tool-result for the model, while
-  a transport failure (`McpTransportException`) fails the run immediately
-  with a clear SSE `error` event — no retry of the whole LLM round.
+  a transport failure (`McpTransportException`) triggers the provider's
+  in-turn recovery (`mcp/McpEntry.kt`): the cached client is dropped,
+  reconnected (up to `reconnectAttempts` times), and the call is re-executed
+  once. If the reconnect cannot restore the connection, `McpTransportException`
+  fails the run with a clear SSE `error` event — no retry of the whole LLM
+  round; a call that fails twice while the server stays up returns a generic
+  error tool-result instead, so the model sees the failure and the run
+  continues. The MCP clients are connected EAGERLY at provider construction
+  (`McpToolProvider.init`): an unreachable server aborts startup (fail fast)
+  instead of degrading every chat run, so a `McpServerConfig` entry that
+  cannot be reached is a startup error, not a runtime warning.
 - **Parallel tool calls in ONE streaming round are fragile upstream.** The
   OpenAI streaming parser (langchain4j 1.18.1) accumulates tool-call chunks
   in ONE shared `ToolCallBuilder` and flushes it as "complete" whenever the

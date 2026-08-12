@@ -3,6 +3,7 @@ package info.skyblond.daapu
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * Pins the [McpServerConfig] validation (issue #8 config surface: the MCP
@@ -16,7 +17,12 @@ class ConfigTest {
         type: McpTransportType = McpTransportType.Http,
         url: String? = "https://mcp.exa.ai/mcp",
         command: List<String> = emptyList(),
-    ) = McpServerConfig(name = name, type = type, url = url, command = command)
+        reconnectAttempts: Int = 3,
+        reconnectDelayMs: Long = 1000L,
+    ) = McpServerConfig(
+        name = name, type = type, url = url, command = command,
+        reconnectAttempts = reconnectAttempts, reconnectDelayMs = reconnectDelayMs,
+    )
 
     @Test
     fun `a valid http server passes validation`() {
@@ -53,5 +59,23 @@ class ConfigTest {
         // the name becomes part of the advertised tool name, so only
         // [a-zA-Z0-9_-] is acceptable
         assertFailsWith<IllegalArgumentException> { server(name = "my server!").validate() }
+    }
+
+    @Test
+    fun `a server name containing the advertised-name separator fails fast`() {
+        // `__` separates the parts of advertised tool names, so it cannot
+        // appear inside a server name
+        assertFailsWith<IllegalArgumentException> { server(name = "my__server").validate() }
+    }
+
+    @Test
+    fun `reconnect parameters are validated`() {
+        // reconnectAttempts is the total number of connect attempts, the
+        // first one included: 0 would mean "never connect at all"
+        val e = assertFailsWith<IllegalArgumentException> {
+            server(reconnectAttempts = 0).validate()
+        }
+        assertTrue(e.message!!.contains("reconnectAttempts"))
+        assertFailsWith<IllegalArgumentException> { server(reconnectDelayMs = -1).validate() }
     }
 }

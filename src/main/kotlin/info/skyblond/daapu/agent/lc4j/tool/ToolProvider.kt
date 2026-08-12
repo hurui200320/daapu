@@ -9,9 +9,10 @@ import info.skyblond.daapu.chat.ChatMessagePart
  *
  * The turn loop advertises [specifications] in the request and executes
  * accepted tool calls via [execute]. [specifications] is suspend because a
- * real provider may need to connect to tool servers before the first use
- * (the MCP provider `mcp/McpToolProvider.kt` connects lazily); the turn loop
- * calls it from a coroutine context. [EmptyToolProvider] is the no-tools
+ * real provider may need to reconnect to tool servers after a transport
+ * failure (the MCP provider `mcp/McpToolProvider.kt` connects eagerly at
+ * construction and reconnects in-turn on demand); the turn loop calls it
+ * from a coroutine context. [EmptyToolProvider] is the no-tools
  * fallback (used in tests): a model that emits tool calls anyway gets an
  * explicit error result back and can recover in the next round instead of
  * failing the run.

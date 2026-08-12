@@ -47,10 +47,11 @@ class ChatRunSetup(
  */
 class ChatRunService(
     config: AppConfig,
-    // the MCP clients are cached in the provider (lazy connect, see
-    // mcp/McpToolProvider.kt): per-request runs must not reconnect per turn.
-    // The default builds no clients, so a service constructed without MCP
-    // servers (tests) behaves like the old EmptyToolProvider path.
+    // the MCP clients are cached in the provider (connected eagerly at
+    // construction, see mcp/McpToolProvider.kt): per-request runs must not
+    // reconnect per turn. The default builds no clients, so a service
+    // constructed without MCP servers (tests) behaves like the old
+    // EmptyToolProvider path.
     private val toolProvider: McpToolProvider = McpToolProvider(emptyList()),
 ) : AutoCloseable {
 

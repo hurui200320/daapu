@@ -74,12 +74,17 @@ McpServerConfig(
 ```
 
 Each entry needs a `name` (used to namespace the advertised tool names,
-e.g. `exa_search`), a `type` (`http` needs `url` + optional `headers`; `stdio`
-needs `command` + optional `environment`), and may set
-`initializationTimeoutSeconds` / `toolExecutionTimeoutSeconds`. A server that
-cannot be reached is skipped with a warning (its tools are not advertised,
-other chats are unaffected) and retried on a later chat run; killing a server
-mid-session fails only the chat that called its tools.
+e.g. `exa__search` — the separator is `__`, so `name` must not contain it), a
+`type` (`http` needs `url` + optional `headers`; `stdio` needs `command` +
+optional `environment`), and may set
+`initializationTimeoutSeconds` / `toolExecutionTimeoutSeconds`, plus
+`reconnectAttempts` (total connect attempts including the first, default 3)
+and `reconnectDelayMs` (delay between attempts, default 1000). The provider
+connects eagerly at startup, so a server that cannot be reached aborts
+startup. Mid-session transport failures drop the connection, reconnect, and
+re-execute the tool call once; if the reconnect fails the chat run fails with
+a clear `error` event, and a call that fails twice while the server stays up
+returns an error tool-result the model can react to.
 
 The system prompt and the model catalog are hardcoded in code: `agent/SystemPrompt.kt`
 and `langchain4j/ModelCatalog.kt` (each model needs an

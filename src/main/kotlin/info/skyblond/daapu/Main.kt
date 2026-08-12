@@ -12,9 +12,9 @@ fun main() {
     val config = appConfigFromEnv()
     // MCP tool servers are hardcoded here for the PoC (see AGENTS.md); only
     // their API keys come from the environment/`.env` (process env first,
-    // then `./.env`). Add or remove entries freely — a server that cannot be
-    // reached at runtime is skipped with a warning and retried on a later
-    // chat run, so a broken entry never blocks the app.
+    // then `./.env`). Add or remove entries freely — the provider connects
+    // eagerly at construction, so a server that cannot be reached aborts
+    // startup instead of silently degrading every chat run.
     // A missing EXA_API_KEY means no MCP servers at all (default: no tools),
     // matching the README; only the LLM/database keys are required.
     val mcpServers = readEnv("EXA_API_KEY")?.let { exaKey ->

@@ -596,7 +596,7 @@ class ChatTurnLoopTest {
         val mcpProvider = McpToolProvider(
             listOf(McpServerConfig(name = "calc", type = McpTransportType.Http, url = mcpServer.baseUrl))
         )
-        val toolCall1 = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calc_add","arguments":""}}]}"""
+        val toolCall1 = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calc__add","arguments":""}}]}"""
         val toolCall2 = """{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1,\"b\":2}"}}]}"""
         val server = MockSseServer { attempt ->
             if (attempt == 1) {
@@ -619,7 +619,7 @@ class ChatTurnLoopTest {
 
             // the call streamed with the advertised name, the server executed
             // the raw tool with the parsed arguments
-            assertEquals(listOf("calc_add" to """{"a":1,"b":2}"""), outcome.callback.toolCalls)
+            assertEquals(listOf("calc__add" to """{"a":1,"b":2}"""), outcome.callback.toolCalls)
             val (rawName, args) = mcpServer.toolCalls.single()
             assertEquals("add", rawName)
             assertEquals("1", args["a"]?.jsonPrimitive?.let { it.content })
@@ -627,14 +627,14 @@ class ChatTurnLoopTest {
             // the result streamed and stored, paired with the call id
             val toolResult = outcome.callback.toolResults.single()
             assertEquals("call_1", toolResult.id)
-            assertEquals("calc_add", toolResult.tool)
+            assertEquals("calc__add", toolResult.tool)
             assertEquals("1 + 2 = 3", toolResult.textContent())
             assertTrue(!toolResult.isError)
 
             val stored = assertNotNull(outcome.store.stored)
             val call = assertIs<ChatMessagePart.ToolCall>(stored[2].parts.single())
             assertEquals("call_1", call.id)
-            assertEquals("calc_add", call.tool)
+            assertEquals("calc__add", call.tool)
             val result = assertIs<ChatMessagePart.ToolResult>(stored[3].parts.single())
             assertEquals("call_1", result.id, "the stored result must pair with the stored call id")
             assertEquals(listOf(ChatMessagePart.Text("1 + 2 = 3")), result.parts)
