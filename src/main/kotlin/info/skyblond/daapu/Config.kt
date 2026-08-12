@@ -77,12 +77,13 @@ enum class McpTransportType {
  * - `stdio`: a local subprocess ([command] list; [environment] extra
  *   variables merged onto the inherited environment).
  *
- * [name] is used to namespace the advertised tool names (`{name}__{tool}`),
- * so tools from different servers never collide in the model request. It
- * must not contain `__` — that is the advertised-name separator.
+ * [namespace] namespaces the advertised tool names (`{namespace}__{tool}`),
+ * so tools from different servers never collide in the model request.
+ * Namespaces the harness reserves for its own internal/harness tools
+ * ([MCP_RESERVED_NAMESPACES]) must not be used.
  */
 data class McpServerConfig(
-    val name: String,
+    val namespace: String,
     val type: McpTransportType,
     val url: String? = null,
     val headers: Map<String, String> = emptyMap(),
@@ -98,39 +99,60 @@ data class McpServerConfig(
     val reconnectDelayMs: Long = 1000L
 ) {
     /**
-     * Fail fast on a config that cannot work: the name becomes part of the
-     * advertised tool name (`{name}__{tool}`, which OpenAI-compatible
-     * gateways only accept in `[a-zA-Z0-9_-]` and which must not contain the
-     * `__` separator), and each transport requires its own fields.
+     * Fail fast on a config that cannot work: the namespace becomes part of
+     * the advertised tool name (`{namespace}__{tool}`, which
+     * OpenAI-compatible gateways only accept in `[0-9a-z_-]` and which must
+     * not contain the `__` separator), must not collide with the namespaces
+     * reserved for internal/harness tools, and each transport requires its
+     * own fields.
      */
     fun validate() {
-        if (name.isBlank()) throw IllegalArgumentException("MCP server config is missing a name")
-        if (!name.matches(Regex("[a-zA-Z0-9_-]+"))) {
+        if (namespace.isBlank()) throw IllegalArgumentException("MCP server config is missing a namespace")
+        if (!namespace.matches(NAMESPACE_REGEX)) {
             throw IllegalArgumentException(
-                "MCP server name '$name' is invalid: tool names are prefixed with it, so only [a-zA-Z0-9_-] is allowed"
+                "MCP server namespace '$namespace' is invalid: tool names are prefixed with it, so only [0-9a-z_-] is allowed"
             )
         }
-        if (name.contains("__")) {
+        if (namespace.contains("__")) {
             throw IllegalArgumentException(
-                "MCP server name '$name' is invalid: it must not contain '__', which separates the parts of advertised tool names"
+                "MCP server namespace '$namespace' is invalid: it must not contain '__', which separates the parts of advertised tool names"
+            )
+        }
+        if (namespace in MCP_RESERVED_NAMESPACES) {
+            throw IllegalArgumentException(
+                "MCP server namespace '$namespace' is reserved for internal/harness tools, " +
+                        "so it cannot be used by an MCP server"
             )
         }
         when (type) {
             McpTransportType.Http -> if (url.isNullOrBlank()) {
-                throw IllegalArgumentException("MCP server '$name': type 'http' requires a url")
+                throw IllegalArgumentException("MCP server '$namespace': type 'http' requires a url")
             }
             McpTransportType.Stdio -> if (command.isEmpty()) {
-                throw IllegalArgumentException("MCP server '$name': type 'stdio' requires a command")
+                throw IllegalArgumentException("MCP server '$namespace': type 'stdio' requires a command")
             }
         }
         if (url != null && !url.startsWith("http://") && !url.startsWith("https://")) {
-            throw IllegalArgumentException("MCP server '$name': url must start with http:// or https://, got '$url'")
+            throw IllegalArgumentException("MCP server '$namespace': url must start with http:// or https://, got '$url'")
         }
         require(reconnectAttempts >= 1) {
-            "MCP server '$name': reconnectAttempts must be at least 1 (it is the total number of connect attempts, the first one included)"
+            "MCP server '$namespace': reconnectAttempts must be at least 1 (it is the total number of connect attempts, the first one included)"
         }
         require(reconnectDelayMs >= 0) {
-            "MCP server '$name': reconnectDelayMs must be non-negative"
+            "MCP server '$namespace': reconnectDelayMs must be non-negative"
         }
     }
 }
+
+/**
+ * Namespaces reserved for the harness's own internal/harness tools: an MCP
+ * server must not use one of these, or its advertised tool names would
+ * collide with the internal tools' namespaces. All lowercase, matching
+ * [NAMESPACE_REGEX] — the check in [McpServerConfig.validate] is exact.
+ */
+val MCP_RESERVED_NAMESPACES: Set<String> = setOf("system", "inner", "internal", "gsg")
+
+// the namespace becomes part of every advertised tool name, which
+// OpenAI-compatible gateways only accept in [0-9a-z_-]; uppercase is
+// rejected so the reserved-namespace check stays an exact match
+val NAMESPACE_REGEX: Regex = Regex("[0-9a-z_-]+")

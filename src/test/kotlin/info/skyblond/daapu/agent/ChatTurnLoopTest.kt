@@ -594,7 +594,7 @@ class ChatTurnLoopTest {
         // stores the result as a tool message whose id pairs with the call
         val mcpServer = MockMcpServer(listOf(mcpAddTool()))
         val mcpProvider = McpToolProvider(
-            listOf(McpServerConfig(name = "calc", type = McpTransportType.Http, url = mcpServer.baseUrl))
+            listOf(McpServerConfig(namespace = "calc", type = McpTransportType.Http, url = mcpServer.baseUrl))
         )
         val toolCall1 = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calc__add","arguments":""}}]}"""
         val toolCall2 = """{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1,\"b\":2}"}}]}"""

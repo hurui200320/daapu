@@ -41,4 +41,4 @@ object EmptyToolProvider : ToolProvider {
 }
 
 // TODO: multi tool provider? merge multiple tool provider together, adding namespace like <namespace>_<tool_name>
-//       require a type that enforce the namespace adding behaviour (name prefix).
+//       require a type that enforce the namespace adding behaviour.

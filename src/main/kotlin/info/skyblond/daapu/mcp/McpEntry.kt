@@ -43,17 +43,14 @@ import java.util.concurrent.atomic.AtomicReference
  *   lock instead of blocking it, so a caller from a non-suspend context
  *   (`close()`) is safe while a concurrent connect is in progress.
  *
- * Advertised names are `{prefix}__{serverName}__{toolName}` (or
- * `{serverName}__{toolName}` without a provider prefix): `__` is the
- * separator, so server tool names containing it are sanitized to `_`
- * ([listTools], the raw name is preserved for [executeRequestOnce]). The
- * mapping is refreshed on every [listTools] pass; per-pass collisions are
- * rejected loudly rather than silently overwriting an earlier tool.
+ * Advertised names are `{namespace}__{toolName}`: `__` is the separator, so
+ * server tool names containing it are sanitized to `_` ([listTools], the raw
+ * name is preserved for [executeRequestOnce]). The mapping is refreshed on
+ * every [listTools] pass; per-pass collisions are rejected loudly rather
+ * than silently overwriting an earlier tool.
  */
 class ClientEntry(
     private val config: McpServerConfig,
-    // the caller should ensure this is valid
-    private val toolNamePrefix: String,
 ) {
     private val clientRef: AtomicReference<McpClient?> = AtomicReference(null)
     private val connectLock: Mutex = Mutex()
@@ -63,7 +60,7 @@ class ClientEntry(
         config.validate()
     }
 
-    val serverName: String = config.name
+    val namespace: String = config.namespace
 
     private fun buildClient(): McpClient {
         val transport = when (config.type) {
@@ -78,7 +75,7 @@ class ClientEntry(
                 .build()
         }
         val builder = DefaultMcpClient.builder()
-            .key(serverName)
+            .key(namespace)
             .transport(transport)
         config.initializationTimeoutSeconds?.let {
             builder.initializationTimeout(Duration.ofSeconds(it))
@@ -110,7 +107,7 @@ class ClientEntry(
                 }
             }
             throw McpTransportException(
-                "MCP server '${serverName}' is unavailable after ${config.reconnectAttempts} " +
+                "MCP server '${namespace}' is unavailable after ${config.reconnectAttempts} " +
                         "reconnect attempts: ${lastFailure?.message}",
                 lastFailure!!,
             )
@@ -129,12 +126,7 @@ class ClientEntry(
         connectLock.unlock()
     }
 
-    private fun advertisedName(serverName: String, toolName: String): String =
-        listOfNotNull(
-            toolNamePrefix.takeIf { it.isNotEmpty() },
-            serverName,
-            toolName
-        ).joinToString("__")
+    private fun advertisedName(toolName: String): String = "${namespace}__$toolName"
 
     suspend fun listTools(): List<ToolSpecification> {
         val specs = try {
@@ -165,12 +157,12 @@ class ClientEntry(
 
             if (sanitized != rawName) {
                 logger.warn {
-                    "MCP server '${serverName}' tool '$rawName' advertising it as '$sanitized'"
+                    "MCP server '${namespace}' tool '$rawName' advertising it as '$sanitized'"
                 }
             }
-            val name = advertisedName(serverName, sanitized)
+            val name = advertisedName(sanitized)
             require(seen.add(name)) {
-                "Tool name $name already exists in MCP server '${serverName}'"
+                "Tool name $name already exists in MCP server '${namespace}'"
             }
             toolNameMapping[name] = rawName
             spec.toBuilder().name(name).build()
@@ -183,7 +175,7 @@ class ClientEntry(
     ): ChatMessagePart.ToolResult {
         val rawName = toolNameMapping[advertisedName] ?: return errorResult(
             request.id(), advertisedName,
-            "Tool name $advertisedName not found in MCP server '${serverName}'"
+            "Tool name $advertisedName not found in MCP server '${namespace}'"
         )
 
         val result = withContext(Dispatchers.IO) {

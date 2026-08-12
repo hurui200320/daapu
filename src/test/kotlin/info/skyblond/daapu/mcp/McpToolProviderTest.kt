@@ -2,6 +2,7 @@ package info.skyblond.daapu.mcp
 
 import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.exception.ToolExecutionException
+import info.skyblond.daapu.MCP_RESERVED_NAMESPACES
 import info.skyblond.daapu.McpServerConfig
 import info.skyblond.daapu.McpTransportType
 import info.skyblond.daapu.chat.ChatMessagePart
@@ -20,9 +21,9 @@ import kotlin.test.assertTrue
  * Pins the MCP tool provider's lifecycle and error policy (#8): eager connect
  * at construction (a server that cannot be reached aborts startup) + client
  * caching (per-request turn construction must not reconnect per run),
- * `{name}__{tool}` name namespacing with an optional provider prefix, the
- * error-result vs transport-failure split, the in-turn drop-reconnect-retry,
- * and the reconnect-on-next-run behavior.
+ * `{namespace}__{tool}` name namespacing, the error-result vs
+ * transport-failure split, the in-turn drop-reconnect-retry, and the
+ * reconnect-on-next-run behavior.
  */
 class McpToolProviderTest {
 
@@ -60,7 +61,7 @@ class McpToolProviderTest {
                     listOf(
                         httpConfig("good", good),
                         McpServerConfig(
-                            name = "dead",
+                            namespace = "dead",
                             type = McpTransportType.Http,
                             url = "http://127.0.0.1:1/mcp",
                             reconnectAttempts = 2,
@@ -92,7 +93,7 @@ class McpToolProviderTest {
     }
 
     @Test
-    fun `advertised tool names are namespaced by server name`() {
+    fun `advertised tool names are namespaced by namespace`() {
         val server = MockMcpServer(listOf(addTool(), echoTool()))
         val provider = McpToolProvider(listOf(httpConfig("calc", server)))
         try {
@@ -106,36 +107,16 @@ class McpToolProviderTest {
     }
 
     @Test
-    fun `a provider name prefix namespaces the tool names further`() {
-        val server = MockMcpServer(listOf(addTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)), namePrefix = "po")
-        try {
-            val specs = runBlocking { provider.specifications() }
-            assertEquals(listOf("po__calc__add"), specs.map { it.name() })
-            val result = runBlocking {
-                provider.execute(request("call-1", "po__calc__add", """{"a":1,"b":2}"""))
-            }
-            assertEquals("1 + 2 = 3", result.text())
-            assertFalse(result.isError)
-            // the server saw the RAW tool name
-            assertEquals("add", server.toolCalls.single().first)
-        } finally {
-            provider.close()
-            server.close()
-        }
-    }
-
-    @Test
-    fun `an invalid provider name prefix is rejected`() {
+    fun `a reserved namespace is rejected at construction`() {
         val server = MockMcpServer(listOf(addTool()))
         try {
-            // the prefix becomes part of every advertised tool name: it must
-            // be `[a-zA-Z0-9_-]` and must not contain the `__` separator
-            assertFailsWith<IllegalArgumentException> {
-                McpToolProvider(listOf(httpConfig("calc", server)), namePrefix = "a__b")
-            }
-            assertFailsWith<IllegalArgumentException> {
-                McpToolProvider(listOf(httpConfig("calc", server)), namePrefix = "bad name!")
+            // namespaces the harness reserves for internal/harness tools must
+            // not be claimed by an MCP server (validated in the config too,
+            // see ConfigTest; here the provider fails fast at construction)
+            for (reserved in MCP_RESERVED_NAMESPACES) {
+                assertFailsWith<IllegalArgumentException> {
+                    McpToolProvider(listOf(httpConfig(reserved, server)))
+                }
             }
         } finally {
             server.close()
@@ -212,28 +193,20 @@ class McpToolProviderTest {
     fun `execute rejects malformed advertised names`() {
         val server = MockMcpServer(listOf(addTool()))
         val provider = McpToolProvider(listOf(httpConfig("calc", server)))
-        val prefixed = McpToolProvider(listOf(httpConfig("calc", server)), namePrefix = "po")
         try {
             runBlocking { provider.specifications() }
-            // a valid split with an unknown server: no entry owns it
+            // a valid split with an unknown namespace: no entry owns it
             val unknown = runBlocking { provider.execute(request("call-1", "nope__add", "{}")) }
             assertTrue(unknown.isError)
             assertTrue(unknown.text().contains("not advertised"))
 
-            // wrong part count for a provider without a prefix (3 parts)
+            // wrong part count (3 parts: only `namespace__tool` is valid)
             val wrongParts = runBlocking { provider.execute(request("call-2", "a__b__c", "{}")) }
             assertTrue(wrongParts.isError)
             assertTrue(wrongParts.text().contains("invalid tool name"))
 
-            // wrong part count for a prefixed provider (4 parts)
-            runBlocking { prefixed.specifications() }
-            val prefixedWrong = runBlocking { prefixed.execute(request("call-3", "po__calc__add__x", "{}")) }
-            assertTrue(prefixedWrong.isError)
-            assertTrue(prefixedWrong.text().contains("invalid tool name"))
-
             assertTrue(server.toolCalls.isEmpty(), "no server call must be made")
         } finally {
-            prefixed.close()
             provider.close()
             server.close()
         }
@@ -391,7 +364,7 @@ class McpToolProviderTest {
         val provider = McpToolProvider(
             listOf(
                 McpServerConfig(
-                    name = "local",
+                    namespace = "local",
                     type = McpTransportType.Stdio,
                     command = stdioMockCommand(),
                     environment = mapOf("MCP_STDIO_COUNT_FILE" to countFile.absolutePath),
@@ -429,7 +402,7 @@ class McpToolProviderTest {
         val provider = McpToolProvider(
             listOf(
                 McpServerConfig(
-                    name = "local",
+                    namespace = "local",
                     type = McpTransportType.Stdio,
                     command = stdioMockCommand(),
                     environment = mapOf("MCP_STDIO_COUNT_FILE" to countFile.absolutePath),
@@ -456,12 +429,12 @@ class McpToolProviderTest {
     // ------------------------------------------------------------------
 
     private fun httpConfig(
-        name: String,
+        namespace: String,
         server: MockMcpServer,
         reconnectAttempts: Int = 3,
         reconnectDelayMs: Long = 1000L,
     ) = McpServerConfig(
-        name = name,
+        namespace = namespace,
         type = McpTransportType.Http,
         url = server.baseUrl,
         reconnectAttempts = reconnectAttempts,

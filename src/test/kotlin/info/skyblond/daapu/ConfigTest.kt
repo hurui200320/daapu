@@ -13,14 +13,14 @@ import kotlin.test.assertTrue
 class ConfigTest {
 
     private fun server(
-        name: String = "exa",
+        namespace: String = "exa",
         type: McpTransportType = McpTransportType.Http,
         url: String? = "https://mcp.exa.ai/mcp",
         command: List<String> = emptyList(),
         reconnectAttempts: Int = 3,
         reconnectDelayMs: Long = 1000L,
     ) = McpServerConfig(
-        name = name, type = type, url = url, command = command,
+        namespace = namespace, type = type, url = url, command = command,
         reconnectAttempts = reconnectAttempts, reconnectDelayMs = reconnectDelayMs,
     )
 
@@ -54,18 +54,31 @@ class ConfigTest {
     }
 
     @Test
-    fun `blank or non-conforming server name fails fast`() {
-        assertFailsWith<IllegalArgumentException> { server(name = "  ").validate() }
-        // the name becomes part of the advertised tool name, so only
-        // [a-zA-Z0-9_-] is acceptable
-        assertFailsWith<IllegalArgumentException> { server(name = "my server!").validate() }
+    fun `blank or non-conforming namespace fails fast`() {
+        assertFailsWith<IllegalArgumentException> { server(namespace = "  ").validate() }
+        // the namespace becomes part of the advertised tool name, so only
+        // [0-9a-z_-] is acceptable
+        assertFailsWith<IllegalArgumentException> { server(namespace = "my server!").validate() }
+        // uppercase is rejected too: the reserved-namespace check stays an
+        // exact match on the lowercase reserved names
+        assertFailsWith<IllegalArgumentException> { server(namespace = "Exa").validate() }
     }
 
     @Test
-    fun `a server name containing the advertised-name separator fails fast`() {
+    fun `a namespace containing the advertised-name separator fails fast`() {
         // `__` separates the parts of advertised tool names, so it cannot
-        // appear inside a server name
-        assertFailsWith<IllegalArgumentException> { server(name = "my__server").validate() }
+        // appear inside a namespace
+        assertFailsWith<IllegalArgumentException> { server(namespace = "my__server").validate() }
+    }
+
+    @Test
+    fun `reserved namespaces are rejected`() {
+        // namespaces the harness reserves for internal/harness tools: an
+        // MCP server using one would collide with those tools' names
+        for (reserved in MCP_RESERVED_NAMESPACES) {
+            val e = assertFailsWith<IllegalArgumentException> { server(namespace = reserved).validate() }
+            assertTrue(e.message!!.contains("reserved"), "reserved namespace '$reserved': ${e.message}")
+        }
     }
 
     @Test

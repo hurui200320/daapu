@@ -35,8 +35,7 @@ import kotlinx.coroutines.runBlocking
  *   *error tool-result* without touching the connection.
  * - [close] closes every client (called on JVM shutdown).
  *
- * Tool names are advertised as `"{prefix}__{serverName}__{toolName}"`
- * (without the optional [namePrefix], `"{serverName}__{toolName}"`):
+ * Tool names are advertised as `"{namespace}__{toolName}"`:
  * OpenAI-style gateways require unique tool names in the `tools` array, so
  * two servers exporting e.g. `search` would otherwise collide and the gateway
  * would reject EVERY request. [execute] splits the advertised name on `__` to
@@ -47,25 +46,17 @@ import kotlinx.coroutines.runBlocking
  */
 class McpToolProvider(
     configs: List<McpServerConfig>,
-    private val namePrefix: String = "",
 ) : ToolProvider, AutoCloseable {
 
     // built once, never mutated afterwards: safe for the concurrent reads
     // from chat runs, and keeps the config-list advertisement order
     private val entries: Map<String, ClientEntry> = buildMap {
-        require(
-            namePrefix.isEmpty()
-                    || (namePrefix.matches(TOOL_NAME_REGEX) && !namePrefix.contains("__"))
-        ) {
-            "MCP tool provider name prefix '$namePrefix' is invalid: tool names are prefixed with it, " +
-                    "so only [a-zA-Z0-9_-] is allowed and it must not contain the '__' separator"
-        }
         for (config in configs) {
-            val entry = ClientEntry(config, namePrefix)
-            require(!containsKey(entry.serverName)) {
-                "MCP tool provider server name '${entry.serverName}' is duplicated"
+            val entry = ClientEntry(config)
+            require(!containsKey(entry.namespace)) {
+                "MCP tool provider namespace '${entry.namespace}' is duplicated"
             }
-            put(config.name, entry)
+            put(config.namespace, entry)
         }
     }
 
@@ -105,27 +96,21 @@ class McpToolProvider(
 
     override suspend fun execute(request: ToolExecutionRequest): ChatMessagePart.ToolResult {
         val advertisedName = request.name()
-        // the advertised name is `prefix__serverName__toolName` (or
-        // `serverName__toolName` without a prefix): none of the parts can
-        // contain `__` (prefix and config names are validated, tool names are
-        // sanitized in specifications), so the split is unambiguous
+        // the advertised name is `namespace__toolName`: neither part can
+        // contain `__` (namespaces are validated, tool names are sanitized
+        // in specifications), so the split is unambiguous
         val parts = advertisedName.split("__")
-        if (namePrefix.isBlank()) {
-            if (parts.size != 2)
-                return errorResult(request.id(), advertisedName, "invalid tool name")
-        } else {
-            if (parts.size != 3)
-                return errorResult(request.id(), advertisedName, "invalid tool name")
-        }
-        val serverName = parts[parts.size - 2]
-        val entry = entries[serverName] ?: return errorResult(
+        if (parts.size != 2)
+            return errorResult(request.id(), advertisedName, "invalid tool name")
+        val namespace = parts[0]
+        val entry = entries[namespace] ?: return errorResult(
             request.id(), advertisedName,
             "tool '$advertisedName' is not advertised by any configured MCP server."
         )
-        // one retry: a transport failure drops the connection (the reconnect
+        // one retry: a transport failure drops the connection (the reconnection
         // itself retries up to `reconnectAttempts` times) and re-executes the
         // call once on the fresh connection. If the server stays down, the
-        // reconnect throws McpTransportException, failing the run.
+        // reconnection throws McpTransportException, failing the run.
         repeat(2) {
             return try {
                 entry.executeRequestOnce(request, advertisedName)
@@ -135,7 +120,7 @@ class McpToolProvider(
                 throw e
             } catch (e: ToolExecutionException) {
                 if (e.isTransportFailure()) {
-                    logger.warn { "MCP server ${entry.serverName} has transport failure, retry..." }
+                    logger.warn { "MCP server ${entry.namespace} has transport failure, retry..." }
                     entry.dropConnection()
                     return@repeat // retry
                 } else {
@@ -174,6 +159,5 @@ class McpToolProvider(
 
     companion object {
         private val logger = KotlinLogging.logger("McpToolProvider")
-        private val TOOL_NAME_REGEX = Regex("[a-zA-Z0-9_-]+")
     }
 }

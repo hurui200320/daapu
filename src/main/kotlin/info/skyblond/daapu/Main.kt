@@ -20,7 +20,7 @@ fun main() {
     val mcpServers = readEnv("EXA_API_KEY")?.let { exaKey ->
         listOf(
             McpServerConfig(
-                name = "exa",
+                namespace = "exa",
                 type = McpTransportType.Http,
                 url = "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa,web_search_advanced_exa",
                 headers = mapOf("Authorization" to "Bearer $exaKey"),

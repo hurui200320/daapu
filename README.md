@@ -67,16 +67,18 @@ stdio transports are supported, e.g. to add a local filesystem server:
 
 ```kotlin
 McpServerConfig(
-    name = "fs",
+    namespace = "fs",
     type = McpTransportType.Stdio,
     command = listOf("npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"),
 )
 ```
 
-Each entry needs a `name` (used to namespace the advertised tool names,
-e.g. `exa__search` — the separator is `__`, so `name` must not contain it), a
-`type` (`http` needs `url` + optional `headers`; `stdio` needs `command` +
-optional `environment`), and may set
+Each entry needs a `namespace` (used to namespace the advertised tool names,
+e.g. `exa__search` — the separator is `__`, so it must not contain it; only
+`[0-9a-z_-]` is allowed, and the harness-reserved namespaces
+`system`/`inner`/`internal`/`gsg` are rejected because internal tools will
+use them), a `type` (`http` needs `url` + optional `headers`; `stdio` needs
+`command` + optional `environment`), and may set
 `initializationTimeoutSeconds` / `toolExecutionTimeoutSeconds`, plus
 `reconnectAttempts` (total connect attempts including the first, default 3)
 and `reconnectDelayMs` (delay between attempts, default 1000). The provider
