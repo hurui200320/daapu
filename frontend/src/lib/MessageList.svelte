@@ -14,7 +14,6 @@
     streamReasoning = '',
     streamText = '',
     streamToolCalls = [],
-    streamToolResults = [],
     retrying = false,
     streamError = null,
   }: {
@@ -23,7 +22,6 @@
     streamReasoning?: string
     streamText?: string
     streamToolCalls?: { name: string; args: string }[]
-    streamToolResults?: { id: string; name: string; content: string; isError: boolean }[]
     retrying?: boolean
     streamError?: string | null
   } = $props()
@@ -71,15 +69,15 @@
               <img class="attachment" src={src} alt="attachment" />
             {/if}
           {:else if part.type === 'tool_call'}
-            <div class="tool-call">
-              <div class="tool-name">tool: {part.tool}</div>
+            <details class="tool-call">
+              <summary>tool: {part.tool}</summary>
               <pre>{part.args}</pre>
-            </div>
+            </details>
           {:else if part.type === 'tool_result'}
-            <div class="tool-result">
-              <div class="tool-name">tool result: {part.tool}</div>
+            <details class="tool-result">
+              <summary>tool result: {part.tool}{part.isError ? ' (error)' : ''}</summary>
               <pre>{toolResultText(part)}</pre>
-            </div>
+            </details>
           {/if}
         {/each}
       </div>
@@ -95,16 +93,10 @@
         </details>
       {/if}
       {#each streamToolCalls as call}
-        <div class="tool-call">
-          <div class="tool-name">tool: {call.name}</div>
+        <details class="tool-call">
+          <summary>tool: {call.name}</summary>
           <pre>{call.args}</pre>
-        </div>
-      {/each}
-      {#each streamToolResults as result}
-        <div class="tool-result">
-          <div class="tool-name">tool result: {result.name}{result.isError ? ' (error)' : ''}</div>
-          <pre>{result.content}</pre>
-        </div>
+        </details>
       {/each}
       {#if streamText}
         <div class="text">{@html renderMarkdown(streamText)}</div>
@@ -197,15 +189,18 @@
     font-size: 0.85rem;
   }
 
+  .tool-call summary,
+  .tool-result summary {
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+
   .tool-call pre,
   .tool-result pre {
     margin: 0.2rem 0 0;
     white-space: pre-wrap;
     word-break: break-word;
-  }
-
-  .tool-name {
-    color: var(--text-muted);
   }
 
   .retrying {

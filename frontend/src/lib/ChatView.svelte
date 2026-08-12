@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { deleteChat, listChats, listModels, loadChat, newChat, streamChat } from './api'
-  import type { ChatMessage, ModelInfo } from './types'
+  import type { ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
   import Composer from './Composer.svelte'
   import MessageList from './MessageList.svelte'
 
@@ -16,14 +16,36 @@
   let streamText = $state('')
   // tool calls of the round currently being streamed (uncommitted: wiped on retry)
   let streamToolCalls = $state<{ name: string; args: string }[]>([])
-  // tool calls of finished rounds, whose results were appended to the prompt
-  // (committed: a later retry must not wipe them — the results stay in history)
-  let committedToolCalls = $state<{ name: string; args: string }[]>([])
-  let streamToolResults = $state<{ id: string; name: string; content: string; isError: boolean }[]>([])
   let retrying = $state(false)
   let streamError = $state<string | null>(null)
 
-  let displayedToolCalls = $derived([...committedToolCalls, ...streamToolCalls])
+  // mirrors the backend's data-URL handling (ChatRunService.parseImagePart:
+  // trims the URL and strips whitespace from the base64 payload)
+  const DATA_URL_RE = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/
+
+  /** Mirror of the backend's ChatMessagePart.Attachment, for display only. */
+  function dataUrlToPart(dataUrl: string): ChatMessagePart | null {
+    const match = DATA_URL_RE.exec(dataUrl.trim())
+    if (!match) return null
+    return {
+      type: 'attachment',
+      kind: 'image',
+      mimeType: match[1],
+      content: { type: 'base64', base64: match[2].replace(/\s/g, '') },
+    }
+  }
+
+  /**
+   * Sync the view with whatever the DB actually holds. A failed reload must
+   * not mask the run's own error, so keep the current display on failure.
+   */
+  async function reloadFromDb(id: string) {
+    try {
+      messages = await loadChat(id)
+    } catch {
+      // keep the optimistic display; nothing better to show
+    }
+  }
 
   onMount(async () => {
     try {
@@ -88,9 +110,17 @@
     streamReasoning = ''
     streamText = ''
     streamToolCalls = []
-    committedToolCalls = []
-    streamToolResults = []
     streaming = true
+    // optimistic: show the sent message right away; the final reload replaces
+    // it with the stored form (and a failed run never reaches the store, so
+    // the error/connection-closed reloads below drop it again)
+    const userParts: ChatMessagePart[] = []
+    if (text) userParts.push({ type: 'text', text })
+    for (const image of images) {
+      const part = dataUrlToPart(image.dataUrl)
+      if (part) userParts.push(part)
+    }
+    messages = [...messages, { role: 'user', parts: userParts }]
     let failed = false
     let sawDone = false
     try {
@@ -109,17 +139,56 @@
             streamToolCalls = [...streamToolCalls, JSON.parse(ev.data)]
             break
           case 'tool_result':
-            // a tool result implies its round's tool calls were committed to
-            // the prompt too: move them out of the current round so a later
-            // retry doesn't wipe them
-            committedToolCalls = [...committedToolCalls, ...streamToolCalls]
-            streamToolCalls = []
-            streamToolResults = [...streamToolResults, JSON.parse(ev.data)]
+            // a tool result commits the current round: its assistant message
+            // (reasoning + text + tool calls) is finished, so move it into the
+            // history and reset the buffers — the next round must stream as
+            // its own message, or its reasoning would append to this round's.
+            // The backend emits one event per result of a round (parallel tool
+            // calls => several), so only the FIRST event of a batch commits a
+            // fresh pair; later ones append their part to the just-committed
+            // tool_result message, mirroring the stored format. Display-only
+            // state (the tool_call parts have no real id — the SSE event
+            // doesn't carry one): the `done` reload replaces it with the
+            // stored form.
+            {
+              const result = JSON.parse(ev.data)
+              const resultPart: ChatToolResultPart = {
+                type: 'tool_result',
+                id: result.id,
+                tool: result.name,
+                isError: result.isError,
+                parts: [{ type: 'text', text: result.content }],
+              }
+              const last = messages[messages.length - 1]
+              if (streamToolCalls.length === 0 && last?.role === 'tool_result') {
+                // 2nd..Nth result of the same batch: extend the committed
+                // tool_result message instead of creating an empty pair
+                messages = [
+                  ...messages.slice(0, -1),
+                  { ...last, parts: [...last.parts, resultPart] },
+                ]
+              } else {
+                const parts: ChatMessagePart[] = []
+                if (streamReasoning) parts.push({ type: 'reasoning', content: [streamReasoning] })
+                if (streamText) parts.push({ type: 'text', text: streamText })
+                for (const call of streamToolCalls) {
+                  parts.push({ type: 'tool_call', id: '', tool: call.name, args: call.args })
+                }
+                messages = [
+                  ...messages,
+                  { role: 'assistant', parts },
+                  { role: 'tool_result', parts: [resultPart] },
+                ]
+                streamReasoning = ''
+                streamText = ''
+                streamToolCalls = []
+              }
+            }
             break
           case 'retry':
             // the server re-streams the whole round from scratch; drop the
             // failed round's partials so the retried output doesn't append to
-            // stale text (committed tool calls + results are kept)
+            // stale text (committed rounds live in `messages` and survive)
             retrying = true
             streamReasoning = ''
             streamText = ''
@@ -131,12 +200,15 @@
             // the server stores history only on success; reload it so the UI
             // always matches the DB (covers tool-call rounds too). Uses the
             // captured id, not the mutable input state.
-            await loadChat(id)
+            await reloadFromDb(id)
             break
           case 'error':
             failed = true
             retrying = false
             streamError = JSON.parse(ev.data).message ?? ev.data
+            // the run failed before storing, so the optimistic user message
+            // and any committed tool rounds are not in the DB: reload to match
+            await reloadFromDb(id)
             break
         }
       }
@@ -145,12 +217,15 @@
         // server restarted mid-run): the run's outcome is unknown, so sync
         // with whatever the DB actually has and restore the draft
         failed = true
-        await loadChat(id)
+        await reloadFromDb(id)
         streamError = 'connection closed before the run completed'
       }
     } catch (e) {
       failed = true
       error = String(e)
+      // a fetch/parse failure may still have stored the run server-side (or
+      // not): sync with the DB so a phantom optimistic message never sticks
+      await reloadFromDb(id)
     } finally {
       streaming = false
     }
@@ -188,8 +263,7 @@
     {streaming}
     streamReasoning={streamReasoning}
     streamText={streamText}
-    streamToolCalls={displayedToolCalls}
-    streamToolResults={streamToolResults}
+    streamToolCalls={streamToolCalls}
     {retrying}
     streamError={streamError}
   />
