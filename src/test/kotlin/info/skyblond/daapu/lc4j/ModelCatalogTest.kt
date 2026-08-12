@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
 import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -50,11 +51,18 @@ class ModelCatalogTest {
     @Test
     fun `provider id prefixes every model id`() {
         assertTrue(catalog.models.all { it.id.startsWith("bifrost/") })
-        assertEquals(
-            "other/cerebras/gpt-oss-120b",
-            ModelCatalog(BifrostProvider("other", "http://other.example", "test-key"))
-                .models.first().id,
+        // extra providers are accepted (ids unique), but the pinned entries
+        // still resolve to the bifrost provider
+        val extended = ModelCatalog(
+            BifrostProvider("bifrost", "http://one.example", "test-key"),
+            BifrostProvider("other", "http://two.example", "test-key"),
         )
+        assertEquals(
+            catalog.models.map { it.id },
+            extended.models.map { it.id },
+            "the pinned model entries still resolve to the bifrost provider",
+        )
+        assertTrue(extended.models.all { it.id.startsWith("bifrost/") })
     }
 
     @Test
@@ -62,5 +70,22 @@ class ModelCatalogTest {
         assertEquals("bifrost/cerebras/gemma-4-31b", catalog.findModel("bifrost/cerebras/gemma-4-31b")?.id)
         assertNull(catalog.findModel("no/such-model"))
         assertNull(catalog.findModel("cerebras/gemma-4-31b"), "the bare model id must not match")
+    }
+
+    @Test
+    fun `duplicate provider ids are rejected`() {
+        assertFailsWith<IllegalArgumentException> {
+            ModelCatalog(
+                BifrostProvider("bifrost", "http://one.example", "test-key"),
+                BifrostProvider("bifrost", "http://two.example", "test-key"),
+            )
+        }
+    }
+
+    @Test
+    fun `catalog without a bifrost provider fails fast`() {
+        assertFailsWith<IllegalArgumentException> {
+            ModelCatalog(BifrostProvider("other", "http://other.example", "test-key"))
+        }
     }
 }

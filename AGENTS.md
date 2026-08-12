@@ -24,7 +24,7 @@ The pieces:
   server-side default), `runChat` builds a fresh streaming chat model per
   request (cheap — it holds configuration only, no connections, so
   per-request model selection has no shared state) and runs the turn loop; the
-  model catalog, the history store, and the system prompt are built once and
+  model catalog, the chat store, and the system prompt are built once and
   shared. Stream progress reaches the client via a `StreamingExecutionCallback`
   implementation that writes SSE events (`server/WebServer.kt`), including
   `tool_result` events emitted when the loop appends locally-executed tool
@@ -82,11 +82,11 @@ tables), and the serialized format is ours:
   (including the new user message and assistant reply, plus any tool rounds)
   after the run **succeeds**. A failed or aborted run never reaches the store,
   so history stays at the last good state.
-- `chats.history_json` stores a **framework-neutral** JSON array
+- `chats.chat_json` stores a **framework-neutral** JSON array
   (`chat/ChatMessage.kt`): roles system/user/assistant/tool_result, parts
   text / reasoning / tool_call / tool_result / attachment, plus per-message
   meta (timestamp, token usage) and `finishReason`. No framework type names
-  cross the DB or the API boundary (`GET /api/chats/{id}/history`
+  cross the DB or the API boundary (`GET /api/chats/{id}/chat`
   serves this format).
 - The neutral list is the canonical in-loop structure: each round builds its
   request from a fresh conversion (`agent/lc4j/chat/Lc4jChatMessageConverters.kt`
@@ -94,7 +94,7 @@ tables), and the serialized format is ours:
   `chat/ChatMessage.kt`'s KDoc), and accepted responses are captured
   back into neutral messages with their `ChatResponse` metadata (token usage,
   `finishReason` wire name) at accept time.
-- Loading fails fast: an undecodable `history_json` (corrupt row, or an
+- Loading fails fast: an undecodable `chat_json` (corrupt row, or an
   incompatible format change) throws instead of silently resetting the chat
   to empty. The golden-JSON tests in `ChatCodecTest` pin the neutral format
   and `Langchain4jHistoryConvertersTest` pins the neutral↔langchain4j mapping,

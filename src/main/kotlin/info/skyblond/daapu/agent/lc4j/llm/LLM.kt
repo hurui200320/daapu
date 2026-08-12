@@ -5,8 +5,13 @@ import info.skyblond.daapu.chat.AttachmentKind
 import info.skyblond.daapu.agent.lc4j.provider.OpenAICompatibleProvider
 import java.time.Duration
 
-// FIXME: add doc/comment
-
+/**
+ * Capabilities of a model, used to reject content a model cannot process
+ * before any LLM request ([checkPromptContentCapabilities] / attachment
+ * kinds) and to configure per-model behavior ([LLM.toStreamingChatModel]).
+ * Nested under `Input`/`Output` to reflect the side of the conversation the
+ * capability belongs to.
+ */
 sealed class LLMCapability {
     class Input {
         class Vision {
@@ -25,6 +30,18 @@ sealed class LLMCapability {
     }
 }
 
+/**
+ * One catalog entry: a model served by a gateway ([provider]) together with
+ * the metadata the turn loop needs to run it.
+ *
+ * [id] is the wire-visible, user-facing identifier (`{provider.id}/{modelId}`,
+ * served via `/api/models` and stored in chat history as
+ * `ChatMessageMeta.modelId`); [contextLength] and [maxOutputTokens] are the
+ * budgets used to classify context-vs-output exhaustion, [capabilities] drive
+ * the pre-send content check and attachment support, and
+ * [toStreamingChatModel] builds a fresh streaming model per run — cheap, as
+ * it holds configuration only, no connections.
+ */
 class LLM(
     val provider: OpenAICompatibleProvider,
     val modelId: String,
@@ -45,6 +62,12 @@ class LLM(
 
     fun hasReasoning(): Boolean = supports(LLMCapability.Output.Reasoning)
 
+    /**
+     * Build a streaming chat model for one run. Cheap: configuration only,
+     * no connections, so building one per request is fine (see
+     * `ChatRunService`). Thinking is sent/returned according to
+     * [LLMCapability.Output.Reasoning].
+     */
     fun toStreamingChatModel(
         reasoningEffort: String,
         timeout: Duration = Duration.ofSeconds(60),

@@ -34,8 +34,8 @@ export async function deleteChat(chatId: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw new Error(await parseError(res))
 }
 
-export async function loadHistory(chatId: string): Promise<ChatMessage[]> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/history`)
+export async function loadChat(chatId: string): Promise<ChatMessage[]> {
+  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/chat`)
   if (!res.ok) throw new Error(await parseError(res))
   return res.json()
 }

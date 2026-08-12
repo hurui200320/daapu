@@ -7,8 +7,8 @@ import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
 
 /**
- * Postgres-backed [ChatStore], storing the whole history as one JSON array
- * in the chat row's `history_json` column.
+ * Postgres-backed [ChatStore], storing the whole chat as one JSON array in
+ * the chat row's `chat_json` column.
  */
 class PostgresChatStore : ChatStore {
 
@@ -16,16 +16,16 @@ class PostgresChatStore : ChatStore {
         Chats.selectAll()
             .where { Chats.id eq chatId }
             .singleOrNull()
-            ?.get(Chats.historyJson)
+            ?.get(Chats.chatJson)
             ?: "[]"
     }.let { ChatCodec.decodeChat(chatId, it) }
 
     override suspend fun store(chatId: String, messages: List<ChatMessage>) {
-        val historyJson = ChatCodec.encodeChat(messages)
+        val chatJson = ChatCodec.encodeChat(messages)
         withTransaction {
             Chats.upsert {
                 it[Chats.id] = chatId
-                it[Chats.historyJson] = historyJson
+                it[Chats.chatJson] = chatJson
             }
         }
     }

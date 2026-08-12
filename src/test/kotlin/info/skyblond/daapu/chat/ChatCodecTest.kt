@@ -107,7 +107,7 @@ class ChatCodecTest {
     @Test
     fun `empty json array decodes to an empty history`() {
         // the exact payload every brand-new chat row starts with
-        // (history_json DEFAULT '[]')
+        // (chat_json DEFAULT '[]')
         assertEquals(emptyList(), ChatCodec.decodeChat("chat-new", "[]"))
     }
 

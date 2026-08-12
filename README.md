@@ -120,7 +120,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`):
 | `GET /api/chats`                        | Existing chat ids (newest first, capped).                    |
 | `POST /api/chats`                       | Create a chat id.                                            |
 | `DELETE /api/chats/{id}`                | Delete a chat (409 while a run is active).                   |
-| `GET /api/chats/{id}/history`           | Full history as neutral-format JSON (raw `history_json`).    |
+| `GET /api/chats/{id}/chat`              | Full chat as neutral-format JSON (raw `chat_json`).         |
 | `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |
 | `GET /api/memories`                     | Shared short-term memories (in injection order).             |
 | `POST /api/memories`                    | Create a memory.                                             |

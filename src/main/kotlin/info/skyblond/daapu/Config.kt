@@ -108,7 +108,7 @@ data class McpServerConfig(
      */
     fun validate() {
         if (namespace.isBlank()) throw IllegalArgumentException("MCP server config is missing a namespace")
-        if (!namespace.matches(NAMESPACE_REGEX)) {
+        if (!namespace.matches(SAFE_ID_REGEX)) {
             throw IllegalArgumentException(
                 "MCP server namespace '$namespace' is invalid: tool names are prefixed with it, so only [0-9a-z_-] is allowed"
             )
@@ -148,11 +148,15 @@ data class McpServerConfig(
  * Namespaces reserved for the harness's own internal/harness tools: an MCP
  * server must not use one of these, or its advertised tool names would
  * collide with the internal tools' namespaces. All lowercase, matching
- * [NAMESPACE_REGEX] — the check in [McpServerConfig.validate] is exact.
+ * [SAFE_ID_REGEX] — the check in [McpServerConfig.validate] is exact.
  */
 val MCP_RESERVED_NAMESPACES: Set<String> = setOf("system", "inner", "internal", "gsg")
 
-// the namespace becomes part of every advertised tool name, which
-// OpenAI-compatible gateways only accept in [0-9a-z_-]; uppercase is
-// rejected so the reserved-namespace check stays an exact match
-val NAMESPACE_REGEX: Regex = Regex("[0-9a-z_-]+")
+/**
+ * Charset for ids that become part of wire-visible strings: MCP namespaces
+ * (prefixed onto every advertised tool name) and provider ids (prefixed onto
+ * every model id served via `/api/models` and stored in chat history).
+ * OpenAI-compatible gateways only accept `[0-9a-z_-]` in such strings;
+ * uppercase is rejected so the reserved-namespace check stays an exact match.
+ */
+val SAFE_ID_REGEX: Regex = Regex("[0-9a-z_-]+")

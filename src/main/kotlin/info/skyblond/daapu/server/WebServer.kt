@@ -117,9 +117,9 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                     if (!service.deleteChat(id)) throw NotFoundException("Chat $id not found")
                     call.respond(HttpStatusCode.NoContent)
                 }
-                get("/{chatId}/history") {
-                    val history = service.history(call.chatIdParam())
-                    call.respondText(ChatCodec.encodeChat(history), ContentType.Application.Json)
+                get("/{chatId}/chat") {
+                    val chat = service.chat(call.chatIdParam())
+                    call.respondText(ChatCodec.encodeChat(chat), ContentType.Application.Json)
                 }
                 post("/{chatId}/messages") {
                     handleChatMessage(call, service)

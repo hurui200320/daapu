@@ -2,6 +2,7 @@ package info.skyblond.daapu.agent.lc4j.provider
 
 import dev.langchain4j.http.client.jdk.JdkHttpClient
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel
+import info.skyblond.daapu.SAFE_ID_REGEX
 import info.skyblond.daapu.agent.lc4j.provider.client.ReasoningRewriteHttpClient
 
 abstract class OpenAICompatibleProvider(
@@ -10,7 +11,12 @@ abstract class OpenAICompatibleProvider(
     protected val apiKey: String,
 ) {
     init {
-        // FIXME: id must be a-z0-9 with `_` and `-`, other chars are not allowed
+        // the id is prefixed onto every model id (`provider/modelId`), which is
+        // served via /api/models and stored in chat history, so it must stay
+        // unambiguous: no '/', no whitespace, no uppercase — see SAFE_ID_REGEX
+        require(id.matches(SAFE_ID_REGEX)) {
+            "Provider id '$id' is invalid: only [0-9a-z_-] is allowed"
+        }
     }
 
     open fun createOpenAiStreamingChatModelBuilder(): OpenAiStreamingChatModel.OpenAiStreamingChatModelBuilder =

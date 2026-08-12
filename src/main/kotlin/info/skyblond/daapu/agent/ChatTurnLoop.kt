@@ -59,11 +59,11 @@ fun checkPromptContentCapabilities(
 /**
  * Run one chat turn on langchain4j, replacing the old koog strategy graph.
  *
- * The neutral history ([ChatMessage]s) is the canonical in-loop structure:
+ * The neutral chat ([ChatMessage]s) is the canonical in-loop structure:
  * it is loaded from [chatStore], extended with the injected user message
  * and each accepted round's messages, and — only when the whole turn
  * succeeded — stripped of the per-turn XML injection and stored back. A
- * failed or aborted run never reaches [ChatStore.store], so history stays
+ * failed or aborted run never reaches [ChatStore.store], so the chat stays
  * at the last good state.
  *
  *
@@ -86,14 +86,14 @@ suspend fun runChatTurn(
     val contextInjection = ContextInjection()
 
     // the injection is prepended and stripped after the round, so an empty
-    // user input would leave a lone injection message in history
+    // user input would leave a lone injection message in chat
     require(userParts.isNotEmpty()) { "Empty user message is not allowed" }
 
-    var history = chatStore.load(chatId)
-    history = history.refreshSystemPrompt(systemPrompt)
+    var chat = chatStore.load(chatId)
+    chat = chat.refreshSystemPrompt(systemPrompt)
 
     // TODO: pre-round compaction (detect topic? or just compaction?)
-    history.lastOrNull { it.role == ChatMessageRole.Assistant }?.meta?.let { meta ->
+    chat.lastOrNull { it.role == ChatMessageRole.Assistant }?.meta?.let { meta ->
         meta.totalTokens?.let { logger.info { "Usage so far: total:  $it" } }
         meta.inputTokens?.let { logger.info { "Usage so far: input:  $it" } }
         meta.outputTokens?.let { logger.info { "Usage so far: output: $it" } }
@@ -111,7 +111,7 @@ suspend fun runChatTurn(
         eltmUpdated = false,
         memoryList = memories,
     )
-    history = history + ChatMessage(
+    chat = chat + ChatMessage(
         role = ChatMessageRole.User,
         parts = listOf(injection) + userParts,
     )
@@ -125,19 +125,19 @@ suspend fun runChatTurn(
         // the chat switches to a text-only model), or from tool results
         // (e.g. an MCP tool returning an image) — so the check must run per
         // round against the current prompt, not once on the request alone.
-        checkPromptContentCapabilities(history, model)
+        checkPromptContentCapabilities(chat, model)
         val result = executor.executeOnce(
             model = streamingChatModel,
             modelContextLength = model.contextLength,
             modelMaxOutputTokens = model.maxOutputTokens,
-            chat = history,
+            chat = chat,
             toolProvider = toolProvider,
             callback = callback
         )
         when (result) { // TODO: http error like 429 rate limited? classified to EmptyTransient?
             is StreamingExecutionResult.Completed -> {
-                // add to the history
-                history = history + result.assistant
+                // add to the chat
+                chat = chat + result.assistant
                 // handle tool calls
                 if (result.toolCallRequests.isNotEmpty()) {
                     // tool loop skeleton: execute each call in parallel,
@@ -148,8 +148,8 @@ suspend fun runChatTurn(
                         }.awaitAll()
                     }
                     callback.onToolResults(results)
-                    // add tool results to the history
-                    history = history + results.map { result ->
+                    // add tool results to the chat
+                    chat = chat + results.map { result ->
                         ChatMessage(
                             role = ChatMessageRole.ToolResult,
                             parts = listOf(result),
@@ -196,8 +196,8 @@ suspend fun runChatTurn(
     }
 
     // only the success path stores: a failed run never reaches here
-    history = history.stripInjection(contextInjection)
-    chatStore.store(chatId, history)
+    chat = chat.stripInjection(contextInjection)
+    chatStore.store(chatId, chat)
 }
 
 /**

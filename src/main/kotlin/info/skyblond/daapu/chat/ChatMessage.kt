@@ -6,10 +6,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlin.time.Instant
 
-// FIXME: change from history to chat
-
 /**
- * Framework-neutral chat history DTOs, owned by this project.
+ * Framework-neutral chat DTOs, owned by this project.
  */
 @Serializable
 data class ChatMessage(
@@ -227,6 +225,6 @@ sealed interface AttachmentContent {
     // it, and allowing stored external URLs into the system is a risk we
     // don't need until a real use case exists (e.g. provider-returned URLs
     // after a future model feature). The neutral format simply has no URL
-    // content type, so no URL ever lands in history_json.
+    // content type, so no URL ever lands in chat_json.
 
 }

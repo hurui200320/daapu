@@ -1,7 +1,7 @@
 package info.skyblond.daapu.chat
 
 /**
- * Load/store the chat history as the framework-neutral format
+ * Load/store a chat's messages in the framework-neutral format
  * ([ChatMessage]s), owned by this project.
  */
 interface ChatStore {

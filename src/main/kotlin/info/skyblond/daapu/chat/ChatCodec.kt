@@ -4,16 +4,16 @@ import info.skyblond.daapu.chat.ChatCodec.validateChat
 import kotlinx.serialization.json.Json
 
 /**
- * JSON codec for the neutral chat history format ([ChatMessage]).
+ * JSON codec for the neutral chat format ([ChatMessage]).
  *
  * Configuration mirrors the old koog-format codec: unknown keys are tolerated
  * on decode (a newer format may add fields), nulls are omitted on encode, and
  * defaults (e.g. `isError = false`) are written explicitly — the stored JSON
  * carries the full value, never an implicit default.
  *
- * Decode also validates the invariants that keep stored history re-sendable to
+ * Decode also validates the invariants that keep a stored chat re-sendable to
  * providers (see [validateChat]): a violating row fails fast with the chat
- * named, on every load path (run loads and `GET /history`), instead of
+ * named, on every load path (run loads and `GET /chat`), instead of
  * surfacing later as an opaque gateway 400 or an unbounded retry.
  */
 object ChatCodec {
@@ -30,7 +30,7 @@ object ChatCodec {
     fun encodeChat(chat: List<ChatMessage>): String = json.encodeToString(chat)
 
     /**
-     * Decode a stored chat history payload, failing fast on corruption or an
+     * Decode a stored chat payload, failing fast on corruption or an
      * incompatible format instead of silently resetting the chat to empty.
      */
     fun decodeChat(chatId: String, chatJson: String): List<ChatMessage> =
@@ -48,9 +48,9 @@ object ChatCodec {
     /**
      * validate a chat.
      */
-    private fun validateChat(history: List<ChatMessage>) {
+    private fun validateChat(chat: List<ChatMessage>) {
         // last message (if has one) must be assistant message with reason stop
-        history.lastOrNull()?.let {
+        chat.lastOrNull()?.let {
             require(it.role == ChatMessageRole.Assistant) {
                 "Last message is not assistant, this is not a complete chat: ${it.role}"
             }
@@ -58,8 +58,8 @@ object ChatCodec {
                 "Last message is not naturally finished (reason should be 'stop'): ${it.finishReason}"
             }
         }
-        val calls = history.flatMap { it.parts }.filterIsInstance<ChatMessagePart.ToolCall>()
-        val results = history.flatMap { it.parts }.filterIsInstance<ChatMessagePart.ToolResult>()
+        val calls = chat.flatMap { it.parts }.filterIsInstance<ChatMessagePart.ToolCall>()
+        val results = chat.flatMap { it.parts }.filterIsInstance<ChatMessagePart.ToolResult>()
         // call id must be unique, no duplicates
         val dedupToolCallIdCount = calls.map { it.id }.toSet().size
         require(dedupToolCallIdCount == calls.size) {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { deleteChat, listChats, listModels, loadHistory, newChat, streamChat } from './api'
+  import { deleteChat, listChats, listModels, loadChat, newChat, streamChat } from './api'
   import type { ChatMessage, ModelInfo } from './types'
   import Composer from './Composer.svelte'
   import MessageList from './MessageList.svelte'
@@ -34,11 +34,11 @@
     }
   })
 
-  async function loadChat(id: string) {
+  async function loadMessages(id: string) {
     error = null
     streamError = null
     try {
-      messages = await loadHistory(id)
+      messages = await loadChat(id)
     } catch (e) {
       error = String(e)
     }
@@ -46,7 +46,7 @@
 
   function pickChat(id: string) {
     chatId = id
-    void loadChat(id)
+    void loadMessages(id)
   }
 
   async function createNewChat() {

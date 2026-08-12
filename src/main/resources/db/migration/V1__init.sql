@@ -2,13 +2,13 @@
 -- vector columns without a schema migration later.
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- The conversation history is stored in history_json as one JSON array in the
+-- The conversation is stored in chat_json as one JSON array in the
 -- project-owned framework-neutral format.
 CREATE TABLE chats
 (
-    id           TEXT PRIMARY KEY,
-    title        TEXT NOT NULL DEFAULT 'New chat',
-    history_json TEXT NOT NULL DEFAULT '[]'
+    id       TEXT PRIMARY KEY,
+    title    TEXT NOT NULL DEFAULT 'New chat',
+    chat_json TEXT NOT NULL DEFAULT '[]'
 );
 
 -- Shared short term memories

@@ -11,7 +11,7 @@ object Chats : Table("chats") {
     val id = text("id")
     // TODO: wire it up when the chat list shows titles, also add rename chat title in service
     val title = text("title")
-    val historyJson = text("history_json").default("[]")
+    val chatJson = text("chat_json").default("[]")
 
     override val primaryKey = PrimaryKey(id)
 }

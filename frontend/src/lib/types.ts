@@ -1,5 +1,5 @@
 /**
- * Loose mirror of the framework-neutral chat history format the backend
+ * Loose mirror of the framework-neutral chat format the backend
  * serves (see chat/ChatMessage.kt + the golden-format tests in
  * ChatCodecTest). The `type`/`role` discriminators are our own short
  * lowercase names — no framework type strings cross the API.

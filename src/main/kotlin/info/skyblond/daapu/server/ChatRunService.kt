@@ -41,7 +41,7 @@ class ChatRunSetup(
  *
  * One streaming chat model is built per request (cheap: the model holds
  * configuration only, no connections), so per-request model selection comes
- * for free; only the expensive pieces — the model catalog, the history store,
+ * for free; only the expensive pieces — the model catalog, the chat store,
  * the system prompt, and the MCP tool provider (cached clients, #8) — are
  * shared.
  */
@@ -94,7 +94,7 @@ class ChatRunService(
 
     /**
      * Delete a chat row. Refuses (throws [ChatRunConflictException]) while a
-     * run holds the chat lock: the history store's upsert would otherwise let
+     * run holds the chat lock: the chat store's upsert would otherwise let
      * an in-flight run's final store resurrect the deleted row. Returns false
      * when the chat doesn't exist.
      *
@@ -125,7 +125,7 @@ class ChatRunService(
         }
     }
 
-    suspend fun history(chatId: String): List<ChatMessage> = chatStore.load(chatId)
+    suspend fun chat(chatId: String): List<ChatMessage> = chatStore.load(chatId)
 
     /**
      * Validate and map an incoming message. Throws ktor's
@@ -203,7 +203,7 @@ class ChatRunService(
 
     /**
      * Run one chat turn for [setup], forwarding stream events to [sendEvent]
-     * (an SSE writer). History is only stored by the turn loop when the run
+     * (an SSE writer). The chat is only stored by the turn loop when the run
      * completes, so a failed or aborted run leaves the chat untouched.
      */
     suspend fun runChat(
