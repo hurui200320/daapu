@@ -4,12 +4,18 @@
   import type { ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
   import Composer from './Composer.svelte'
   import MessageList from './MessageList.svelte'
+  import UsageBar from './UsageBar.svelte'
 
   let chatId = $state('')
   let knownChats = $state<string[]>([])
   let models = $state<ModelInfo[]>([])
   let messages = $state<ChatMessage[]>([])
   let error = $state<string | null>(null)
+
+  // the per-message model picker lives in the Composer; the state is lifted
+  // here so the usage bar can show the context of the model that will process
+  // the next message
+  let selectedModel = $state('')
 
   let streaming = $state(false)
   let streamReasoning = $state('')
@@ -22,6 +28,42 @@
   // mirrors the backend's data-URL handling (ChatRunService.parseImagePart:
   // trims the URL and strips whitespace from the base64 payload)
   const DATA_URL_RE = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/
+
+  const STORAGE_KEY = 'daapu.model'
+
+  $effect(() => {
+    if (models.length > 0 && selectedModel === '') {
+      const stored = localStorage.getItem(STORAGE_KEY)
+      // a stale stored id (catalog changed, different backend) would render a
+      // blank picker and a confusing 400 on send: fall back to the first model
+      selectedModel = models.some((m) => m.id === stored) ? stored! : models[0].id
+    }
+  })
+
+  $effect(() => {
+    if (selectedModel) localStorage.setItem(STORAGE_KEY, selectedModel)
+  })
+
+  /**
+   * Latest-round usage: scan backwards for the last assistant message that
+   * carries token usage (each round's total = full prompt + output of that
+   * round, the best proxy for current context occupancy). The context window
+   * is always the currently selected model's, since the next message will be
+   * processed by it. Missing either side (no usage data, unknown/null
+   * contextLength) hides the indicator.
+   */
+  function computeUsage(): { used: number | null; context: number | null } {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      const used = msg.role === 'assistant' ? msg.meta?.totalTokens : null
+      if (used == null) continue
+      const model = models.find((m) => m.id === selectedModel)
+      return { used, context: model?.contextLength ?? null }
+    }
+    return { used: null, context: null }
+  }
+
+  const usage = $derived(computeUsage())
 
   /** Mirror of the backend's ChatMessagePart.Attachment, for display only. */
   function dataUrlToPart(dataUrl: string): ChatMessagePart | null {
@@ -256,6 +298,7 @@
     </select>
     <button onclick={() => void createNewChat()} disabled={streaming}>new chat</button>
     <button onclick={() => void deleteCurrentChat()} disabled={streaming || !chatId}>delete</button>
+    <UsageBar used={usage.used} context={usage.context} />
     {#if error}<span class="error">{error}</span>{/if}
   </div>
   <MessageList
@@ -267,7 +310,7 @@
     {retrying}
     streamError={streamError}
   />
-  <Composer {models} disabled={streaming} onSend={send} />
+  <Composer {models} disabled={streaming} onSend={send} bind:selectedModel />
 </div>
 
 <style>

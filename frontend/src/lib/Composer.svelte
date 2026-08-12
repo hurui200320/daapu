@@ -4,33 +4,19 @@
   let {
     models,
     disabled = false,
+    selectedModel = $bindable(''),
     onSend,
   }: {
     models: ModelInfo[]
     disabled?: boolean
+    selectedModel?: string
     /** resolves to whether the message was stored (false restores the draft) */
     onSend: (text: string, images: { dataUrl: string }[], model: string) => Promise<boolean>
   } = $props()
 
   let text = $state('')
   let images = $state<{ dataUrl: string }[]>([])
-  let selectedModel = $state('')
   let fileInput: HTMLInputElement
-
-  const STORAGE_KEY = 'daapu.model'
-
-  $effect(() => {
-    if (models.length > 0 && selectedModel === '') {
-      const stored = localStorage.getItem(STORAGE_KEY)
-      // a stale stored id (catalog changed, different backend) would render a
-      // blank picker and a confusing 400 on send: fall back to the first model
-      selectedModel = models.some((m) => m.id === stored) ? stored! : models[0].id
-    }
-  })
-
-  $effect(() => {
-    if (selectedModel) localStorage.setItem(STORAGE_KEY, selectedModel)
-  })
 
   function addFiles(files: FileList | null) {
     if (!files) return
