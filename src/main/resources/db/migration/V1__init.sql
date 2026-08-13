@@ -6,16 +6,17 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- project-owned framework-neutral format.
 CREATE TABLE chats
 (
-    id       TEXT PRIMARY KEY,
-    title    TEXT NOT NULL DEFAULT 'New chat',
-    chat_json TEXT NOT NULL DEFAULT '[]'
+    id           TEXT PRIMARY KEY,
+    title        TEXT NOT NULL DEFAULT 'New chat',
+    chat_json    TEXT NOT NULL DEFAULT '[]',
+    sstm_version TEXT NOT NULL DEFAULT ''
 );
 
 -- Shared short term memories
 -- content is raw text, no escape.
 CREATE TABLE sstms
 (
-    id BIGSERIAL PRIMARY KEY,
+    id          BIGSERIAL PRIMARY KEY,
     last_update TIMESTAMP NOT NULL DEFAULT now(),
-    content TEXT NOT NULL
+    content     TEXT      NOT NULL
 )

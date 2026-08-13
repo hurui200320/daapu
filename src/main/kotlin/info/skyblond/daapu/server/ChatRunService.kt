@@ -12,10 +12,11 @@ import info.skyblond.daapu.agent.runChatTurn
 import info.skyblond.daapu.chat.*
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
-import info.skyblond.daapu.db.SSTMs
 import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.mcp.McpToolProvider
+import info.skyblond.daapu.memory.sstm.PostgresSstmService
+import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.json.buildJsonObject
@@ -45,8 +46,8 @@ class ChatRunSetup(
  * One streaming chat model is built per request (cheap: the model holds
  * configuration only, no connections), so per-request model selection comes
  * for free; only the expensive pieces — the model catalog, the chat store,
- * the system prompt, and the MCP tool provider (cached clients, #8) — are
- * shared.
+ * the system prompt, the MCP tool provider (cached clients, #8), and the
+ * SSTM service (shared with the memory CRUD routes) — are reused.
  */
 class ChatRunService(
     config: AppConfig,
@@ -56,6 +57,7 @@ class ChatRunService(
     // constructed without MCP servers (tests) behaves like the old
     // EmptyToolProvider path.
     private val toolProvider: McpToolProvider = McpToolProvider(emptyList()),
+    private val sstmService: SstmService = PostgresSstmService(),
 ) : AutoCloseable {
 
     private val bifrostProvider = BifrostProvider(
@@ -156,7 +158,7 @@ class ChatRunService(
         }
     }
 
-    suspend fun chat(chatId: String): List<ChatMessage> = chatStore.load(chatId)
+    suspend fun chat(chatId: String): List<ChatMessage> = chatStore.load(chatId).chat
 
     /**
      * Validate and map an incoming message. Throws ktor's
@@ -248,13 +250,7 @@ class ChatRunService(
             userParts = setup.parts,
             systemPrompt = systemPrompt,
             chatStore = chatStore,
-            loadMemories = {
-                withTransaction {
-                    SSTMs.selectAll()
-                        .orderBy(SSTMs.lastUpdate to SortOrder.ASC)
-                        .map { it[SSTMs.content] }
-                }
-            },
+            sstmService = sstmService,
             toolProvider = toolProvider,
             callback = streamEventCallback(sendEvent),
             executor = Lc4jStreamingExecutor()

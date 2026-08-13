@@ -6,10 +6,12 @@ import info.skyblond.daapu.agent.executor.StreamingExecutionResult
 import info.skyblond.daapu.agent.executor.StreamingExecutor
 import info.skyblond.daapu.agent.lc4j.llm.LLM
 import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
+import info.skyblond.daapu.chat.ChatEntry
 import info.skyblond.daapu.chat.ChatMessage
 import info.skyblond.daapu.chat.ChatMessagePart
 import info.skyblond.daapu.chat.ChatMessageRole
 import info.skyblond.daapu.chat.ChatStore
+import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -78,7 +80,7 @@ suspend fun runChatTurn(
     userParts: List<ChatMessagePart>,
     systemPrompt: String,
     chatStore: ChatStore,
-    loadMemories: suspend () -> List<String>,
+    sstmService: SstmService,
     toolProvider: ToolProvider,
     callback: StreamingExecutionCallback,
     executor: StreamingExecutor
@@ -89,22 +91,19 @@ suspend fun runChatTurn(
     // user input would leave a lone injection message in chat
     require(userParts.isNotEmpty()) { "Empty user message is not allowed" }
 
-    var chat = chatStore.load(chatId)
-    chat = chat.refreshSystemPrompt(systemPrompt)
+    val loaded = chatStore.load(chatId)
+    val chatSstmVersion = loaded.sstmVersion
+    var chat = loaded.chat.refreshSystemPrompt(systemPrompt)
 
     // TODO: pre-round compaction (detect topic? or just compaction?)
 
-    // TODO: add a class for memories, use lock to block all readers when memory
-    //       is too long and triggers compaction. Hold the lock until done.
-    // TODO: history compaction when context is exhausted (see ContextExhausted
-    //       handling below; currently unrecoverable).
-    val memories = loadMemories()
+    val sstm = sstmService.listMemories()
     val injection = contextInjection.generateInjection(
         time = ZonedDateTime.now(),
-        // TODO: hook these up (SSTM/ELTM update tracking)
-        sstmUpdated = false,
+        sstmUpdated = chatSstmVersion != sstm.version,
+        // TODO: hook these up (ELTM update tracking)
         eltmUpdated = false,
-        memoryList = memories,
+        memoryList = sstm.memories.map { it.content },
     )
     chat = chat + ChatMessage(
         role = ChatMessageRole.User,
@@ -192,7 +191,7 @@ suspend fun runChatTurn(
 
     // only the success path stores: a failed run never reaches here
     chat = chat.stripInjection(contextInjection)
-    chatStore.store(chatId, chat)
+    chatStore.store(chatId, ChatEntry(chat, sstm.version))
 }
 
 /**

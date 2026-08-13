@@ -14,6 +14,7 @@ import info.skyblond.daapu.agent.lc4j.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
 import info.skyblond.daapu.chat.AttachmentContent
 import info.skyblond.daapu.chat.AttachmentKind
+import info.skyblond.daapu.chat.ChatEntry
 import info.skyblond.daapu.chat.ChatMessage
 import info.skyblond.daapu.chat.ChatMessagePart
 import info.skyblond.daapu.chat.ChatMessageRole
@@ -27,6 +28,9 @@ import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
 import info.skyblond.daapu.mcp.MockToolReply
+import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
+import info.skyblond.daapu.memory.sstm.ShortTermMemory
+import info.skyblond.daapu.memory.sstm.SstmService
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -67,6 +71,7 @@ class ChatTurnLoopTest {
         modelId: String = "bifrost/cerebras/gemma-4-31b",
         userParts: List<ChatMessagePart> = listOf(ChatMessagePart.Text("hello")),
         store: InMemoryChatStore = InMemoryChatStore(),
+        sstmService: SstmService = InMemorySstmService(),
         toolProvider: ToolProvider = EmptyToolProvider,
     ): TurnOutcome {
         val model = catalogModel(server, modelId)
@@ -80,7 +85,7 @@ class ChatTurnLoopTest {
                     userParts = userParts,
                     systemPrompt = systemPrompt,
                     chatStore = store,
-                    loadMemories = { emptyList() },
+                    sstmService = sstmService,
                     toolProvider = toolProvider,
                     callback = callback,
                     executor = Lc4jStreamingExecutor(),
@@ -117,6 +122,81 @@ class ChatTurnLoopTest {
             assertEquals(listOf(ChatMessagePart.Text("hello")), stored[1].parts)
             assertEquals(listOf(ChatMessagePart.Text("ok")), stored[2].parts)
             assertEquals("stop", stored[2].finishReason)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `sstm version is persisted on the chat and the sstm-updated flag tracks changes`() {
+        val server = MockSseServer { MockSseResponse(200, stopStream()) }
+        try {
+            val store = InMemoryChatStore()
+            val sstm = InMemorySstmService(version = "v1")
+
+            // a fresh chat has no stored version, so the first run must flag
+            // the memory list as updated and persist the version it saw
+            var outcome = run(server, store = store, sstmService = sstm)
+            assertNull(outcome.error)
+            assertTrue(
+                server.lastRequest()!!.contains("<sstm-updated>true</sstm-updated>"),
+                "fresh chat must flag memories as updated",
+            )
+            assertEquals("v1", store.storedSstmVersion, "run must persist the memory version")
+
+            // same version as the last run: nothing changed, no flag
+            outcome = run(server, store = store, sstmService = sstm)
+            assertNull(outcome.error)
+            assertTrue(
+                server.lastRequest()!!.contains("<sstm-updated>false</sstm-updated>"),
+                "an unchanged version must not flag",
+            )
+            assertEquals("v1", store.storedSstmVersion)
+
+            // a memory edit bumps the version: the next run must flag again
+            sstm.version = "v2"
+            outcome = run(server, store = store, sstmService = sstm)
+            assertNull(outcome.error)
+            assertTrue(
+                server.lastRequest()!!.contains("<sstm-updated>true</sstm-updated>"),
+                "a changed version must flag",
+            )
+            assertEquals("v2", store.storedSstmVersion)
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `sstm version is not persisted on a failed run`() {
+        val server = MockSseServer { MockSseResponse(200, stopStream()) }
+        try {
+            val store = InMemoryChatStore()
+            val sstm = InMemorySstmService(version = "v1")
+            val outcome = run(server, store = store, sstmService = sstm)
+            assertNull(outcome.error)
+            assertEquals("v1", store.storedSstmVersion)
+
+            // a failed run must not touch the stored version: history stays
+            // at the last good state
+            sstm.version = "v2"
+            val failingServer = MockSseServer { MockSseResponse(500, emptyList()) }
+            try {
+                val failed = run(failingServer, store = store, sstmService = sstm)
+                assertNotNull(failed.error)
+                assertEquals("v1", store.storedSstmVersion, "failed run must not update the version")
+            } finally {
+                failingServer.close()
+            }
+
+            // ... so the next successful run still flags the pending change
+            val retry = run(server, store = store, sstmService = sstm)
+            assertNull(retry.error)
+            assertTrue(
+                server.lastRequest()!!.contains("<sstm-updated>true</sstm-updated>"),
+                "a change missed by a failed run must flag on the next success",
+            )
+            assertEquals("v2", store.storedSstmVersion)
         } finally {
             server.close()
         }
@@ -746,13 +826,39 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
         private set
     var storeCount = 0
         private set
+    var storedSstmVersion: String? = null
+        private set
 
-    override suspend fun load(chatId: String): List<ChatMessage> = stored ?: emptyList()
+    override suspend fun load(chatId: String): ChatEntry =
+        ChatEntry(stored ?: emptyList(), storedSstmVersion ?: "")
 
-    override suspend fun store(chatId: String, messages: List<ChatMessage>) {
+    override suspend fun store(chatId: String, chat: ChatEntry) {
         storeCount++
-        stored = messages
+        stored = chat.chat
+        storedSstmVersion = chat.sstmVersion
     }
+}
+
+/**
+ * A fake [SstmService] whose version is settable, so tests can verify the
+ * loop persists the version it saw and flips the `sstm-updated` flag when
+ * the version changes between runs.
+ */
+private class InMemorySstmService(
+    private val memories: List<ShortTermMemory> = emptyList(),
+    var version: String = "test-version",
+) : SstmService {
+    override suspend fun listMemories(): MemoriesWithVersion =
+        MemoriesWithVersion(memories, version)
+
+    override suspend fun createMemory(content: String): ShortTermMemory =
+        error("not used in loop tests")
+
+    override suspend fun updateMemory(id: Long, content: String): ShortTermMemory? =
+        error("not used in loop tests")
+
+    override suspend fun deleteMemory(id: Long): Boolean =
+        error("not used in loop tests")
 }
 
 /**

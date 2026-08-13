@@ -4,35 +4,23 @@ import info.skyblond.daapu.AppConfig
 import info.skyblond.daapu.McpServerConfig
 import info.skyblond.daapu.chat.ChatCodec
 import info.skyblond.daapu.mcp.McpToolProvider
+import info.skyblond.daapu.memory.sstm.PostgresSstmService
+import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.server.MemoryDto.Companion.toDto
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.http.ContentType
-import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.ApplicationCall
-import io.ktor.server.application.install
-import io.ktor.server.application.log
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
-import io.ktor.server.plugins.BadRequestException
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
+import io.ktor.server.application.*
+import io.ktor.server.engine.*
+import io.ktor.server.netty.*
+import io.ktor.server.plugins.*
 import io.ktor.server.plugins.ContentTransformationException
-import io.ktor.server.plugins.NotFoundException
-import io.ktor.server.plugins.UnsupportedMediaTypeException
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.request.receive
-import io.ktor.server.request.uri
-import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytesWriter
-import io.ktor.server.response.respondText
-import io.ktor.server.routing.delete
-import io.ktor.server.routing.get
-import io.ktor.server.routing.post
-import io.ktor.server.routing.put
-import io.ktor.server.routing.route
-import io.ktor.server.routing.routing
-import io.ktor.utils.io.ByteWriteChannel
-import io.ktor.utils.io.writeString
+import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.plugins.statuspages.*
+import io.ktor.server.request.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import io.ktor.utils.io.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -51,10 +39,10 @@ data class ErrorResponse(val error: String)
  * [mcpServers] are the hardcoded MCP tool servers from `Main.kt`.
  */
 fun startWebServer(config: AppConfig, mcpServers: List<McpServerConfig> = emptyList()) {
-    val service = ChatRunService(config, McpToolProvider(mcpServers))
+    val sstmService = PostgresSstmService()
+    val service = ChatRunService(config, McpToolProvider(mcpServers), sstmService)
     // graceful close of the MCP clients (stdio subprocesses, HTTP sessions)
     Runtime.getRuntime().addShutdownHook(Thread { service.close() })
-    val sstmService = SstmService()
     embeddedServer(Netty, port = config.httpPort, host = "0.0.0.0") {
         module(service, sstmService)
     }.start(wait = true)
@@ -89,7 +77,10 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
         // request Content-Type never reaches this handler: ktor's own default
         // transformation checker answers 415 (body-less) for it first.
         exception<UnsupportedMediaTypeException> { call, cause ->
-            call.respond(HttpStatusCode.UnsupportedMediaType, ErrorResponse(cause.message ?: "Unsupported media type"))
+            call.respond(
+                HttpStatusCode.UnsupportedMediaType,
+                ErrorResponse(cause.message ?: "Unsupported media type")
+            )
         }
         exception<ContentTransformationException> { call, cause ->
             call.respond(HttpStatusCode.BadRequest, ErrorResponse("Malformed request body"))
@@ -117,7 +108,10 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                     val request = call.receive<RenameChatRequest>()
                     val title = request.title.trim()
                     if (title.isEmpty()) throw BadRequestException("Chat title is empty")
-                    call.respond(service.renameChat(id, title) ?: throw NotFoundException("Chat $id not found"))
+                    call.respond(
+                        service.renameChat(id, title)
+                            ?: throw NotFoundException("Chat $id not found")
+                    )
                 }
                 delete("/{chatId}") {
                     val id = call.chatIdParam()
@@ -134,20 +128,28 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
             }
             route("/memories") {
                 get {
-                    call.respond(sstmService.listMemories())
+                    call.respond(
+                        sstmService.listMemories().memories.map { it.toDto() }
+                    )
                 }
                 post {
                     val request = call.receive<MemoryWriteRequest>()
                     val content = request.content.trim()
                     if (content.isEmpty()) throw BadRequestException("Memory content is empty")
-                    call.respond(HttpStatusCode.Created, sstmService.createMemory(content))
+                    call.respond(
+                        HttpStatusCode.Created,
+                        sstmService.createMemory(content).toDto()
+                    )
                 }
                 put("/{memoryId}") {
                     val id = call.memoryIdParam()
                     val request = call.receive<MemoryWriteRequest>()
                     val content = request.content.trim()
                     if (content.isEmpty()) throw BadRequestException("Memory content is empty")
-                    call.respond(sstmService.updateMemory(id, content) ?: throw NotFoundException("Memory $id not found"))
+                    call.respond(
+                        sstmService.updateMemory(id, content)?.toDto()
+                            ?: throw NotFoundException("Memory $id not found")
+                    )
                 }
                 delete("/{memoryId}") {
                     val id = call.memoryIdParam()

@@ -6,6 +6,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlin.time.Instant
 
+data class ChatEntry(
+    val chat: List<ChatMessage>,
+    val sstmVersion: String
+)
+
 /**
  * Framework-neutral chat DTOs, owned by this project.
  */

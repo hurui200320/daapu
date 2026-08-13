@@ -5,7 +5,7 @@ package info.skyblond.daapu.chat
  * ([ChatMessage]s), owned by this project.
  */
 interface ChatStore {
-    suspend fun load(chatId: String): List<ChatMessage>
+    suspend fun load(chatId: String): ChatEntry
 
-    suspend fun store(chatId: String, messages: List<ChatMessage>)
+    suspend fun store(chatId: String, chat: ChatEntry)
 }

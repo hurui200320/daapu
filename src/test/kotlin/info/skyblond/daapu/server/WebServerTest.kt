@@ -1,6 +1,7 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.AppConfig
+import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -49,7 +50,7 @@ class WebServerTest {
     @Test
     fun `blank message is rejected with 400`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Application.Json)
                 setBody(messageBody(text = "   "))
@@ -61,7 +62,7 @@ class WebServerTest {
     @Test
     fun `missing and unknown models are rejected with 400`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             listOf("""{"text":"hi"}""", """{"text":"hi","model":"no/such-model"}""").forEach { body ->
                 val response = client.post("/api/chats/chat-1/messages") {
                     contentType(ContentType.Application.Json)
@@ -75,7 +76,7 @@ class WebServerTest {
     @Test
     fun `malformed image data url is rejected with 400`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Application.Json)
                 setBody(messageBody(images = listOf("http://example.com/image.png")))
@@ -87,7 +88,7 @@ class WebServerTest {
     @Test
     fun `wrong content type is rejected with 415`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Text.Plain)
                 setBody("not json")
@@ -106,7 +107,7 @@ class WebServerTest {
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService, SstmService()) }
+                application { module(chatService, PostgresSstmService()) }
                 val response = client.post("/api/chats/$chatId/messages") {
                     contentType(ContentType.Application.Json)
                     setBody(messageBody())
@@ -125,7 +126,7 @@ class WebServerTest {
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService, SstmService()) }
+                application { module(chatService, PostgresSstmService()) }
                 val response = client.delete("/api/chats/$chatId")
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
@@ -137,7 +138,7 @@ class WebServerTest {
     @Test
     fun `blank or missing chat title is rejected with 400`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             listOf("""{"title":"   "}""", """{}""").forEach { body ->
                 val response = client.put("/api/chats/chat-1") {
                     contentType(ContentType.Application.Json)
@@ -151,7 +152,7 @@ class WebServerTest {
     @Test
     fun `empty memory content is rejected with 400`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             val response = client.post("/api/memories") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"   "}""")
@@ -163,7 +164,7 @@ class WebServerTest {
     @Test
     fun `non-numeric memory id is rejected with 400`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             val response = client.put("/api/memories/abc") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"memory"}""")
@@ -175,7 +176,7 @@ class WebServerTest {
     @Test
     fun `model catalog is served`() {
         testApplication {
-            application { module(service(), SstmService()) }
+            application { module(service(), PostgresSstmService()) }
             val response = client.get("/api/models")
             assertEquals(HttpStatusCode.OK, response.status)
         }

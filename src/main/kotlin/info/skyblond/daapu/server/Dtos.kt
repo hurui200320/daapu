@@ -1,5 +1,6 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import kotlinx.serialization.Serializable
 
 /**
@@ -50,7 +51,15 @@ data class MemoryDto(
     val id: Long,
     val lastUpdate: String,
     val content: String,
-)
+) {
+    companion object {
+        fun ShortTermMemory.toDto() = MemoryDto(
+            id = id,
+            lastUpdate = lastUpdate.toString(),
+            content = content
+        )
+    }
+}
 
 @Serializable
 data class MemoryWriteRequest(val content: String)

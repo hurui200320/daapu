@@ -11,6 +11,7 @@ object Chats : Table("chats") {
     val id = text("id")
     val title = text("title")
     val chatJson = text("chat_json").default("[]")
+    val sstmVersion = text("sstm_version").default("")
 
     override val primaryKey = PrimaryKey(id)
 }

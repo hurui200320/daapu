@@ -12,20 +12,25 @@ import org.jetbrains.exposed.v1.jdbc.upsert
  */
 class PostgresChatStore : ChatStore {
 
-    override suspend fun load(chatId: String): List<ChatMessage> = withTransaction {
-        Chats.selectAll()
+    override suspend fun load(chatId: String): ChatEntry = withTransaction {
+        val entry = Chats.selectAll()
             .where { Chats.id eq chatId }
             .singleOrNull()
-            ?.get(Chats.chatJson)
-            ?: "[]"
-    }.let { ChatCodec.decodeChat(chatId, it) }
+        val json = entry?.get(Chats.chatJson) ?: "[]"
+        val sstmVersion = entry?.get(Chats.sstmVersion) ?: ""
+        ChatEntry(
+            chat = ChatCodec.decodeChat(chatId, json),
+            sstmVersion = sstmVersion
+        )
+    }
 
-    override suspend fun store(chatId: String, messages: List<ChatMessage>) {
-        val chatJson = ChatCodec.encodeChat(messages)
+    override suspend fun store(chatId: String, chat: ChatEntry) {
+        val chatJson = ChatCodec.encodeChat(chat.chat)
         withTransaction {
             Chats.upsert {
                 it[Chats.id] = chatId
                 it[Chats.chatJson] = chatJson
+                it[Chats.sstmVersion] = chat.sstmVersion
             }
         }
     }
