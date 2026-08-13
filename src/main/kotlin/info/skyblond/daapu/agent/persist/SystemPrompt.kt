@@ -1,4 +1,4 @@
-package info.skyblond.daapu.agent
+package info.skyblond.daapu.agent.persist
 
 fun renderSystemPrompt(
     nickname: String,

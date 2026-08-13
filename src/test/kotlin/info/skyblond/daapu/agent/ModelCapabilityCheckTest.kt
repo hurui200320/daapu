@@ -1,14 +1,8 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent
 
-import info.skyblond.daapu.agent.ModelCapabilityException
-import info.skyblond.daapu.agent.checkPromptContentCapabilities
 import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
 import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
-import info.skyblond.daapu.chat.AttachmentContent
-import info.skyblond.daapu.chat.AttachmentKind
-import info.skyblond.daapu.chat.ChatMessage
-import info.skyblond.daapu.chat.ChatMessagePart
-import info.skyblond.daapu.chat.ChatMessageRole
+import info.skyblond.daapu.chat.*
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -25,7 +19,8 @@ import kotlin.test.assertTrue
  */
 class ModelCapabilityCheckTest {
 
-    private val catalog = ModelCatalog(BifrostProvider("bifrost", "http://gateway.example/v1", "test-key"))
+    private val catalog =
+        ModelCatalog(BifrostProvider("bifrost", "http://gateway.example/v1", "test-key"))
     private val gptOss = catalog.findModel("bifrost/cerebras/gpt-oss-120b")!!
     private val cerebrasGemma = catalog.findModel("bifrost/cerebras/gemma-4-31b")!!
     private val novitaGemma = catalog.findModel("bifrost/novita/google/gemma-4-31b-it")!!
@@ -89,7 +84,10 @@ class ModelCapabilityCheckTest {
         // an MCP tool can return an image mid-run; the attachment lives inside
         // the tool_result part, so the check must descend into it
         assertFailsWith<ModelCapabilityException> {
-            checkPromptContentCapabilities(chatWithToolResultAttachment(AttachmentKind.Image), gptOss)
+            checkPromptContentCapabilities(
+                chatWithToolResultAttachment(AttachmentKind.Image),
+                gptOss
+            )
         }
         checkPromptContentCapabilities(
             chatWithToolResultAttachment(AttachmentKind.Image),

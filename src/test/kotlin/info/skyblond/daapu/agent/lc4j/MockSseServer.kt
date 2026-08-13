@@ -1,4 +1,4 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent.lc4j
 
 import java.io.BufferedReader
 import java.io.InputStreamReader

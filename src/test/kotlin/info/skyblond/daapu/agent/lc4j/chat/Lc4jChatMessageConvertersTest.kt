@@ -1,5 +1,6 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent.lc4j.chat
 
+import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.data.message.AiMessage
 import dev.langchain4j.data.message.AudioContent
 import dev.langchain4j.data.message.ImageContent
@@ -17,9 +18,6 @@ import info.skyblond.daapu.chat.AttachmentKind
 import info.skyblond.daapu.chat.ChatMessage
 import info.skyblond.daapu.chat.ChatMessagePart
 import info.skyblond.daapu.chat.ChatMessageRole
-import info.skyblond.daapu.agent.lc4j.chat.toLc4jMessages
-import info.skyblond.daapu.agent.lc4j.chat.toNeutralAssistantMessage
-import info.skyblond.daapu.agent.lc4j.chat.toWireName
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -173,7 +171,7 @@ class Langchain4jHistoryConvertersTest {
                     .text("Hi there")
                     .toolExecutionRequests(
                         listOf(
-                            dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
+                            ToolExecutionRequest.builder()
                                 .id("call_1").name("flag").arguments("{}").build()
                         )
                     )
@@ -232,7 +230,7 @@ class Langchain4jHistoryConvertersTest {
                 AiMessage.builder()
                     .toolExecutionRequests(
                         listOf(
-                            dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
+                            ToolExecutionRequest.builder()
                                 .id("").name("flag").arguments("{}").build()
                         )
                     )

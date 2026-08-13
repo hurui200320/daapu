@@ -1,4 +1,4 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent.lc4j.llm
 
 import dev.langchain4j.data.message.AiMessage
 import dev.langchain4j.data.message.ChatMessage
@@ -9,10 +9,12 @@ import dev.langchain4j.model.chat.response.PartialThinking
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel
 import dev.langchain4j.model.output.FinishReason
-import info.skyblond.daapu.agent.lc4j.llm.LLM
-import info.skyblond.daapu.agent.lc4j.llm.LLMCapability
-import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
+import info.skyblond.daapu.agent.lc4j.MockSseResponse
+import info.skyblond.daapu.agent.lc4j.MockSseServer
+import info.skyblond.daapu.agent.lc4j.SSE_DONE
 import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
+import info.skyblond.daapu.agent.lc4j.sseChunk
+import info.skyblond.daapu.agent.lc4j.sseEvent
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test

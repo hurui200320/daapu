@@ -1,10 +1,11 @@
-package info.skyblond.daapu.agent
+package info.skyblond.daapu.agent.persist
 
 import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.agent.tool.ToolSpecification
 import dev.langchain4j.exception.HttpException
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
+import info.skyblond.daapu.agent.ModelCapabilityException
 import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
 import info.skyblond.daapu.agent.lc4j.executor.Lc4jStreamingExecutor
 import info.skyblond.daapu.agent.lc4j.executor.MidStreamErrorChunkException
@@ -19,11 +20,11 @@ import info.skyblond.daapu.chat.ChatMessage
 import info.skyblond.daapu.chat.ChatMessagePart
 import info.skyblond.daapu.chat.ChatMessageRole
 import info.skyblond.daapu.chat.ChatStore
-import info.skyblond.daapu.lc4j.MockSseResponse
-import info.skyblond.daapu.lc4j.MockSseServer
-import info.skyblond.daapu.lc4j.SSE_DONE
-import info.skyblond.daapu.lc4j.sseChunk
-import info.skyblond.daapu.lc4j.sseEvent
+import info.skyblond.daapu.agent.lc4j.MockSseResponse
+import info.skyblond.daapu.agent.lc4j.MockSseServer
+import info.skyblond.daapu.agent.lc4j.SSE_DONE
+import info.skyblond.daapu.agent.lc4j.sseChunk
+import info.skyblond.daapu.agent.lc4j.sseEvent
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool

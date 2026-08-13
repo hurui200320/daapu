@@ -1,7 +1,5 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent.lc4j.llm
 
-import info.skyblond.daapu.agent.lc4j.llm.LLMCapability
-import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
 import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
 import kotlin.test.Test
 import kotlin.test.assertEquals

@@ -7,8 +7,8 @@ import info.skyblond.daapu.agent.lc4j.llm.LLM
 import info.skyblond.daapu.agent.lc4j.llm.LLMCapability
 import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
 import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
-import info.skyblond.daapu.agent.renderSystemPrompt
-import info.skyblond.daapu.agent.runChatTurn
+import info.skyblond.daapu.agent.persist.renderSystemPrompt
+import info.skyblond.daapu.agent.persist.runChatTurn
 import info.skyblond.daapu.chat.*
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE

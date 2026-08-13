@@ -1,6 +1,5 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent.lc4j.provider
 
-import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue

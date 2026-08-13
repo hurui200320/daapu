@@ -1,4 +1,4 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent.lc4j.provider.client
 
 import dev.langchain4j.http.client.HttpClient
 import dev.langchain4j.http.client.HttpMethod
@@ -7,7 +7,6 @@ import dev.langchain4j.http.client.SuccessfulHttpResponse
 import dev.langchain4j.http.client.sse.ServerSentEvent
 import dev.langchain4j.http.client.sse.ServerSentEventListener
 import dev.langchain4j.http.client.sse.ServerSentEventParser
-import info.skyblond.daapu.agent.lc4j.provider.client.ReasoningRewriteHttpClient
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

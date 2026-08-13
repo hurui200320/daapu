@@ -1,4 +1,4 @@
-package info.skyblond.daapu.lc4j
+package info.skyblond.daapu.agent.lc4j
 
 import dev.langchain4j.data.message.UserMessage
 import dev.langchain4j.exception.HttpException

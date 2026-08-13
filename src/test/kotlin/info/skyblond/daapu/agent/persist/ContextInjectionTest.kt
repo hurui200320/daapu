@@ -1,4 +1,4 @@
-package info.skyblond.daapu.agent
+package info.skyblond.daapu.agent.persist
 
 import info.skyblond.daapu.chat.ChatMessagePart
 import java.time.ZonedDateTime
