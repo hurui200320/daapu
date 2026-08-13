@@ -2,10 +2,10 @@ package info.skyblond.daapu.mcp
 
 import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.exception.ToolExecutionException
-import info.skyblond.daapu.MCP_RESERVED_NAMESPACES
-import info.skyblond.daapu.McpServerConfig
-import info.skyblond.daapu.McpTransportType
 import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.config.MCP_RESERVED_NAMESPACES
+import info.skyblond.daapu.config.McpServerConfig
+import info.skyblond.daapu.config.McpTransportType
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.CompletionException

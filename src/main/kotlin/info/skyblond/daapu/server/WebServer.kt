@@ -1,8 +1,7 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.AppConfig
-import info.skyblond.daapu.McpServerConfig
 import info.skyblond.daapu.chat.ChatCodec
+import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -36,14 +35,16 @@ data class ErrorResponse(val error: String)
  * Start the HTTP API server (the frontend is a separate dev server that
  * proxies `/api` here; this process only serves the API).
  *
- * [mcpServers] are the hardcoded MCP tool servers from `Main.kt`.
+ * The MCP tool servers come from [AppConfig.mcp] (`config.jsonc`): the
+ * provider connects eagerly at construction, so a server that cannot be
+ * reached aborts startup instead of silently degrading every chat run.
  */
-fun startWebServer(config: AppConfig, mcpServers: List<McpServerConfig> = emptyList()) {
+fun startWebServer(config: AppConfig) {
     val sstmService = PostgresSstmService()
-    val service = ChatRunService(config, McpToolProvider(mcpServers), sstmService)
+    val service = ChatRunService(config, McpToolProvider(config.mcp.servers), sstmService)
     // graceful close of the MCP clients (stdio subprocesses, HTTP sessions)
     Runtime.getRuntime().addShutdownHook(Thread { service.close() })
-    embeddedServer(Netty, port = config.httpPort, host = "0.0.0.0") {
+    embeddedServer(Netty, port = config.server.port, host = "0.0.0.0") {
         module(service, sstmService)
     }.start(wait = true)
 }

@@ -47,31 +47,31 @@ chat"), pick a model, and chat.
 
 ### Configuration
 
-Configuration is read from environment variables (in development, place these in
-a `.env` file):
+Configuration lives in `config.jsonc` (JSON with C-style `//` comments and
+trailing commas) at the repo root. It contains API keys, so it is gitignored —
+start from the checked-in example:
 
-| Variable             | Required | Description                                                                 |
-|----------------------|----------|-----------------------------------------------------------------------------|
-| `DATABASE_URL`       | yes      | JDBC URL for PostgreSQL, e.g. `jdbc:postgresql://localhost:5432/postgres`.  |
-| `DATABASE_USER`      | yes      | Database user.                                                              |
-| `DATABASE_PASSWORD`  | yes      | Database password.                                                          |
-| `LLM_API_KEY`        | yes      | LLM provider API key (OpenAI-compatible).                                   |
-| `LLM_BASE_URL`       | yes      | LLM provider base URL.                                                      |
-| `HTTP_PORT`          | no       | API server port (default `8080`).                                           |
-| `EXA_API_KEY`        | no       | API key for the hardcoded exa MCP search server (default: no tools).        |
-
-MCP tool servers are **hardcoded in `Main.kt`** (PoC choice); only their API
-keys come from the environment/`.env` — e.g. the exa search server is wired
-with an `Authorization: Bearer $EXA_API_KEY` header. Both Streamable HTTP and
-stdio transports are supported, e.g. to add a local filesystem server:
-
-```kotlin
-McpServerConfig(
-    namespace = "fs",
-    type = McpTransportType.Stdio,
-    command = listOf("npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"),
-)
+```bash
+cp config.example.jsonc config.jsonc
+# then fill in your keys
 ```
+
+| Section     | Fields                                             | Description                                                          |
+|-------------|----------------------------------------------------|----------------------------------------------------------------------|
+| `database`  | `url`, `user`, `password` (required)               | PostgreSQL JDBC URL, user and password.                              |
+| `providers` | `{<id>: {apiKey, baseUrl}}` (required)             | OpenAI-compatible providers, keyed by id (e.g. `bifrost`); `/v1` is appended if missing. |
+| `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
+| `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
+
+`config.schema.json` is a JSON Schema (draft-07) mirroring the config models
+in `config/Config.kt`; the `"$schema": "./config.schema.json"` entry at the
+top of `config.jsonc` makes editors like VSCode/IntelliJ validate the file
+and autocomplete field names.
+
+MCP tool servers are configured under `mcp.servers`. Both Streamable HTTP and
+stdio transports are supported — `config.example.jsonc` shows a working
+example (an exa HTTP server with an `Authorization` header, plus a
+commented-out stdio entry to adapt).
 
 Each entry needs a `namespace` (used to namespace the advertised tool names,
 e.g. `exa__search` — the separator is `__`, so it must not contain it; only

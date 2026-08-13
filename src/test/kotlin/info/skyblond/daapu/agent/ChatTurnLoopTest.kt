@@ -3,8 +3,8 @@ package info.skyblond.daapu.agent
 import dev.langchain4j.agent.tool.ToolExecutionRequest
 import dev.langchain4j.agent.tool.ToolSpecification
 import dev.langchain4j.exception.HttpException
-import info.skyblond.daapu.McpServerConfig
-import info.skyblond.daapu.McpTransportType
+import info.skyblond.daapu.config.McpServerConfig
+import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
 import info.skyblond.daapu.agent.lc4j.executor.Lc4jStreamingExecutor
 import info.skyblond.daapu.agent.lc4j.executor.MidStreamErrorChunkException

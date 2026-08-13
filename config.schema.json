@@ -1,0 +1,219 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./config.schema.json",
+  "title": "daapu configuration",
+  "description": "Configuration of the daapu harness, loaded from config.jsonc. Mirrors the Kotlin models in info.skyblond.daapu.config (see AGENTS.md: keep this schema in sync with the config models).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "database",
+    "providers"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor hint pointing at this schema file."
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "user",
+        "password"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "JDBC URL for PostgreSQL, e.g. jdbc:postgresql://localhost:5432/postgres"
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Database user."
+        },
+        "password": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Database password."
+        }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[0-9a-z_-]+$"
+      },
+      "description": "OpenAI-compatible LLM providers, keyed by provider id. The id prefixes every model id ({provider.id}/{modelId}), so only [0-9a-z_-] is allowed. May be empty.",
+      "additionalProperties": {
+        "$ref": "#/definitions/llmProvider"
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8080,
+          "description": "HTTP API port; the frontend dev server proxies /api to it."
+        }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "servers": {
+          "type": "array",
+          "default": [],
+          "description": "MCP tool servers; all their tools are advertised to every chat run.",
+          "items": {
+            "$ref": "#/definitions/mcpServer"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "llmProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "apiKey",
+        "baseUrl"
+      ],
+      "properties": {
+        "apiKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "API key of the OpenAI-compatible LLM provider."
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base URL of the provider; /v1 is appended if missing."
+        }
+      }
+    },
+    "mcpServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "type"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!.*__)[0-9a-z_-]+$",
+          "not": {
+            "enum": [
+              "system",
+              "inner",
+              "internal",
+              "gsg"
+            ]
+          },
+          "description": "Prefix of the advertised tool names ({namespace}__{tool}): only [0-9a-z_-], no '__', and not a harness-reserved namespace."
+        },
+        "type": {
+          "enum": [
+            "http",
+            "stdio"
+          ],
+          "description": "http: Streamable HTTP server (url + optional headers); stdio: local subprocess (command + optional environment)."
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://",
+          "description": "Streamable HTTP endpoint; required when type is http."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra HTTP headers, e.g. Authorization for type http."
+        },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Subprocess argv; required when type is stdio."
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra environment variables merged onto the inherited environment of the stdio subprocess."
+        },
+        "initializationTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Timeout of the MCP initialize handshake."
+        },
+        "toolExecutionTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Timeout of one tool execution."
+        },
+        "reconnectAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "Total connect attempts including the first one (1 means no retry)."
+        },
+        "reconnectDelayMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000,
+          "description": "Delay between connect attempts in milliseconds."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "http"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "url"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "stdio"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "command"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

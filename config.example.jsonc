@@ -1,0 +1,48 @@
+{
+  // Editor support: IDEs that understand JSON schema (VSCode, IntelliJ)
+  // validate and autocomplete this file against config.schema.json.
+  // Copy this file to config.jsonc and fill in your values (the schema
+  // file and this example are checked in; config.jsonc is gitignored
+  // because it holds API keys).
+  "$schema": "./config.schema.json",
+  // PostgreSQL connection (pgvector enabled), see db/Database.kt
+  "database": {
+    "url": "jdbc:postgresql://localhost:5432/postgres",
+    "user": "postgres",
+    "password": "postgres"
+  },
+  // The OpenAI-compatible LLM gateway; /v1 is appended if missing
+  "providers": {
+    "bifrost": {
+      "apiKey": "replace-me",
+      "baseUrl": "http://localhost:8000"
+    }
+  },
+  // The HTTP API server; the frontend dev server proxies /api to this port
+  "server": {
+    "port": 8080
+  },
+  // MCP tool servers, all tools advertised to every chat run. The provider
+  // connects eagerly at startup, so a server that cannot be reached aborts
+  // startup instead of silently degrading every chat run.
+  "mcp": {
+    "servers": [
+      {
+        // Streamable HTTP server: url + optional headers
+        "namespace": "exa",
+        "type": "http",
+        "url": "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa,web_search_advanced_exa",
+        "headers": {
+          "Authorization": "Bearer replace-me"
+        }
+      }
+      // stdio example: a local subprocess (command + optional
+      // environment); uncomment and adapt to use it
+      // {
+      //     "namespace": "fs",
+      //     "type": "stdio",
+      //     "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      // }
+    ]
+  }
+}

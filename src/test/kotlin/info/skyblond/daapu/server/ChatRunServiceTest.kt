@@ -1,9 +1,9 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.AppConfig
 import info.skyblond.daapu.chat.AttachmentContent
 import info.skyblond.daapu.chat.AttachmentKind
 import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.config.testAppConfig
 import io.ktor.server.plugins.BadRequestException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,16 +16,7 @@ import kotlin.test.assertNotNull
  */
 class ChatRunServiceTest {
 
-    private val service = ChatRunService(
-        AppConfig(
-            databaseUrl = "jdbc:postgresql://localhost:5432/postgres",
-            databaseUser = "postgres",
-            databasePassword = "postgres",
-            llmApiKey = "test",
-            llmBaseUrl = "http://localhost:9",
-            httpPort = 8080,
-        )
-    )
+    private val service = ChatRunService(testAppConfig())
 
     private fun request(
         text: String? = null,
@@ -140,6 +131,16 @@ class ChatRunServiceTest {
                 val setup = service.prepareRun("chat-1", request(text = "hi", model = id))
                 assertEquals(id, setup.model.id)
             }
+    }
+
+    @Test
+    fun `a config without the bifrost provider fails fast at construction`() {
+        // the catalog pins its models to the bifrost gateway (see
+        // ModelCatalog.kt); a config without it is a wiring bug
+        val e = assertFailsWith<IllegalStateException> {
+            ChatRunService(testAppConfig().copy(providers = emptyMap()))
+        }
+        assertEquals("Provider config 'bifrost' not found", e.message)
     }
 
     @Test

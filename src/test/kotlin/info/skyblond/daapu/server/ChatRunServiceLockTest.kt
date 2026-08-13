@@ -1,6 +1,6 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.AppConfig
+import info.skyblond.daapu.config.testAppConfig
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
@@ -17,16 +17,7 @@ import kotlin.test.assertNotSame
  */
 class ChatRunServiceLockTest {
 
-    private val service = ChatRunService(
-        AppConfig(
-            databaseUrl = "jdbc:postgresql://localhost:5432/postgres",
-            databaseUser = "postgres",
-            databasePassword = "postgres",
-            llmApiKey = "test",
-            llmBaseUrl = "http://localhost:9",
-            httpPort = 8080,
-        )
-    )
+    private val service = ChatRunService(testAppConfig())
 
     @Test
     fun `second acquire on the same chat conflicts`() {

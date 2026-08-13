@@ -5,17 +5,17 @@ import dev.langchain4j.agent.tool.ToolSpecification
 import dev.langchain4j.exception.ToolArgumentsException
 import dev.langchain4j.exception.ToolExecutionException
 import dev.langchain4j.mcp.client.McpException
-import info.skyblond.daapu.McpServerConfig
 import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
 import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.config.McpServerConfig
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 
 /**
  * The MCP-backed [ToolProvider] (#8): one [ClientEntry] per configured server
- * (hardcoded in `Main.kt`, see [McpServerConfig]), all tools advertised to
- * every chat run ("one global tool set" for the PoC).
+ * (`config.jsonc` → `mcp.servers`, see [McpServerConfig]), all tools
+ * advertised to every chat run ("one global tool set" for the PoC).
  *
  * Lifecycle:
  * - Clients are cached long-lived per server, and connected EAGERLY at

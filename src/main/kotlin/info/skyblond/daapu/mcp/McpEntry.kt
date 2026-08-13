@@ -10,11 +10,11 @@ import dev.langchain4j.mcp.client.McpClient
 import dev.langchain4j.mcp.client.McpException
 import dev.langchain4j.mcp.client.transport.http.StreamableHttpMcpTransport
 import dev.langchain4j.mcp.client.transport.stdio.StdioMcpTransport
-import info.skyblond.daapu.McpServerConfig
-import info.skyblond.daapu.McpTransportType
 import info.skyblond.daapu.chat.AttachmentContent
 import info.skyblond.daapu.chat.AttachmentKind
 import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.config.McpServerConfig
+import info.skyblond.daapu.config.McpTransportType
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers

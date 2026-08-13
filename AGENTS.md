@@ -18,8 +18,10 @@ The pieces:
   streaming bridge and round executor, `llm/` the catalog and model
   metadata, `provider/` gateway config, `tool/` the tool-loop seam). The
   conversation-turn machinery is a hand-rolled loop in `agent/ChatTurnLoop.kt`.
-- **ktor HTTP API** (`server/`) — the input loop: `Main.kt` starts the database
-  and the API server. One chat run per request: `ChatRunService.prepareRun`
+- **ktor HTTP API** (`server/`) — the input loop: `Main.kt` loads the
+  configuration from `config.jsonc` (models in `config/Config.kt`, loaded by
+  `loadConfig`), starts the database and the API server. One chat run per
+  request: `ChatRunService.prepareRun`
   validates the request (the model is required per message — there is no
   server-side default), `runChat` builds a fresh streaming chat model per
   request (cheap — it holds configuration only, no connections, so
@@ -71,6 +73,12 @@ When writing or reviewing code, looking for bugs with the following perspectives
 + Test coverage and test quality: Coverage gaps, weak assertions, tautological tests, missing scenarios. Are key code paths tested? Do tests actually validate correct behavior? Are unit tests well-structured with meaningful assertions?
 + Performance and security: Inefficiencies, resource leaks, injection risks, insecure defaults, exposed secrets, missing input validation.
 + Code quality and style: follow existing pattern (project conventions), no dark magic, no hacky solution/workaround, no complex logic without comments. Maintainability is the first priority.
++ Config models and their schema: `config.schema.json` mirrors the config
+  models in `config/Config.kt` (and the checked-in `config.example.jsonc`
+  documents the shape). Treat the schema as documentation: when the config
+  models change — new fields, renames, defaults, validation rules — update
+  `config.schema.json` (and `config.example.jsonc` if the example changes)
+  in the same change. Reviews must check the schema and the models match.
 
 ## Backend style
 

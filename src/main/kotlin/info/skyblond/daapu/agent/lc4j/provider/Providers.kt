@@ -2,8 +2,8 @@ package info.skyblond.daapu.agent.lc4j.provider
 
 import dev.langchain4j.http.client.jdk.JdkHttpClient
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel
-import info.skyblond.daapu.SAFE_ID_REGEX
 import info.skyblond.daapu.agent.lc4j.provider.client.ReasoningRewriteHttpClient
+import info.skyblond.daapu.config.SAFE_ID_REGEX
 
 abstract class OpenAICompatibleProvider(
     val id: String,

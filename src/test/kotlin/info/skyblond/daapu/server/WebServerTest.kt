@@ -1,6 +1,6 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.AppConfig
+import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -24,16 +24,7 @@ import kotlin.test.assertEquals
  */
 class WebServerTest {
 
-    private fun service() = ChatRunService(
-        AppConfig(
-            databaseUrl = "jdbc:postgresql://localhost:5432/postgres",
-            databaseUser = "postgres",
-            databasePassword = "postgres",
-            llmApiKey = "test",
-            llmBaseUrl = "http://localhost:9",
-            httpPort = 8080,
-        )
-    )
+    private fun service() = ChatRunService(testAppConfig())
 
     private val model = "bifrost/cerebras/gpt-oss-120b"
 

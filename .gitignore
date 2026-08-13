@@ -44,6 +44,10 @@ bin/
 
 **/.env
 
+# local configuration contains API keys; the checked-in example and schema
+# (config.example.jsonc, config.schema.json) document the shape
+config.jsonc
+
 ### Frontend ###
 frontend/node_modules/
 frontend/dist/

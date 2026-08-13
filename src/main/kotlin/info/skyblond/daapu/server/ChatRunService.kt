@@ -1,6 +1,6 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.AppConfig
+import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
 import info.skyblond.daapu.agent.lc4j.executor.Lc4jStreamingExecutor
 import info.skyblond.daapu.agent.lc4j.llm.LLM
@@ -60,10 +60,15 @@ class ChatRunService(
     private val sstmService: SstmService = PostgresSstmService(),
 ) : AutoCloseable {
 
+    // PoC: the catalog pins its models to the bifrost gateway (see
+    // ModelCatalog.kt); a config without it is a wiring bug, so fail fast
+    // at startup instead of at model resolution time.
+    private val bifrostConfig = config.providers["bifrost"]
+        ?: throw IllegalStateException("Provider config 'bifrost' not found")
     private val bifrostProvider = BifrostProvider(
         id = "bifrost",
-        baseUrl = config.llmBaseUrl.openAiApiRoot(),
-        apiKey = config.llmApiKey
+        baseUrl = bifrostConfig.baseUrl.openAiApiRoot(),
+        apiKey = bifrostConfig.apiKey,
     )
     private val modelCatalog = ModelCatalog(bifrostProvider)
     private val chatStore: ChatStore = PostgresChatStore()
@@ -276,8 +281,9 @@ class ChatRunService(
 
 /**
  * The OpenAI-compatible API root langchain4j should hit for a configured
- * `LLM_BASE_URL`: the base URL itself, plus `/v1` when it is missing
- * (langchain4j appends `/chat/completions` to it).
+ * provider base URL (`config.jsonc` → `providers.<id>.baseUrl`): the base
+ * URL itself, plus `/v1` when it is missing (langchain4j appends
+ * `/chat/completions` to it).
  */
 internal fun String.openAiApiRoot(): String {
     val trimmed = trimEnd('/')
