@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { deleteChat, listChats, listModels, loadChat, newChat, streamChat } from './api'
-  import type { ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
+  import { deleteChat, listChats, listModels, loadChat, newChat, renameChat, streamChat } from './api'
+  import type { ChatInfo, ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
   import Composer from './Composer.svelte'
   import MessageList from './MessageList.svelte'
   import UsageBar from './UsageBar.svelte'
 
   let chatId = $state('')
-  let knownChats = $state<string[]>([])
+  let knownChats = $state<ChatInfo[]>([])
   let models = $state<ModelInfo[]>([])
   let messages = $state<ChatMessage[]>([])
   let error = $state<string | null>(null)
@@ -29,7 +29,13 @@
   // trims the URL and strips whitespace from the base64 payload)
   const DATA_URL_RE = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/
 
+  // mirrors the backend's DEFAULT_CHAT_TITLE (db/Tables.kt)
+  const DEFAULT_CHAT_TITLE = 'New chat'
+
   const STORAGE_KEY = 'daapu.model'
+
+  /** The currently selected chat's entry (absent for a stale/missing id). */
+  const currentChat = $derived(knownChats.find((c) => c.id === chatId))
 
   $effect(() => {
     if (models.length > 0 && selectedModel === '') {
@@ -118,9 +124,30 @@
     try {
       chatId = await newChat()
       // prepend to match the server's newest-first order
-      knownChats = [chatId, ...knownChats]
-      // the row only appears after the first successful run; history is empty
+      knownChats = [{ id: chatId, title: DEFAULT_CHAT_TITLE }, ...knownChats]
       messages = []
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  async function renameCurrentChat() {
+    if (!chatId) return
+    const current = currentChat
+    const input = prompt(
+      `Rename chat${current ? ` "${current.title}"` : ''}:`,
+      current?.title ?? ''
+    )
+    if (input == null) return
+    const title = input.trim()
+    if (!title) {
+      error = 'Chat title must not be empty'
+      return
+    }
+    error = null
+    try {
+      await renameChat(chatId, title)
+      knownChats = knownChats.map((c) => (c.id === chatId ? { ...c, title } : c))
     } catch (e) {
       error = String(e)
     }
@@ -128,11 +155,12 @@
 
   async function deleteCurrentChat() {
     if (!chatId) return
-    if (!confirm(`Delete chat ${chatId}?`)) return
+    const label = currentChat ? `"${currentChat.title}"` : chatId
+    if (!confirm(`Delete chat ${label}?`)) return
     error = null
     try {
       await deleteChat(chatId)
-      knownChats = knownChats.filter((c) => c !== chatId)
+      knownChats = knownChats.filter((c) => c.id !== chatId)
       chatId = ''
       messages = []
     } catch (e) {
@@ -277,7 +305,9 @@
 
 <div class="chat">
   <div class="chat-bar">
-    <code class="current-chat" title="current chat id">{chatId || 'no chat selected'}</code>
+    <code class="current-chat" title={chatId ? `chat id: ${chatId}` : undefined}>
+      {currentChat?.title ?? (chatId || 'no chat selected')}
+    </code>
     <select
       value=""
       disabled={streaming}
@@ -292,11 +322,12 @@
       title="load chat (re-select the same chat to refresh)"
     >
       <option value="" disabled>load chat…</option>
-      {#each knownChats as id}
-        <option value={id}>{id}</option>
+      {#each knownChats as info}
+        <option value={info.id} title={info.id}>{info.title}</option>
       {/each}
     </select>
     <button onclick={() => void createNewChat()} disabled={streaming}>new chat</button>
+    <button onclick={() => void renameCurrentChat()} disabled={streaming || !chatId}>rename</button>
     <button onclick={() => void deleteCurrentChat()} disabled={streaming || !chatId}>delete</button>
     <UsageBar used={usage.used} context={usage.context} />
     {#if error}<span class="error">{error}</span>{/if}

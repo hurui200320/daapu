@@ -9,12 +9,17 @@ import org.jetbrains.exposed.v1.javatime.timestamp
  */
 object Chats : Table("chats") {
     val id = text("id")
-    // TODO: wire it up when the chat list shows titles, also add rename chat title in service
     val title = text("title")
     val chatJson = text("chat_json").default("[]")
 
     override val primaryKey = PrimaryKey(id)
 }
+
+/**
+ * The title a chat starts with; mirrors the `chats.title` column default in
+ * `V1__init.sql` (kept in sync manually so inserts state the title explicitly).
+ */
+const val DEFAULT_CHAT_TITLE = "New chat"
 
 /**
  * Shared Short Term Memories.

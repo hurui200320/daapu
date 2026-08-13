@@ -112,6 +112,13 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                 post {
                     call.respond(HttpStatusCode.Created, service.newChat())
                 }
+                put("/{chatId}") {
+                    val id = call.chatIdParam()
+                    val request = call.receive<RenameChatRequest>()
+                    val title = request.title.trim()
+                    if (title.isEmpty()) throw BadRequestException("Chat title is empty")
+                    call.respond(service.renameChat(id, title) ?: throw NotFoundException("Chat $id not found"))
+                }
                 delete("/{chatId}") {
                     val id = call.chatIdParam()
                     if (!service.deleteChat(id)) throw NotFoundException("Chat $id not found")

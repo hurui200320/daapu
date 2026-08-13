@@ -117,8 +117,9 @@ All endpoints are under `/api` (see `server/WebServer.kt`):
 | Method & path                           | Purpose                                                      |
 |-----------------------------------------|--------------------------------------------------------------|
 | `GET /api/models`                       | Model catalog (`vision`, context, output limits).            |
-| `GET /api/chats`                        | Existing chat ids (newest first, capped).                    |
-| `POST /api/chats`                       | Create a chat id.                                            |
+| `GET /api/chats`                        | Existing chats as `{"id", "title"}` (newest first, capped).  |
+| `POST /api/chats`                       | Create a chat (empty history, title `New chat`).             |
+| `PUT /api/chats/{id}`                   | Rename a chat (`{"title": "..."}`).                          |
 | `DELETE /api/chats/{id}`                | Delete a chat (409 while a run is active).                   |
 | `GET /api/chats/{id}/chat`              | Full chat as neutral-format JSON (raw `chat_json`).         |
 | `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |

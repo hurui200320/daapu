@@ -82,6 +82,12 @@ export interface MemoryDto {
   content: string
 }
 
+/** One entry of `GET /api/chats`: the user-visible chat title. */
+export interface ChatInfo {
+  id: string
+  title: string
+}
+
 export interface StreamEvent {
   event: string
   data: string

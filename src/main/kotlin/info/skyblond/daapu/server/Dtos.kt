@@ -25,6 +25,18 @@ data class ImagePart(val dataUrl: String)
 @Serializable
 data class ChatIdResponse(val id: String)
 
+/**
+ * One entry of `GET /api/chats`: id + the user-visible title.
+ */
+@Serializable
+data class ChatInfo(val id: String, val title: String)
+
+/**
+ * Request body of `PUT /api/chats/{id}`. [title] must be non-blank.
+ */
+@Serializable
+data class RenameChatRequest(val title: String)
+
 @Serializable
 data class ModelInfo(
     val id: String,

@@ -93,11 +93,6 @@ suspend fun runChatTurn(
     chat = chat.refreshSystemPrompt(systemPrompt)
 
     // TODO: pre-round compaction (detect topic? or just compaction?)
-    chat.lastOrNull { it.role == ChatMessageRole.Assistant }?.meta?.let { meta ->
-        meta.totalTokens?.let { logger.info { "Usage so far: total:  $it" } }
-        meta.inputTokens?.let { logger.info { "Usage so far: input:  $it" } }
-        meta.outputTokens?.let { logger.info { "Usage so far: output: $it" } }
-    }
 
     // TODO: add a class for memories, use lock to block all readers when memory
     //       is too long and triggers compaction. Hold the lock until done.

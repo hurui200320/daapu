@@ -135,6 +135,20 @@ class WebServerTest {
     }
 
     @Test
+    fun `blank or missing chat title is rejected with 400`() {
+        testApplication {
+            application { module(service(), SstmService()) }
+            listOf("""{"title":"   "}""", """{}""").forEach { body ->
+                val response = client.put("/api/chats/chat-1") {
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                assertEquals(HttpStatusCode.BadRequest, response.status, "body: $body")
+            }
+        }
+    }
+
+    @Test
     fun `empty memory content is rejected with 400`() {
         testApplication {
             application { module(service(), SstmService()) }

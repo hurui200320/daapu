@@ -1,4 +1,4 @@
-import type { ChatMessage, MemoryDto, ModelInfo, StreamEvent } from './types'
+import type { ChatInfo, ChatMessage, MemoryDto, ModelInfo, StreamEvent } from './types'
 
 async function parseError(res: Response): Promise<string> {
   try {
@@ -15,7 +15,7 @@ export async function listModels(): Promise<ModelInfo[]> {
   return res.json()
 }
 
-export async function listChats(): Promise<string[]> {
+export async function listChats(): Promise<ChatInfo[]> {
   const res = await fetch('/api/chats')
   if (!res.ok) throw new Error(await parseError(res))
   return res.json()
@@ -27,11 +27,18 @@ export async function newChat(): Promise<string> {
   return (await res.json()).id
 }
 
+export async function renameChat(chatId: string, title: string): Promise<void> {
+  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+}
+
 export async function deleteChat(chatId: string): Promise<void> {
   const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
-  // a never-messaged chat has no row yet, so deleting it 404s; treat that as
-  // success so the UI can drop the id from its list
-  if (!res.ok && res.status !== 404) throw new Error(await parseError(res))
+  if (!res.ok) throw new Error(await parseError(res))
 }
 
 export async function loadChat(chatId: string): Promise<ChatMessage[]> {

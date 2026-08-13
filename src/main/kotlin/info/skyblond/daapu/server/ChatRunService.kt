@@ -11,6 +11,7 @@ import info.skyblond.daapu.agent.renderSystemPrompt
 import info.skyblond.daapu.agent.runChatTurn
 import info.skyblond.daapu.chat.*
 import info.skyblond.daapu.db.Chats
+import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.db.SSTMs
 import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
@@ -22,7 +23,9 @@ import kotlinx.serialization.json.put
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.update
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
 
@@ -81,16 +84,44 @@ class ChatRunService(
         )
     }
 
-    suspend fun listChats(): List<String> = withTransaction {
+    suspend fun listChats(): List<ChatInfo> = withTransaction {
         Chats.selectAll()
             // TODO: should add time to Chats, 1) createdAt, 2) lastUpdatedAt
             .orderBy(Chats.id to SortOrder.DESC)
             // TODO: pagination?
             .limit(200)
-            .map { it[Chats.id] }
+            .map { row -> ChatInfo(row[Chats.id], row[Chats.title]) }
     }
 
-    fun newChat(): ChatIdResponse = ChatIdResponse(newChatId())
+    /**
+     * Create a chat: a row with the default title and empty history is
+     * inserted right away, so the chat is visible in `GET /api/chats` and
+     * renameable before the first run. The turn loop's store upsert only
+     * touches `id` + `chat_json`, so the title survives every run untouched.
+     */
+    suspend fun newChat(): ChatIdResponse = withTransaction {
+        val id = newChatId()
+        Chats.insert {
+            it[Chats.id] = id
+            it[Chats.title] = DEFAULT_CHAT_TITLE
+        }
+        ChatIdResponse(id)
+    }
+
+    /**
+     * Rename a chat. Returns null when the chat doesn't exist.
+     *
+     * Takes no per-chat lock: the chat store's upsert writes only `id` and
+     * `chat_json` ([PostgresChatStore.store]), never the title, so an
+     * in-flight run cannot clobber a rename (unlike a delete, which the lock
+     * guards against the upsert resurrecting the row).
+     */
+    suspend fun renameChat(chatId: String, title: String): ChatInfo? = withTransaction {
+        val updated = Chats.update({ Chats.id eq chatId }) {
+            it[Chats.title] = title
+        }
+        if (updated == 0) null else ChatInfo(chatId, title)
+    }
 
     /**
      * Delete a chat row. Refuses (throws [ChatRunConflictException]) while a
