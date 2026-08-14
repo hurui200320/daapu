@@ -1,10 +1,12 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
-import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
@@ -61,12 +63,12 @@ class StreamEventMappingTest {
     @Test
     fun `completed tool call maps to tool_call event with name and args`() {
         val events = runBlocking {
-            eventsFor { cb -> cb.onToolCall("flag", """{"flag":true}""") }
+            eventsFor { cb -> cb.onToolCall("flag", buildJsonObject { put("flag", true) }) }
         }
         assertEquals(listOf("tool_call"), events.map { it.first })
         val body = payload(events[0].second)
         assertEquals("flag", str(body, "name"))
-        assertEquals("""{"flag":true}""", str(body, "args"))
+        assertEquals("""{"flag":true}""", body.getValue("args").toString())
     }
 
     @Test

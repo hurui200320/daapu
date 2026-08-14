@@ -50,6 +50,8 @@ data class AppConfig(
     val server: ServerConfig = ServerConfig(),
     val mcp: McpConfig = McpConfig(),
     val memory: MemoryConfig = MemoryConfig(),
+    /** The hand-pi execution service. */
+    val hand: HandConfig = HandConfig(),
     // editor hint declared by config.schema.json and config.example.jsonc;
     // a known field so the strict parser accepts files that carry it
     @SerialName("\$schema")
@@ -66,13 +68,37 @@ data class AppConfig(
         server.validate()
         mcp.validate()
         memory.validate()
+        hand.validate()
+    }
+}
+
+/**
+ * The hand-pi execution service (`hand-pi/`): a stateless
+ * Node service that owns LLM execution (streaming, dialects, tool-call
+ * accumulation, retries, usage). The brain passes provider/model
+ * configuration per request; only the loopback endpoint and the shared
+ * static token are configured here. The token also authenticates the
+ * hand's tool callbacks into this process (`hand/HandCallbackRoute.kt`).
+ */
+@Serializable
+data class HandConfig(
+    /** The hand's base URL, e.g. `http://127.0.0.1:3100`. */
+    val baseUrl: String = "http://127.0.0.1:3100",
+    /** The shared static token (`HAND_TOKEN` on the hand's side). */
+    val token: String = "dev-token",
+) {
+    fun validate() {
+        require(baseUrl.isNotBlank()) { "hand.baseUrl must not be blank" }
+        require(baseUrl.startsWith("http://") || baseUrl.startsWith("https://")) {
+            "hand.baseUrl must be an http(s) URL, got '$baseUrl'"
+        }
     }
 }
 
 /**
  * The memory pipeline settings (history compaction + SSTM extraction, see
  * `agent/oneshot/`). The model ids reference the catalog
- * (`agent/lc4j/llm/ModelCatalog.kt`); `null` uses the run's model.
+ * (`agent/ModelCatalog.kt`); `null` uses the run's model.
  * Catalog membership is validated at startup by `ChatRunService` (the config
  * layer does not know the catalog).
  */
@@ -86,7 +112,7 @@ data class MemoryConfig(
      */
     val compactionTriggerFraction: Double = 0.8,
     /** Complete rounds kept verbatim at the tail of a compacted chat. */
-    val compactionKeepRounds: Int = 3,
+    val compactionKeepRounds: Int = 2,
     /** Catalog model id for the compaction summarizer; null = the run's model. */
     val compactModel: String? = null,
     /**
@@ -136,8 +162,10 @@ data class DatabaseConfig(
  * One OpenAI-compatible LLM provider, keyed by its id in [AppConfig.providers]
  * (`{provider.id}/{modelId}` prefixes every model id, so the id must match
  * [SAFE_ID_REGEX] — enforced at provider construction, see
- * `agent/lc4j/provider/Providers.kt`). [baseUrl] is used as-is by the runtime
- * (`server/ChatRunService.kt` appends `/v1` if missing).
+ * `agent/hand/HandMappers.kt`). [baseUrl] is used as-is by the hand
+ * (`hand-pi/`), which appends the OpenAI API path to it — so the value must
+ * carry the full `/v1` root (e.g. `http://localhost:8000/v1`); nothing
+ * appends `/v1`.
  */
 @Serializable
 data class LlmProviderConfig(
@@ -186,7 +214,7 @@ enum class McpTransportType {
 /**
  * One MCP tool server, configured in `config.jsonc` under `mcp.servers`
  * (before the config move the exa server was hardcoded in `Main.kt` with only
- * its API key in the environment/`.env`). Maps 1:1 to the langchain4j-mcp
+ * its API key in the environment/`.env`). Maps 1:1 to the MCP SDK
  * builders (see the #3 spike's config surface notes):
  *
  * - `http`: a Streamable-HTTP server ([url], optional [headers]).
@@ -253,7 +281,7 @@ data class McpServerConfig(
             throw IllegalArgumentException("MCP server '$namespace': url must start with http:// or https://, got '$url'")
         }
         // mirror config.schema.json's minimum: 1 — 0/negative would reach the
-        // langchain4j builders (McpEntry.buildClient) as a nonsense Duration
+        // SDK transport builders (McpEntry) as a nonsense Duration
         require(initializationTimeoutSeconds == null || initializationTimeoutSeconds >= 1) {
             "MCP server '$namespace': initializationTimeoutSeconds must be at least 1, got $initializationTimeoutSeconds"
         }

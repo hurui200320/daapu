@@ -111,6 +111,25 @@
           "description": "Catalog model id for the memory merger tool loop; null (omitted) uses the run's model."
         }
       }
+    },
+    "hand": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The hand-pi execution service (hand-pi/): a stateless Node service that owns LLM execution. The token is shared with the hand's tool callbacks into this process.",
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "default": "http://127.0.0.1:3100",
+          "description": "The hand's base URL."
+        },
+        "token": {
+          "type": "string",
+          "minLength": 0,
+          "default": "dev-token",
+          "description": "The shared static token (HAND_TOKEN on the hand's side)."
+        }
+      }
     }
   },
   "definitions": {
@@ -130,7 +149,7 @@
         "baseUrl": {
           "type": "string",
           "minLength": 1,
-          "description": "Base URL of the provider; /v1 is appended if missing."
+          "description": "Base URL of the provider, used as-is by the hand-pi service; must carry the full /v1 root (e.g. http://localhost:8000/v1)."
         }
       }
     },

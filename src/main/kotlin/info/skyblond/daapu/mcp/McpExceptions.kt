@@ -1,5 +1,7 @@
 package info.skyblond.daapu.mcp
 
+import info.skyblond.daapu.agent.tool.ToolTransportException
+
 /**
  * The MCP transport itself failed (connect refused, stdio process died, ...).
  * Thrown by [McpToolProvider] at construction — a server that cannot be
@@ -14,4 +16,4 @@ package info.skyblond.daapu.mcp
  * but fails the call twice surfaces as an error tool-result instead, so the
  * model sees the failure and the run continues.)
  */
-class McpTransportException(message: String, cause: Throwable) : Exception(message, cause)
+class McpTransportException(message: String, cause: Throwable) : ToolTransportException(message, cause)

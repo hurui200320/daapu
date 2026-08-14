@@ -21,7 +21,7 @@
     streaming: boolean
     streamReasoning?: string
     streamText?: string
-    streamToolCalls?: { name: string; args: string }[]
+    streamToolCalls?: { name: string; args: Record<string, unknown> }[]
     retrying?: boolean
     streamError?: string | null
   } = $props()
@@ -39,7 +39,11 @@
   }
 
   function showReasoning(part: ReasoningPart): string {
-    return part.content.join('')
+    return part.content
+  }
+
+  function argsText(args: Record<string, unknown>): string {
+    return JSON.stringify(args)
   }
 
   /**
@@ -53,35 +57,33 @@
 
 <div class="message-list">
   {#each messages as message}
-    {#if message.role !== 'system'}
-      <div class="message {message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : 'other'}">
-        {#each message.parts as part}
-          {#if part.type === 'text' && part.text}
-            <div class="text">{@html renderMarkdown(part.text)}</div>
-          {:else if part.type === 'reasoning'}
-            <details class="reasoning">
-              <summary>Reasoning</summary>
-              <div class="text reasoning-text">{@html renderMarkdown(showReasoning(part))}</div>
-            </details>
-          {:else if isImage(part)}
-            {@const src = imageSrc(part)}
-            {#if src}
-              <img class="attachment" src={src} alt="attachment" />
-            {/if}
-          {:else if part.type === 'tool_call'}
-            <details class="tool-call">
-              <summary>tool: {part.tool}</summary>
-              <pre>{part.args}</pre>
-            </details>
-          {:else if part.type === 'tool_result'}
-            <details class="tool-result">
-              <summary>tool result: {part.tool}{part.isError ? ' (error)' : ''}</summary>
-              <pre>{toolResultText(part)}</pre>
-            </details>
+    <div class="message {message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : 'other'}">
+      {#each message.parts as part}
+        {#if part.type === 'text' && part.text}
+          <div class="text">{@html renderMarkdown(part.text)}</div>
+        {:else if part.type === 'reasoning'}
+          <details class="reasoning">
+            <summary>Reasoning</summary>
+            <div class="text reasoning-text">{@html renderMarkdown(showReasoning(part))}</div>
+          </details>
+        {:else if isImage(part)}
+          {@const src = imageSrc(part)}
+          {#if src}
+            <img class="attachment" src={src} alt="attachment" />
           {/if}
-        {/each}
-      </div>
-    {/if}
+        {:else if part.type === 'tool_call'}
+          <details class="tool-call">
+            <summary>tool: {part.tool}</summary>
+            <pre>{argsText(part.args)}</pre>
+          </details>
+        {:else if part.type === 'tool_result'}
+          <details class="tool-result">
+            <summary>tool result: {part.tool}{part.isError ? ' (error)' : ''}</summary>
+            <pre>{toolResultText(part)}</pre>
+          </details>
+        {/if}
+      {/each}
+    </div>
   {/each}
 
   {#if streaming}
@@ -95,7 +97,7 @@
       {#each streamToolCalls as call}
         <details class="tool-call">
           <summary>tool: {call.name}</summary>
-          <pre>{call.args}</pre>
+          <pre>{argsText(call.args)}</pre>
         </details>
       {/each}
       {#if streamText}

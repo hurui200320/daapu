@@ -1,35 +1,41 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.config.AppConfig
-import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
-import info.skyblond.daapu.agent.lc4j.executor.Lc4jStreamingExecutor
-import info.skyblond.daapu.agent.lc4j.llm.LLM
-import info.skyblond.daapu.agent.lc4j.llm.LLMCapability
-import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
-import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
+import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.model.LLMCapability
+import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.ChatCompactor
 import info.skyblond.daapu.agent.oneshot.SstmExtractor
 import info.skyblond.daapu.agent.persist.renderSystemPrompt
 import info.skyblond.daapu.agent.persist.runChatTurn
-import info.skyblond.daapu.chat.*
+import info.skyblond.daapu.agent.chat.AttachmentContent
+import info.skyblond.daapu.agent.chat.AttachmentKind
+import info.skyblond.daapu.agent.chat.ChatMessage
+import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatStore
+import info.skyblond.daapu.agent.chat.PostgresChatStore
+import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
+import info.skyblond.daapu.hand.HandCallbackService
+import info.skyblond.daapu.hand.HandClient
+import info.skyblond.daapu.hand.HttpHandClient
+import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.update
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
 
@@ -40,17 +46,18 @@ class ChatRunSetup(
     val chatId: String,
     val model: LLM,
     val parts: List<ChatMessagePart>,
-    val reasoningEffort: String
 )
 
 /**
  * Service for executing an agent request.
  *
- * One streaming chat model is built per request (cheap: the model holds
- * configuration only, no connections), so per-request model selection comes
- * for free; only the expensive pieces — the model catalog, the chat store,
- * the system prompt, the MCP tool provider (cached clients, #8), and the
- * SSTM service (shared with the memory CRUD routes) — are reused.
+ * The hand client is built once (one HTTP client, shared across runs — a
+ * run's state lives entirely inside the hand call, so sharing is safe);
+ * the model catalog, the chat store, the system prompt, the MCP tool
+ * provider (cached clients, #8), the SSTM service (shared with the
+ * memory CRUD routes), and the hand callback service (the in-flight run
+ * registry behind the hand's tool callbacks, `hand/HandCallbackService.kt`)
+ * are also reused.
  */
 class ChatRunService(
     config: AppConfig,
@@ -61,6 +68,8 @@ class ChatRunService(
     // EmptyToolProvider path.
     private val toolProvider: McpToolProvider = McpToolProvider(emptyList()),
     private val sstmService: SstmService = PostgresSstmService(),
+    private val hand: HandClient = HttpHandClient(config.hand.baseUrl, config.hand.token),
+    internal val handCallback: HandCallbackService = HandCallbackService(config.hand.token),
 ) : AutoCloseable {
 
     // PoC: the catalog pins its models to the bifrost gateway (see
@@ -68,19 +77,23 @@ class ChatRunService(
     // at startup instead of at model resolution time.
     private val bifrostConfig = config.providers["bifrost"]
         ?: error("Provider config 'bifrost' not found")
-    private val bifrostProvider = BifrostProvider(
-        id = "bifrost",
-        baseUrl = bifrostConfig.baseUrl.openAiApiRoot(),
-        apiKey = bifrostConfig.apiKey,
+    private val modelCatalog = ModelCatalog(
+        mapOf(
+            "bifrost" to ModelProvider(
+                id = "bifrost",
+                baseUrl = bifrostConfig.baseUrl,
+                apiKey = bifrostConfig.apiKey,
+            )
+        )
     )
-    private val modelCatalog = ModelCatalog(bifrostProvider)
     private val chatStore: ChatStore = PostgresChatStore()
-    private val systemPrompt = renderSystemPrompt("Raven", true)
+    private val systemPrompt = renderSystemPrompt(true)
     private val memoryConfig = config.memory
 
-    // the one-shot pipeline models: catalog ids from config.memory, resolved
-    // once at startup — an unknown id is a config bug, fail fast like the
-    // MCP server validation. null = use the run's model (resolved per run).
+    /** This brain's tool callback endpoint the hand POSTs to (loopback PoC). */
+    internal val handCallbackUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tool"
+
+    // one-shot pipeline models: resolved once at startup (unchanged)
     private val configuredCompactModel = memoryConfig.compactModel?.let { id ->
         modelCatalog.findModel(id) ?: throw IllegalArgumentException("memory.compactModel '$id' is not in the model catalog")
     }
@@ -96,10 +109,7 @@ class ChatRunService(
         model
     }
 
-    // serializes the SSTM writes of concurrent runs' extraction merges: each
-    // memory write is its own transaction, but the merge is a sequence of
-    // them, and a concurrent run's injection read must never observe a
-    // half-merged SSTM (the version digest alone cannot close that window)
+    // serializes the SSTM writes of concurrent runs' extraction merges (unchanged)
     private val sstmWriteLock = Mutex()
 
     // one run per chat at a time: a chat's history is loaded and stored as a
@@ -121,7 +131,7 @@ class ChatRunService(
 
     suspend fun listChats(): List<ChatInfo> = withTransaction {
         Chats.selectAll()
-            // TODO: should add time to Chats, 1) createdAt, 2) lastUpdatedAt
+            // TODO: should add time to Chats, lastUpdatedAt
             .orderBy(Chats.id to SortOrder.DESC)
             // TODO: pagination?
             .limit(200)
@@ -208,8 +218,7 @@ class ChatRunService(
         val parts = mutableListOf<ChatMessagePart>()
         if (text.isNotBlank()) parts += ChatMessagePart.Text(text)
         request.images.forEach { parts += parseImagePart(it) }
-        // TODO: hard coded reasoning effort
-        return ChatRunSetup(chatId, model, parts, "high")
+        return ChatRunSetup(chatId, model, parts)
     }
 
     /**
@@ -268,55 +277,69 @@ class ChatRunService(
     }
 
     /**
-     * Run one chat turn for [setup], forwarding stream events to [sendEvent]
-     * (an SSE writer). The chat is only stored by the turn loop when the run
-     * completes, so a failed or aborted run leaves the chat untouched.
+     * Run one chat turn for [setup], forwarding stream events to [callback]
+     * (a [StreamingExecutionCallback] implementation). The chat is only
+     * stored by the turn loop when the run completes, so a failed or aborted
+     * run leaves the chat untouched.
+     *
+     * The run is registered under a fresh [runId] before the hand call: the
+     * hand's tool callbacks (HTTP POSTs back into this process) resolve it
+     * through [HandCallbackService.executeToolCall]. The entry is evicted when the
+     * run ends.
      */
     suspend fun runChat(
         setup: ChatRunSetup,
-        sendEvent: suspend (event: String, data: String) -> Unit
+        callback: StreamingExecutionCallback,
     ) {
         // one-shot models per run: the configured model wins, the run's
         // model is the fallback. Capability checks (attachments in the
         // history) happen inside the one-shots and skip with a warning
-        // instead of failing the run.
+        // instead of failing the run. Each model carries its own reasoning
+        // effort (its Reasoning capability), no override.
         val compactModel = configuredCompactModel ?: setup.model
         val extractModel = configuredExtractModel ?: setup.model
         val mergeModel = configuredMergeModel ?: setup.model
-        val compactor = ChatCompactor(compactModel, compactModel.toChatModel(setup.reasoningEffort))
+        val compactor = ChatCompactor(compactModel, hand)
         val extractor = SstmExtractor(
             extractModel = extractModel,
-            extractChatModel = extractModel.toChatModel(setup.reasoningEffort),
             mergeModel = mergeModel,
-            mergeChatModel = mergeModel.toChatModel(setup.reasoningEffort),
+            hand = hand,
             sstmService = sstmService,
         )
-        runChatTurn(
-            chatId = setup.chatId,
-            model = setup.model,
-            streamingChatModel = setup.model.toStreamingChatModel(setup.reasoningEffort),
-            userParts = setup.parts,
-            systemPrompt = systemPrompt,
-            chatStore = chatStore,
-            sstmService = sstmService,
-            toolProvider = toolProvider,
-            callback = streamEventCallback(sendEvent),
-            executor = Lc4jStreamingExecutor(),
-            compactor = compactor,
-            // the whole extraction merge holds the write lock, so the
-            // injection read never observes a half-merged SSTM
-            extractSstm = { dropped -> sstmWriteLock.withLock { extractor.processDiscardedMessages(dropped) } },
-            compactionTriggerFraction = memoryConfig.compactionTriggerFraction,
-            compactionKeepRounds = memoryConfig.compactionKeepRounds,
-        )
+        val runId = UUID.randomUUID().toString()
+        handCallback.register(runId, toolProvider, setup.model)
+        try {
+            runChatTurn(
+                chatId = setup.chatId,
+                model = setup.model,
+                userParts = setup.parts,
+                systemPrompt = systemPrompt,
+                chatStore = chatStore,
+                sstmService = sstmService,
+                toolProvider = toolProvider,
+                callback = callback,
+                hand = hand,
+                runId = runId,
+                toolCallbackUrl = handCallbackUrl,
+                compactor = compactor,
+                // the whole extraction merge holds the write lock, so the
+                // injection read never observes a half-merged SSTM
+                extractSstm = { dropped -> sstmWriteLock.withLock { extractor.processDiscardedMessages(dropped) } },
+                compactionTriggerFraction = memoryConfig.compactionTriggerFraction,
+                compactionKeepRounds = memoryConfig.compactionKeepRounds,
+            )
+        } finally {
+            handCallback.unregister(runId)
+        }
     }
 
     /**
-     * Close the shared MCP clients (called from the JVM shutdown hook
-     * registered in `WebServer.startWebServer`).
+     * Close the shared MCP clients and the hand HTTP client (called from
+     * the JVM shutdown hook registered in `WebServer.startWebServer`).
      */
     override fun close() {
         toolProvider.close()
+        hand.close()
     }
 
     companion object {
@@ -327,74 +350,3 @@ class ChatRunService(
         )
     }
 }
-
-/**
- * The OpenAI-compatible API root langchain4j should hit for a configured
- * provider base URL (`config.jsonc` → `providers.<id>.baseUrl`): the base
- * URL itself, plus `/v1` when it is missing (langchain4j appends
- * `/chat/completions` to it).
- */
-internal fun String.openAiApiRoot(): String {
-    val trimmed = trimEnd('/')
-    return if (trimmed.endsWith("/v1")) trimmed else "$trimmed/v1"
-}
-
-/**
- * The [StreamingExecutionCallback] that maps turn-loop stream events to SSE
- * events — the contract the frontend (`frontend/src/lib/api.ts`) parses.
- * Extracted from [ChatRunService.runChat] so the exact event payloads can be
- * unit-tested.
- */
-internal fun streamEventCallback(
-    sendEvent: suspend (event: String, data: String) -> Unit,
-): StreamingExecutionCallback = object : StreamingExecutionCallback {
-    override suspend fun onTextDelta(text: String) {
-        sendEvent("text", sseData("delta" to text))
-    }
-
-    override suspend fun onReasoningDelta(text: String) {
-        sendEvent("reasoning", sseData("delta" to text))
-    }
-
-    override suspend fun onToolCall(name: String, args: String) {
-        sendEvent(
-            "tool_call",
-            sseData(
-                "name" to name,
-                "args" to args,
-            )
-        )
-    }
-
-    override suspend fun onToolResults(results: List<ChatMessagePart.ToolResult>) {
-        // stream tool results as they are produced; the frontend shows
-        // them live (the `done` history reload re-renders them anyway)
-        results.forEach { result ->
-            sendEvent(
-                "tool_result",
-                buildJsonObject {
-                    put("id", result.id)
-                    put("name", result.tool)
-                    put("content", result.parts.joinToString("\n") {
-                        when (it) {
-                            is ChatMessagePart.Text -> it.text
-
-                            // TODO: non-text content?
-                            is ChatMessagePart.Attachment -> "Show attachment is not supported yet"
-                        }
-                    })
-                    put("isError", result.isError)
-                }.toString()
-            )
-        }
-    }
-
-    override suspend fun onStreamError(error: String) {
-        // the stream hit a transient error and will be retried
-        // frontend should clear the current round (after previous tool call)
-        sendEvent("retry", sseData("message" to error))
-    }
-}
-
-private fun sseData(vararg pairs: Pair<String, String>): String =
-    buildJsonObject { pairs.forEach { (k, v) -> put(k, v) } }.toString()

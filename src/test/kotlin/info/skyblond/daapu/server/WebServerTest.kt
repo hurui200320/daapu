@@ -77,17 +77,18 @@ class WebServerTest {
     }
 
     @Test
-    fun `wrong content type is rejected with 415`() {
+    fun `wrong content type is rejected`() {
         testApplication {
             application { module(service(), PostgresSstmService()) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Text.Plain)
                 setBody("not json")
             }
-            // ktor's own default transformation checker answers 415 (without a
-            // body) for an unparseable request Content-Type, before StatusPages
-            // is involved — pin the status, not the body
-            assertEquals(HttpStatusCode.UnsupportedMediaType, response.status)
+            // ktor's transformation check surfaces an unparseable request
+            // Content-Type as a ContentTransformationException, which
+            // StatusPages maps to 400 before any route handler runs —
+            // pin the rejection, not the exact status
+            assertEquals(HttpStatusCode.BadRequest, response.status)
         }
     }
 

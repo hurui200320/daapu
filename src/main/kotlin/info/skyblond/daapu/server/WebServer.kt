@@ -1,7 +1,8 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.chat.ChatCodec
+import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.config.AppConfig
+import info.skyblond.daapu.hand.handToolCallback
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -97,6 +98,7 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
             get("/models") {
                 call.respond(service.models())
             }
+            handToolCallback(service.handCallback)
             route("/chats") {
                 get {
                     call.respond(service.listChats())
@@ -198,7 +200,7 @@ private suspend fun handleChatMessage(call: ApplicationCall, service: ChatRunSer
                 }
             }
             try {
-                service.runChat(setup, sink)
+                service.runChat(setup, streamEventCallback(sink))
                 sink("done", "{}")
             } catch (e: CancellationException) {
                 throw e

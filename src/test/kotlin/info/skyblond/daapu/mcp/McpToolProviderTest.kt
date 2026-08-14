@@ -1,8 +1,7 @@
 package info.skyblond.daapu.mcp
 
-import dev.langchain4j.agent.tool.ToolExecutionRequest
-import dev.langchain4j.exception.ToolExecutionException
-import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.MCP_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
@@ -10,6 +9,9 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.CompletionException
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -39,12 +41,12 @@ class McpToolProviderTest {
             assertEquals(1, server.initializeCount.get(), "the client connects at construction")
             val specs = runBlocking { provider.specifications() }
             assertEquals(1, server.initializeCount.get(), "no reconnect for a cached client")
-            assertEquals(listOf("calc__add"), specs.map { it.name() })
+            assertEquals(listOf("calc__add"), specs.map { it.name })
 
             // a second "run" must reuse the cached client, not reconnect
             val specs2 = runBlocking { provider.specifications() }
             assertEquals(1, server.initializeCount.get(), "the cached client must not reconnect")
-            assertEquals(listOf("calc__add"), specs2.map { it.name() })
+            assertEquals(listOf("calc__add"), specs2.map { it.name })
         } finally {
             provider.close()
             server.close()
@@ -98,8 +100,8 @@ class McpToolProviderTest {
         val provider = McpToolProvider(listOf(httpConfig("calc", server)))
         try {
             val specs = runBlocking { provider.specifications() }
-            assertEquals(listOf("calc__add", "calc__echo"), specs.map { it.name() })
-            assertTrue(specs.all { it.description() != null })
+            assertEquals(listOf("calc__add", "calc__echo"), specs.map { it.name })
+            assertTrue(specs.all { it.description.isNotBlank() })
         } finally {
             provider.close()
             server.close()
@@ -134,7 +136,7 @@ class McpToolProviderTest {
         try {
             runBlocking { provider.specifications() }
             val result = runBlocking {
-                provider.execute(request("call-1", "calc__add", """{"a":1,"b":2}"""))
+                provider.execute(request("call-1", "calc__add", buildJsonObject { put("a", 1); put("b", 2) }))
             }
             assertEquals("call-1", result.id)
             assertEquals("calc__add", result.tool)
@@ -157,14 +159,14 @@ class McpToolProviderTest {
         val provider = McpToolProvider(listOf(httpConfig("calc", server)))
         try {
             runBlocking { provider.specifications() }
-            val result = runBlocking { provider.execute(request("call-1", "calc__boom", "{}")) }
+            val result = runBlocking { provider.execute(request("call-1", "calc__boom", JsonObject(emptyMap()))) }
             assertTrue(result.isError, "the error must be surfaced as an error tool result")
             assertTrue(result.text().contains("exploded"))
             assertEquals("call-1", result.id, "the result must stay paired with its call id")
 
             // a server-side error is NOT a transport failure: the connection
             // must survive it (no drop, no reconnect)
-            runBlocking { provider.execute(request("call-2", "calc__boom", "{}")) }
+            runBlocking { provider.execute(request("call-2", "calc__boom", JsonObject(emptyMap()))) }
             assertEquals(1, server.initializeCount.get(), "an isError result must not drop the connection")
         } finally {
             provider.close()
@@ -179,7 +181,7 @@ class McpToolProviderTest {
         try {
             runBlocking { provider.specifications() }
             // a model hallucinating a tool name that is not advertised
-            val result = runBlocking { provider.execute(request("call-1", "calc__nonexistent", "{}")) }
+            val result = runBlocking { provider.execute(request("call-1", "calc__nonexistent", JsonObject(emptyMap()))) }
             assertTrue(result.isError)
             assertTrue(result.text().contains("not found in MCP server"))
             assertTrue(server.toolCalls.isEmpty(), "no server call must be made")
@@ -196,32 +198,16 @@ class McpToolProviderTest {
         try {
             runBlocking { provider.specifications() }
             // a valid split with an unknown namespace: no entry owns it
-            val unknown = runBlocking { provider.execute(request("call-1", "nope__add", "{}")) }
+            val unknown = runBlocking { provider.execute(request("call-1", "nope__add", JsonObject(emptyMap()))) }
             assertTrue(unknown.isError)
             assertTrue(unknown.text().contains("not advertised"))
 
             // wrong part count (3 parts: only `namespace__tool` is valid)
-            val wrongParts = runBlocking { provider.execute(request("call-2", "a__b__c", "{}")) }
+            val wrongParts = runBlocking { provider.execute(request("call-2", "a__b__c", JsonObject(emptyMap()))) }
             assertTrue(wrongParts.isError)
             assertTrue(wrongParts.text().contains("invalid tool name"))
 
             assertTrue(server.toolCalls.isEmpty(), "no server call must be made")
-        } finally {
-            provider.close()
-            server.close()
-        }
-    }
-
-    @Test
-    fun `tool arguments rejected by the server become an error tool result`() {
-        val server = MockMcpServer(listOf(addTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
-        try {
-            runBlocking { provider.specifications() }
-            // malformed JSON arguments: the client throws ToolArgumentsException
-            val result = runBlocking { provider.execute(request("call-1", "calc__add", "not json")) }
-            assertTrue(result.isError)
-            assertTrue(result.text().isNotBlank(), "the failure reason must reach the model")
         } finally {
             provider.close()
             server.close()
@@ -238,7 +224,7 @@ class McpToolProviderTest {
         val provider = McpToolProvider(listOf(httpConfig("calc", server)))
         try {
             runBlocking { provider.specifications() }
-            val result = runBlocking { provider.execute(request("call-1", "calc__blank", "{}")) }
+            val result = runBlocking { provider.execute(request("call-1", "calc__blank", JsonObject(emptyMap()))) }
             assertFalse(result.isError)
             assertEquals(
                 listOf(ChatMessagePart.Text("(the tool returned no text content)")),
@@ -268,7 +254,7 @@ class McpToolProviderTest {
             // kill the server mid-session: executing must fail the run
             server.close()
             val e = assertFailsWith<McpTransportException> {
-                runBlocking { provider.execute(request("call-1", "calc__echo", """{"text":"hi"}""")) }
+                runBlocking { provider.execute(request("call-1", "calc__echo", buildJsonObject { put("text", "hi") })) }
             }
             assertTrue(e.cause != null, "the transport failure must be preserved as the cause")
 
@@ -277,10 +263,10 @@ class McpToolProviderTest {
             val restarted = MockMcpServer(listOf(echoTool()), bindPort = port)
             try {
                 val specs = runBlocking { provider.specifications() }
-                assertEquals(listOf("calc__echo"), specs.map { it.name() })
+                assertEquals(listOf("calc__echo"), specs.map { it.name })
                 assertEquals(1, restarted.initializeCount.get(), "a fresh client must be built")
                 val result = runBlocking {
-                    provider.execute(request("call-2", "calc__echo", """{"text":"hi"}"""))
+                    provider.execute(request("call-2", "calc__echo", buildJsonObject { put("text", "hi") }))
                 }
                 assertEquals("hi", result.text())
                 assertFalse(result.isError)
@@ -318,10 +304,10 @@ class McpToolProviderTest {
             val restarted = MockMcpServer(listOf(echoTool()), bindPort = port)
             try {
                 val specs = runBlocking { provider.specifications() }
-                assertEquals(listOf("calc__echo"), specs.map { it.name() })
+                assertEquals(listOf("calc__echo"), specs.map { it.name })
                 assertEquals(1, restarted.initializeCount.get(), "a fresh client must be built")
                 val result = runBlocking {
-                    provider.execute(request("call-2", "calc__echo", """{"text":"hi"}"""))
+                    provider.execute(request("call-2", "calc__echo", buildJsonObject { put("text", "hi") }))
                 }
                 assertEquals("hi", result.text())
                 assertFalse(result.isError)
@@ -333,26 +319,6 @@ class McpToolProviderTest {
         }
     }
 
-    @Test
-    fun `isTransportFailure classifies server-side and transport failures`() {
-        // server-side isError result: ToolExecutionException(String) chains
-        // to the (String, Integer) ctor and finally to a generated cause that
-        // is EXACTLY a plain RuntimeException with the same message
-        assertFalse(ToolExecutionException("the tool failed").isTransportFailure())
-        // same for a hand-built (Throwable) with a plain RuntimeException cause
-        assertFalse(ToolExecutionException(RuntimeException("boom")).isTransportFailure())
-        // JSON-RPC error response: carries the protocol error code
-        assertFalse(ToolExecutionException("MCP error -32602: boom", -32602).isTransportFailure())
-        // stdio process death: the underlying cause is preserved
-        assertTrue(ToolExecutionException(IllegalStateException("Process has exited")).isTransportFailure())
-        assertTrue(ToolExecutionException(IllegalStateException("Process is not alive")).isTransportFailure())
-        // connect refused: the ExecutionException cause is preserved
-        assertTrue(ToolExecutionException(IOException("connection refused")).isTransportFailure())
-        // a CompletionException from the HTTP transport's CompletableFuture
-        // (e.g. the body subscriber throwing mid-stream on a malformed SSE
-        // payload) is a transport failure too
-        assertTrue(ToolExecutionException(CompletionException("boom", RuntimeException("boom"))).isTransportFailure())
-    }
 
     // ------------------------------------------------------------------
     // stdio transport
@@ -373,22 +339,22 @@ class McpToolProviderTest {
         )
         try {
             assertEquals(1, countFile.readLines().count { it == "initialize" }, "eager connect at construction")
-            assertEquals(listOf("local__echo", "local__die"), runBlocking { provider.specifications() }.map { it.name() })
+            assertEquals(listOf("local__echo", "local__die"), runBlocking { provider.specifications() }.map { it.name })
 
             // the die tool kills the subprocess: the first attempt fails with
             // a transport failure, the provider drops the connection,
             // reconnects (a fresh subprocess), and re-executes the call once —
             // which kills the second subprocess too. The retry is exhausted,
             // so the model gets a generic error tool-result instead of a run failure.
-            val result = runBlocking { provider.execute(request("call-1", "local__die", "{}")) }
+            val result = runBlocking { provider.execute(request("call-1", "local__die", JsonObject(emptyMap()))) }
             assertTrue(result.isError, "the exhausted in-turn retry must surface as an error result")
             assertTrue(result.text().contains("transport failure"))
             assertEquals(2, countFile.readLines().count { it == "initialize" }, "the in-turn retry reconnects once")
 
             // the dead client was dropped: the next run spawns a fresh subprocess
-            assertEquals(listOf("local__echo", "local__die"), runBlocking { provider.specifications() }.map { it.name() })
+            assertEquals(listOf("local__echo", "local__die"), runBlocking { provider.specifications() }.map { it.name })
             assertEquals(3, countFile.readLines().count { it == "initialize" }, "a fresh subprocess must be spawned")
-            val echo = runBlocking { provider.execute(request("call-2", "local__echo", """{"text":"hello"}""")) }
+            val echo = runBlocking { provider.execute(request("call-2", "local__echo", buildJsonObject { put("text", "hello") })) }
             assertEquals("hello", echo.text())
         } finally {
             provider.close()
@@ -441,8 +407,8 @@ class McpToolProviderTest {
         reconnectDelayMs = reconnectDelayMs,
     )
 
-    private fun request(id: String, name: String, argsJson: String): ToolExecutionRequest =
-        ToolExecutionRequest.builder().id(id).name(name).arguments(argsJson).build()
+    private fun request(id: String, name: String, argsJson: JsonObject): ToolCallRequest =
+        ToolCallRequest(id = id, name = name, args = argsJson)
 
     /** The tool result's text content, joined like the SSE `tool_result` event. */
     private fun ChatMessagePart.ToolResult.text(): String =

@@ -1,8 +1,8 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.chat.AttachmentContent
-import info.skyblond.daapu.chat.AttachmentKind
-import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.AttachmentContent
+import info.skyblond.daapu.agent.chat.AttachmentKind
+import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.MemoryConfig
 import info.skyblond.daapu.config.testAppConfig
 import io.ktor.server.plugins.BadRequestException
@@ -159,16 +159,5 @@ class ChatRunServiceTest {
         assertFailsWith<IllegalArgumentException> {
             ChatRunService(testAppConfig().copy(memory = MemoryConfig(mergeModel = "bifrost/nope")))
         }
-    }
-
-    @Test
-    fun `llm base url gains the v1 api root when missing`() {
-        // koog's default chat completions path was "v1/chat/completions";
-        // langchain4j appends "chat/completions" to its baseUrl, so the root
-        // must carry /v1 to hit the same endpoint (verified live in the #6
-        // smoke: without it the gateway answers 405 Method Not Allowed)
-        assertEquals("http://localhost:9/v1", "http://localhost:9".openAiApiRoot())
-        assertEquals("http://localhost:9/v1", "http://localhost:9/".openAiApiRoot())
-        assertEquals("https://api.example.com/v1", "https://api.example.com/v1".openAiApiRoot())
     }
 }

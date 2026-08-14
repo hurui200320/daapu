@@ -13,11 +13,12 @@ repositories {
 
 val exposedVersion = "1.3.1"
 val flywayVersion = "13.1.0"
-val langchain4jVersion = "1.18.1"
-// the MCP and kotlin modules are still on the beta version line while
-// core is GA; both depend on the GA core, so the mix is safe
-val langchain4jBetaVersion = "1.18.1-beta28"
-val ktorVersion = "3.3.3"
+// the official MCP Kotlin SDK, riding on ktor-client
+// like the hand client below
+val mcpSdkVersion = "0.15.0"
+// ktor must stay uniform across the classpath: the MCP SDK depends on
+// ktor-client-core 3.5.1, so the server artifacts follow the same version
+val ktorVersion = "3.5.1"
 
 dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.38")
@@ -36,24 +37,19 @@ dependencies {
     implementation("com.zaxxer:HikariCP:7.1.0")
     implementation("org.postgresql:postgresql:42.7.13")
 
-    implementation("dev.langchain4j:langchain4j-open-ai:$langchain4jVersion")
-    // explicit: the reasoning-dialect rewrite wraps JdkHttpClient (the
-    // default SSE transport langchain4j-open-ai already pulls in at runtime)
-    implementation("dev.langchain4j:langchain4j-http-client-jdk:$langchain4jVersion")
-    // MCP tools (#8): pinned per the #3 spike (still beta while core is GA)
-    implementation("dev.langchain4j:langchain4j-mcp:$langchain4jBetaVersion")
-    // Kotlin support (docs.langchain4j.dev/tutorials/kotlin): coroutine
-    // extensions (chatFlow, suspend chat) and the type-safe chatRequest
-    // builder. jackson-module-kotlin is NOT added: the project serializes
-    // with kotlinx-serialization and never hands Jackson data classes to
-    // langchain4j (MCP tool args stay raw JSON strings).
-    implementation("dev.langchain4j:langchain4j-kotlin:$langchain4jBetaVersion")
+    // MCP tool servers (#8) through the official Kotlin SDK
+    implementation("io.modelcontextprotocol:kotlin-sdk-client:$mcpSdkVersion")
 
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-status-pages-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktorVersion")
+
+    // hand-pi client: CIO engine + the SSE plugin (the
+    // plugin lives in ktor-client-core; the shared SSE protocol in ktor-sse)
+    implementation("io.ktor:ktor-client-core-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-client-cio-jvm:$ktorVersion")
 
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host-jvm:$ktorVersion")
@@ -62,10 +58,6 @@ dependencies {
 kotlin {
     jvmToolchain(25)
     compilerOptions {
-        // docs.langchain4j.dev/tutorials/kotlin: Kotlin-defined tools need
-        // Java reflection to see parameter names, else the generated
-        // ToolSpecification gets arg0/arg1.
-        javaParameters = true
     }
 }
 

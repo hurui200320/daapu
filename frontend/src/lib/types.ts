@@ -1,14 +1,13 @@
 /**
  * Loose mirror of the framework-neutral chat format the backend
- * serves (see chat/ChatMessage.kt + the golden-format tests in
+ * serves (see agent/chat/ChatMessage.kt + the golden-format tests in
  * ChatCodecTest). The `type`/`role` discriminators are our own short
  * lowercase names — no framework type strings cross the API.
  */
 
-export type Role = 'system' | 'user' | 'assistant' | 'tool_result'
+export type Role = 'user' | 'assistant' | 'tool_result'
 
 export interface ChatMessageMeta {
-  timestamp?: string
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
@@ -31,7 +30,7 @@ export interface TextPart {
 
 export interface ReasoningPart {
   type: 'reasoning'
-  content: string[]
+  content: string
 }
 
 export interface ToolCallPart {
@@ -39,7 +38,7 @@ export interface ToolCallPart {
   /** required by the format: a blank id would brick the chat on re-send */
   id: string
   tool: string
-  args: string
+  args: Record<string, unknown>
 }
 
 export interface ChatToolResultPart {
@@ -65,9 +64,7 @@ export interface ChatAttachmentPart {
 
 // URL attachment content is deliberately not supported (blocked at the
 // backend boundary) until a real use case exists.
-export type AttachmentContent =
-  | { type: 'base64'; base64: string }
-  | { type: 'text'; text: string }
+export type AttachmentContent = { type: 'base64'; base64: string }
 
 export interface ModelInfo {
   id: string

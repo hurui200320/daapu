@@ -1,8 +1,9 @@
 package info.skyblond.daapu.agent
 
-import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
-import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
-import info.skyblond.daapu.chat.*
+import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.model.ModelProvider
+import info.skyblond.daapu.agent.chat.*
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -19,8 +20,9 @@ import kotlin.test.assertTrue
  */
 class ModelCapabilityCheckTest {
 
-    private val catalog =
-        ModelCatalog(BifrostProvider("bifrost", "http://gateway.example/v1", "test-key"))
+    private val catalog = ModelCatalog(
+        mapOf("bifrost" to ModelProvider("bifrost", "http://gateway.example/v1", "test-key"))
+    )
     private val gptOss = catalog.findModel("bifrost/cerebras/gpt-oss-120b")!!
     private val cerebrasGemma = catalog.findModel("bifrost/cerebras/gemma-4-31b")!!
     private val novitaGemma = catalog.findModel("bifrost/novita/google/gemma-4-31b-it")!!
@@ -63,20 +65,20 @@ class ModelCapabilityCheckTest {
 
     @Test
     fun `text-only prompt passes on a text-only model`() {
-        checkPromptContentCapabilities(textOnlyChat(), gptOss)
+        gptOss.checkPromptContentCapabilities(textOnlyChat())
     }
 
     @Test
     fun `image in the prompt fails on a text-only model`() {
         assertFailsWith<ModelCapabilityException> {
-            checkPromptContentCapabilities(chatWith(AttachmentKind.Image), gptOss)
+            gptOss.checkPromptContentCapabilities(chatWith(AttachmentKind.Image))
         }
     }
 
     @Test
     fun `image passes on a vision model`() {
-        checkPromptContentCapabilities(chatWith(AttachmentKind.Image), cerebrasGemma)
-        checkPromptContentCapabilities(chatWith(AttachmentKind.Image), novitaGemma)
+        cerebrasGemma.checkPromptContentCapabilities(chatWith(AttachmentKind.Image))
+        novitaGemma.checkPromptContentCapabilities(chatWith(AttachmentKind.Image))
     }
 
     @Test
@@ -84,14 +86,12 @@ class ModelCapabilityCheckTest {
         // an MCP tool can return an image mid-run; the attachment lives inside
         // the tool_result part, so the check must descend into it
         assertFailsWith<ModelCapabilityException> {
-            checkPromptContentCapabilities(
+            gptOss.checkPromptContentCapabilities(
                 chatWithToolResultAttachment(AttachmentKind.Image),
-                gptOss
             )
         }
-        checkPromptContentCapabilities(
+        cerebrasGemma.checkPromptContentCapabilities(
             chatWithToolResultAttachment(AttachmentKind.Image),
-            cerebrasGemma,
         )
     }
 
@@ -100,7 +100,7 @@ class ModelCapabilityCheckTest {
         for (kind in listOf(AttachmentKind.Video, AttachmentKind.Audio, AttachmentKind.File)) {
             for (model in catalog.models) {
                 assertFailsWith<ModelCapabilityException>("$kind on ${model.id}") {
-                    checkPromptContentCapabilities(chatWith(kind), model)
+                    model.checkPromptContentCapabilities(chatWith(kind))
                 }
             }
         }
@@ -109,7 +109,7 @@ class ModelCapabilityCheckTest {
     @Test
     fun `error message names the model and the offending content`() {
         val e = assertFailsWith<ModelCapabilityException> {
-            checkPromptContentCapabilities(chatWith(AttachmentKind.Image), gptOss)
+            gptOss.checkPromptContentCapabilities(chatWith(AttachmentKind.Image))
         }
         assertNotNull(e.message)
         val message = e.message!!

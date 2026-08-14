@@ -21,7 +21,7 @@
   let streamReasoning = $state('')
   let streamText = $state('')
   // tool calls of the round currently being streamed (uncommitted: wiped on retry)
-  let streamToolCalls = $state<{ name: string; args: string }[]>([])
+  let streamToolCalls = $state<{ name: string; args: Record<string, unknown> }[]>([])
   let retrying = $state(false)
   let streamError = $state<string | null>(null)
 
@@ -239,7 +239,7 @@
                 ]
               } else {
                 const parts: ChatMessagePart[] = []
-                if (streamReasoning) parts.push({ type: 'reasoning', content: [streamReasoning] })
+                if (streamReasoning) parts.push({ type: 'reasoning', content: streamReasoning })
                 if (streamText) parts.push({ type: 'text', text: streamText })
                 for (const call of streamToolCalls) {
                   parts.push({ type: 'tool_call', id: '', tool: call.name, args: call.args })

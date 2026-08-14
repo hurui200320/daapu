@@ -1,0 +1,24 @@
+{
+  "name": "hand-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stateless LLM execution service for daapu, replacing langchain4j execution.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.84.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}

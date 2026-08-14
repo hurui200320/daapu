@@ -1,35 +1,17 @@
 package info.skyblond.daapu.agent.persist
 
-import dev.langchain4j.agent.tool.ToolExecutionRequest
-import dev.langchain4j.agent.tool.ToolSpecification
-import dev.langchain4j.exception.HttpException
-import info.skyblond.daapu.config.McpServerConfig
-import info.skyblond.daapu.config.McpTransportType
-import info.skyblond.daapu.agent.ModelCapabilityException
-import info.skyblond.daapu.agent.executor.StreamingExecutionCallback
-import info.skyblond.daapu.agent.lc4j.executor.Lc4jStreamingExecutor
-import info.skyblond.daapu.agent.lc4j.executor.MidStreamErrorChunkException
-import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
-import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
-import info.skyblond.daapu.agent.lc4j.tool.EmptyToolProvider
-import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
+import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.ChatCompactor
 import info.skyblond.daapu.agent.oneshot.SstmExtractor
-import info.skyblond.daapu.chat.AttachmentContent
-import info.skyblond.daapu.chat.AttachmentKind
-import info.skyblond.daapu.chat.ChatEntry
-import info.skyblond.daapu.chat.ChatMessage
-import info.skyblond.daapu.chat.ChatMessageMeta
-import info.skyblond.daapu.chat.ChatMessagePart
-import info.skyblond.daapu.chat.ChatMessageRole
-import info.skyblond.daapu.chat.ChatStore
-import info.skyblond.daapu.agent.lc4j.MockSseResponse
-import info.skyblond.daapu.agent.lc4j.MockSseServer
-import info.skyblond.daapu.agent.lc4j.SSE_DONE
-import info.skyblond.daapu.agent.lc4j.jsonCompletion
-import info.skyblond.daapu.agent.lc4j.jsonResponse
-import info.skyblond.daapu.agent.lc4j.sseChunk
-import info.skyblond.daapu.agent.lc4j.sseEvent
+import info.skyblond.daapu.agent.tool.EmptyToolProvider
+import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.config.McpServerConfig
+import info.skyblond.daapu.config.McpTransportType
+import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
@@ -37,44 +19,35 @@ import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
-import java.time.Instant
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertIs
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlinx.serialization.json.put
+import java.time.Instant
+import kotlin.test.*
 
 /**
- * Pins the turn loop's behavior end-to-end against a mock SSE server: the
- * history load/store lifecycle (store only on success, injection stripped,
- * system prompt refreshed), the retry policy (only a clean stream with no
- * `finish_reason` retries), the mid-stream error-chunk scan, truncation
- * detection, capability enforcement BEFORE any LLM request, and the
- * tool-round skeleton.
+ * Pins the turn loop's behavior against a scripted fake hand (the hand
+ * owns the round loop itself; hand-pi's vitest suite pins its semantics).
+ * Covered here: the history load/store lifecycle (store only on success,
+ * injection stripped; the system prompt travels separately and is never
+ * stored), the run request shape
+ * (messages, tool advertisement, run id, callback URL), event mapping onto
+ * the callback and the history, capability enforcement BEFORE any hand
+ * request, and the reactive compaction path (hand `context_exhausted` →
+ * compact → extract → refresh injection → fresh run, with no attempt cap).
  */
 class ChatTurnLoopTest {
 
     private val systemPrompt = "You are Raven."
 
-    private fun catalogModel(server: MockSseServer, id: String) = ModelCatalog(
-        BifrostProvider(
-            id = "bifrost",
-            baseUrl = "http://127.0.0.1:${server.port}/v1",
-            apiKey = "test-key",
-        )
+    private fun catalogModel(id: String) = ModelCatalog(
+        mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test-key"))
     ).findModel(id)!!
 
     /** Runs one turn; returns the outcome for assertions. */
     private fun run(
-        server: MockSseServer,
         modelId: String = "bifrost/cerebras/gemma-4-31b",
         userParts: List<ChatMessagePart> = listOf(ChatMessagePart.Text("hello")),
         store: InMemoryChatStore = InMemoryChatStore(),
@@ -82,23 +55,30 @@ class ChatTurnLoopTest {
         toolProvider: ToolProvider = EmptyToolProvider,
         extractSstm: suspend (List<ChatMessage>) -> Unit = {},
         compactionTriggerFraction: Double = 0.8,
+        handScript: suspend (HandRunRequest) -> List<HandEvent> = { stopEvents() },
+        completeScript: (suspend (HandCompleteRequest) -> HandCompleteResponse)? = null,
     ): TurnOutcome {
-        val model = catalogModel(server, modelId)
-        val compactor = ChatCompactor(model, model.toChatModel("high"))
+        val model = catalogModel(modelId)
+        val hand = FakeHand(
+            runScript = handScript,
+            completeScript = completeScript ?: { error("unexpected /complete call") },
+        )
+        val compactor = ChatCompactor(model, hand)
         val callback = RecordingCallback()
         val error = runBlocking {
             runCatching {
                 runChatTurn(
                     chatId = "chat-1",
                     model = model,
-                    streamingChatModel = model.toStreamingChatModel("high"),
                     userParts = userParts,
                     systemPrompt = systemPrompt,
                     chatStore = store,
                     sstmService = sstmService,
                     toolProvider = toolProvider,
                     callback = callback,
-                    executor = Lc4jStreamingExecutor(),
+                    hand = hand,
+                    runId = "run-test",
+                    toolCallbackUrl = "http://127.0.0.1:9/api/hand/tool",
                     compactor = compactor,
                     extractSstm = extractSstm,
                     compactionTriggerFraction = compactionTriggerFraction,
@@ -106,614 +86,415 @@ class ChatTurnLoopTest {
                 )
             }.exceptionOrNull()
         }
-        return TurnOutcome(error, store, callback)
+        return TurnOutcome(error, store, callback, hand)
     }
 
-    private fun stopStream() = listOf(
-        sseEvent(sseChunk(delta = """{"content":"ok"}""")),
-        sseEvent(sseChunk(finishReason = "stop")),
-        SSE_DONE,
+    private fun stopEvents(): List<HandEvent> = listOf(
+        HandEvent.TextDelta("ok"),
+        HandEvent.AssistantMessage(assistantMessage("ok")),
+        HandEvent.Done("stop"),
     )
 
+    private fun injectionOf(request: HandRunRequest): String =
+        ChatCodec.encodeChat(request.messages)
+
     @Test
-    fun `basic chat stores history with injection stripped and system refreshed`() {
-        val server = MockSseServer { MockSseResponse(200, stopStream()) }
-        try {
-            val outcome = run(server)
-            assertNull(outcome.error)
+    fun `basic chat stores history with injection stripped and the system prompt out of band`() {
+        val outcome = run()
+        assertNull(outcome.error)
 
-            // deltas streamed to the client
-            assertEquals(listOf("ok"), outcome.callback.texts)
-            assertTrue(outcome.callback.errors.isEmpty())
+        // deltas streamed to the client
+        assertEquals(listOf("ok"), outcome.callback.texts)
+        assertTrue(outcome.callback.errors.isEmpty())
 
-            // history stored: system (refreshed), user (injection stripped), assistant
-            val stored = assertNotNull(outcome.store.stored, "history must be stored on success")
-            assertEquals(
-                listOf(ChatMessageRole.System, ChatMessageRole.User, ChatMessageRole.Assistant),
-                stored.map { it.role },
-            )
-            assertEquals(listOf(ChatMessagePart.Text(systemPrompt)), stored[0].parts)
-            assertEquals(listOf(ChatMessagePart.Text("hello")), stored[1].parts)
-            assertEquals(listOf(ChatMessagePart.Text("ok")), stored[2].parts)
-            assertEquals("stop", stored[2].finishReason)
-        } finally {
-            server.close()
-        }
+        // the hand got one run request carrying the injection and the
+        // system prompt as a separate field (never inside the messages)
+        val request = outcome.hand.requests.single()
+        assertEquals("run-test", request.runId)
+        assertEquals("chat-1", request.chatId)
+        assertNull(request.toolCallbackUrl, "no callback URL without tools")
+        assertTrue(request.tools.isNullOrEmpty(), "no tools advertised with the empty registry")
+        assertEquals(systemPrompt, request.systemPrompt, "the system prompt travels out of band")
+        assertTrue(injectionOf(request).contains("<sstm-updated>true</sstm-updated>"))
+
+        // the model spec carries the reasoning effort from the model's
+        // Reasoning capability (not a per-request field)
+        assertTrue(request.model.reasoning, "the catalog model supports reasoning")
+        assertEquals("high", request.model.reasoningEffort)
+
+        // history stored: user (injection stripped), assistant
+        val stored = assertNotNull(outcome.store.stored, "history must be stored on success")
+        assertEquals(
+            listOf(ChatMessageRole.User, ChatMessageRole.Assistant),
+            stored.map { it.role },
+        )
+        assertEquals(listOf(ChatMessagePart.Text("hello")), stored[0].parts)
+        assertEquals(listOf(ChatMessagePart.Text("ok")), stored[1].parts)
+        assertEquals("stop", stored[1].finishReason)
     }
 
     @Test
     fun `sstm version is persisted on the chat and the sstm-updated flag tracks changes`() {
-        val server = MockSseServer { MockSseResponse(200, stopStream()) }
-        try {
-            val store = InMemoryChatStore()
-            val sstm = InMemorySstmService(version = "v1")
+        val store = InMemoryChatStore()
+        val sstm = InMemorySstmService(version = "v1")
 
-            // a fresh chat has no stored version, so the first run must flag
-            // the memory list as updated and persist the version it saw
-            var outcome = run(server, store = store, sstmService = sstm)
-            assertNull(outcome.error)
-            assertTrue(
-                server.lastRequest()!!.contains("<sstm-updated>true</sstm-updated>"),
-                "fresh chat must flag memories as updated",
-            )
-            assertEquals("v1", store.storedSstmVersion, "run must persist the memory version")
+        // a fresh chat has no stored version, so the first run must flag
+        // the memory list as updated and persist the version it saw
+        var outcome = run(store = store, sstmService = sstm)
+        assertNull(outcome.error)
+        assertTrue(
+            injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
+            "fresh chat must flag memories as updated",
+        )
+        assertEquals("v1", store.storedSstmVersion, "run must persist the memory version")
 
-            // same version as the last run: nothing changed, no flag
-            outcome = run(server, store = store, sstmService = sstm)
-            assertNull(outcome.error)
-            assertTrue(
-                server.lastRequest()!!.contains("<sstm-updated>false</sstm-updated>"),
-                "an unchanged version must not flag",
-            )
-            assertEquals("v1", store.storedSstmVersion)
+        // same version as the last run: nothing changed, no flag
+        outcome = run(store = store, sstmService = sstm)
+        assertNull(outcome.error)
+        assertTrue(
+            injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>false</sstm-updated>"),
+            "an unchanged version must not flag",
+        )
+        assertEquals("v1", store.storedSstmVersion)
 
-            // a memory edit bumps the version: the next run must flag again
-            sstm.version = "v2"
-            outcome = run(server, store = store, sstmService = sstm)
-            assertNull(outcome.error)
-            assertTrue(
-                server.lastRequest()!!.contains("<sstm-updated>true</sstm-updated>"),
-                "a changed version must flag",
-            )
-            assertEquals("v2", store.storedSstmVersion)
-        } finally {
-            server.close()
-        }
+        // a memory edit bumps the version: the next run must flag again
+        sstm.version = "v2"
+        outcome = run(store = store, sstmService = sstm)
+        assertNull(outcome.error)
+        assertTrue(
+            injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
+            "a changed version must flag",
+        )
+        assertEquals("v2", store.storedSstmVersion)
     }
 
     @Test
     fun `sstm version is not persisted on a failed run`() {
-        val server = MockSseServer { MockSseResponse(200, stopStream()) }
-        try {
-            val store = InMemoryChatStore()
-            val sstm = InMemorySstmService(version = "v1")
-            val outcome = run(server, store = store, sstmService = sstm)
-            assertNull(outcome.error)
-            assertEquals("v1", store.storedSstmVersion)
+        val store = InMemoryChatStore()
+        val sstm = InMemorySstmService(version = "v1")
+        val outcome = run(store = store, sstmService = sstm)
+        assertNull(outcome.error)
+        assertEquals("v1", store.storedSstmVersion)
 
-            // a failed run must not touch the stored version: history stays
-            // at the last good state
-            sstm.version = "v2"
-            val failingServer = MockSseServer { MockSseResponse(500, emptyList()) }
-            try {
-                val failed = run(failingServer, store = store, sstmService = sstm)
-                assertNotNull(failed.error)
-                assertEquals("v1", store.storedSstmVersion, "failed run must not update the version")
-            } finally {
-                failingServer.close()
-            }
+        // a failed run must not touch the stored version: history stays
+        // at the last good state
+        sstm.version = "v2"
+        val failed = run(
+            store = store,
+            sstmService = sstm,
+            handScript = { listOf(HandEvent.RunError("upstream", "boom")) },
+        )
+        assertIs<HandRunException>(failed.error)
+        assertEquals("v1", store.storedSstmVersion, "failed run must not update the version")
 
-            // ... so the next successful run still flags the pending change
-            val retry = run(server, store = store, sstmService = sstm)
-            assertNull(retry.error)
-            assertTrue(
-                server.lastRequest()!!.contains("<sstm-updated>true</sstm-updated>"),
-                "a change missed by a failed run must flag on the next success",
-            )
-            assertEquals("v2", store.storedSstmVersion)
-        } finally {
-            server.close()
-        }
+        // ... so the next successful run still flags the pending change
+        val retry = run(store = store, sstmService = sstm)
+        assertNull(retry.error)
+        assertTrue(
+            injectionOf(retry.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
+            "a change missed by a failed run must flag on the next success",
+        )
+        assertEquals("v2", store.storedSstmVersion)
     }
 
     @Test
     fun `reasoning deltas are forwarded and kept in stored history`() {
-        val server = MockSseServer {
-            MockSseResponse(
-                200,
+        val outcome = run(
+            handScript = {
                 listOf(
-                    sseEvent(sseChunk(delta = """{"reasoning_content":"Let me think"}""")),
-                    sseEvent(sseChunk(delta = """{"reasoning_content":" step by step"}""")),
-                    sseEvent(sseChunk(delta = """{"content":"17 * 23 = 391"}""")),
-                    sseEvent(sseChunk(finishReason = "stop")),
-                    SSE_DONE,
+                    HandEvent.ReasoningDelta("Let me think"),
+                    HandEvent.ReasoningDelta(" step by step"),
+                    HandEvent.TextDelta("17 * 23 = 391"),
+                    HandEvent.AssistantMessage(
+                        assistantMessage(
+                            parts = listOf(
+                                ChatMessagePart.Reasoning("Let me think step by step"),
+                                ChatMessagePart.Text("17 * 23 = 391"),
+                            ),
+                        )
+                    ),
+                    HandEvent.Done("stop"),
                 )
-            )
-        }
-        try {
-            val outcome = run(server)
-            assertNull(outcome.error)
-            assertEquals(listOf("Let me think", " step by step"), outcome.callback.thinkings)
-            val assistant = outcome.store.stored!![2]
-            // the reasoning part is kept in stored history on purpose (it is
-            // re-sent as reasoning_content on later requests via sendThinking)
-            assertEquals(
-                listOf(
-                    ChatMessagePart.Reasoning(listOf("Let me think step by step")),
-                    ChatMessagePart.Text("17 * 23 = 391"),
-                ),
-                assistant.parts,
-            )
-        } finally {
-            server.close()
-        }
+            },
+        )
+        assertNull(outcome.error)
+        assertEquals(listOf("Let me think", " step by step"), outcome.callback.thinkings)
+        val assistant = outcome.store.stored!![1]
+        // the reasoning part is kept in stored history on purpose (the
+        // hand replays it as reasoning on later runs)
+        assertEquals(
+            listOf(
+                ChatMessagePart.Reasoning("Let me think step by step"),
+                ChatMessagePart.Text("17 * 23 = 391"),
+            ),
+            assistant.parts,
+        )
     }
 
     @Test
-    fun `http 500 fails the run without storing`() {
-        // the exception-based retry policy was removed in the executor
-        // refactor: only a clean stream with no finish_reason is retried now,
-        // HTTP-level failures fail the run immediately
-        val server = MockSseServer { MockSseResponse(500, emptyList()) }
-        try {
-            // a chat with existing history: a failed run must leave it untouched
-            val seed = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("old"))))
-            val store = InMemoryChatStore(seed)
-            val outcome = run(server, store = store)
+    fun `a terminal hand error fails the run without storing`() {
+        // a chat with existing history: a failed run must leave it untouched
+        val seed = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("old"))))
+        val store = InMemoryChatStore(seed)
+        val outcome = run(
+            store = store,
+            handScript = { listOf(HandEvent.RunError("upstream", "500: boom")) },
+        )
 
-            val status = generateSequence(assertNotNull(outcome.error)) { it.cause }
-                .filterIsInstance<HttpException>()
-                .map { it.statusCode() }
-                .firstOrNull()
-            assertEquals(500, status)
-            assertEquals(1, server.count, "an http failure must not be retried")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-            assertEquals(seed, outcome.store.stored, "history stays at the last good state")
-        } finally {
-            server.close()
-        }
+        val e = assertIs<HandRunException>(outcome.error)
+        assertEquals("upstream", e.type)
+        assertEquals(1, outcome.hand.requests.size, "a terminal error must not retry")
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+        assertEquals(seed, outcome.store.stored, "history stays at the last good state")
     }
 
     @Test
-    fun `mid-stream error chunk with numeric 403 fails the run without storing`() {
-        val server = MockSseServer {
-            MockSseResponse(
-                200,
+    fun `retry events are relayed to the client`() {
+        val outcome = run(
+            handScript = {
                 listOf(
-                    sseEvent(sseChunk(delta = """{"content":"partial"}""")),
-                    sseEvent("""{"error":{"message":"Content policy violation","type":"moderation","code":403}}"""),
-                    SSE_DONE,
+                    HandEvent.Retry(attempt = 2, delayMs = 200, message = "transient hiccup"),
+                    HandEvent.TextDelta("ok"),
+                    HandEvent.AssistantMessage(assistantMessage("ok")),
+                    HandEvent.Done("stop"),
                 )
-            )
-        }
-        try {
-            // a chat with existing history: a failed run must leave it untouched
-            val seed = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("old"))))
-            val store = InMemoryChatStore(seed)
-            val outcome = run(server, store = store)
-
-            val e = assertIs<HttpException>(outcome.error)
-            assertEquals(403, e.statusCode())
-            assertTrue(outcome.callback.errors.isEmpty(), "a permanent error must not be retried")
-            assertEquals(1, server.count, "the run must not retry the request")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-            assertEquals(seed, outcome.store.stored, "history stays at the last good state")
-        } finally {
-            server.close()
-        }
+            },
+        )
+        assertNull(outcome.error)
+        assertEquals(listOf("transient hiccup"), outcome.callback.errors)
+        assertNotNull(outcome.store.stored)
     }
 
     @Test
-    fun `mid-stream error chunk without a code fails the run`() {
-        // a code-less error chunk used to be retried as transient; with the
-        // exception-based retry policy gone it fails the run immediately
-        val server = MockSseServer {
-            MockSseResponse(
-                200,
+    fun `content filter fails fast without storing`() {
+        val outcome = run(
+            handScript = {
                 listOf(
-                    sseEvent(sseChunk(delta = """{"content":"partial"}""")),
-                    sseEvent("""{"error":{"message":"upstream connection reset"}}"""),
-                    SSE_DONE,
-                )
-            )
-        }
-        try {
-            val outcome = run(server)
-            assertIs<MidStreamErrorChunkException>(outcome.error)
-            assertEquals(1, server.count, "a mid-stream error chunk must not be retried")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `mid-stream error chunk with a numeric code fails the run`() {
-        // a numeric code (here 429) is thrown as HttpException by the error
-        // chunk scan and fails the run; classifying it back into the
-        // transient/retry bucket is a TODO
-        val server = MockSseServer {
-            MockSseResponse(
-                200,
-                listOf(
-                    sseEvent(sseChunk(delta = """{"content":"partial"}""")),
-                    sseEvent("""{"error":{"message":"Rate limited","type":"rate_limit","code":429}}"""),
-                    SSE_DONE,
-                )
-            )
-        }
-        try {
-            val outcome = run(server)
-            val e = assertIs<HttpException>(outcome.error)
-            assertEquals(429, e.statusCode())
-            assertEquals(1, server.count, "a mid-stream error chunk must not be retried")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `http 401 fails the run without storing`() {
-        // the HTTP error status must survive langchain4j's exception mapping
-        // as an HttpException walkable in the cause chain
-        val server = MockSseServer { MockSseResponse(401, emptyList()) }
-        try {
-            // a chat with existing history: a failed run must leave it untouched
-            val seed = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("old"))))
-            val store = InMemoryChatStore(seed)
-            val outcome = run(server, store = store)
-
-            val status = generateSequence(assertNotNull(outcome.error)) { it.cause }
-                .filterIsInstance<HttpException>()
-                .map { it.statusCode() }
-                .firstOrNull()
-            assertEquals(401, status)
-            assertEquals(1, server.count, "a permanent error must not be retried")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-            assertEquals(seed, outcome.store.stored, "history stays at the last good state")
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `truncated stream without finish reason is retried then succeeds`() {
-        // langchain4j silently accepts a clean EOF without finish_reason;
-        // the turn loop must detect it itself and retry (the only transient
-        // bucket left after the executor refactor)
-        val server = MockSseServer { attempt ->
-            if (attempt == 1) {
-                MockSseResponse(
-                    200,
-                    listOf(
-                        sseEvent(sseChunk(delta = """{"content":"partial"}""")),
-                        SSE_DONE,
+                    HandEvent.RunError(
+                        "content_filter",
+                        "Provider finish_reason: content_filter"
                     )
                 )
-            } else {
-                MockSseResponse(200, stopStream())
-            }
-        }
-        try {
-            val outcome = run(server)
-            assertNull(outcome.error)
-            assertEquals(1, outcome.callback.errors.size, "one retry expected")
-            assertNotNull(outcome.store.stored)
-        } finally {
-            server.close()
-        }
+            },
+        )
+        val e = assertIs<HandRunException>(outcome.error)
+        assertEquals("content_filter", e.type)
+        assertTrue(
+            e.message!!.contains("finish_reason"),
+            "error should name the finish reason: ${e.message}"
+        )
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
     }
 
     @Test
-    fun `empty response with a named reason fails fast without storing`() {
-        val server = MockSseServer {
-            MockSseResponse(200, listOf(sseEvent(sseChunk(finishReason = "content_filter")), SSE_DONE))
-        }
-        try {
-            val outcome = run(server)
-            val e = assertIs<IllegalStateException>(outcome.error)
-            assertTrue(e.message!!.contains("finish_reason"), "error should name the finish reason: ${e.message}")
-            assertEquals(1, server.count, "a named empty reason must not be retried")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `length below the threshold fails fast with output exhaustion`() {
-        val server = MockSseServer {
-            MockSseResponse(
-                200,
+    fun `empty stop fails fast without storing`() {
+        val outcome = run(
+            handScript = {
                 listOf(
-                    sseEvent(
-                        sseChunk(
-                            finishReason = "length",
-                            usage = """{"prompt_tokens":20,"completion_tokens":0,"total_tokens":20}""",
+                    HandEvent.RunError(
+                        "empty_response",
+                        "assistant finished with neither text nor tool calls"
+                    )
+                )
+            },
+        )
+        val e = assertIs<HandRunException>(outcome.error)
+        assertEquals("empty_response", e.type)
+        assertTrue(
+            e.message!!.contains("finish_reason"),
+            "error should name the finish reason: ${e.message}"
+        )
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+    }
+
+    @Test
+    fun `output budget exhaustion fails the run`() {
+        val outcome = run(
+            handScript = {
+                listOf(
+                    HandEvent.TextDelta("partial"),
+                    HandEvent.AssistantMessage(
+                        assistantMessage(
+                            "partial",
+                            finishReason = "length"
                         )
                     ),
-                    SSE_DONE,
+                    HandEvent.RunError("output_budget_exhausted", "output hit the token budget"),
                 )
-            )
-        }
-        try {
-            val outcome = run(server)
-            val e = assertIs<IllegalStateException>(outcome.error)
-            assertTrue(e.message!!.contains("output budget"), "error should explain the failure: ${e.message}")
-            assertEquals(1, server.count)
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
-        }
+            },
+        )
+        val e = assertIs<HandRunException>(outcome.error)
+        assertEquals("output_budget_exhausted", e.type)
+        assertTrue(
+            e.message!!.contains("output budget"),
+            "error should explain the failure: ${e.message}"
+        )
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
     }
 
     @Test
-    fun `length with partial text also fails the run`() {
-        // a response that hit the output budget is never accepted, even with
-        // partial text: a truncated answer is not worth storing (a chat must
-        // end with a clean stop, see ChatCodec.validateChat)
-        val server = MockSseServer {
-            MockSseResponse(
-                200,
-                listOf(
-                    sseEvent(sseChunk(delta = """{"content":"partial answer"}""")),
-                    sseEvent(
-                        sseChunk(
-                            finishReason = "length",
-                            usage = """{"prompt_tokens":20,"completion_tokens":16,"total_tokens":36}""",
-                        )
-                    ),
-                    SSE_DONE,
-                )
-            )
-        }
-        try {
-            val outcome = run(server)
-            assertIs<IllegalStateException>(outcome.error)
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `capability violation fails before any HTTP request`() {
-        val server = MockSseServer { MockSseResponse(200, stopStream()) }
-        try {
-            // an image with a text-only model: the check must fail up front
-            val outcome = run(
-                server,
-                modelId = "bifrost/cerebras/gpt-oss-120b",
-                userParts = listOf(
-                    ChatMessagePart.Text("look"),
-                    ChatMessagePart.Attachment(
-                        kind = AttachmentKind.Image,
-                        content = AttachmentContent.Base64("AAAA"),
-                        mimeType = "image/png",
-                    ),
+    fun `capability violation fails before any hand request`() {
+        // an image with a text-only model: the check must fail up front
+        val outcome = run(
+            modelId = "bifrost/cerebras/gpt-oss-120b",
+            userParts = listOf(
+                ChatMessagePart.Text("look"),
+                ChatMessagePart.Attachment(
+                    kind = AttachmentKind.Image,
+                    content = AttachmentContent.Base64("AAAA"),
+                    mimeType = "image/png",
                 ),
-            )
-            assertIs<ModelCapabilityException>(outcome.error)
-            assertEquals(0, server.count, "no LLM request must be made")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
-        }
+            ),
+        )
+        assertIs<ModelCapabilityException>(outcome.error)
+        assertTrue(outcome.hand.requests.isEmpty(), "no hand request must be made")
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
     }
 
     @Test
     fun `image with a vision model passes the capability check`() {
-        val server = MockSseServer { MockSseResponse(200, stopStream()) }
-        try {
-            val outcome = run(
-                server,
-                modelId = "bifrost/cerebras/gemma-4-31b",
-                userParts = listOf(
-                    ChatMessagePart.Attachment(
-                        kind = AttachmentKind.Image,
-                        content = AttachmentContent.Base64("AAAA"),
-                        mimeType = "image/png",
-                    ),
+        val outcome = run(
+            modelId = "bifrost/cerebras/gemma-4-31b",
+            userParts = listOf(
+                ChatMessagePart.Attachment(
+                    kind = AttachmentKind.Image,
+                    content = AttachmentContent.Base64("AAAA"),
+                    mimeType = "image/png",
                 ),
-            )
-            assertNull(outcome.error)
-            assertNotNull(outcome.store.stored)
-        } finally {
-            server.close()
-        }
+            ),
+        )
+        assertNull(outcome.error)
+        assertNotNull(outcome.store.stored)
     }
 
     @Test
     fun `tool call round executes the empty registry and completes the next round`() {
-        val toolCallDelta1 = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"flag","arguments":""}}]}"""
-        val toolCallDelta2 = """{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}"""
-        val server = MockSseServer { attempt ->
-            if (attempt == 1) {
-                MockSseResponse(
-                    200,
-                    listOf(
-                        sseEvent(sseChunk(delta = toolCallDelta1)),
-                        sseEvent(sseChunk(delta = toolCallDelta2)),
-                        sseEvent(sseChunk(finishReason = "tool_calls")),
-                        SSE_DONE,
-                    )
+        val outcome = run(
+            handScript = {
+                // the fake hand plays the model AND the hand's callback
+                // POST: the hand would HTTP-POST the call to the brain,
+                // which answers through the same empty registry
+                val call = ChatMessagePart.ToolCall(
+                    id = "call_1",
+                    tool = "flag",
+                    args = JsonObject(emptyMap())
                 )
-            } else {
-                MockSseResponse(200, stopStream())
-            }
-        }
-        try {
-            val outcome = run(server)
-            assertNull(outcome.error)
-
-            // the tool call was streamed to the client and the empty registry
-            // answered it with an explicit error result
-            assertEquals(listOf("flag" to "{}"), outcome.callback.toolCalls)
-            val toolResult = outcome.callback.toolResults.single()
-            assertEquals("call_1", toolResult.id)
-            assertEquals("flag", toolResult.tool)
-            assertTrue(toolResult.isError, "empty registry must answer with an error result")
-
-            // stored history: user, assistant(tool_call), tool(result), assistant(answer)
-            val stored = assertNotNull(outcome.store.stored)
-            assertEquals(
-                listOf(ChatMessageRole.System, ChatMessageRole.User, ChatMessageRole.Assistant, ChatMessageRole.ToolResult, ChatMessageRole.Assistant),
-                stored.map { it.role },
-            )
-            assertEquals(
-                listOf(ChatMessagePart.ToolCall(id = "call_1", tool = "flag", args = "{}")),
-                stored[2].parts,
-            )
-            assertEquals("tool_calls", stored[2].finishReason)
-            val storedResult = assertIs<ChatMessagePart.ToolResult>(stored[3].parts.single())
-            assertEquals("call_1", storedResult.id)
-            assertEquals(true, storedResult.isError)
-            assertEquals(listOf(ChatMessagePart.Text("ok")), stored[4].parts)
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `id-less streamed tool call gets a generated id matching its result`() {
-        // gateways that stream tool_calls without id fields: langchain4j
-        // yields a blank id on the final ChatResponse's requests, so
-        // withGeneratedToolCallIds (inside Lc4jStreamingExecutor) must give
-        // the call a stable id — otherwise the stored history carries a
-        // tool_call_id that never matches, and strict providers reject every
-        // later run of the chat with a 400
-        val toolCall1 = """{"tool_calls":[{"index":0,"type":"function","function":{"name":"flag","arguments":"{\"fl"}}]}"""
-        val toolCall2 = """{"tool_calls":[{"index":0,"function":{"arguments":"ag\":true}"}}]}"""
-        val server = MockSseServer { attempt ->
-            if (attempt == 1) {
-                MockSseResponse(
-                    200,
-                    listOf(
-                        sseEvent(sseChunk(delta = toolCall1)),
-                        sseEvent(sseChunk(delta = toolCall2)),
-                        sseEvent(sseChunk(finishReason = "tool_calls")),
-                        SSE_DONE,
-                    )
-                )
-            } else {
-                MockSseResponse(200, stopStream())
-            }
-        }
-        try {
-            val outcome = run(server)
-            assertNull(outcome.error)
-
-            val stored = assertNotNull(outcome.store.stored)
-            val call = assertIs<ChatMessagePart.ToolCall>(stored[2].parts.single())
-            assertTrue(call.id.startsWith("call_"), "Expected a generated id, got ${call.id}")
-            assertEquals("flag", call.tool)
-            assertEquals("""{"flag":true}""", call.args)
-            val result = assertIs<ChatMessagePart.ToolResult>(stored[3].parts.single())
-            assertEquals(call.id, result.id, "the tool result must reference the generated id")
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `tool calls in one round execute in parallel`() {
-        val toolCallA1 = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"tool_a","arguments":""}}]}"""
-        val toolCallA2 = """{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}"""
-        val toolCallB1 = """{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"tool_b","arguments":""}}]}"""
-        val toolCallB2 = """{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}"""
-        val server = MockSseServer { attempt ->
-            if (attempt == 1) {
-                MockSseResponse(
-                    200,
-                    listOf(
-                        // index-sequential chunk order: openai4j's streaming
-                        // tool-call builder flushes a call when the index
-                        // changes, so interleaved indexes would corrupt it
-                        sseEvent(sseChunk(delta = toolCallA1)),
-                        sseEvent(sseChunk(delta = toolCallA2)),
-                        sseEvent(sseChunk(delta = toolCallB1)),
-                        sseEvent(sseChunk(delta = toolCallB2)),
-                        sseEvent(sseChunk(finishReason = "tool_calls")),
-                        SSE_DONE,
-                    )
-                )
-            } else {
-                MockSseResponse(200, stopStream())
-            }
-        }
-        val tools = RendezvousToolProvider(expectedCalls = 2)
-        try {
-            val outcome = run(server, toolProvider = tools)
-            assertNull(outcome.error)
-
-            // the rendezvous only releases when every call of the round is in
-            // flight: parallel execution completes immediately, a sequential
-            // one would time out and fail the maxInFlight assertion
-            assertEquals(2, tools.maxInFlight.get())
-
-            // both tool calls streamed, results reported in request order
-            assertEquals(
-                listOf("tool_a" to "{}", "tool_b" to "{}"),
-                outcome.callback.toolCalls,
-            )
-            assertEquals(
-                listOf("tool_a" to "result", "tool_b" to "result"),
-                outcome.callback.toolResults.map { it.tool to it.textContent() },
-            )
-            assertTrue(outcome.callback.toolResults.none { it.isError })
-
-            // stored history: assistant(tool_call x2), tool(result), tool(result), assistant(answer)
-            val stored = assertNotNull(outcome.store.stored)
-            assertEquals(
+                val result =
+                    EmptyToolProvider.execute(ToolCallRequest(call.id, call.tool, call.args))
                 listOf(
-                    ChatMessageRole.System, ChatMessageRole.User, ChatMessageRole.Assistant,
-                    ChatMessageRole.ToolResult, ChatMessageRole.ToolResult, ChatMessageRole.Assistant,
-                ),
-                stored.map { it.role },
-            )
-            assertEquals(2, stored[2].parts.count { it is ChatMessagePart.ToolCall })
-            assertEquals(1, stored[3].parts.count { it is ChatMessagePart.ToolResult })
-            assertEquals(1, stored[4].parts.count { it is ChatMessagePart.ToolResult })
-            assertEquals(listOf(ChatMessagePart.Text("ok")), stored[5].parts)
-        } finally {
-            server.close()
-        }
+                    HandEvent.AssistantMessage(
+                        assistantMessage(
+                            parts = listOf(call),
+                            finishReason = "tool_calls"
+                        )
+                    ),
+                    HandEvent.ToolCall(call.id, call.tool, call.args),
+                    HandEvent.ToolResult(call.id, call.tool, result.parts, result.isError),
+                    HandEvent.TextDelta("ok"),
+                    HandEvent.AssistantMessage(assistantMessage("ok")),
+                    HandEvent.Done("stop"),
+                )
+            },
+        )
+        assertNull(outcome.error)
+
+        // the tool call was streamed to the client and the empty registry
+        // answered it with an explicit error result
+        assertEquals(listOf("flag" to JsonObject(emptyMap())), outcome.callback.toolCalls)
+        val toolResult = outcome.callback.toolResults.single()
+        assertEquals("call_1", toolResult.id)
+        assertEquals("flag", toolResult.tool)
+        assertTrue(toolResult.isError, "empty registry must answer with an error result")
+
+        // stored history: user, assistant(tool_call), tool(result), assistant(answer)
+        val stored = assertNotNull(outcome.store.stored)
+        assertEquals(
+            listOf(
+                ChatMessageRole.User,
+                ChatMessageRole.Assistant,
+                ChatMessageRole.ToolResult,
+                ChatMessageRole.Assistant
+            ),
+            stored.map { it.role },
+        )
+        assertEquals(
+            listOf(
+                ChatMessagePart.ToolCall(
+                    id = "call_1",
+                    tool = "flag",
+                    args = JsonObject(emptyMap())
+                )
+            ),
+            stored[1].parts,
+        )
+        assertEquals("tool_calls", stored[1].finishReason)
+        val storedResult = assertIs<ChatMessagePart.ToolResult>(stored[2].parts.single())
+        assertEquals("call_1", storedResult.id)
+        assertEquals(true, storedResult.isError)
+        assertEquals(listOf(ChatMessagePart.Text("ok")), stored[3].parts)
     }
 
     @Test
-    fun `tool call round executes through the MCP provider with paired history`() {
-        // end-to-end: the loop advertises the MCP server's tools
-        // (namespaced), executes the model's call against the server, and
-        // stores the result as a tool message whose id pairs with the call
+    fun `tool call round executes through the MCP provider with paired history and advertised specs`() {
+        // end-to-end through the neutral tool seam: the loop advertises the
+        // MCP server's tools (namespaced) in the hand request, and the
+        // hand-side execution (simulated by calling the provider) stores the
+        // result as a tool message whose id pairs with the call
         val mcpServer = MockMcpServer(listOf(mcpAddTool()))
         val mcpProvider = McpToolProvider(
-            listOf(McpServerConfig(namespace = "calc", type = McpTransportType.Http, url = mcpServer.baseUrl))
-        )
-        val toolCall1 = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"calc__add","arguments":""}}]}"""
-        val toolCall2 = """{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1,\"b\":2}"}}]}"""
-        val server = MockSseServer { attempt ->
-            if (attempt == 1) {
-                MockSseResponse(
-                    200,
-                    listOf(
-                        sseEvent(sseChunk(delta = toolCall1)),
-                        sseEvent(sseChunk(delta = toolCall2)),
-                        sseEvent(sseChunk(finishReason = "tool_calls")),
-                        SSE_DONE,
-                    )
+            listOf(
+                McpServerConfig(
+                    namespace = "calc",
+                    type = McpTransportType.Http,
+                    url = mcpServer.baseUrl
                 )
-            } else {
-                MockSseResponse(200, stopStream())
-            }
-        }
+            )
+        )
         try {
-            val outcome = run(server, toolProvider = mcpProvider)
+            val outcome = run(
+                toolProvider = mcpProvider,
+                handScript = {
+                    // the fake hand plays the model AND the hand's callback
+                    // POST (the HTTP contract is pinned by HandCallbackTest)
+                    val call = ChatMessagePart.ToolCall(
+                        id = "call_1",
+                        tool = "calc__add",
+                        args = buildJsonObject { put("a", 1); put("b", 2) },
+                    )
+                    val result = mcpProvider.execute(ToolCallRequest(call.id, call.tool, call.args))
+                    listOf(
+                        HandEvent.AssistantMessage(
+                            assistantMessage(
+                                parts = listOf(call),
+                                finishReason = "tool_calls"
+                            )
+                        ),
+                        HandEvent.ToolCall(call.id, call.tool, call.args),
+                        HandEvent.ToolResult(call.id, call.tool, result.parts, result.isError),
+                        HandEvent.TextDelta("ok"),
+                        HandEvent.AssistantMessage(assistantMessage("ok")),
+                        HandEvent.Done("stop"),
+                    )
+                },
+            )
             assertNull(outcome.error)
+
+            // the request advertised the namespaced tool with its schema
+            val advertised = outcome.hand.requests.last().tools?.single()
+            assertEquals("calc__add", advertised?.name)
+            assertTrue(advertised!!.schema.isNotEmpty(), "the tool schema must be advertised")
+            assertEquals(
+                "http://127.0.0.1:9/api/hand/tool",
+                outcome.hand.requests.last().toolCallbackUrl,
+                "the callback URL is sent when tools are advertised",
+            )
 
             // the call streamed with the advertised name, the server executed
             // the raw tool with the parsed arguments
-            assertEquals(listOf("calc__add" to """{"a":1,"b":2}"""), outcome.callback.toolCalls)
+            assertEquals(
+                listOf("calc__add" to buildJsonObject { put("a", 1); put("b", 2) }),
+                outcome.callback.toolCalls
+            )
             val (rawName, args) = mcpServer.toolCalls.single()
             assertEquals("add", rawName)
             assertEquals("1", args["a"]?.jsonPrimitive?.let { it.content })
@@ -726,303 +507,267 @@ class ChatTurnLoopTest {
             assertTrue(!toolResult.isError)
 
             val stored = assertNotNull(outcome.store.stored)
-            val call = assertIs<ChatMessagePart.ToolCall>(stored[2].parts.single())
+            val call = assertIs<ChatMessagePart.ToolCall>(stored[1].parts.single())
             assertEquals("call_1", call.id)
             assertEquals("calc__add", call.tool)
-            val result = assertIs<ChatMessagePart.ToolResult>(stored[3].parts.single())
+            val result = assertIs<ChatMessagePart.ToolResult>(stored[2].parts.single())
             assertEquals("call_1", result.id, "the stored result must pair with the stored call id")
             assertEquals(listOf(ChatMessagePart.Text("1 + 2 = 3")), result.parts)
-            assertEquals(listOf(ChatMessagePart.Text("ok")), stored[4].parts)
+            assertEquals(listOf(ChatMessagePart.Text("ok")), stored[3].parts)
         } finally {
             mcpProvider.close()
             mcpServer.close()
-            server.close()
-        }
-    }
-
-    @Test
-    fun `tool result attachment fails the next round on a text-only model`() {
-        // the capability check runs per round against the current prompt: a
-        // tool returning an image mid-run must be caught before the next
-        // round's request, not sent to a model that cannot see it
-        val server = MockSseServer { attempt ->
-            if (attempt == 1) {
-                MockSseResponse(
-                    200,
-                    listOf(
-                        sseEvent(sseChunk(delta = """{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"gen","arguments":""}}]}""")),
-                        sseEvent(sseChunk(delta = """{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}""")),
-                        sseEvent(sseChunk(finishReason = "tool_calls")),
-                        SSE_DONE,
-                    )
-                )
-            } else {
-                MockSseResponse(200, stopStream())
-            }
-        }
-        val toolProvider = object : ToolProvider {
-            override suspend fun specifications(): List<ToolSpecification> = emptyList()
-
-            override suspend fun execute(request: ToolExecutionRequest): ChatMessagePart.ToolResult =
-                ChatMessagePart.ToolResult(
-                    id = request.id(),
-                    tool = request.name(),
-                    parts = listOf(
-                        ChatMessagePart.Attachment(
-                            kind = AttachmentKind.Image,
-                            content = AttachmentContent.Base64("AAAA"),
-                            mimeType = "image/png",
-                        ),
-                    ),
-                )
-        }
-        try {
-            val outcome = run(
-                server,
-                modelId = "bifrost/cerebras/gpt-oss-120b",
-                toolProvider = toolProvider,
-            )
-            assertIs<ModelCapabilityException>(outcome.error)
-            assertEquals(1, server.count, "the second round must not hit the LLM")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
         }
     }
 
     @Test
     fun `existing history is loaded and extended`() {
-        val server = MockSseServer { MockSseResponse(200, stopStream()) }
-        try {
-            val seed = listOf(
-                ChatMessage(ChatMessageRole.System, listOf(ChatMessagePart.Text("old system"))),
-                ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("earlier"))),
-                ChatMessage(
-                    ChatMessageRole.Assistant,
-                    listOf(ChatMessagePart.Text("earlier reply")),
-                    finishReason = "stop",
-                ),
-            )
-            val store = InMemoryChatStore(seed)
-            val outcome = run(server, store = store)
-            assertNull(outcome.error)
-            val stored = assertNotNull(outcome.store.stored)
-            assertEquals(5, stored.size, "seed + new user + new assistant")
-            // the system prompt is refreshed in place at index 0
-            assertEquals(listOf(ChatMessagePart.Text(systemPrompt)), stored[0].parts)
-            assertEquals(listOf(ChatMessagePart.Text("earlier")), stored[1].parts)
-            assertEquals(listOf(ChatMessagePart.Text("earlier reply")), stored[2].parts)
-            assertEquals(listOf(ChatMessagePart.Text("hello")), stored[3].parts)
-            assertEquals(listOf(ChatMessagePart.Text("ok")), stored[4].parts)
-        } finally {
-            server.close()
-        }
+        val seed = listOf(
+            ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("earlier"))),
+            ChatMessage(
+                ChatMessageRole.Assistant,
+                listOf(ChatMessagePart.Text("earlier reply")),
+                meta = ChatMessageMeta(inputTokens = 10, outputTokens = 5, totalTokens = 15),
+                finishReason = "stop",
+            ),
+        )
+        val store = InMemoryChatStore(seed)
+        val outcome = run(store = store)
+        assertNull(outcome.error)
+        val stored = assertNotNull(outcome.store.stored)
+        assertEquals(4, stored.size, "seed + new user + new assistant")
+        assertEquals(listOf(ChatMessagePart.Text("earlier")), stored[0].parts)
+        assertEquals(listOf(ChatMessagePart.Text("earlier reply")), stored[1].parts)
+        assertEquals(listOf(ChatMessagePart.Text("hello")), stored[2].parts)
+        assertEquals(listOf(ChatMessagePart.Text("ok")), stored[3].parts)
     }
 
     // ------------------------------------------------------------------
-    // history compaction (pre-round trigger + reactive ContextExhausted)
+    // history compaction (pre-round trigger + reactive context_exhausted)
     // ------------------------------------------------------------------
 
     private fun turnText(prefix: String, i: Int) = "$prefix $i".padEnd(200, 'x')
 
-    /** system + 4 complete turns (realistic-length texts); the last assistant reports a huge input. */
-    private fun crowdedSeed(lastInputTokens: Int? = 200_000): List<ChatMessage> = listOf(
-        ChatMessage(ChatMessageRole.System, listOf(ChatMessagePart.Text("old system"))),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 1)))),
-        ChatMessage(ChatMessageRole.Assistant, listOf(ChatMessagePart.Text(turnText("answer", 1))), finishReason = "stop"),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 2)))),
-        ChatMessage(ChatMessageRole.Assistant, listOf(ChatMessagePart.Text(turnText("answer", 2))), finishReason = "stop"),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 3)))),
-        ChatMessage(ChatMessageRole.Assistant, listOf(ChatMessagePart.Text(turnText("answer", 3))), finishReason = "stop"),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 4)))),
-        ChatMessage(
-            ChatMessageRole.Assistant,
-            listOf(ChatMessagePart.Text(turnText("answer", 4))),
-            meta = ChatMessageMeta(inputTokens = lastInputTokens),
-            finishReason = "stop",
-        ),
+    private fun answer(text: String, inputTokens: Int = 100): ChatMessage = ChatMessage(
+        ChatMessageRole.Assistant,
+        listOf(ChatMessagePart.Text(text)),
+        meta = ChatMessageMeta(inputTokens = inputTokens, outputTokens = 10, totalTokens = inputTokens + 10),
+        finishReason = "stop",
     )
+
+    /** 4 complete turns (realistic-length texts); the last assistant reports a huge input. */
+    private fun crowdedSeed(lastInputTokens: Int = 200_000): List<ChatMessage> = listOf(
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 1)))),
+        answer(turnText("answer", 1)),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 2)))),
+        answer(turnText("answer", 2)),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 3)))),
+        answer(turnText("answer", 3)),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 4)))),
+        answer(turnText("answer", 4), lastInputTokens),
+    )
+
+    private fun summaryResponse(summary: String): HandCompleteResponse =
+        okCompleteResponse(assistantMessage(summary))
 
     @Test
     fun `pre-round compaction fires when the estimated prompt exceeds the trigger`() {
-        // attempt 1 = the compactor's non-streaming call, attempt 2 = the real chat round
-        val server = MockSseServer { attempt ->
-            if (attempt == 1) {
-                jsonResponse(jsonCompletion(content = "compacted summary"))
-            } else {
-                MockSseResponse(200, stopStream())
-            }
-        }
-        try {
-            val outcome = run(server, store = InMemoryChatStore(crowdedSeed()))
-            assertNull(outcome.error)
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed()),
+            completeScript = { summaryResponse("compacted summary") },
+        )
+        assertNull(outcome.error)
 
-            // the compactor ran (its one-shot call) before the chat round
-            assertEquals(2, server.count, "compactor call + chat round")
+        // the compactor ran (its one-shot /complete call) before the hand run
+        assertEquals(1, outcome.hand.completeRequests.size, "one compactor call")
+        assertEquals(1, outcome.hand.requests.size, "exactly one hand run")
 
-            // stored: system, the summary user message, the last 3 turns verbatim, new user + answer
-            val stored = assertNotNull(outcome.store.stored)
-            assertEquals(
-                listOf(
-                    ChatMessageRole.System, ChatMessageRole.User,
-                    ChatMessageRole.User, ChatMessageRole.Assistant,
-                    ChatMessageRole.User, ChatMessageRole.Assistant,
-                    ChatMessageRole.User, ChatMessageRole.Assistant,
-                    ChatMessageRole.User, ChatMessageRole.Assistant,
-                ),
-                stored.map { it.role },
-            )
-            val summaryText = (stored[1].parts.single() as ChatMessagePart.Text).text
-            assertTrue(summaryText.startsWith("CONTEXT COMPACTION: "), "the summary carries the compaction marker")
-            assertTrue(summaryText.endsWith("compacted summary"))
-            // the first turn was replaced by the summary; the rest is verbatim
-            assertTrue((stored[2].parts.single() as ChatMessagePart.Text).text.startsWith("topic 2"))
-            assertTrue((stored[6].parts.single() as ChatMessagePart.Text).text.startsWith("topic 4"))
-        } finally {
-            server.close()
-        }
+        // the hand received the compacted history: the summary user message,
+        // the last 3 turns verbatim, the injected user message
+        val sent = outcome.hand.requests.single().messages
+        assertEquals(
+            listOf(
+                ChatMessageRole.User,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User,
+            ),
+            sent.map { it.role },
+        )
+        val summaryText = (sent[0].parts.single() as ChatMessagePart.Text).text
+        assertTrue(
+            summaryText.startsWith("CONTEXT COMPACTION: "),
+            "the summary carries the compaction marker"
+        )
+        assertTrue(summaryText.endsWith("compacted summary"))
+
+        // stored: same shape, injection stripped, plus the new answer
+        val stored = assertNotNull(outcome.store.stored)
+        assertEquals(
+            listOf(
+                ChatMessageRole.User,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+            ),
+            stored.map { it.role },
+        )
+        assertTrue((stored[1].parts.single() as ChatMessagePart.Text).text.startsWith("topic 2"))
+        assertTrue((stored[5].parts.single() as ChatMessagePart.Text).text.startsWith("topic 4"))
     }
 
     @Test
-    fun `context exhausted compacts once and retries successfully`() {
-        // attempt 1 = the chat round hitting the length cap with a crowded
-        // prompt (ContextExhausted), attempt 2 = the compactor's non-streaming
-        // call, attempt 3 = the retried chat round
-        val server = MockSseServer { attempt ->
-            when (attempt) {
-                1 -> MockSseResponse(
-                    200,
-                    listOf(
-                        sseEvent(
-                            sseChunk(
-                                finishReason = "length",
-                                usage = """{"prompt_tokens":100000,"completion_tokens":0,"total_tokens":100000}""",
+    fun `context exhausted compacts once and retries with a fresh hand run`() {
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            handScript = { request ->
+                if (request.messages.any {
+                        it.parts.any { part ->
+                            part is ChatMessagePart.Text && part.text.startsWith(
+                                "CONTEXT COMPACTION"
                             )
-                        ),
-                        SSE_DONE,
+                        }
+                    }) {
+                    stopEvents()
+                } else {
+                    listOf(
+                        HandEvent.RunError(
+                            "context_exhausted",
+                            "input 100000 tokens exceeds context window"
+                        )
                     )
-                )
-                2 -> jsonResponse(jsonCompletion(content = "compacted summary"))
-                else -> MockSseResponse(200, stopStream())
-            }
-        }
-        try {
-            val outcome = run(server, store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)))
-            assertNull(outcome.error)
+                }
+            },
+            completeScript = { summaryResponse("compacted summary") },
+        )
+        assertNull(outcome.error)
 
-            // reactive compaction happened once, mid-run: exhausted round,
-            // the compactor's one-shot call, then the retried round
-            assertEquals(3, server.count, "exhausted -> compactor -> retried round")
-            assertTrue(outcome.callback.errors.isEmpty())
+        // reactive compaction happened once, mid-run: the first hand run
+        // reported exhaustion, the compactor's one-shot call ran, and a
+        // fresh hand run received the compacted history
+        assertEquals(2, outcome.hand.requests.size, "exhausted run -> fresh run")
+        assertEquals(1, outcome.hand.completeRequests.size, "one compactor call")
+        assertTrue(outcome.callback.errors.isEmpty())
 
-            val stored = assertNotNull(outcome.store.stored)
-            // the first turn is summarized, the rest of the history is kept
-            assertEquals(
-                listOf(ChatMessageRole.System, ChatMessageRole.User),
-                stored.take(2).map { it.role },
-            )
-            assertTrue((stored[1].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: "))
-            assertTrue((stored[2].parts.single() as ChatMessagePart.Text).text.startsWith("topic 3"))
-        } finally {
-            server.close()
-        }
+        val stored = assertNotNull(outcome.store.stored)
+        // the first turn is summarized, the rest of the history is kept
+        assertEquals(
+            listOf(ChatMessageRole.User),
+            stored.take(1).map { it.role },
+        )
+        assertTrue((stored[0].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: "))
+        assertTrue((stored[1].parts.single() as ChatMessagePart.Text).text.startsWith("topic 3"))
     }
 
     @Test
     fun `a second exhaustion compacts again and a failed compaction fails the run`() {
-        // attempt 1 = exhausted round, attempt 2 = compactor (compaction
-        // succeeds), attempt 3 = exhausted again, attempt 4 = the second
-        // compactor call. The loop compacts on EVERY exhaustion, so the
-        // second compactor call happens; the mock answers it with a
-        // truncated summary (finish_reason=length), the compactor rejects
-        // it, and the run fails without storing.
-        val server = MockSseServer { attempt ->
-            when (attempt) {
-                2 -> jsonResponse(jsonCompletion(content = "compacted summary"))
-                4 -> jsonResponse(jsonCompletion(content = "still crowded", finishReason = "length"))
-                else -> MockSseResponse(
-                    200,
-                    listOf(
-                        sseEvent(
-                            sseChunk(
-                                finishReason = "length",
-                                usage = """{"prompt_tokens":100000,"completion_tokens":0,"total_tokens":100000}""",
-                            )
-                        ),
-                        SSE_DONE,
-                    )
-                )
-            }
-        }
-        try {
-            val store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10))
-            val outcome = run(server, store = store)
-            val e = assertIs<IllegalStateException>(outcome.error)
-            assertTrue(
-                e.message!!.contains("Compaction summarization"),
-                "error should explain the failure: ${e.message}",
-            )
-            assertEquals(4, server.count, "exhausted -> compactor -> exhausted -> compactor (fails)")
-            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
-        } finally {
-            server.close()
-        }
+        // the loop compacts on EVERY exhaustion: the second compactor call
+        // answers with a truncated summary (a length-classified hand error),
+        // the compactor rejects it, and the run fails without storing.
+        var compactions = 0
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            handScript = { listOf(HandEvent.RunError("context_exhausted", "still too big")) },
+            completeScript = {
+                if (++compactions == 1) {
+                    summaryResponse("compacted summary")
+                } else {
+                    failedCompleteResponse("output_budget_exhausted", "output hit the token budget")
+                }
+            },
+        )
+        val e = assertIs<IllegalStateException>(outcome.error)
+        assertTrue(
+            e.message!!.contains("Compaction summarization"),
+            "error should explain the failure: ${e.message}",
+        )
+        assertEquals(
+            2,
+            outcome.hand.requests.size,
+            "exhausted -> compact -> exhausted -> compact (fails)"
+        )
+        assertEquals(2, outcome.hand.completeRequests.size, "two compactor calls")
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
     }
 
     @Test
     fun `pre-round compaction extracts SSTM from the dropped messages`() {
-        // attempt 1 = compactor, attempt 2 = extractor (fact text),
-        // attempt 3 = merge round 1 (add_memory tool call), attempt 4 = merge
-        // round 2 (done), attempt 5 = the real chat round
-        val server = MockSseServer { attempt ->
-            when (attempt) {
-                1 -> jsonResponse(jsonCompletion(content = "compacted summary"))
-                2 -> jsonResponse(jsonCompletion(content = "likes coffee"))
-                3 -> jsonResponse(
-                    jsonCompletion(
-                        content = null,
-                        finishReason = "tool_calls",
-                        toolCalls = """[{"id":"call_1","type":"function","function":{"name":"add_memory","arguments":"{\"content\":\"likes coffee\"}"}}]""",
-                    )
-                )
-                4 -> jsonResponse(jsonCompletion(content = "done"))
-                else -> MockSseResponse(200, stopStream())
-            }
-        }
         val sstm = InMemorySstmService()
         var extractedDropped: List<ChatMessage>? = null
-        try {
-            val model = catalogModel(server, "bifrost/cerebras/gemma-4-31b")
-            val outcome = run(
-                server,
-                store = InMemoryChatStore(crowdedSeed()),
-                sstmService = sstm,
-                extractSstm = { dropped ->
-                    extractedDropped = dropped
-                    SstmExtractor(
-                        extractModel = model,
-                        extractChatModel = model.toChatModel("high"),
-                        sstmService = sstm,
-                    ).processDiscardedMessages(dropped)
-                },
-            )
-            assertNull(outcome.error)
+        var completeRound = 0
+        val model = catalogModel("bifrost/cerebras/gemma-4-31b")
+        val hand = FakeHand(
+            runScript = { stopEvents() },
+            completeScript = {
+                when (++completeRound) {
+                    1 -> okCompleteResponse(assistantMessage("compacted summary"))
+                    2 -> okCompleteResponse(assistantMessage("likes coffee"))
+                    3 -> okCompleteResponse(
+                        assistantMessage(
+                            parts = listOf(
+                                ChatMessagePart.ToolCall(
+                                    id = "call_1",
+                                    tool = "add_memory",
+                                    args = buildJsonObject { put("content", "likes coffee") },
+                                )
+                            ),
+                            finishReason = "tool_calls",
+                        )
+                    )
 
-            // the dropped raw messages were handed to the extraction pipeline
-            val dropped = assertNotNull(extractedDropped)
-            assertEquals(2, dropped.size, "the first complete turn is dropped")
-            assertTrue((dropped[0].parts.single() as ChatMessagePart.Text).text.startsWith("topic 1"))
-            assertTrue((dropped[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1"))
-
-            // the merge agent's add_memory call hit the SSTM
-            assertEquals(listOf("likes coffee"), sstm.created)
-
-            // the run completed and stored the compacted history
-            val stored = assertNotNull(outcome.store.stored)
-            assertTrue((stored[1].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: "))
-        } finally {
-            server.close()
+                    else -> okCompleteResponse(assistantMessage("done"))
+                }
+            },
+        )
+        val compactor = ChatCompactor(model, hand)
+        val callback = RecordingCallback()
+        val store = InMemoryChatStore(crowdedSeed())
+        val error = runBlocking {
+            runCatching {
+                runChatTurn(
+                    chatId = "chat-1",
+                    model = model,
+                    userParts = listOf(ChatMessagePart.Text("hello")),
+                    systemPrompt = systemPrompt,
+                    chatStore = store,
+                    sstmService = sstm,
+                    toolProvider = EmptyToolProvider,
+                    callback = callback,
+                    hand = hand,
+                    runId = "run-test",
+                    toolCallbackUrl = "http://127.0.0.1:9/api/hand/tool",
+                    compactor = compactor,
+                    extractSstm = { dropped ->
+                        extractedDropped = dropped
+                        SstmExtractor(
+                            extractModel = model,
+                            hand = hand,
+                            sstmService = sstm,
+                        ).processDiscardedMessages(dropped)
+                    },
+                    compactionTriggerFraction = 0.8,
+                    compactionKeepRounds = 3,
+                )
+            }.exceptionOrNull()
         }
+        assertNull(error)
+
+        // the dropped raw messages were handed to the extraction pipeline
+        val dropped = assertNotNull(extractedDropped)
+        assertEquals(2, dropped.size, "the first complete turn is dropped")
+        assertTrue((dropped[0].parts.single() as ChatMessagePart.Text).text.startsWith("topic 1"))
+        assertTrue((dropped[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1"))
+
+        // the merge agent's add_memory call hit the SSTM
+        assertEquals(listOf("likes coffee"), sstm.created)
+
+        // the run completed and stored the compacted history
+        val stored = assertNotNull(store.stored)
+        assertTrue((stored[0].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: "))
+        assertEquals(4, hand.completeRequests.size, "compactor + extractor + 2 merger rounds")
+        assertEquals(1, hand.requests.size, "the chat round itself is one hand run")
     }
 }
 
@@ -1030,6 +775,7 @@ private class TurnOutcome(
     val error: Throwable?,
     val store: InMemoryChatStore,
     val callback: RecordingCallback,
+    val hand: FakeHand,
 )
 
 private fun mcpAddTool(): MockTool = MockTool(
@@ -1049,10 +795,10 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
     var storedSstmVersion: String? = null
         private set
 
-    override suspend fun load(chatId: String): ChatEntry =
-        ChatEntry(stored ?: emptyList(), storedSstmVersion ?: "")
+    override suspend fun load(chatId: String): ChatStoreEntry =
+        ChatStoreEntry(stored ?: emptyList(), storedSstmVersion ?: "")
 
-    override suspend fun store(chatId: String, chat: ChatEntry) {
+    override suspend fun store(chatId: String, chat: ChatStoreEntry) {
         storeCount++
         stored = chat.chat
         storedSstmVersion = chat.sstmVersion
@@ -1087,41 +833,10 @@ private class InMemorySstmService(
         memories.any { it.id == id }
 }
 
-/**
- * A tool provider that only returns from [execute] once every call of the
- * round is in flight: the count-down latch opens when all [expectedCalls]
- * have arrived, so parallel execution completes immediately while a
- * sequential caller would block the IO thread for the full 5s timeout.
- * [maxInFlight] then distinguishes the two cases.
- */
-private class RendezvousToolProvider(
-    private val expectedCalls: Int,
-) : ToolProvider {
-    val maxInFlight = AtomicInteger(0)
-    private val inFlight = AtomicInteger(0)
-    private val arrived = CountDownLatch(expectedCalls)
-
-    override suspend fun specifications(): List<ToolSpecification> = emptyList()
-
-    override suspend fun execute(request: ToolExecutionRequest): ChatMessagePart.ToolResult =
-        withContext(Dispatchers.IO) {
-            val current = inFlight.incrementAndGet()
-            maxInFlight.updateAndGet { maxOf(it, current) }
-            arrived.countDown()
-            arrived.await(5, TimeUnit.SECONDS)
-            inFlight.decrementAndGet()
-            ChatMessagePart.ToolResult(
-                id = request.id(),
-                tool = request.name(),
-                parts = listOf(ChatMessagePart.Text("result")),
-            )
-        }
-}
-
 private class RecordingCallback : StreamingExecutionCallback {
     val texts = mutableListOf<String>()
     val thinkings = mutableListOf<String>()
-    val toolCalls = mutableListOf<Pair<String, String>>()
+    val toolCalls = mutableListOf<Pair<String, JsonObject>>()
     val toolResults = mutableListOf<ChatMessagePart.ToolResult>()
     val errors = mutableListOf<String>()
 
@@ -1133,7 +848,7 @@ private class RecordingCallback : StreamingExecutionCallback {
         thinkings += text
     }
 
-    override suspend fun onToolCall(name: String, args: String) {
+    override suspend fun onToolCall(name: String, args: JsonObject) {
         toolCalls += name to args
     }
 

@@ -1,0 +1,56 @@
+[
+  {
+    "role": "user",
+    "parts": [
+      { "type": "text", "text": "Look at this image and search for the weather in Berlin." },
+      {
+        "type": "attachment",
+        "kind": "image",
+        "content": {
+          "type": "base64",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        },
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "parts": [
+      { "type": "reasoning", "content": "The user wants the weather." },
+      { "type": "reasoning", "content": "I should call the search tool." },
+      { "type": "text", "text": "Let me look that up." },
+      { "type": "tool_call", "id": "call_golden_1", "tool": "get_weather", "args": { "city": "Berlin" } }
+    ],
+    "meta": {
+      "inputTokens": 120,
+      "outputTokens": 25,
+      "totalTokens": 200,
+      "modelId": "cerebras/gpt-oss-120b"
+    },
+    "finishReason": "tool_calls"
+  },
+  {
+    "role": "tool_result",
+    "parts": [
+      {
+        "type": "tool_result",
+        "id": "call_golden_1",
+        "tool": "get_weather",
+        "parts": [{ "type": "text", "text": "Berlin: 22C, sunny." }],
+        "isError": false
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "parts": [{ "type": "text", "text": "It is 22C and sunny in Berlin." }],
+    "meta": {
+      "inputTokens": 300,
+      "outputTokens": 12,
+      "totalTokens": 312,
+      "modelId": "cerebras/gpt-oss-120b"
+    },
+    "finishReason": "stop"
+  }
+]

@@ -6,8 +6,9 @@ A PoC for an LLM chatbot with a memory system, built on two pieces of
 infrastructure:
 
 - **PostgreSQL** (with the pgvector extension) via Exposed + Flyway
-- **langchain4j** for the LLM runtime (streaming chat, MCP tools) — see
-  `AGENTS.md` for the architecture
+- **hand-pi** (`hand-pi/`, a stateless Node service on
+  `@earendil-works/pi-ai`) for the LLM runtime (streaming chat, MCP tool
+  execution) — see `AGENTS.md` for the architecture
 
 The input loop is a small **ktor HTTP API** (`Main.kt` → `src/main/kotlin/.../server/`)
 plus a minimal **Svelte frontend** (`frontend/`, inspired by llama.cpp's own
@@ -17,30 +18,63 @@ existing chat from the dropdown to resume it, or click "new chat". Text and
 image messages are supported; images only work with a vision-capable model
 (the turn loop rejects them with a clear error otherwise — see `AGENTS.md`).
 
+## Why pi, not deepseek-harness (dsh)
+
+A phase-0 spike evaluated [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+(`dsh`) as an lc4j replacement; technically all five gates passed (reasoning
+dialect, MCP tools with auth, vision, auto-compaction, plugin dev), but it was
+rejected for this project:
+
+- **Prompt sovereignty.** daapu is a PoC for *memory-system experiments*: the
+  prompt content is the independent variable. dsh composes its own system
+  prompt sections, loads workspace `AGENTS.md`, ships its own tool schemas,
+  makes session-title auxiliary calls, and injects its own compaction
+  instruction — every shipped default is a confound that would have to be
+  audited or stripped. `@earendil-works/pi-ai` — the LLM layer dsh itself
+  wraps — is available standalone: no loop, no system prompt, no sessions,
+  no prompt opinions. The gateway integration dsh proved (reasoning parse,
+  tools, vision, cache accounting) comes for free without any of the sauce.
+- **History ownership.** dsh owns an append-only session event log: user
+  messages commit durably before the turn runs, there is no message edit, and
+  daapu's store-only-on-success semantics don't exist. Kotlin stays the
+  history authority here.
+- **Churn.** rc releases (6 in its first 4 days at evaluation time), a
+  vendored Cordis fork, single-user/no-auth gateway.
+
+The decision: a stateless TS service (`hand-pi/`) on pi-ai owns LLM
+*execution* only; Kotlin owns everything *content* — history, prompts,
+injection, compaction policy, extraction, tools, memory, persistence.
+
 ## Development
 
 ### Prerequisites
 
 - Docker + Docker Compose
 - JDK 25
-- Node.js (for the frontend)
+- Node.js ≥ 22.19 (for the hand and the frontend)
 
 ### Run
 
-Start PostgreSQL, then run the API server:
+Start PostgreSQL, the hand, then the API server:
 
 ```bash
 docker compose up -d db
+cd hand-pi && npm install && npm run build
+HAND_PORT=3100 HAND_TOKEN=dev-token npm --prefix hand-pi start   # the hand on http://127.0.0.1:3100
 ./gradlew run        # ktor API on http://localhost:8080
 ```
 
-In a second terminal, start the frontend dev server:
+The hand's port and token must match the `hand` section of `config.jsonc`
+(see below). In a second terminal, start the frontend dev server:
 
 ```bash
 cd frontend
 npm install
 npm run dev          # Svelte app on http://localhost:5173, proxies /api to :8080
 ```
+
+(There is a three-process `dev.sh` convenience script that starts the hand,
+ktor, and the frontend dev server together.)
 
 Open http://localhost:5173, pick a chat from the dropdown (or click "new
 chat"), pick a model, and chat.
@@ -63,6 +97,7 @@ cp config.example.jsonc config.jsonc
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
 | `memory`    | `compactionTriggerFraction` (0.8), `compactionKeepRounds` (3), `compactModel`/`extractModel`/`mergeModel` (null) | History compaction and SSTM extraction settings, see below.          |
+| `hand`      | `baseUrl` (`http://127.0.0.1:3100`), `token` (`dev-token`) | The hand-pi execution service endpoint and the shared static token (`HAND_TOKEN`). |
 
 `config.schema.json` is a JSON Schema (draft-07) mirroring the config models
 in `config/Config.kt`; the `"$schema": "./config.schema.json"` entry at the
@@ -113,16 +148,17 @@ re-execute the tool call once; if the reconnect fails the chat run fails with
 a clear `error` event, and a call that fails twice while the server stays up
 returns an error tool-result the model can react to.
 
-The system prompt and the model catalog are hardcoded in code: `agent/SystemPrompt.kt`
-and `langchain4j/ModelCatalog.kt` (each model needs an
-explicit capability list). The web UI can switch between the catalog models per
-message; the model is sent with every message (the UI defaults to the first
-catalog entry — the server has no default).
+The system prompt and the model catalog are hardcoded in code:
+`agent/persist/SystemPrompt.kt` and `agent/ModelCatalog.kt` (each model
+needs an explicit capability list). The web UI can switch between the catalog
+models per message; the model is sent with every message (the UI defaults to
+the first catalog entry — the server has no default).
 
 ### Verification
 
 ```bash
 ./gradlew test
+cd hand-pi && npm test && npm run build
 ```
 
 Frontend (in `frontend/`):
@@ -134,6 +170,28 @@ npm run build       # production build
 
 Note: the schema is a fresh migration (`V1__init.sql`); if you had an older
 database, drop the volume (`docker compose down -v`) before starting again.
+
+### Divergences from the langchain4j implementation
+
+The hand-pi migration changed a few observable behaviors on purpose:
+
+- **Sequential tool callbacks.** The hand executes one round's tool calls
+  one at a time, in source order (the old loop ran them in parallel). Slower
+  for multi-tool rounds, but deterministic and side-effect-safe — and the
+  hand never retries a callback POST.
+- **Transient upstream failures are retried by the hand.** 5xx responses,
+  mid-stream error chunks, and truncated streams retry with exponential
+  backoff inside the hand (visible as `retry` SSE events); the old loop only
+  retried a clean stream without a `finish_reason`. 4xx responses and
+  `content_filter` still fail the run.
+- **Gateway-side context rejections now compact.** A 400/413 prompt-too-long
+  response classifies as `context_exhausted` and triggers the reactive
+  compaction path (the old loop failed the run with the raw HTTP error).
+- **Richer assistant metadata.** Assistant messages now carry timestamps, and
+  `inputTokens` is the full prompt size (`input + cacheRead + cacheWrite`).
+- **A hand connection loss is terminal.** The stateless hand cannot resume a
+  dead run, so a dropped hand connection fails the run cleanly (nothing is
+  stored) instead of being retried.
 
 ## API
 
@@ -164,9 +222,11 @@ For Coding agents.
 + Docs https://www.jetbrains.com/help/exposed
 + Repo https://github.com/JetBrains/Exposed
 
-### langchain4j
+### pi-ai
 
-+ Repo https://github.com/langchain4j/langchain4j
-  + Docs https://docs.langchain4j.dev
-  + MCP https://github.com/langchain4j/langchain4j/blob/main/docs/docs/tutorials/mcp.md
-  + Kotlin extensions https://docs.langchain4j.dev/tutorials/kotlin/
++ Repo https://github.com/earendil-works/pi-ai (pinned `0.84.1` in `hand-pi/`)
+  + Docs https://pi-ai.dev
+
+### MCP Kotlin SDK
+
++ Repo https://github.com/modelcontextprotocol/kotlin-sdk (pinned `0.15.0`)

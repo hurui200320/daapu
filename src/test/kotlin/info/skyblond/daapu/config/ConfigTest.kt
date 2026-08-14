@@ -368,7 +368,7 @@ class ConfigTest {
     @Test
     fun `timeouts are validated`() {
         // mirroring config.schema.json's minimum: 1 — 0/negative would reach
-        // the langchain4j builders as a nonsense Duration
+        // the SDK transport builders as a nonsense Duration
         val e = assertFailsWith<IllegalArgumentException> {
             server(initializationTimeoutSeconds = 0).validate()
         }
@@ -382,7 +382,7 @@ class ConfigTest {
         assertFailsWith<IllegalArgumentException> {
             server(toolExecutionTimeoutSeconds = -5).validate()
         }
-        // null means "use the langchain4j default": valid
+        // null means "use the SDK default": valid
         server(initializationTimeoutSeconds = null, toolExecutionTimeoutSeconds = null).validate()
         server(initializationTimeoutSeconds = 30, toolExecutionTimeoutSeconds = 60).validate()
     }
@@ -398,7 +398,7 @@ class ConfigTest {
             """.trimIndent()
         ).memory
         assertEquals(0.8, defaults.compactionTriggerFraction)
-        assertEquals(3, defaults.compactionKeepRounds)
+        assertEquals(2, defaults.compactionKeepRounds)
         assertEquals(null, defaults.compactModel)
         assertEquals(null, defaults.extractModel)
         assertEquals(null, defaults.mergeModel)

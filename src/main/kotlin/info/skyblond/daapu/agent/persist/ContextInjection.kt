@@ -1,6 +1,6 @@
 package info.skyblond.daapu.agent.persist
 
-import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatMessagePart
 import java.io.StringReader
 import java.io.StringWriter
 import java.time.ZonedDateTime

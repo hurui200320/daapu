@@ -1,17 +1,13 @@
 package info.skyblond.daapu.agent.oneshot
 
-import dev.langchain4j.model.openai.OpenAiChatModel
-import dev.langchain4j.model.output.FinishReason
-import info.skyblond.daapu.agent.checkPromptContentCapabilities
-import info.skyblond.daapu.agent.lc4j.chat.toLc4jMessages
-import info.skyblond.daapu.agent.lc4j.llm.LLM
-import info.skyblond.daapu.agent.refreshSystemPrompt
-import info.skyblond.daapu.chat.ChatMessage
-import info.skyblond.daapu.chat.ChatMessagePart
-import info.skyblond.daapu.chat.ChatMessageRole
+import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.chat.ChatMessage
+import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.hand.HandClient
+import info.skyblond.daapu.hand.HandCompleteRequest
+import info.skyblond.daapu.hand.toHandModelSpec
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 data class ChatCompactionResult(
     /**
@@ -25,50 +21,27 @@ data class ChatCompactionResult(
 )
 
 /**
- * Estimate the prompt size of [chat] in tokens.
- *
- * Provider-reported usage wins when available: every round's
- * `meta.inputTokens` already counts the whole prompt up to that round, so
- * summing rounds would massively over-count — instead the LAST assistant
- * message's `inputTokens` is the best measured snapshot of the prompt, and
- * only the messages appended after it (the new user input, tool rounds, the
- * compaction summary) are estimated. Messages without meta fall back to a
- * chars/4 heuristic. Attachments are not counted (base64 would dominate and
- * is not token-like); the trigger headroom absorbs the inaccuracy.
+ * The current prompt size in tokens: the last assistant message's measured
+ * `meta.inputTokens` (the FULL prompt of that round, as reported by the
+ * provider). There is no estimation: usage meta is required on every hand
+ * response, and a stored chat always ends with the last round's assistant
+ * message, so the snapshot is the freshest exact measurement available. A
+ * chat with no assistant message (a brand-new chat) returns 0 — nothing
+ * meaningful to measure yet; the reactive `context_exhausted` path still
+ * guards a first run that overflows the window.
  */
-// FIXME: get rid of this. It's hard to estimate tokens since OpenAI API is used widely
-//        by opensource models, each model has different tokenizer. Impossible to cover all.
-//        Should require usage on response meta.
-fun estimateTokens(chat: List<ChatMessage>): Long {
-    val lastAssistantIndex = chat.indexOfLast { it.role == ChatMessageRole.Assistant }
-    if (lastAssistantIndex >= 0) {
-        val measured = chat[lastAssistantIndex].meta?.inputTokens
-        if (measured != null) {
-            return measured + chat.drop(lastAssistantIndex + 1).sumOf { charEstimate(it) }
-        }
-    }
-    return chat.sumOf { charEstimate(it) }
-}
-
-internal fun charEstimate(message: ChatMessage): Long =
-    (message.parts.sumOf { part -> partCharCount(part) } / 4).coerceAtLeast(1).toLong()
-
-private fun partCharCount(part: ChatMessagePart): Int = when (part) {
-    is ChatMessagePart.Text -> part.text.length
-    is ChatMessagePart.Reasoning -> part.content.sumOf { it.length }
-    is ChatMessagePart.ToolCall -> part.tool.length + part.args.length
-    is ChatMessagePart.ToolResult -> part.tool.length + part.parts.sumOf { partCharCount(it) }
-    is ChatMessagePart.Attachment -> 0
-}
+fun currentPromptTokens(chat: List<ChatMessage>): Long =
+    chat.lastOrNull { it.role == ChatMessageRole.Assistant }?.meta?.inputTokens?.toLong() ?: 0L
 
 class ChatCompactor(
     private val model: LLM,
-    private val chatModel: OpenAiChatModel,
+    private val hand: HandClient,
 ) {
     /**
      * Compact the given chat history, return a summarized text that replaced the history.
      *
-     * The [fullChat] can be the raw chat history from other agents, including the system prompt.
+     * The [fullChat] is the raw conversation history (the system prompt is
+     * not part of it; the summarizer gets its own prompt out of band).
      *
      * The [excludeLastNRound] is an indicator, the whole chat history will be
      * feed to the compactor LLM, but will tell it the last N round is for context/reference-only,
@@ -85,7 +58,7 @@ class ChatCompactor(
      * The history is left untouched whenever this throws:
      * - [IllegalArgumentException] when the chat has no user messages at all
      *   (nothing to summarize);
-     * - [info.skyblond.daapu.agent.ModelCapabilityException] when the
+     * - [info.skyblond.daapu.agent.model.ModelCapabilityException] when the
      *   compactor model cannot process the chat's content (e.g. images with
      *   a text-only model) — a capability mismatch is a configuration error
      *   (`memory.compactModel`), so it fails fast instead of silently
@@ -103,13 +76,13 @@ class ChatCompactor(
         // fail fast on a capability mismatch before the LLM call: the same
         // prompt would fail identically forever (see the loop's per-round
         // check, which this reuses)
-        checkPromptContentCapabilities(fullChat, model)
+        model.checkPromptContentCapabilities(fullChat)
         // chat to feed into summary llm:
         // First contains the part to compact,
         // Then add a user message to tell model the line between summary and context.
         // Finally, add a user message to request the summary.
         // Also replace the system prompt with our own.
-        val chat = (chatToCompact + ChatMessage(
+        val chat = chatToCompact + ChatMessage(
             role = ChatMessageRole.User,
             parts = listOf(
                 ChatMessagePart.Text(
@@ -124,14 +97,16 @@ class ChatCompactor(
                     "Summarize this chat according to system prompt."
                 )
             ),
-        )).refreshSystemPrompt(
-            // TODO: estimate output size?
-            renderSystemPrompt(500)
         )
 
         val response = try {
-            // non-streaming: the blocking call stays off the event loop
-            withContext(Dispatchers.IO) { chatModel.chat(chat.toLc4jMessages()) }
+            hand.complete(
+                HandCompleteRequest(
+                    model = model.toHandModelSpec(),
+                    messages = chat,
+                    systemPrompt = renderSystemPrompt(500),
+                )
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -140,17 +115,26 @@ class ChatCompactor(
                 e,
             )
         }
-
-        if (response.finishReason() != FinishReason.STOP) {
-            error("Compaction summarization ended with finish_reason=${response.finishReason()}, not a clean stop")
+        if (!response.ok) {
+            error(
+                "Compaction summarization failed (${response.error?.type}): " +
+                        "${response.error?.message}; the history was left untouched"
+            )
         }
-        if (response.aiMessage().hasToolExecutionRequests()) {
+        val assistant = response.message
+            ?: error("Compaction summarization returned no message")
+        if (assistant.finishReason != "stop") {
+            error("Compaction summarization ended with finish_reason=${assistant.finishReason}, not a clean stop")
+        }
+        if (assistant.parts.any { it is ChatMessagePart.ToolCall }) {
             error("Compaction summarization produced tool calls instead of text")
         }
-        val summary = response.aiMessage().text()?.trim()?.takeIf { it.isNotBlank() }
+        val summary = assistant.parts.filterIsInstance<ChatMessagePart.Text>()
+            .joinToString("\n") { it.text }
+            .trim()
+            .takeIf { it.isNotBlank() }
             ?: error("Compaction summarization produced no text")
 
-        val head = fullChat.takeWhile { it.role == ChatMessageRole.System }
         val summaryMessage = ChatMessage(
             role = ChatMessageRole.User,
             parts = listOf(ChatMessagePart.Text(COMPACTION_HEADER + summary)),
@@ -158,7 +142,7 @@ class ChatCompactor(
         // TODO: check summary shorter than input?
         return ChatCompactionResult(
             droppedMessages = chatToCompact,
-            newChat = head + summaryMessage + chatToPreserve,
+            newChat = listOf(summaryMessage) + chatToPreserve,
         )
     }
 
@@ -184,9 +168,7 @@ class ChatCompactor(
         lastNRound: Int,
     ): Pair<List<ChatMessage>, List<ChatMessage>> {
         require(lastNRound >= 1)
-        val head = chat.takeWhile { it.role == ChatMessageRole.System }
-        val body = chat.drop(head.size)
-        val userIndexes = body.mapIndexedNotNull { index, message ->
+        val userIndexes = chat.mapIndexedNotNull { index, message ->
             if (message.role == ChatMessageRole.User) index else null
         }
         require(userIndexes.isNotEmpty()) {
@@ -195,14 +177,14 @@ class ChatCompactor(
         // always leave at least one round to compact: keep the last N
         // rounds, but never ALL of them
         val keep = minOf(lastNRound, userIndexes.size - 1)
-        val cutIdx = if (keep == 0) body.size else userIndexes[userIndexes.size - keep]
-        // defensive: the arithmetic above always cuts after the first body
+        val cutIdx = if (keep == 0) chat.size else userIndexes[userIndexes.size - keep]
+        // defensive: the arithmetic above always cuts after the first chat
         // message, so an empty drop region can never reach the LLM
         require(cutIdx > 0) {
             "Nothing to compact: the drop region would be empty"
         }
-        val dropped = body.subList(0, cutIdx)
-        val preserved = body.subList(cutIdx, body.size)
+        val dropped = chat.subList(0, cutIdx)
+        val preserved = chat.subList(cutIdx, chat.size)
         return dropped to preserved
     }
 

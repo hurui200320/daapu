@@ -1,15 +1,15 @@
 package info.skyblond.daapu.mcp
 
-import dev.langchain4j.agent.tool.ToolExecutionRequest
-import dev.langchain4j.agent.tool.ToolSpecification
-import dev.langchain4j.exception.ToolArgumentsException
-import dev.langchain4j.exception.ToolExecutionException
-import dev.langchain4j.mcp.client.McpException
-import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
-import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.agent.tool.ToolSpec
+import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.McpServerConfig
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.modelcontextprotocol.kotlin.sdk.types.McpException
+import io.modelcontextprotocol.kotlin.sdk.types.RPCError
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -74,37 +74,37 @@ class McpToolProvider(
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            connected.forEach { it.dropConnection() }
+            runBlocking { connected.forEach { it.dropConnection() } }
             throw t
         }
     }
 
-    override suspend fun specifications(): List<ToolSpecification> {
-        val advertised = mutableListOf<ToolSpecification>()
+    override suspend fun specifications(): List<ToolSpec> {
+        val advertised = mutableListOf<ToolSpec>()
         val nameSet = mutableSetOf<String>()
         for (entry in entries.values) {
             entry.listTools().forEach {
-                require(!nameSet.contains(it.name())) {
-                    "MCP tool provider tool name '${it.name()}' is duplicated"
+                require(!nameSet.contains(it.name)) {
+                    "MCP tool provider tool name '${it.name}' is duplicated"
                 }
-                nameSet.add(it.name())
+                nameSet.add(it.name)
                 advertised.add(it)
             }
         }
         return advertised
     }
 
-    override suspend fun execute(request: ToolExecutionRequest): ChatMessagePart.ToolResult {
-        val advertisedName = request.name()
+    override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
+        val advertisedName = request.name
         // the advertised name is `namespace__toolName`: neither part can
         // contain `__` (namespaces are validated, tool names are sanitized
         // in specifications), so the split is unambiguous
         val parts = advertisedName.split("__")
         if (parts.size != 2)
-            return errorResult(request.id(), advertisedName, "invalid tool name")
+            return errorResult(request.id, advertisedName, "invalid tool name")
         val namespace = parts[0]
         val entry = entries[namespace] ?: return errorResult(
-            request.id(), advertisedName,
+            request.id, advertisedName,
             "tool '$advertisedName' is not advertised by any configured MCP server."
         )
         // one retry: a transport failure drops the connection (the reconnection
@@ -113,39 +113,51 @@ class McpToolProvider(
         // reconnection throws McpTransportException, failing the run.
         repeat(2) {
             return try {
-                entry.executeRequestOnce(request, advertisedName)
+                entry.executeRequestOnce(request.id, request.args, advertisedName)
+            } catch (e: TimeoutCancellationException) {
+                // the tool-execution timeout: a hung server is a transport
+                // failure — drop the connection and retry once
+                logger.warn { "MCP server ${entry.namespace} timed out, retry..." }
+                entry.dropConnection()
+                return@repeat
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Error) {
                 throw e
-            } catch (e: ToolExecutionException) {
-                if (e.isTransportFailure()) {
-                    logger.warn { "MCP server ${entry.namespace} has transport failure, retry..." }
+            } catch (e: McpException) {
+                // the SDK wraps transport failures as McpExceptions too:
+                // "Error while sending message: ..." carries the real cause,
+                // and CONNECTION_CLOSED / REQUEST_TIMEOUT mark a dead or
+                // unready transport. Anything else is a server-answered
+                // protocol/tool-level error (bad arguments, server-side
+                // failure): model-visible, the connection survives.
+                if (e.cause != null ||
+                    e.code == RPCError.ErrorCode.CONNECTION_CLOSED ||
+                    e.code == RPCError.ErrorCode.REQUEST_TIMEOUT
+                ) {
+                    logger.warn(e) { "MCP server ${entry.namespace} has transport failure, retry..." }
                     entry.dropConnection()
                     return@repeat // retry
-                } else {
-                    errorResult(
-                        request.id(), advertisedName,
-                        e.message ?: "the tool call failed"
-                    )
                 }
-            } catch (e: ToolArgumentsException) {
                 errorResult(
-                    request.id(),
-                    advertisedName,
-                    e.message ?: "the tool rejected the arguments"
+                    request.id, advertisedName,
+                    e.message ?: "the tool call failed"
                 )
-            } catch (e: McpException) {
-                errorResult(request.id(), advertisedName, e.message ?: "MCP protocol error")
-            } catch (e: RuntimeException) {
-                // anything else escaping the client, e.g. a malformed response
-                // ("Result contains neither 'result' nor 'error' element"): a
-                // server-side failure the model can be told about
-                errorResult(request.id(), advertisedName, e.message ?: "the tool call failed")
+            } catch (e: McpTransportException) {
+                // the reconnect itself failed: the server stays down, fail
+                // the run instead of answering an error result forever
+                throw e
+            } catch (e: Exception) {
+                // anything else escaping the client (connect refused, stdio
+                // process death, malformed response): transport failure —
+                // drop the connection and retry the call once
+                logger.warn(e) { "MCP server ${entry.namespace} has transport failure, retry..." }
+                entry.dropConnection()
+                return@repeat // retry
             }
         }
         return errorResult(
-            request.id(), advertisedName,
+            request.id, advertisedName,
             "tool call failed with transport failure, will reconnect on next call"
         )
     }
@@ -153,7 +165,7 @@ class McpToolProvider(
 
     override fun close() {
         entries.values.forEach { entry ->
-            entry.dropConnection()
+            entry.close()
         }
     }
 
