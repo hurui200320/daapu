@@ -49,6 +49,7 @@ data class AppConfig(
     val providers: Map<String, LlmProviderConfig>,
     val server: ServerConfig = ServerConfig(),
     val mcp: McpConfig = McpConfig(),
+    val memory: MemoryConfig = MemoryConfig(),
     // editor hint declared by config.schema.json and config.example.jsonc;
     // a known field so the strict parser accepts files that carry it
     @SerialName("\$schema")
@@ -64,6 +65,52 @@ data class AppConfig(
         }
         server.validate()
         mcp.validate()
+        memory.validate()
+    }
+}
+
+/**
+ * The memory pipeline settings (history compaction + SSTM extraction, see
+ * `agent/oneshot/`). The model ids reference the catalog
+ * (`agent/lc4j/llm/ModelCatalog.kt`); `null` uses the run's model.
+ * Catalog membership is validated at startup by `ChatRunService` (the config
+ * layer does not know the catalog).
+ */
+@Serializable
+data class MemoryConfig(
+    /**
+     * Pre-round compaction trigger: compact when the estimated prompt size
+     * exceeds this fraction of the run model's context window. `0.0`
+     * disables the proactive path (the reactive `ContextExhausted` path
+     * still compacts).
+     */
+    val compactionTriggerFraction: Double = 0.8,
+    /** Complete rounds kept verbatim at the tail of a compacted chat. */
+    val compactionKeepRounds: Int = 3,
+    /** Catalog model id for the compaction summarizer; null = the run's model. */
+    val compactModel: String? = null,
+    /**
+     * Catalog model id for the memory extractor (sees the raw dropped
+     * history, images included); null = the run's model.
+     */
+    val extractModel: String? = null,
+    /** Catalog model id for the memory merger (a tool loop); null = the run's model. */
+    val mergeModel: String? = null,
+) {
+    fun validate() {
+        require(compactionTriggerFraction in 0.0..1.0) {
+            "memory.compactionTriggerFraction must be in [0, 1], got $compactionTriggerFraction"
+        }
+        require(compactionKeepRounds >= 1) {
+            "memory.compactionKeepRounds must be at least 1, got $compactionKeepRounds"
+        }
+        listOf(
+            "memory.compactModel" to compactModel,
+            "memory.extractModel" to extractModel,
+            "memory.mergeModel" to mergeModel,
+        ).forEach { (name, id) ->
+            require(id == null || id.isNotBlank()) { "$name must not be blank when set" }
+        }
     }
 }
 

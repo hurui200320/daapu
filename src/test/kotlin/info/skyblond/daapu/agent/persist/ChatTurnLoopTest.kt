@@ -13,16 +13,21 @@ import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
 import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
 import info.skyblond.daapu.agent.lc4j.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
+import info.skyblond.daapu.agent.oneshot.ChatCompactor
+import info.skyblond.daapu.agent.oneshot.SstmExtractor
 import info.skyblond.daapu.chat.AttachmentContent
 import info.skyblond.daapu.chat.AttachmentKind
 import info.skyblond.daapu.chat.ChatEntry
 import info.skyblond.daapu.chat.ChatMessage
+import info.skyblond.daapu.chat.ChatMessageMeta
 import info.skyblond.daapu.chat.ChatMessagePart
 import info.skyblond.daapu.chat.ChatMessageRole
 import info.skyblond.daapu.chat.ChatStore
 import info.skyblond.daapu.agent.lc4j.MockSseResponse
 import info.skyblond.daapu.agent.lc4j.MockSseServer
 import info.skyblond.daapu.agent.lc4j.SSE_DONE
+import info.skyblond.daapu.agent.lc4j.jsonCompletion
+import info.skyblond.daapu.agent.lc4j.jsonResponse
 import info.skyblond.daapu.agent.lc4j.sseChunk
 import info.skyblond.daapu.agent.lc4j.sseEvent
 import info.skyblond.daapu.mcp.McpToolProvider
@@ -32,6 +37,7 @@ import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -74,8 +80,11 @@ class ChatTurnLoopTest {
         store: InMemoryChatStore = InMemoryChatStore(),
         sstmService: SstmService = InMemorySstmService(),
         toolProvider: ToolProvider = EmptyToolProvider,
+        extractSstm: suspend (List<ChatMessage>) -> Unit = {},
+        compactionTriggerFraction: Double = 0.8,
     ): TurnOutcome {
         val model = catalogModel(server, modelId)
+        val compactor = ChatCompactor(model, model.toChatModel("high"))
         val callback = RecordingCallback()
         val error = runBlocking {
             runCatching {
@@ -90,6 +99,10 @@ class ChatTurnLoopTest {
                     toolProvider = toolProvider,
                     callback = callback,
                     executor = Lc4jStreamingExecutor(),
+                    compactor = compactor,
+                    extractSstm = extractSstm,
+                    compactionTriggerFraction = compactionTriggerFraction,
+                    compactionKeepRounds = 3,
                 )
             }.exceptionOrNull()
         }
@@ -805,6 +818,212 @@ class ChatTurnLoopTest {
             server.close()
         }
     }
+
+    // ------------------------------------------------------------------
+    // history compaction (pre-round trigger + reactive ContextExhausted)
+    // ------------------------------------------------------------------
+
+    private fun turnText(prefix: String, i: Int) = "$prefix $i".padEnd(200, 'x')
+
+    /** system + 4 complete turns (realistic-length texts); the last assistant reports a huge input. */
+    private fun crowdedSeed(lastInputTokens: Int? = 200_000): List<ChatMessage> = listOf(
+        ChatMessage(ChatMessageRole.System, listOf(ChatMessagePart.Text("old system"))),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 1)))),
+        ChatMessage(ChatMessageRole.Assistant, listOf(ChatMessagePart.Text(turnText("answer", 1))), finishReason = "stop"),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 2)))),
+        ChatMessage(ChatMessageRole.Assistant, listOf(ChatMessagePart.Text(turnText("answer", 2))), finishReason = "stop"),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 3)))),
+        ChatMessage(ChatMessageRole.Assistant, listOf(ChatMessagePart.Text(turnText("answer", 3))), finishReason = "stop"),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 4)))),
+        ChatMessage(
+            ChatMessageRole.Assistant,
+            listOf(ChatMessagePart.Text(turnText("answer", 4))),
+            meta = ChatMessageMeta(inputTokens = lastInputTokens),
+            finishReason = "stop",
+        ),
+    )
+
+    @Test
+    fun `pre-round compaction fires when the estimated prompt exceeds the trigger`() {
+        // attempt 1 = the compactor's non-streaming call, attempt 2 = the real chat round
+        val server = MockSseServer { attempt ->
+            if (attempt == 1) {
+                jsonResponse(jsonCompletion(content = "compacted summary"))
+            } else {
+                MockSseResponse(200, stopStream())
+            }
+        }
+        try {
+            val outcome = run(server, store = InMemoryChatStore(crowdedSeed()))
+            assertNull(outcome.error)
+
+            // the compactor ran (its one-shot call) before the chat round
+            assertEquals(2, server.count, "compactor call + chat round")
+
+            // stored: system, the summary user message, the last 3 turns verbatim, new user + answer
+            val stored = assertNotNull(outcome.store.stored)
+            assertEquals(
+                listOf(
+                    ChatMessageRole.System, ChatMessageRole.User,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                ),
+                stored.map { it.role },
+            )
+            val summaryText = (stored[1].parts.single() as ChatMessagePart.Text).text
+            assertTrue(summaryText.startsWith("CONTEXT COMPACTION: "), "the summary carries the compaction marker")
+            assertTrue(summaryText.endsWith("compacted summary"))
+            // the first turn was replaced by the summary; the rest is verbatim
+            assertTrue((stored[2].parts.single() as ChatMessagePart.Text).text.startsWith("topic 2"))
+            assertTrue((stored[6].parts.single() as ChatMessagePart.Text).text.startsWith("topic 4"))
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `context exhausted compacts once and retries successfully`() {
+        // attempt 1 = the chat round hitting the length cap with a crowded
+        // prompt (ContextExhausted), attempt 2 = the compactor's non-streaming
+        // call, attempt 3 = the retried chat round
+        val server = MockSseServer { attempt ->
+            when (attempt) {
+                1 -> MockSseResponse(
+                    200,
+                    listOf(
+                        sseEvent(
+                            sseChunk(
+                                finishReason = "length",
+                                usage = """{"prompt_tokens":100000,"completion_tokens":0,"total_tokens":100000}""",
+                            )
+                        ),
+                        SSE_DONE,
+                    )
+                )
+                2 -> jsonResponse(jsonCompletion(content = "compacted summary"))
+                else -> MockSseResponse(200, stopStream())
+            }
+        }
+        try {
+            val outcome = run(server, store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)))
+            assertNull(outcome.error)
+
+            // reactive compaction happened once, mid-run: exhausted round,
+            // the compactor's one-shot call, then the retried round
+            assertEquals(3, server.count, "exhausted -> compactor -> retried round")
+            assertTrue(outcome.callback.errors.isEmpty())
+
+            val stored = assertNotNull(outcome.store.stored)
+            // the first turn is summarized, the rest of the history is kept
+            assertEquals(
+                listOf(ChatMessageRole.System, ChatMessageRole.User),
+                stored.take(2).map { it.role },
+            )
+            assertTrue((stored[1].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: "))
+            assertTrue((stored[2].parts.single() as ChatMessagePart.Text).text.startsWith("topic 3"))
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `a second exhaustion compacts again and a failed compaction fails the run`() {
+        // attempt 1 = exhausted round, attempt 2 = compactor (compaction
+        // succeeds), attempt 3 = exhausted again, attempt 4 = the second
+        // compactor call. The loop compacts on EVERY exhaustion, so the
+        // second compactor call happens; the mock answers it with a
+        // truncated summary (finish_reason=length), the compactor rejects
+        // it, and the run fails without storing.
+        val server = MockSseServer { attempt ->
+            when (attempt) {
+                2 -> jsonResponse(jsonCompletion(content = "compacted summary"))
+                4 -> jsonResponse(jsonCompletion(content = "still crowded", finishReason = "length"))
+                else -> MockSseResponse(
+                    200,
+                    listOf(
+                        sseEvent(
+                            sseChunk(
+                                finishReason = "length",
+                                usage = """{"prompt_tokens":100000,"completion_tokens":0,"total_tokens":100000}""",
+                            )
+                        ),
+                        SSE_DONE,
+                    )
+                )
+            }
+        }
+        try {
+            val store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10))
+            val outcome = run(server, store = store)
+            val e = assertIs<IllegalStateException>(outcome.error)
+            assertTrue(
+                e.message!!.contains("Compaction summarization"),
+                "error should explain the failure: ${e.message}",
+            )
+            assertEquals(4, server.count, "exhausted -> compactor -> exhausted -> compactor (fails)")
+            assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `pre-round compaction extracts SSTM from the dropped messages`() {
+        // attempt 1 = compactor, attempt 2 = extractor (fact text),
+        // attempt 3 = merge round 1 (add_memory tool call), attempt 4 = merge
+        // round 2 (done), attempt 5 = the real chat round
+        val server = MockSseServer { attempt ->
+            when (attempt) {
+                1 -> jsonResponse(jsonCompletion(content = "compacted summary"))
+                2 -> jsonResponse(jsonCompletion(content = "likes coffee"))
+                3 -> jsonResponse(
+                    jsonCompletion(
+                        content = null,
+                        finishReason = "tool_calls",
+                        toolCalls = """[{"id":"call_1","type":"function","function":{"name":"add_memory","arguments":"{\"content\":\"likes coffee\"}"}}]""",
+                    )
+                )
+                4 -> jsonResponse(jsonCompletion(content = "done"))
+                else -> MockSseResponse(200, stopStream())
+            }
+        }
+        val sstm = InMemorySstmService()
+        var extractedDropped: List<ChatMessage>? = null
+        try {
+            val model = catalogModel(server, "bifrost/cerebras/gemma-4-31b")
+            val outcome = run(
+                server,
+                store = InMemoryChatStore(crowdedSeed()),
+                sstmService = sstm,
+                extractSstm = { dropped ->
+                    extractedDropped = dropped
+                    SstmExtractor(
+                        extractModel = model,
+                        extractChatModel = model.toChatModel("high"),
+                        sstmService = sstm,
+                    ).processDiscardedMessages(dropped)
+                },
+            )
+            assertNull(outcome.error)
+
+            // the dropped raw messages were handed to the extraction pipeline
+            val dropped = assertNotNull(extractedDropped)
+            assertEquals(2, dropped.size, "the first complete turn is dropped")
+            assertTrue((dropped[0].parts.single() as ChatMessagePart.Text).text.startsWith("topic 1"))
+            assertTrue((dropped[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1"))
+
+            // the merge agent's add_memory call hit the SSTM
+            assertEquals(listOf("likes coffee"), sstm.created)
+
+            // the run completed and stored the compacted history
+            val stored = assertNotNull(outcome.store.stored)
+            assertTrue((stored[1].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: "))
+        } finally {
+            server.close()
+        }
+    }
 }
 
 private class TurnOutcome(
@@ -843,23 +1062,29 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
 /**
  * A fake [SstmService] whose version is settable, so tests can verify the
  * loop persists the version it saw and flips the `sstm-updated` flag when
- * the version changes between runs.
+ * the version changes between runs. Supports writes so the extraction merge
+ * tests can record what the merge agent created.
  */
 private class InMemorySstmService(
     private val memories: List<ShortTermMemory> = emptyList(),
     var version: String = "test-version",
 ) : SstmService {
+    val created = mutableListOf<String>()
+
     override suspend fun listMemories(): MemoriesWithVersion =
         MemoriesWithVersion(memories, version)
 
-    override suspend fun createMemory(content: String): ShortTermMemory =
-        error("not used in loop tests")
+    override suspend fun createMemory(content: String): ShortTermMemory {
+        created += content
+        version = "version-${created.size}"
+        return ShortTermMemory(created.size.toLong(), Instant.EPOCH, content)
+    }
 
     override suspend fun updateMemory(id: Long, content: String): ShortTermMemory? =
-        error("not used in loop tests")
+        memories.firstOrNull { it.id == id }?.copy(content = content)
 
     override suspend fun deleteMemory(id: Long): Boolean =
-        error("not used in loop tests")
+        memories.any { it.id == id }
 }
 
 /**

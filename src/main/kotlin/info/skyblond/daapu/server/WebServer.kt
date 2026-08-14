@@ -177,6 +177,15 @@ private suspend fun handleChatMessage(call: ApplicationCall, service: ChatRunSer
     val lock = service.acquireChatLock(chatId)
     try {
         call.respondBytesWriter(ContentType.Text.EventStream) {
+            // Flush the SSE stream immediately: ktor Netty's
+            // responseWriteTimeoutSeconds (10s default) starts a timer on the
+            // first (headers) write and kills the connection when it isn't
+            // flushed within 10s. A run can stay silent for minutes during
+            // history compaction/SSTM extraction, which would trip that
+            // timeout (502 at the proxy) — committing the stream up front
+            // completes the write and cancels the timer. The frontend
+            // ignores unknown events, so this is invisible to the client.
+            sendEvent("comment", "connected")
             // the sink is what the agent callback writes through; a failed
             // write means the client went away, so abort the run with a
             // CancellationException (pinned as non-retryable) instead of

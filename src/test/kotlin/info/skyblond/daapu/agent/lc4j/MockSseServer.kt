@@ -12,10 +12,16 @@ import kotlin.concurrent.thread
 
 /**
  * What the mock SSE server answers for one connection: an HTTP status (a
- * non-2xx exercises the retry policy's HTTP-error path) and the canned SSE
- * data lines.
+ * non-2xx exercises the retry policy's HTTP-error path) and the canned data
+ * lines. The default `text/event-stream` framing serves SSE streams (the
+ * streaming chat model); `application/json` serves one raw JSON body (the
+ * non-streaming chat model used by the one-shots, `agent/oneshot/`).
  */
-internal data class MockSseResponse(val status: Int = 200, val lines: List<String>)
+internal data class MockSseResponse(
+    val status: Int = 200,
+    val lines: List<String>,
+    val contentType: String = "text/event-stream",
+)
 
 /**
  * Minimal SSE server on a random localhost port: captures the full request
@@ -98,9 +104,13 @@ internal class MockSseServer(private val respond: (attempt: Int) -> MockSseRespo
                 429 -> "Too Many Requests"
                 else -> "Error"
             }
-            val payload = response.lines.joinToString("\n\n") + "\n\n"
+            val payload = if (response.contentType == "application/json") {
+                response.lines.joinToString("")
+            } else {
+                response.lines.joinToString("\n\n") + "\n\n"
+            }
             val header = "HTTP/1.1 ${response.status} $reason\r\n" +
-                "Content-Type: text/event-stream\r\nConnection: close\r\n" +
+                "Content-Type: ${response.contentType}\r\nConnection: close\r\n" +
                 "Content-Length: ${payload.toByteArray().size}\r\n\r\n"
             output.write((header + payload).toByteArray())
             output.flush()
@@ -117,6 +127,33 @@ internal fun sseEvent(json: String) = "data: $json"
 
 /** The terminal `[DONE]` line of an OpenAI-style stream. */
 internal const val SSE_DONE = "data: [DONE]"
+
+/**
+ * A plain JSON `chat.completion` body for the non-streaming chat model
+ * (`agent/oneshot/`): [content] is the assistant text (null when the message
+ * carries only [toolCalls]), [finishReason] the choice's finish_reason, and
+ * [toolCalls] the raw `tool_calls` array JSON.
+ */
+internal fun jsonCompletion(
+    content: String? = null,
+    finishReason: String = "stop",
+    toolCalls: String? = null,
+): String {
+    val messageFields = buildList {
+        add("\"role\":\"assistant\"")
+        if (content != null) add("\"content\":\"${content.replace("\"", "\\\"")}\"")
+        if (toolCalls != null) add("\"tool_calls\":$toolCalls")
+    }.joinToString(",")
+    return """{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"mock",""" +
+            """"choices":[{"index":0,"message":{$messageFields},"finish_reason":"$finishReason"}]}"""
+}
+
+/** A [MockSseResponse] that serves one raw JSON body (non-streaming). */
+internal fun jsonResponse(vararg lines: String) = MockSseResponse(
+    status = 200,
+    lines = lines.toList(),
+    contentType = "application/json",
+)
 
 /**
  * One `chat.completion.chunk` SSE payload. [delta] is the raw JSON object

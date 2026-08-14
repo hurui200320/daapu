@@ -62,11 +62,36 @@ cp config.example.jsonc config.jsonc
 | `providers` | `{<id>: {apiKey, baseUrl}}` (required)             | OpenAI-compatible providers, keyed by id (e.g. `bifrost`); `/v1` is appended if missing. |
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
+| `memory`    | `compactionTriggerFraction` (0.8), `compactionKeepRounds` (3), `compactModel`/`extractModel`/`mergeModel` (null) | History compaction and SSTM extraction settings, see below.          |
 
 `config.schema.json` is a JSON Schema (draft-07) mirroring the config models
 in `config/Config.kt`; the `"$schema": "./config.schema.json"` entry at the
 top of `config.jsonc` makes editors like VSCode/IntelliJ validate the file
 and autocomplete field names.
+
+### Memory pipeline (`memory`)
+
+History compaction and SSTM extraction (see `AGENTS.md` and
+`agent/oneshot/`):
+
+- `compactionTriggerFraction` — before each round, the harness estimates the
+  prompt size (the last provider-reported input-token snapshot plus a
+  chars/4 estimate for the messages after it) and compacts the history when
+  it exceeds this fraction of the model's context window (default 0.8; `0`
+  disables the proactive path). A round that still exhausts the context
+  compacts reactively and retries (every exhaustion triggers a compaction;
+  a compaction that fails or returns a non-clean summary fails the run).
+- `compactionKeepRounds` — complete rounds kept verbatim at the tail of a
+  compacted chat (default 3); everything older is replaced by one
+  `CONTEXT COMPACTION: `-marked summary user message. When the chat has
+  fewer rounds than this, the keep count shrinks (down to zero) so an
+  overflowing chat always compacts.
+- `compactModel`, `extractModel`, `mergeModel` — catalog model ids for the
+  one-shot pipelines (summarizer, memory extractor, memory merger); omitted
+  (`null`) means the run's model. The extractor/compactor see the raw
+  history, images included, so the model must support the content — a
+  model that cannot fails the run with a clear error (same as the chat
+  model's own capability check), and unknown ids fail fast at startup.
 
 MCP tool servers are configured under `mcp.servers`. Both Streamable HTTP and
 stdio transports are supported — `config.example.jsonc` shows a working
@@ -128,7 +153,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`):
 | `PUT /api/memories/{id}`                | Update a memory (bumps `last_update`).                       |
 | `DELETE /api/memories/{id}`             | Delete a memory.                                             |
 
-`POST /api/chats/{id}/messages` accepts `{"text": "...", "images": [{"dataUrl": "data:image/png;base64,..."}], "model": "..."}` (text and/or images required, model required) and streams SSE events: `reasoning`, `text`, `tool_call`, `tool_result`, `retry` (transient hiccup, the run will be retried), `done`, or `error` (terminal). Validation errors are plain `400`/`409` responses before the stream starts.
+`POST /api/chats/{id}/messages` accepts `{"text": "...", "images": [{"dataUrl": "data:image/png;base64,..."}], "model": "..."}` (text and/or images required, model required) and streams SSE events: `reasoning`, `text`, `tool_call`, `tool_result`, `retry` (transient hiccup, the run will be retried), `done`, or `error` (terminal). Validation errors are plain `400`/`409` responses before the stream starts. History compaction happens server-side with no dedicated event — the frontend's post-run resync (done/error) presents the compacted history.
 
 ## References
 

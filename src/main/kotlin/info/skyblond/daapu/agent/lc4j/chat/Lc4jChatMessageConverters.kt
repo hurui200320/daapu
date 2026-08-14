@@ -49,11 +49,11 @@ private fun ChatMessage.toLc4jMessage(): List<Lc4jMessages> = when (role) {
                     .arguments(part.args)
                     .build()
 
-                is ChatMessagePart.Attachment -> throw IllegalStateException(
+                is ChatMessagePart.Attachment -> error(
                     "An assistant message cannot carry an attachment in the langchain4j mapping."
                 )
 
-                is ChatMessagePart.ToolResult -> throw IllegalStateException(
+                is ChatMessagePart.ToolResult -> error(
                     "An assistant message cannot carry a tool_result part."
                 )
             }
@@ -70,13 +70,13 @@ private fun ChatMessage.toLc4jMessage(): List<Lc4jMessages> = when (role) {
 
 private fun ChatMessagePart.asSystemText(): String = when (this) {
     is ChatMessagePart.Text -> text
-    else -> throw IllegalStateException("System messages can only contain text parts, got: $this")
+    else -> error("System messages can only contain text parts, got: $this")
 }
 
 private fun ChatMessagePart.toLc4jContent(): Content = when (this) {
     is ChatMessagePart.Text -> TextContent(text)
     is ChatMessagePart.Attachment -> toLc4jAttachment()
-    else -> throw IllegalStateException("User messages can only contain text and attachment parts, got: $this")
+    else -> error("User messages can only contain text and attachment parts, got: $this")
 }
 
 private fun ChatMessagePart.Attachment.toLc4jAttachment(): Content =
@@ -98,7 +98,7 @@ private fun ChatMessagePart.toLc4jToolResultMessage(): ToolExecutionResultMessag
         .isError(isError)
         .build()
 
-    else -> throw IllegalStateException("Tool messages can only contain tool_result parts, got: $this")
+    else -> error("Tool messages can only contain tool_result parts, got: $this")
 }
 
 /**
@@ -126,7 +126,7 @@ fun ChatResponse.toNeutralAssistantMessage(aiMessage: AiMessage = aiMessage()): 
     ai.text()?.let { parts += ChatMessagePart.Text(it) }
     ai.toolExecutionRequests().forEach { request ->
         if (request.id().isNullOrBlank()) {
-            throw IllegalStateException("Tool call has no valid id")
+            error("Tool call has no valid id")
         }
         parts += ChatMessagePart.ToolCall(
             id = request.id(),
@@ -145,7 +145,7 @@ fun ChatResponse.toNeutralAssistantMessage(aiMessage: AiMessage = aiMessage()): 
             modelId = modelName(),
         ),
         finishReason = finishReason()?.toWireName()
-            ?: throw IllegalStateException("Assistant message has no finish reason"),
+            ?: error("Assistant message has no finish reason"),
     )
 }
 

@@ -7,6 +7,8 @@ import info.skyblond.daapu.agent.executor.StreamingExecutionResult
 import info.skyblond.daapu.agent.executor.StreamingExecutor
 import info.skyblond.daapu.agent.lc4j.llm.LLM
 import info.skyblond.daapu.agent.lc4j.tool.ToolProvider
+import info.skyblond.daapu.agent.oneshot.ChatCompactor
+import info.skyblond.daapu.agent.oneshot.estimateTokens
 import info.skyblond.daapu.agent.refreshSystemPrompt
 import info.skyblond.daapu.chat.*
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -48,7 +50,23 @@ suspend fun runChatTurn(
     sstmService: SstmService,
     toolProvider: ToolProvider,
     callback: StreamingExecutionCallback,
-    executor: StreamingExecutor
+    executor: StreamingExecutor,
+    compactor: ChatCompactor,
+    /**
+     * SSTM extraction over the raw messages a compaction is about to discard
+     * (see `agent/oneshot/ExtractSSTM.kt`). The caller (e.g.
+     * `ChatRunService`) must hold the memory lock for the whole extraction.
+     */
+    extractSstm: suspend (droppedMessages: List<ChatMessage>) -> Unit,
+    /**
+     * Pre-round compaction trigger: compact when the estimated prompt size
+     * exceeds this fraction of the model's context window. `0.0` disables
+     * the proactive path (the reactive `ContextExhausted` path still
+     * compacts).
+     */
+    compactionTriggerFraction: Double,
+    /** Complete rounds kept verbatim at the tail of a compaction. */
+    compactionKeepRounds: Int,
 ) {
     val contextInjection = ContextInjection()
 
@@ -60,9 +78,25 @@ suspend fun runChatTurn(
     val chatSstmVersion = loaded.sstmVersion
     var chat = loaded.chat.refreshSystemPrompt(systemPrompt)
 
-    // TODO: pre-round compaction (detect topic? or just compaction?)
+    // history compaction: fire before the round when the estimated prompt
+    // size crosses the trigger, so the prompt never crowds the context
+    // window (if it still does, the round fails with ContextExhausted,
+    // which compacts reactively below).
+    // The raw dropped messages feed the SSTM extraction BEFORE they are
+    // discarded (see agent/persist/SystemPrompt.kt's memory architecture).
+    if (compactionTriggerFraction > 0 &&
+        estimateTokens(chat) > model.contextLength * compactionTriggerFraction
+    ) {
+        logger.info { "Compacting chat $chatId" }
+        val result = compactor.compactChat(chat, excludeLastNRound = compactionKeepRounds)
+        extractSstm(result.droppedMessages)
+        // the compacted history reaches the client via the post-run
+        // resync; no dedicated event is emitted
+        chat = result.newChat
+        logger.info { "Finished compacting chat $chatId" }
+    }
 
-    val sstm = sstmService.listMemories()
+    var sstm = sstmService.listMemories()
     val injection = contextInjection.generateInjection(
         time = ZonedDateTime.now(),
         sstmUpdated = chatSstmVersion != sstm.version,
@@ -120,8 +154,30 @@ suspend fun runChatTurn(
                 }
             }
 
-            // the prompt crowds the context window: compact to free output room, then retry
-            StreamingExecutionResult.ContextExhausted -> TODO("Compaction not implemented")
+            // the prompt crowds the context window: compact the history to
+            // free output room, then retry the round with the compacted
+            // prompt. Only once per run — a second exhaustion means the
+            // compacted prompt still crowds, which compaction cannot fix.
+            StreamingExecutionResult.ContextExhausted -> {
+                val result = compactor.compactChat(chat, excludeLastNRound = compactionKeepRounds)
+                extractSstm(result.droppedMessages)
+                // the compacted history reaches the client via the post-run
+                // resync; no dedicated event is emitted
+                chat = result.newChat
+                // the injection was generated before the compaction; the
+                // extraction may have changed the SSTM, so refresh the
+                // latest user message's injection with the fresh memory list
+                // and the updated flag
+                sstm = sstmService.listMemories()
+                chat = chat.refreshLatestUserInjection(
+                    contextInjection = contextInjection,
+                    time = ZonedDateTime.now(),
+                    sstmUpdated = chatSstmVersion != sstm.version,
+                    memories = sstm.memories.map { it.content },
+                )
+                // fall through: the next loop iteration retries the round
+                // with the compacted prompt
+            }
 
             // the output cap bound on its own: compaction cannot help, fail the run
             StreamingExecutionResult.OutputBudgetExhausted -> error(
@@ -176,5 +232,36 @@ private fun List<ChatMessage>.stripInjection(contextInjection: ContextInjection)
     return mapIndexed { index, message ->
         if (matchedIndex != index) message
         else message.copy(parts = message.parts.drop(1))
+    }
+}
+
+/**
+ * Regenerate the latest user message's injection part in place: after a
+ * mid-run compaction the SSTM may have changed (extraction) and the flag
+ * must be set, so the injection is rebuilt with the fresh memory list
+ * instead of leaving the stale pre-run one.
+ */
+private fun List<ChatMessage>.refreshLatestUserInjection(
+    contextInjection: ContextInjection,
+    time: ZonedDateTime,
+    sstmUpdated: Boolean,
+    memories: List<String>,
+): List<ChatMessage> {
+    val matchedIndex = indexOfLast { message ->
+        message.role == ChatMessageRole.User
+                && message.parts.size > 1
+                && message.parts.first() is ChatMessagePart.Text
+                && contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text)
+    }
+    if (matchedIndex < 0) return this
+    val fresh = contextInjection.generateInjection(
+        time = time,
+        sstmUpdated = sstmUpdated,
+        eltmUpdated = false,
+        memoryList = memories,
+    )
+    return mapIndexed { index, message ->
+        if (matchedIndex != index) message
+        else message.copy(parts = listOf(fresh) + message.parts.drop(1))
     }
 }

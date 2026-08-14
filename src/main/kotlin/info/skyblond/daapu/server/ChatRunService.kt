@@ -7,6 +7,8 @@ import info.skyblond.daapu.agent.lc4j.llm.LLM
 import info.skyblond.daapu.agent.lc4j.llm.LLMCapability
 import info.skyblond.daapu.agent.lc4j.llm.ModelCatalog
 import info.skyblond.daapu.agent.lc4j.provider.BifrostProvider
+import info.skyblond.daapu.agent.oneshot.ChatCompactor
+import info.skyblond.daapu.agent.oneshot.SstmExtractor
 import info.skyblond.daapu.agent.persist.renderSystemPrompt
 import info.skyblond.daapu.agent.persist.runChatTurn
 import info.skyblond.daapu.chat.*
@@ -19,6 +21,7 @@ import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -64,7 +67,7 @@ class ChatRunService(
     // ModelCatalog.kt); a config without it is a wiring bug, so fail fast
     // at startup instead of at model resolution time.
     private val bifrostConfig = config.providers["bifrost"]
-        ?: throw IllegalStateException("Provider config 'bifrost' not found")
+        ?: error("Provider config 'bifrost' not found")
     private val bifrostProvider = BifrostProvider(
         id = "bifrost",
         baseUrl = bifrostConfig.baseUrl.openAiApiRoot(),
@@ -73,6 +76,31 @@ class ChatRunService(
     private val modelCatalog = ModelCatalog(bifrostProvider)
     private val chatStore: ChatStore = PostgresChatStore()
     private val systemPrompt = renderSystemPrompt("Raven", true)
+    private val memoryConfig = config.memory
+
+    // the one-shot pipeline models: catalog ids from config.memory, resolved
+    // once at startup — an unknown id is a config bug, fail fast like the
+    // MCP server validation. null = use the run's model (resolved per run).
+    private val configuredCompactModel = memoryConfig.compactModel?.let { id ->
+        modelCatalog.findModel(id) ?: throw IllegalArgumentException("memory.compactModel '$id' is not in the model catalog")
+    }
+    private val configuredExtractModel = memoryConfig.extractModel?.let { id ->
+        modelCatalog.findModel(id) ?: throw IllegalArgumentException("memory.extractModel '$id' is not in the model catalog")
+    }
+    private val configuredMergeModel = memoryConfig.mergeModel?.let { id ->
+        val model = modelCatalog.findModel(id)
+            ?: throw IllegalArgumentException("memory.mergeModel '$id' is not in the model catalog")
+        require(model.supports(LLMCapability.Output.ToolCalls)) {
+            "memory.mergeModel '${model.id}' must support tool calls (the memory merge agent runs a tool loop)"
+        }
+        model
+    }
+
+    // serializes the SSTM writes of concurrent runs' extraction merges: each
+    // memory write is its own transaction, but the merge is a sequence of
+    // them, and a concurrent run's injection read must never observe a
+    // half-merged SSTM (the version digest alone cannot close that window)
+    private val sstmWriteLock = Mutex()
 
     // one run per chat at a time: a chat's history is loaded and stored as a
     // whole, so concurrent runs would corrupt each other.
@@ -248,6 +276,21 @@ class ChatRunService(
         setup: ChatRunSetup,
         sendEvent: suspend (event: String, data: String) -> Unit
     ) {
+        // one-shot models per run: the configured model wins, the run's
+        // model is the fallback. Capability checks (attachments in the
+        // history) happen inside the one-shots and skip with a warning
+        // instead of failing the run.
+        val compactModel = configuredCompactModel ?: setup.model
+        val extractModel = configuredExtractModel ?: setup.model
+        val mergeModel = configuredMergeModel ?: setup.model
+        val compactor = ChatCompactor(compactModel, compactModel.toChatModel(setup.reasoningEffort))
+        val extractor = SstmExtractor(
+            extractModel = extractModel,
+            extractChatModel = extractModel.toChatModel(setup.reasoningEffort),
+            mergeModel = mergeModel,
+            mergeChatModel = mergeModel.toChatModel(setup.reasoningEffort),
+            sstmService = sstmService,
+        )
         runChatTurn(
             chatId = setup.chatId,
             model = setup.model,
@@ -258,7 +301,13 @@ class ChatRunService(
             sstmService = sstmService,
             toolProvider = toolProvider,
             callback = streamEventCallback(sendEvent),
-            executor = Lc4jStreamingExecutor()
+            executor = Lc4jStreamingExecutor(),
+            compactor = compactor,
+            // the whole extraction merge holds the write lock, so the
+            // injection read never observes a half-merged SSTM
+            extractSstm = { dropped -> sstmWriteLock.withLock { extractor.processDiscardedMessages(dropped) } },
+            compactionTriggerFraction = memoryConfig.compactionTriggerFraction,
+            compactionKeepRounds = memoryConfig.compactionKeepRounds,
         )
     }
 

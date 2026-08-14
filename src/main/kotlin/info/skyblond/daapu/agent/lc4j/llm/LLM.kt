@@ -1,5 +1,6 @@
 package info.skyblond.daapu.agent.lc4j.llm
 
+import dev.langchain4j.model.openai.OpenAiChatModel
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel
 import info.skyblond.daapu.chat.AttachmentKind
 import info.skyblond.daapu.agent.lc4j.provider.OpenAICompatibleProvider
@@ -79,6 +80,30 @@ class LLM(
             //       need to investigate and provided per provider
             // TODO: also the field name is shared for both req and resp,
             //       what if they are different? And how do we verify input? Provider API doc?
+            .sendThinking(hasReasoning())
+            .returnThinking(hasReasoning())
+
+        if (hasReasoning()) builder.reasoningEffort(reasoningEffort)
+
+        return builder.build()
+    }
+
+    /**
+     * Build a non-streaming chat model for one-shot tasks (compaction
+     * summarizer, memory extraction/merge). Cheap like
+     * [toStreamingChatModel] — configuration only, no connections.
+     * The caller runs the blocking [dev.langchain4j.model.chat.ChatModel.chat]
+     * call on the IO dispatcher. Thinking mirrors [toStreamingChatModel], but
+     * a returned thinking trace is dropped by the non-streaming parser (see
+     * `provider/Providers.kt`); the one-shots only consume the text content.
+     */
+    fun toChatModel(
+        reasoningEffort: String,
+        timeout: Duration = Duration.ofSeconds(60),
+    ): OpenAiChatModel {
+        val builder = provider.createOpenAiChatModelBuilder()
+            .modelName(modelId)
+            .timeout(timeout)
             .sendThinking(hasReasoning())
             .returnThinking(hasReasoning())
 

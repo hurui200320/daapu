@@ -44,5 +44,18 @@
       //     "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
       // }
     ]
+  },
+  // The memory pipeline: history compaction and SSTM extraction. The model
+  // ids reference the catalog; omitting one (or setting null) uses the run's
+  // model for that step.
+  "memory": {
+    // compact when the estimated prompt exceeds this fraction of the model's
+    // context window (0 disables the proactive path)
+    "compactionTriggerFraction": 0.8,
+    // complete rounds kept verbatim at the tail of a compacted chat
+    "compactionKeepRounds": 3
+    // "compactModel": "bifrost/cerebras/gemma-4-31b",
+    // "extractModel": "bifrost/cerebras/gemma-4-31b",
+    // "mergeModel": "bifrost/cerebras/gemma-4-31b"
   }
 }

@@ -3,6 +3,7 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.chat.AttachmentContent
 import info.skyblond.daapu.chat.AttachmentKind
 import info.skyblond.daapu.chat.ChatMessagePart
+import info.skyblond.daapu.config.MemoryConfig
 import info.skyblond.daapu.config.testAppConfig
 import io.ktor.server.plugins.BadRequestException
 import kotlin.test.Test
@@ -10,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * Pins the request → neutral parts mapping done by [ChatRunService.prepareRun].
@@ -141,6 +143,22 @@ class ChatRunServiceTest {
             ChatRunService(testAppConfig().copy(providers = emptyMap()))
         }
         assertEquals("Provider config 'bifrost' not found", e.message)
+    }
+
+    @Test
+    fun `an unknown memory model id fails fast at construction`() {
+        // the one-shot pipeline models are resolved once at startup: a typo
+        // must fail here, not silently skip every compaction/extraction
+        val e = assertFailsWith<IllegalArgumentException> {
+            ChatRunService(testAppConfig().copy(memory = MemoryConfig(compactModel = "bifrost/nope")))
+        }
+        assertTrue(e.message!!.contains("memory.compactModel"), "the error should name the config key: ${e.message}")
+        assertFailsWith<IllegalArgumentException> {
+            ChatRunService(testAppConfig().copy(memory = MemoryConfig(extractModel = "bifrost/nope")))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ChatRunService(testAppConfig().copy(memory = MemoryConfig(mergeModel = "bifrost/nope")))
+        }
     }
 
     @Test

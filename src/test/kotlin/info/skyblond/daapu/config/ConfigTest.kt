@@ -386,4 +386,63 @@ class ConfigTest {
         server(initializationTimeoutSeconds = null, toolExecutionTimeoutSeconds = null).validate()
         server(initializationTimeoutSeconds = 30, toolExecutionTimeoutSeconds = 60).validate()
     }
+
+    @Test
+    fun `memory config decodes with defaults and overrides`() {
+        val defaults = decodeAppConfig(
+            """
+            {
+                "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                "providers": {}
+            }
+            """.trimIndent()
+        ).memory
+        assertEquals(0.8, defaults.compactionTriggerFraction)
+        assertEquals(3, defaults.compactionKeepRounds)
+        assertEquals(null, defaults.compactModel)
+        assertEquals(null, defaults.extractModel)
+        assertEquals(null, defaults.mergeModel)
+
+        val overrides = decodeAppConfig(
+            """
+            {
+                "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                "providers": {},
+                "memory": {
+                    "compactionTriggerFraction": 0.5,
+                    "compactionKeepRounds": 5,
+                    "compactModel": "bifrost/x",
+                    "extractModel": "bifrost/y",
+                    "mergeModel": "bifrost/z"
+                }
+            }
+            """.trimIndent()
+        ).memory
+        assertEquals(0.5, overrides.compactionTriggerFraction)
+        assertEquals(5, overrides.compactionKeepRounds)
+        assertEquals("bifrost/x", overrides.compactModel)
+        assertEquals("bifrost/y", overrides.extractModel)
+        assertEquals("bifrost/z", overrides.mergeModel)
+    }
+
+    @Test
+    fun `memory config validation`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            MemoryConfig(compactionTriggerFraction = 1.5).validate()
+        }
+        assertTrue(e.message!!.contains("compactionTriggerFraction"))
+
+        // 0 is valid: it disables the proactive compaction path
+        MemoryConfig(compactionTriggerFraction = 0.0).validate()
+
+        val rounds = assertFailsWith<IllegalArgumentException> {
+            MemoryConfig(compactionKeepRounds = 0).validate()
+        }
+        assertTrue(rounds.message!!.contains("compactionKeepRounds"))
+
+        val blank = assertFailsWith<IllegalArgumentException> {
+            MemoryConfig(mergeModel = "  ").validate()
+        }
+        assertTrue(blank.message!!.contains("mergeModel"))
+    }
 }

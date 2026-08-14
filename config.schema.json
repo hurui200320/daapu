@@ -76,6 +76,41 @@
           }
         }
       }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The memory pipeline settings: history compaction and SSTM extraction (agent/oneshot/).",
+      "properties": {
+        "compactionTriggerFraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.8,
+          "description": "Pre-round compaction trigger: fraction of the run model's context window. 0 disables the proactive path (the reactive context-exhausted path still compacts)."
+        },
+        "compactionKeepRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "Complete rounds kept verbatim at the tail of a compacted chat."
+        },
+        "compactModel": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Catalog model id for the compaction summarizer; null (omitted) uses the run's model."
+        },
+        "extractModel": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Catalog model id for the memory extractor; null (omitted) uses the run's model."
+        },
+        "mergeModel": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Catalog model id for the memory merger tool loop; null (omitted) uses the run's model."
+        }
+      }
     }
   },
   "definitions": {
