@@ -100,6 +100,14 @@
   border-radius: 0.5rem;
 }
 
+/* wide display formulas scroll horizontally like code blocks */
+.md-content .katex-display {
+  margin: 1rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+}
+
 /* --- code block chrome --- */
 
 .code-block-wrapper {
