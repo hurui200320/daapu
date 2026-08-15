@@ -130,9 +130,11 @@ class ChatRunService(
 
     // one run per chat at a time: a chat's history is loaded and stored as a
     // whole, so concurrent runs would corrupt each other.
-    // Entries exist only while a run is active or a delete is in progress:
-    // [acquireChatLock] creates them atomically, [releaseChatLock] and
-    // [deleteChat] evict them, so arbitrary/deleted chat ids don't accumulate.
+    // Entries exist only while a run is active or a history-mutating operation
+    // (delete/truncate) is in progress: [acquireChatLock] and [withChatLock]
+    // create them atomically, and [releaseChatLock] — the one eviction path
+    // both go through — removes them, so arbitrary/deleted chat ids don't
+    // accumulate.
     // TODO: distributed lock in production
     private val chatLocks = ConcurrentHashMap<String, Mutex>()
 
@@ -193,37 +195,105 @@ class ChatRunService(
      * store resurrect the deleted row. Returns false when the chat doesn't
      * exist (nothing to extract, no LLM call; an empty chat extracts nothing).
      *
-     * The lock entry is taken atomically with the `tryLock`
-     * ([ConcurrentHashMap.compute] serializes both map ops) and KEPT in the
-     * map for the whole operation — load, extraction (potentially minutes of
-     * LLM calls) and the row delete — so no new run can start (409) while the
-     * deletion is in progress, and a delete can never pair with a run that
-     * holds a different mutex for the same chat. The entry is evicted before
-     * the unlock ([releaseChatLock]), like a run's lock.
+     * The lock is held for the whole operation — load, extraction (potentially
+     * minutes of LLM calls) and the row delete — via [withChatLock], so no new
+     * run can start (409) while the deletion is in progress.
      *
      * A failed extraction (a classified hand error, a truncated extractor
      * round, a model that cannot see the history) throws and FAILS the
      * delete: the row survives untouched, and the next delete attempt
      * re-extracts the same history, which the merge agent deduplicates.
      */
-    suspend fun deleteChat(chatId: String): Boolean {
-        var lock: Mutex? = null
-        chatLocks.compute(chatId) { _, existing ->
-            val mutex = existing ?: Mutex()
-            if (!mutex.tryLock()) {
-                throw ChatRunConflictException("Chat '$chatId' is currently locked")
-            }
-            lock = mutex
-            mutex
+    suspend fun deleteChat(chatId: String): Boolean = withChatLock(chatId) {
+        val entry = chatStore.load(chatId) ?: return@withChatLock false
+        sstmExtractionService.processDiscardedMessages(entry.content.messages)
+        chatStore.delete(chatId)
+    }
+
+    /**
+     * Truncate a chat: drop every message from [index] (a user message) to
+     * the end, keeping `messages[0..index-1]`. The dropped tail is discarded
+     * WITHOUT SSTM extraction — deliberately: a typo'd turn must not leak
+     * into memories. Returns false when the chat doesn't exist; throws
+     * [BadRequestException] when [index] is out of bounds, does not point at
+     * a user message, or would leave the kept prefix ending mid-turn (a user
+     * message whose predecessor is another user message — consecutive user
+     * turns occur after a compaction, whose summary user message sits
+     * directly before the preserved tail).
+     *
+     * Runs under the per-chat lock: an in-flight run's final store upsert
+     * would otherwise resurrect the truncated tail (the same reason
+     * [deleteChat] takes the lock). The stored `sstm_version` is reset to
+     * `""`: the `sstms` table is untouched, but the kept history may no
+     * longer cover the memories merged from the dropped tail, so the next
+     * run must re-flag `sstm-updated` and re-inject the current memory list.
+     */
+    suspend fun truncateChat(chatId: String, index: Int): Boolean = withChatLock(chatId) {
+        val entry = chatStore.load(chatId) ?: return@withChatLock false
+        val messages = entry.content.messages
+        if (index < 0 || index >= messages.size) {
+            throw BadRequestException("Message index $index is out of bounds")
         }
-        val mutex = lock!!
-        return try {
-            val entry = chatStore.load(chatId) ?: return false
-            sstmExtractionService.processDiscardedMessages(entry.content.messages)
-            chatStore.delete(chatId)
-        } finally {
-            releaseChatLock(chatId, mutex)
+        if (messages[index].role != ChatMessageRole.User) {
+            throw BadRequestException("Message $index is not a user message, refusing to truncate")
         }
+        val kept = messages.subList(0, index).toList()
+        // the kept prefix must end with a completed assistant turn (or be
+        // empty): a user message is always preceded by an assistant stop
+        // message in a stored chat — EXCEPT after a compaction, where the
+        // summary user message can directly precede the preserved tail's
+        // first user message. Storing a prefix that ends mid-turn would
+        // brick the chat on load (decodeChat validates), so refuse it with
+        // a clear 400 instead of a defensive 500 from validateChat below.
+        if (kept.isNotEmpty() && kept.last().role != ChatMessageRole.Assistant) {
+            throw BadRequestException(
+                "Refusing to truncate at message $index: the kept prefix would end " +
+                    "mid-turn (a user message follows a user message, e.g. after a " +
+                    "compaction), which the stored chat format cannot represent"
+            )
+        }
+        // still validate defensively: a violating truncation would brick the
+        // chat on load
+        ChatCodec.validateChat(kept)
+        chatStore.store(chatId, ChatContent(kept, ""))
+        true
+    }
+
+    /**
+     * Fork a chat: create a new chat whose history is the source chat's
+     * `messages[0..index]` (inclusive), where [index] must point at an
+     * assistant message that ended naturally (`finishReason == "stop"`) —
+     * the fork's history is then a complete, valid chat by construction.
+     * The source row is untouched. Returns null when the source chat doesn't
+     * exist; throws [BadRequestException] when [index] is out of bounds or
+     * does not point at a naturally finished assistant message.
+     *
+     * Takes no per-chat lock: it is a pure read + insert into a NEW row, so
+     * a concurrent run can only make the fork reflect the committed state
+     * without the in-flight turn (snapshot semantics) — nothing corrupts.
+     * The fork's `sstm_version` starts as `""` (like a fresh chat): the fork
+     * has never seen a memory list, so its first run must flag
+     * `sstm-updated`.
+     */
+    suspend fun forkChat(chatId: String, index: Int): ChatInfo? {
+        val entry = chatStore.load(chatId) ?: return null
+        val messages = entry.content.messages
+        if (index < 0 || index >= messages.size) {
+            throw BadRequestException("Message index $index is out of bounds")
+        }
+        val message = messages[index]
+        if (message.role != ChatMessageRole.Assistant ||
+            message.finishReason?.lowercase() != "stop"
+        ) {
+            throw BadRequestException(
+                "Message $index is not a naturally finished assistant message, refusing to fork"
+            )
+        }
+        val kept = messages.subList(0, index + 1).toList()
+        ChatCodec.validateChat(kept)
+        val forked = chatStore.newChat()
+        chatStore.store(forked.id, ChatContent(kept, ""))
+        return forked
     }
 
     suspend fun chat(chatId: String): List<ChatMessage> =
@@ -287,6 +357,33 @@ class ChatRunService(
             mutex
         }
         return acquired!!
+    }
+
+    /**
+     * Run [block] while holding the per-chat lock, or throw
+     * [ChatRunConflictException] when the chat is locked by a run or another
+     * history-mutating operation in progress. The lock entry is taken
+     * atomically with the `tryLock` ([ConcurrentHashMap.compute] serializes
+     * both map ops); [releaseChatLock] removes the entry BEFORE the unlock,
+     * so the block's holder keeps working on its mutex while the next
+     * acquirer gets a fresh one — never two concurrent holders.
+     */
+    private suspend fun <T> withChatLock(chatId: String, block: suspend () -> T): T {
+        var lock: Mutex? = null
+        chatLocks.compute(chatId) { _, existing ->
+            val mutex = existing ?: Mutex()
+            if (!mutex.tryLock()) {
+                throw ChatRunConflictException("Chat '$chatId' is currently locked")
+            }
+            lock = mutex
+            mutex
+        }
+        val mutex = lock!!
+        try {
+            return block()
+        } finally {
+            releaseChatLock(chatId, mutex)
+        }
     }
 
     /**

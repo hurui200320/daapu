@@ -46,9 +46,12 @@ object ChatCodec {
         }
 
     /**
-     * validate a chat.
+     * Validate a chat: the invariants that keep a stored chat re-sendable to
+     * providers (see the class KDoc). Internal so history-mutating operations
+     * (e.g. truncation in [info.skyblond.daapu.server.ChatRunService]) can
+     * check their result before storing.
      */
-    private fun validateChat(chat: List<ChatMessage>) {
+    internal fun validateChat(chat: List<ChatMessage>) {
         // last message (if has one) must be assistant message with reason stop
         chat.lastOrNull()?.let {
             require(it.role == ChatMessageRole.Assistant) {

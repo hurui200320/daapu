@@ -1,4 +1,15 @@
-import { deleteChat, generateTitle, listChats, listModels, loadChat, newChat, renameChat, streamChat } from './api'
+import {
+  deleteChat,
+  forkChat as apiForkChat,
+  generateTitle,
+  listChats,
+  listModels,
+  loadChat,
+  newChat,
+  renameChat,
+  streamChat,
+  truncateMessages as apiTruncateMessages,
+} from './api'
 import type { ChatInfo, ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
 import { toastStore } from './toast-store.svelte'
 
@@ -48,6 +59,12 @@ class ChatStore {
   // the chat is read-only — no rename/title/delete/send — until the backend
   // confirms the row is gone or reports an error
   deletingIds = $state<Set<string>>(new Set())
+
+  // fork requests in flight per chat id: forks have no confirmation dialog
+  // (unlike truncation) — the click starts the request immediately, and the
+  // action buttons stay disabled until it settles, so a double-click cannot
+  // create duplicate fork chats; other chats' buttons stay live
+  forkingIds = $state<Set<string>>(new Set())
 
   private started = false
 
@@ -212,6 +229,57 @@ class ChatStore {
       toastStore.push(String(e))
     } finally {
       this.deletingIds.delete(id)
+    }
+  }
+
+  /**
+   * Drop the message at `index` (a user message) and everything after it,
+   * WITHOUT SSTM extraction (a typo'd turn must not leak into memories).
+   * `chatId` is pinned by the caller (the confirmation dialog captured it at
+   * open time), so a chat switch before the request cannot redirect the
+   * delete; the slice applies only while still on the same chat. The backend
+   * rejects (409) while a run is active; the UI hides the button while
+   * streaming anyway, so the local slice mirrors the DB exactly.
+   */
+  async truncateMessages(chatId: string, index: number): Promise<void> {
+    if (!chatId || this.deletingIds.has(chatId)) return
+    try {
+      await apiTruncateMessages(chatId, index)
+      if (this.chatId === chatId) {
+        this.messages = this.messages.slice(0, index)
+        // the failed turn is gone, so the run-failure banner goes with it
+        this.streamError = null
+      }
+    } catch (e) {
+      toastStore.push(String(e))
+    }
+  }
+
+  /**
+   * Fork: copy the history up to and including the message at `index` (an
+   * assistant message that ended naturally) into a new chat and switch to it.
+   * The new chat starts as "New chat" with empty sstm state (its first run
+   * flags `sstm-updated`), so the original chat stays untouched. The switch
+   * happens only while still on the source chat: a chat switch during the
+   * request must not hijack the view (the fork chat is still added to the
+   * list either way).
+   */
+  async forkChat(index: number): Promise<void> {
+    const id = this.chatId.trim()
+    if (!id || this.deletingIds.has(id) || this.forkingIds.has(id)) return
+    this.forkingIds.add(id)
+    try {
+      const chat = await apiForkChat(id, index)
+      this.knownChats = [chat, ...this.knownChats]
+      if (this.chatId === id) {
+        this.chatId = chat.id
+        this.messages = this.messages.slice(0, index + 1)
+        this.streamError = null
+      }
+    } catch (e) {
+      toastStore.push(String(e))
+    } finally {
+      this.forkingIds.delete(id)
     }
   }
 

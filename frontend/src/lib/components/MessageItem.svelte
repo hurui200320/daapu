@@ -1,10 +1,36 @@
 <script lang="ts">
-  import { CheckCircle2, Lightbulb, Wrench, XCircle } from '@lucide/svelte'
+  import { CheckCircle2, GitFork, Lightbulb, Trash2, Wrench, XCircle } from '@lucide/svelte'
+  import { chatStore as store } from '../chat-store.svelte'
   import type { ChatAttachmentPart, ChatMessage, ChatMessagePart, ChatToolResultPart } from '../types'
   import CollapsibleBlock from './CollapsibleBlock.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
 
-  let { message }: { message: ChatMessage } = $props()
+  let {
+    message,
+    index,
+    onTruncate,
+  }: { message: ChatMessage; index: number; onTruncate: (index: number) => void } = $props()
+
+  // history edits must never race the streaming buffers (the optimistic
+  // user message / uncommitted tool rounds are not in the DB, so indices
+  // computed on the display list would target the wrong message), and the
+  // backend refuses them while a full-chat delete's extraction runs; a fork
+  // in flight on this chat is the only other pending history edit, so it
+  // disables too
+  const actionsDisabled = $derived(
+    store.streaming || store.deletingIds.has(store.chatId) || store.forkingIds.has(store.chatId)
+  )
+
+  const canFork = $derived(message.role === 'assistant' && message.finishReason === 'stop')
+
+  // hover-revealed action buttons: hidden until the message row is hovered
+  // (or focused), and invisible while disabled so dead buttons never show.
+  // Absolutely positioned into the mt-8 gap below the message (a user message
+  // is always followed by the spacing gap, an assistant stop message too —
+  // the stop message after a tool chain is the only non-chained one), so a
+  // message never reserves space for a button that is not visible.
+  const actionBtn =
+    'absolute -bottom-8 right-0 flex size-6 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 transition hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 no-hover:opacity-100 disabled:pointer-events-none disabled:opacity-0'
 
   function imageSrc(part: ChatAttachmentPart): string | null {
     const content = part.content
@@ -36,7 +62,7 @@
 </script>
 
 {#if message.role === 'user'}
-  <div class="flex flex-col items-end gap-2">
+  <div class="group relative flex flex-col items-end gap-2">
     {#each message.parts.filter(isImage) as img}
       {@const src = imageSrc(img)}
       {#if src}
@@ -49,9 +75,17 @@
         style="overflow-wrap: anywhere"
       >{(part as { type: 'text'; text: string }).text}</div>
     {/each}
+    <button
+      title="delete this message and everything after"
+      class={actionBtn}
+      disabled={actionsDisabled}
+      onclick={() => onTruncate(index)}
+    >
+      <Trash2 class="size-3.5" />
+    </button>
   </div>
 {:else}
-  <div class="w-full">
+  <div class="group relative w-full">
     {#each message.parts as part}
       {#if part.type === 'text' && part.text}
         <MarkdownContent text={part.text} />
@@ -98,6 +132,16 @@
         {#if message.meta?.totalTokens != null}<span>{message.meta.totalTokens.toLocaleString()} tokens</span>{/if}
         {#if message.finishReason}<span>finish: {message.finishReason}</span>{/if}
       </div>
+    {/if}
+    {#if canFork}
+      <button
+        title="fork the conversation from here"
+        class={actionBtn}
+        disabled={actionsDisabled}
+        onclick={() => void store.forkChat(index)}
+      >
+        <GitFork class="size-3.5" />
+      </button>
     {/if}
   </div>
 {/if}

@@ -145,6 +145,118 @@ class WebServerTest {
         }
     }
 
+    // ---- truncate (`DELETE /api/chats/{id}/messages/{index}`) ----
+
+    @Test
+    fun `truncate drops the tail and answers 204`() {
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2")))
+        testApplication {
+            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            val response = client.delete("/api/chats/chat-1/messages/2")
+            assertEquals(HttpStatusCode.NoContent, response.status)
+            assertEquals(listOf(user("u1"), assistantMessage("a1")), store.load("chat-1")!!.content.messages)
+        }
+    }
+
+    @Test
+    fun `truncate on a missing chat is 404`() {
+        testApplication {
+            application {
+                module(ChatRunService(testAppConfig(), chatStore = FakeChatStore()), PostgresSstmService())
+            }
+            val response = client.delete("/api/chats/nope/messages/0")
+            assertEquals(HttpStatusCode.NotFound, response.status)
+        }
+    }
+
+    @Test
+    fun `truncate with a bad index is 400`() {
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        testApplication {
+            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            // non-numeric, out of bounds, and an index pointing at an assistant
+            // message are all rejected before any store write
+            listOf(
+                "/api/chats/chat-1/messages/abc",
+                "/api/chats/chat-1/messages/5",
+                "/api/chats/chat-1/messages/1",
+            ).forEach { path ->
+                val response = client.delete(path)
+                assertEquals(HttpStatusCode.BadRequest, response.status, "path: $path")
+            }
+            assertEquals(2, store.load("chat-1")!!.content.messages.size)
+        }
+    }
+
+    @Test
+    fun `truncate on a chat with an active run is rejected with 409`() {
+        val chatService = service()
+        val chatId = "chat-running"
+        val lock = chatService.acquireChatLock(chatId)
+        try {
+            testApplication {
+                application { module(chatService, PostgresSstmService()) }
+                val response = client.delete("/api/chats/$chatId/messages/0")
+                assertEquals(HttpStatusCode.Conflict, response.status)
+            }
+        } finally {
+            chatService.releaseChatLock(chatId, lock)
+        }
+    }
+
+    // ---- fork (`POST /api/chats/{id}/fork/{index}`) ----
+
+    @Test
+    fun `fork copies the prefix into a new chat and answers 201 with its info`() {
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2")))
+        testApplication {
+            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            val response = client.post("/api/chats/chat-1/fork/1")
+            assertEquals(HttpStatusCode.Created, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            val newId = body["id"]?.jsonPrimitive?.content!!
+            assertTrue(newId != "chat-1")
+            assertEquals("New chat", body["title"]?.jsonPrimitive?.content)
+            // the fork carries the prefix, the source keeps everything
+            assertEquals(listOf(user("u1"), assistantMessage("a1")), store.load(newId)!!.content.messages)
+            assertEquals(4, store.load("chat-1")!!.content.messages.size)
+        }
+    }
+
+    @Test
+    fun `fork on a missing chat is 404`() {
+        testApplication {
+            application {
+                module(ChatRunService(testAppConfig(), chatStore = FakeChatStore()), PostgresSstmService())
+            }
+            val response = client.post("/api/chats/nope/fork/0")
+            assertEquals(HttpStatusCode.NotFound, response.status)
+        }
+    }
+
+    @Test
+    fun `fork with a bad index is 400`() {
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        testApplication {
+            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            // non-numeric, out of bounds, and a user-message index are all
+            // rejected; no fork chat is created
+            listOf(
+                "/api/chats/chat-1/fork/abc",
+                "/api/chats/chat-1/fork/5",
+                "/api/chats/chat-1/fork/0",
+            ).forEach { path ->
+                val response = client.post(path)
+                assertEquals(HttpStatusCode.BadRequest, response.status, "path: $path")
+            }
+            assertEquals(1, store.listChats().size)
+        }
+    }
+
     @Test
     fun `blank or missing chat title is rejected with 400`() {
         testApplication {

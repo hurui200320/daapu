@@ -140,6 +140,27 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                     if (!service.deleteChat(id)) throw NotFoundException("Chat $id not found")
                     call.respond(HttpStatusCode.NoContent)
                 }
+                // drop the message at `index` (a user message) and everything
+                // after it; the tail is discarded WITHOUT SSTM extraction
+                delete("/{chatId}/messages/{index}") {
+                    val id = call.chatIdParam()
+                    val index = call.messageIndexParam()
+                    if (!service.truncateChat(id, index)) {
+                        throw NotFoundException("Chat $id not found")
+                    }
+                    call.respond(HttpStatusCode.NoContent)
+                }
+                // new chat whose history is the source's `messages[0..index]`
+                // (index must point at a naturally finished assistant message)
+                post("/{chatId}/fork/{index}") {
+                    val id = call.chatIdParam()
+                    val index = call.messageIndexParam()
+                    call.respond(
+                        HttpStatusCode.Created,
+                        service.forkChat(id, index)
+                            ?: throw NotFoundException("Chat $id not found")
+                    )
+                }
                 get("/{chatId}/chat") {
                     val chat = service.chat(call.chatIdParam())
                     call.respondText(ChatCodec.encodeChat(chat), ContentType.Application.Json)
@@ -252,6 +273,10 @@ private fun ApplicationCall.chatIdParam(): String {
     if (chatId.isEmpty()) throw BadRequestException("chatId is required")
     return chatId
 }
+
+private fun ApplicationCall.messageIndexParam(): Int =
+    parameters["index"]?.toIntOrNull()
+        ?: throw BadRequestException("index must be a number")
 
 private fun ApplicationCall.memoryIdParam(): Long =
     parameters["memoryId"]?.toLongOrNull()

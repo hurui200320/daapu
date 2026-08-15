@@ -6,6 +6,7 @@
   import CollapsibleBlock from './CollapsibleBlock.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
   import MessageItem from './MessageItem.svelte'
+  import TruncateMessagesDialog from './TruncateMessagesDialog.svelte'
 
   /**
    * Vertical rhythm: standalone messages sit 2rem apart, but a tool chain
@@ -22,6 +23,11 @@
       (prev.role === 'tool_result' && curr.parts.some((p) => p.type === 'tool_call'))
     return chained ? '' : 'mt-8'
   }
+
+  // the chat + user-message index a pending truncation starts from, or null
+  // while closed; the chat id is pinned at open time so a chat switch before
+  // the confirm can never redirect the delete onto a different chat
+  let truncateTarget = $state<{ chatId: string; index: number } | null>(null)
 
   let scrollEl = $state<HTMLElement | null>(null)
   let atBottom = $state(true)
@@ -121,10 +127,13 @@
 
 <div class="relative h-full">
   <div bind:this={scrollEl} class="h-full overflow-y-auto">
-    <div class="mx-auto flex w-full max-w-3xl flex-col px-4 py-6">
+    <!-- the bottom padding is pb-10 (not py-6): the last message's action
+         button hangs -bottom-8 (32px) below its row, so the padding must
+         clear that overhang or the button clips at the scroll edge -->
+    <div class="mx-auto flex w-full max-w-3xl flex-col px-4 pt-6 pb-10">
       {#each store.messages as message, i}
         <div class={messageSpacing(store.messages, i)}>
-          <MessageItem {message} />
+          <MessageItem {message} index={i} onTruncate={(idx) => (truncateTarget = { chatId: store.chatId, index: idx })} />
         </div>
       {/each}
 
@@ -182,3 +191,5 @@
     </button>
   {/if}
 </div>
+
+<TruncateMessagesDialog target={truncateTarget} onClose={() => (truncateTarget = null)} />

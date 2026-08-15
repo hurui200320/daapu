@@ -48,6 +48,29 @@ export async function deleteChat(chatId: string): Promise<void> {
   if (!res.ok) throw new Error(await parseError(res))
 }
 
+/**
+ * Drop the message at `index` (a user message) and everything after it.
+ * The dropped tail is NOT extracted into memories. 204 on success.
+ */
+export async function truncateMessages(chatId: string, index: number): Promise<void> {
+  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/messages/${index}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+}
+
+/**
+ * Fork: copy the history up to and including the message at `index` (an
+ * assistant message that ended naturally) into a new chat; returns its info.
+ */
+export async function forkChat(chatId: string, index: number): Promise<ChatInfo> {
+  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/fork/${index}`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
 export async function loadChat(chatId: string): Promise<ChatMessage[]> {
   const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/chat`)
   if (!res.ok) throw new Error(await parseError(res))

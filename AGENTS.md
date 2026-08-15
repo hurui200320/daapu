@@ -73,6 +73,29 @@ and a small TypeScript service (hand-pi). The pieces:
   for a missing row); the small `ChatInfo` (id + title) is the wire shape
   only — routes never return a full history. `renameChat`/`generateTitle`
   deliberately take no per-chat lock (the upsert never touches the title).
+  History is mutated by message INDEX (the chat array is the wire format and
+  the frontend renders the stored order, so no message ids exist): `DELETE
+  /api/chats/{id}/messages/{index}` (`truncateChat`) drops the user message
+  at `index` and everything after it — WITHOUT SSTM extraction (a typo'd
+  turn must not leak into memories) — resetting the stored `sstm_version`
+  to `""` (the `sstms` table is untouched, but the kept history may no
+  longer cover the memories merged from the dropped tail, so the next run
+  must re-flag `sstm-updated`) and taking the per-chat lock (the same
+  upsert-resurrection argument as `deleteChat`), 400 on a non-user/out-of-
+  bounds index or an index whose truncation would leave the chat ending
+  mid-turn (consecutive user turns occur after a compaction, whose summary
+  user message sits directly before the preserved tail); `POST
+  /api/chats/{id}/fork/{index}` (`forkChat`) copies the history up to and
+  including the assistant message at `index`
+  (`finishReason` must be `"stop"` so the fork is a complete, valid chat)
+  into a NEW row — no lock needed (pure read + insert; a racing run only
+  makes the fork miss the in-flight turn), and the fork's `sstm_version`
+  starts as `""` so its first run flags `sstm-updated` (the fork has never
+  seen a memory list). Both validate their result via `ChatCodec.validateChat`
+  before storing. The frontend reveals the two actions on message hover
+  (trash on user messages, fork on assistant stop messages), hides them
+  while streaming (the optimistic/uncommitted messages would shift the
+  indices) and confirms truncation in a dialog.
 - **MCP tool servers** (`mcp/`, config under `mcp.*` in `config.jsonc`) —
   the official MCP Kotlin SDK (`io.modelcontextprotocol:kotlin-sdk-client`
   0.15.0, streamable-HTTP + stdio transports). `McpToolProvider` implements
