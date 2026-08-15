@@ -2,9 +2,10 @@ package info.skyblond.daapu.agent.persist
 
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelProvider
-import info.skyblond.daapu.agent.oneshot.ChatCompactor
-import info.skyblond.daapu.agent.oneshot.SstmExtractor
+import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
@@ -19,16 +20,21 @@ import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.*
 
 /**
- * Pins the turn loop's behavior against a scripted fake hand (the hand
+ * Pins the persist service's behavior against a scripted fake hand (the hand
  * owns the round loop itself; hand-pi's vitest suite pins its semantics).
  * Covered here: the history load/store lifecycle (store only on success,
  * injection stripped; the system prompt travels separately and is never
@@ -38,13 +44,32 @@ import kotlin.test.*
  * request, and the reactive compaction path (hand `context_exhausted` →
  * compact → extract → refresh injection → fresh run, with no attempt cap).
  */
-class ChatTurnLoopTest {
+class PersistChatServiceTest {
 
     private val systemPrompt = "You are Raven."
 
-    private fun catalogModel(id: String) = ModelCatalog(
-        mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test-key"))
-    ).findModel(id)!!
+    /**
+     * Catalog model, optionally with compaction values different from the
+     * catalog entry (the compaction tuning lives on the model).
+     */
+    private fun catalogModel(
+        id: String,
+        compactionTriggerFraction: Double = 0.8,
+        compactionKeepRounds: Int = 2,
+    ): LLM {
+        val catalog = ModelCatalog(
+            mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test-key"))
+        ).findModel(id)!!
+        return LLM(
+            provider = catalog.provider,
+            modelId = catalog.modelId,
+            contextLength = catalog.contextLength,
+            maxOutputTokens = catalog.maxOutputTokens,
+            capabilities = catalog.capabilities,
+            compactionTriggerFraction = compactionTriggerFraction,
+            compactionKeepRounds = compactionKeepRounds,
+        )
+    }
 
     /** Runs one turn; returns the outcome for assertions. */
     private fun run(
@@ -53,36 +78,49 @@ class ChatTurnLoopTest {
         store: InMemoryChatStore = InMemoryChatStore(),
         sstmService: SstmService = InMemorySstmService(),
         toolProvider: ToolProvider = EmptyToolProvider,
-        extractSstm: suspend (List<ChatMessage>) -> Unit = {},
-        compactionTriggerFraction: Double = 0.8,
+        sstmExtractionService: SstmExtractionService? = null,
+        compactionKeepRounds: Int = 3,
         handScript: suspend (HandRunRequest) -> List<HandEvent> = { stopEvents() },
         completeScript: (suspend (HandCompleteRequest) -> HandCompleteResponse)? = null,
     ): TurnOutcome {
-        val model = catalogModel(modelId)
+        val model = catalogModel(modelId, compactionKeepRounds = compactionKeepRounds)
         val hand = FakeHand(
             runScript = handScript,
             completeScript = completeScript ?: { error("unexpected /complete call") },
         )
-        val compactor = ChatCompactor(model, hand)
+        val compactionService = ChatCompactionService(model, hand)
         val callback = RecordingCallback()
         val error = runBlocking {
             runCatching {
-                runChatTurn(
+                PersistChatService(
+                    chatStore = store,
+                    sstmService = sstmService,
+                    hand = hand,
+                    compactionService = compactionService,
+                    // the default answers the extractor with the sentinel, so
+                    // extraction is a no-op: compaction-focused tests neither
+                    // accumulate /complete calls nor run the merge. The
+                    // sentinel hand is a separate FakeHand, so its calls stay
+                    // off the shared hand's log.
+                    sstmExtractionService = sstmExtractionService
+                        ?: SstmExtractionService(
+                            extractModel = model,
+                            hand = FakeHand(
+                                completeScript = {
+                                    okCompleteResponse(assistantMessage("Nothing worth remember."))
+                                },
+                            ),
+                            sstmService = sstmService,
+                        ),
+                ).runChat(
                     chatId = "chat-1",
                     model = model,
                     userParts = userParts,
                     systemPrompt = systemPrompt,
-                    chatStore = store,
-                    sstmService = sstmService,
                     toolProvider = toolProvider,
                     callback = callback,
-                    hand = hand,
                     runId = "run-test",
                     toolCallbackUrl = "http://127.0.0.1:9/api/hand/tool",
-                    compactor = compactor,
-                    extractSstm = extractSstm,
-                    compactionTriggerFraction = compactionTriggerFraction,
-                    compactionKeepRounds = 3,
                 )
             }.exceptionOrNull()
         }
@@ -555,16 +593,25 @@ class ChatTurnLoopTest {
         finishReason = "stop",
     )
 
-    /** 4 complete turns (realistic-length texts); the last assistant reports a huge input. */
-    private fun crowdedSeed(lastInputTokens: Int = 200_000): List<ChatMessage> = listOf(
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 1)))),
-        answer(turnText("answer", 1)),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 2)))),
-        answer(turnText("answer", 2)),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 3)))),
-        answer(turnText("answer", 3)),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText("topic", 4)))),
-        answer(turnText("answer", 4), lastInputTokens),
+    /**
+     * 4 complete turns (realistic-length texts); the last assistant reports
+     * a huge input. [userPrefix]/[answerPrefix] distinguish the turns, so
+     * concurrent runs on different chats can detect cross-talk in the
+     * stored history.
+     */
+    private fun crowdedSeed(
+        userPrefix: String = "topic",
+        answerPrefix: String = "answer",
+        lastInputTokens: Int = 200_000,
+    ): List<ChatMessage> = listOf(
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 1)))),
+        answer(turnText(answerPrefix, 1)),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 2)))),
+        answer(turnText(answerPrefix, 2)),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 3)))),
+        answer(turnText(answerPrefix, 3)),
+        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 4)))),
+        answer(turnText(answerPrefix, 4), lastInputTokens),
     )
 
     private fun summaryResponse(summary: String): HandCompleteResponse =
@@ -680,7 +727,7 @@ class ChatTurnLoopTest {
         )
         val e = assertIs<IllegalStateException>(outcome.error)
         assertTrue(
-            e.message!!.contains("Compaction summarization"),
+            e.message!!.contains("One-shot call failed (output_budget_exhausted)"),
             "error should explain the failure: ${e.message}",
         )
         assertEquals(
@@ -695,9 +742,8 @@ class ChatTurnLoopTest {
     @Test
     fun `pre-round compaction extracts SSTM from the dropped messages`() {
         val sstm = InMemorySstmService()
-        var extractedDropped: List<ChatMessage>? = null
         var completeRound = 0
-        val model = catalogModel("bifrost/cerebras/gemma-4-31b")
+        val model = catalogModel("bifrost/cerebras/gemma-4-31b", compactionKeepRounds = 3)
         val hand = FakeHand(
             runScript = { stopEvents() },
             completeScript = {
@@ -721,44 +767,49 @@ class ChatTurnLoopTest {
                 }
             },
         )
-        val compactor = ChatCompactor(model, hand)
+        val compactionService = ChatCompactionService(model, hand)
         val callback = RecordingCallback()
         val store = InMemoryChatStore(crowdedSeed())
         val error = runBlocking {
             runCatching {
-                runChatTurn(
+                PersistChatService(
+                    chatStore = store,
+                    sstmService = sstm,
+                    hand = hand,
+                    compactionService = compactionService,
+                    sstmExtractionService = SstmExtractionService(
+                        extractModel = model,
+                        hand = hand,
+                        sstmService = sstm,
+                    ),
+                ).runChat(
                     chatId = "chat-1",
                     model = model,
                     userParts = listOf(ChatMessagePart.Text("hello")),
                     systemPrompt = systemPrompt,
-                    chatStore = store,
-                    sstmService = sstm,
                     toolProvider = EmptyToolProvider,
                     callback = callback,
-                    hand = hand,
                     runId = "run-test",
                     toolCallbackUrl = "http://127.0.0.1:9/api/hand/tool",
-                    compactor = compactor,
-                    extractSstm = { dropped ->
-                        extractedDropped = dropped
-                        SstmExtractor(
-                            extractModel = model,
-                            hand = hand,
-                            sstmService = sstm,
-                        ).processDiscardedMessages(dropped)
-                    },
-                    compactionTriggerFraction = 0.8,
-                    compactionKeepRounds = 3,
                 )
             }.exceptionOrNull()
         }
         assertNull(error)
 
-        // the dropped raw messages were handed to the extraction pipeline
-        val dropped = assertNotNull(extractedDropped)
-        assertEquals(2, dropped.size, "the first complete turn is dropped")
-        assertTrue((dropped[0].parts.single() as ChatMessagePart.Text).text.startsWith("topic 1"))
-        assertTrue((dropped[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1"))
+        // the raw dropped messages (not the summary) fed the extraction
+        // call: the extractor's /complete request starts with the dropped
+        // complete turn, followed by the extraction instruction
+        val extractorMessages = hand.completeRequests[1].messages
+        assertEquals(
+            listOf(ChatMessageRole.User, ChatMessageRole.Assistant, ChatMessageRole.User),
+            extractorMessages.map { it.role },
+        )
+        assertTrue(
+            (extractorMessages[0].parts.single() as ChatMessagePart.Text).text.startsWith("topic 1")
+        )
+        assertTrue(
+            (extractorMessages[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1")
+        )
 
         // the merge agent's add_memory call hit the SSTM
         assertEquals(listOf("likes coffee"), sstm.created)
@@ -768,6 +819,196 @@ class ChatTurnLoopTest {
         assertTrue((stored[0].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: "))
         assertEquals(4, hand.completeRequests.size, "compactor + extractor + 2 merger rounds")
         assertEquals(1, hand.requests.size, "the chat round itself is one hand run")
+    }
+
+    @Test
+    fun `a full-body reactive compaction re-appends the injection with the user input`() {
+        // a fresh chat whose single user message (injection + input) is the
+        // only user message: the compaction's keep count collapses to zero,
+        // replacing the whole chat — injected message included — with the
+        // summary. The loop must re-append the injection with the user's
+        // parts, so the retried round still carries the user input.
+        val outcome = run(
+            store = InMemoryChatStore(),
+            handScript = { request ->
+                if (request.messages.any { message ->
+                        message.parts.any { part ->
+                            part is ChatMessagePart.Text && part.text.startsWith(
+                                "CONTEXT COMPACTION"
+                            )
+                        }
+                    }) {
+                    stopEvents()
+                } else {
+                    listOf(HandEvent.RunError("context_exhausted", "input too big"))
+                }
+            },
+            completeScript = { summaryResponse("compacted summary") },
+        )
+        assertNull(outcome.error)
+
+        // exhausted attempt -> full-body compaction -> fresh run with the
+        // re-appended input
+        assertEquals(2, outcome.hand.requests.size, "exhausted run -> fresh run")
+        val retried = outcome.hand.requests.last()
+        assertTrue(
+            retried.messages.any { message ->
+                message.parts.any { part ->
+                    part is ChatMessagePart.Text && part.text.contains("hello")
+                }
+            },
+            "the retried round must carry the user's input again",
+        )
+        assertTrue(
+            injectionOf(retried).contains("<sstm-updated>true</sstm-updated>"),
+            "the re-appended injection must carry the fresh flag",
+        )
+
+        // stored: the summary, the stripped user message, the final answer
+        val stored = assertNotNull(outcome.store.stored)
+        assertEquals(
+            listOf(ChatMessageRole.User, ChatMessageRole.User, ChatMessageRole.Assistant),
+            stored.map { it.role },
+        )
+        assertTrue(
+            (stored[0].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: ")
+        )
+        assertEquals(listOf(ChatMessagePart.Text("hello")), stored[1].parts, "injection stripped")
+        assertEquals(listOf(ChatMessagePart.Text("ok")), stored[2].parts)
+    }
+
+    @Test
+    fun `one shared service instance serves concurrent runs without cross-talk`() = runBlocking {
+        // both chats sit above the proactive compaction trigger, so each run
+        // compacts and extracts through the SAME shared service instances
+        // (ChatCompactionService / SstmExtractionService / PersistChatService):
+        // this pins the statelessness claim of the shared services under
+        // concurrent calls. Distinct chat content makes any cross-talk
+        // visible in the stores.
+        val hand = FakeHand(
+            runScript = { stopEvents() },
+            completeScript = { request ->
+                when {
+                    request.systemPrompt?.startsWith("You're summarizing") == true ->
+                        okCompleteResponse(assistantMessage("compacted summary"))
+
+                    request.systemPrompt?.startsWith("You're extracting") == true ->
+                        okCompleteResponse(assistantMessage("likes coffee"))
+
+                    // a merge round after any tool result is the final round
+                    request.messages.any { message ->
+                        message.parts.any { it is ChatMessagePart.ToolResult }
+                    } -> okCompleteResponse(assistantMessage("done"))
+
+                    // first merge round: add the extracted fact
+                    else -> okCompleteResponse(
+                        assistantMessage(
+                            parts = listOf(
+                                ChatMessagePart.ToolCall(
+                                    id = "call_merge",
+                                    tool = "add_memory",
+                                    args = buildJsonObject { put("content", "likes coffee") },
+                                )
+                            ),
+                            finishReason = "tool_calls",
+                        )
+                    )
+                }
+            },
+        )
+        val sstm = ConcurrentSstmService()
+        val model = catalogModel("bifrost/cerebras/gemma-4-31b", compactionKeepRounds = 3)
+        val compactionService = ChatCompactionService(model, hand)
+        val extractionService = SstmExtractionService(
+            extractModel = model,
+            hand = hand,
+            sstmService = sstm,
+        )
+        val chatStore = ConcurrentChatStore()
+        val persistService = PersistChatService(
+            chatStore = chatStore,
+            sstmService = sstm,
+            hand = hand,
+            compactionService = compactionService,
+            sstmExtractionService = extractionService,
+        )
+
+        val chats = listOf(
+            "chat-a" to "alpha",
+            "chat-b" to "beta",
+        )
+        chats.forEach { (chatId, prefix) ->
+            chatStore.seed(chatId, crowdedSeed(userPrefix = prefix, answerPrefix = prefix))
+        }
+        val errors = coroutineScope {
+            chats.map { (chatId, prefix) ->
+                async(Dispatchers.Default) {
+                    runCatching {
+                        persistService.runChat(
+                            chatId = chatId,
+                            model = model,
+                            userParts = listOf(ChatMessagePart.Text("$prefix question")),
+                            systemPrompt = systemPrompt,
+                            toolProvider = EmptyToolProvider,
+                            callback = RecordingCallback(),
+                            runId = "run-$chatId",
+                            toolCallbackUrl = "http://127.0.0.1:9/api/hand/tool",
+                        )
+                    }.exceptionOrNull()
+                }
+            }.awaitAll()
+        }
+        assertTrue(errors.all { it == null }, "both concurrent runs must succeed: $errors")
+
+        chats.forEach { (chatId, prefix) ->
+            val stored = assertNotNull(chatStore.stored(chatId), "$chatId must be stored")
+            // summary + turns 2-4 verbatim + the user message (injection
+            // stripped) + the final answer
+            assertEquals(
+                listOf(
+                    ChatMessageRole.User,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                    ChatMessageRole.User, ChatMessageRole.Assistant,
+                ),
+                stored.map { it.role },
+                "$chatId history shape",
+            )
+            assertTrue(
+                (stored[0].parts.single() as ChatMessagePart.Text).text.startsWith("CONTEXT COMPACTION: ")
+            )
+            assertTrue(
+                (stored[1].parts.single() as ChatMessagePart.Text).text.startsWith("$prefix 2"),
+                "$chatId must keep its own history (no cross-talk)",
+            )
+            assertFalse(
+                stored.any { message ->
+                    message.parts.any { part ->
+                        part is ChatMessagePart.Text && part.text.contains(
+                            if (prefix == "alpha") "beta" else "alpha"
+                        )
+                    }
+                },
+                "$chatId must not contain the other chat's content",
+            )
+            assertEquals(
+                listOf(ChatMessagePart.Text("$prefix question")),
+                stored[7].parts,
+                "the user message keeps its own input with the injection stripped",
+            )
+        }
+
+        // both merges applied their fact to the shared SSTM; each chat ran
+        // exactly one hand round; the shared hand served 2 compactions +
+        // 2 extractions + 2 merge rounds per chat (add then done)
+        assertEquals(listOf("likes coffee", "likes coffee"), sstm.created, "both merges applied")
+        assertEquals(
+            listOf("chat-a", "chat-b"),
+            hand.requests.map { it.chatId }.sorted(),
+            "one hand run per chat",
+        )
+        assertEquals(8, hand.completeRequests.size, "2 compact + 2 extract + 4 merge rounds")
     }
 }
 
@@ -831,6 +1072,56 @@ private class InMemorySstmService(
 
     override suspend fun deleteMemory(id: Long): Boolean =
         memories.any { it.id == id }
+}
+
+/**
+ * A thread-safe in-memory [ChatStore] keyed by chat id: the shared-service
+ * concurrency test runs several chats through one service (and one store)
+ * at the same time.
+ */
+private class ConcurrentChatStore : ChatStore {
+    private val chats = ConcurrentHashMap<String, ChatStoreEntry>()
+
+    fun seed(chatId: String, chat: List<ChatMessage>, sstmVersion: String = "") {
+        chats[chatId] = ChatStoreEntry(chat, sstmVersion)
+    }
+
+    override suspend fun load(chatId: String): ChatStoreEntry =
+        chats[chatId] ?: ChatStoreEntry(emptyList(), "")
+
+    override suspend fun store(chatId: String, chat: ChatStoreEntry) {
+        chats[chatId] = chat
+    }
+
+    fun stored(chatId: String): List<ChatMessage>? = chats[chatId]?.chat
+}
+
+/**
+ * A thread-safe [SstmService] fake whose version bumps on every write: the
+ * shared-service concurrency test runs two extraction merges against one
+ * instance at the same time.
+ */
+private class ConcurrentSstmService : SstmService {
+    private val lock = Any()
+    private val memories = mutableListOf<ShortTermMemory>()
+    private var version = "v0"
+    val created = mutableListOf<String>()
+
+    override suspend fun listMemories(): MemoriesWithVersion = synchronized(lock) {
+        MemoriesWithVersion(memories.toList(), version)
+    }
+
+    override suspend fun createMemory(content: String): ShortTermMemory = synchronized(lock) {
+        created += content
+        val memory = ShortTermMemory(memories.size.toLong(), Instant.EPOCH, content)
+        memories += memory
+        version = "v${memories.size}"
+        memory
+    }
+
+    override suspend fun updateMemory(id: Long, content: String): ShortTermMemory? = null
+
+    override suspend fun deleteMemory(id: Long): Boolean = false
 }
 
 private class RecordingCallback : StreamingExecutionCallback {

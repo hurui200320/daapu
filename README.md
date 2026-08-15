@@ -96,7 +96,7 @@ cp config.example.jsonc config.jsonc
 | `providers` | `{<id>: {apiKey, baseUrl}}` (required)             | OpenAI-compatible providers, keyed by id (e.g. `bifrost`); `/v1` is appended if missing. |
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
-| `memory`    | `compactionTriggerFraction` (0.8), `compactionKeepRounds` (3), `compactModel`/`extractModel`/`mergeModel` (null) | History compaction and SSTM extraction settings, see below.          |
+| `memory`    | `compactModel`/`extractModel`/`mergeModel` (required) | SSTM extraction settings, see below.                                  |
 | `hand`      | `baseUrl` (`http://127.0.0.1:3100`), `token` (`dev-token`) | The hand-pi execution service endpoint and the shared static token (`HAND_TOKEN`). |
 
 `config.schema.json` is a JSON Schema (draft-07) mirroring the config models
@@ -107,23 +107,28 @@ and autocomplete field names.
 ### Memory pipeline (`memory`)
 
 History compaction and SSTM extraction (see `AGENTS.md` and
-`agent/oneshot/`):
+`agent/oneshot/compaction/` + `agent/oneshot/sstm/`):
 
-- `compactionTriggerFraction` — before each round, the harness estimates the
-  prompt size (the last provider-reported input-token snapshot plus a
-  chars/4 estimate for the messages after it) and compacts the history when
-  it exceeds this fraction of the model's context window (default 0.8; `0`
-  disables the proactive path). A round that still exhausts the context
-  compacts reactively and retries (every exhaustion triggers a compaction;
-  a compaction that fails or returns a non-clean summary fails the run).
-- `compactionKeepRounds` — complete rounds kept verbatim at the tail of a
-  compacted chat (default 3); everything older is replaced by one
+- Compaction is triggered per model: the trigger fraction and the keep
+  rounds live on the catalog entries (`agent/model/LLM.kt`), because the
+  headroom depends on the model's context size. Before each round, the
+  harness measures the prompt size (the last assistant message's
+  provider-reported input-token snapshot) and compacts the history when it
+  exceeds `compactionTriggerFraction` of the model's context window
+  (0.75–0.8 on the current catalog entries; `0` disables the proactive
+  path). A round that still exhausts the context compacts reactively and
+  retries (every exhaustion triggers a compaction; a compaction that fails
+  or returns a non-clean summary fails the run).
+  `compactionKeepRounds` (2–3 on the current catalog entries) complete
+  rounds are kept verbatim at the tail of a compacted chat; everything
+  older is replaced by one
   `CONTEXT COMPACTION: `-marked summary user message. When the chat has
   fewer rounds than this, the keep count shrinks (down to zero) so an
   overflowing chat always compacts.
-- `compactModel`, `extractModel`, `mergeModel` — catalog model ids for the
-  one-shot pipelines (summarizer, memory extractor, memory merger); omitted
-  (`null`) means the run's model. The extractor/compactor see the raw
+- `compactModel`, `extractModel`, `mergeModel` — REQUIRED catalog model ids
+  for the one-shot pipelines (summarizer, memory extractor, memory merger);
+  they are resolved once at startup and reused for every run — a chat run's
+  own model is never used for these. The extractor/compactor see the raw
   history, images included, so the model must support the content — a
   model that cannot fails the run with a clear error (same as the chat
   model's own capability check), and unknown ids fail fast at startup.

@@ -1,30 +1,20 @@
-package info.skyblond.daapu.agent.oneshot
+package info.skyblond.daapu.agent.oneshot.sstm
 
-import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.tool.ToolCallRequest
-import info.skyblond.daapu.agent.tool.ToolProvider
-import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.model.LLMCapability
+import info.skyblond.daapu.agent.oneshot.checkAndGetTextResp
+import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService.Companion.NOTHING_TO_REMEMBER_TEXT
+import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.HandToolSpec
 import info.skyblond.daapu.hand.toHandModelSpec
-import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-
-private val logger = KotlinLogging.logger("SstmExtractor")
 
 /**
  * The two-LLM memory extraction pipeline (see `agent/persist/SystemPrompt.kt`:
@@ -38,9 +28,9 @@ private val logger = KotlinLogging.logger("SstmExtractor")
  *    sentinel).
  * 2. **Merger** — a hand `/complete` tool loop against the existing SSTM
  *    ([SstmService]) with add/update/delete/list tools, following the
- *    ADD/UPDATE/DELETE/NONE semantics. The caller must serialize the whole
- *    merge against concurrent SSTM readers/writers (see `ChatRunService`'s
- *    write lock), so an injection read never observes a half-merged SSTM.
+ *    ADD/UPDATE/DELETE/NONE semantics. No lock is held: a concurrent run's
+ *    injection read may observe a half-merged SSTM, which is healed by the
+ *    `sstm-updated` flag comparison on the next round.
  *
  * A failure throws and fails the run:
  * - [info.skyblond.daapu.agent.model.ModelCapabilityException] when the
@@ -53,7 +43,7 @@ private val logger = KotlinLogging.logger("SstmExtractor")
  *   round. Transient `upstream` merge failures retry indefinitely; the SSTM
  *   keeps whatever was already applied when a later round fails.
  */
-class SstmExtractor(
+class SstmExtractionService(
     private val extractModel: LLM,
     private val mergeModel: LLM = extractModel,
     private val hand: HandClient,
@@ -68,17 +58,19 @@ class SstmExtractor(
     suspend fun processDiscardedMessages(
         droppedMessages: List<ChatMessage>,
     ) {
-        if (droppedMessages.isEmpty()) return
+        if (droppedMessages.isEmpty()) {
+            return
+        }
         // fail fast on a capability mismatch before the LLM call: the same
         // prompt would fail identically forever (the loop's per-round check
         // semantics, applied to the configured extraction model)
         extractModel.checkPromptContentCapabilities(droppedMessages)
         val extraction = extract(droppedMessages)
-        logger.info { "Extracted SSTM from dropped messages: $extraction" }
-        if (extraction.isBlank() || extraction == NOTHING_TO_REMEMBER_TEXT)
+        if (extraction.isBlank() || extraction == NOTHING_TO_REMEMBER_TEXT) {
             return
+        }
 
-        return mergeToSstm(extraction)
+        mergeToSstm(extraction)
     }
 
     /**
@@ -103,23 +95,8 @@ class SstmExtractor(
                 systemPrompt = renderExtractorSystemPrompt(),
             )
         )
-        if (!response.ok) {
-            error("One-shot call failed (${response.error?.type}): ${response.error?.message}")
-        }
-        val assistant = response.message
-            ?: error("One-shot call returned no message")
-        if (assistant.finishReason != "stop") {
-            error("One-shot call ended with finish_reason=${assistant.finishReason}, not a clean stop")
-        }
-        if (assistant.parts.any { it is ChatMessagePart.ToolCall }) {
-            error("One-shot call produced tool calls instead of text")
-        }
         // TODO: when ELTM is ready, detect SSTM length and trigger ELTM
-        return assistant.parts.filterIsInstance<ChatMessagePart.Text>()
-            .joinToString("\n") { it.text }
-            .trim()
-            .takeIf { it.isNotBlank() }
-            ?: error("One-shot call produced no text")
+        return response.checkAndGetTextResp()
     }
 
     /**
@@ -133,7 +110,7 @@ class SstmExtractor(
         require(mergeModel.supports(LLMCapability.Output.ToolCalls)) {
             "Merge model ${mergeModel.id} does not support tool calls"
         }
-        val toolProvider = MemoryToolProvider(sstmService)
+        val toolProvider = MergeMemoryToolProvider(sstmService)
         var chat = listOf(
             ChatMessage(
                 ChatMessageRole.User,
@@ -190,7 +167,11 @@ class SstmExtractor(
             // for id-less calls), so no id normalization is needed here
             val results = assistant.parts
                 .filterIsInstance<ChatMessagePart.ToolCall>()
-                .map { call -> toolProvider.execute(ToolCallRequest(call.id, call.tool, call.args)) }
+                .map { call ->
+                    toolProvider.execute(
+                        ToolCallRequest(call.id, call.tool, call.args)
+                    )
+                }
             chat = chat + results.map { ChatMessage(ChatMessageRole.ToolResult, listOf(it)) }
             if (++rounds >= maxMergeRounds) {
                 logger.warn { "SSTM merge round exceeded max rounds, force stop" }
@@ -200,6 +181,7 @@ class SstmExtractor(
     }
 
     companion object {
+        private val logger = KotlinLogging.logger {}
         private const val NOTHING_TO_REMEMBER_TEXT = "Nothing worth remember."
 
         private fun renderExtractorSystemPrompt(): String = """
@@ -246,147 +228,4 @@ Rules:
 - When all candidates are handled, reply with a short confirmation and make no further tool calls
 """.trimIndent().trim()
     }
-}
-
-/**
- * The memory-edit tools the merge agent may call, backed by an [SstmService].
- */
-class MemoryToolProvider(
-    private val sstmService: SstmService,
-) : ToolProvider {
-    override suspend fun specifications(): List<ToolSpec> = listOf(
-        ToolSpec(
-            name = "list_memories",
-            description = "List the current SSTM with their ids.",
-            schema = buildJsonObject {
-                put("type", "object")
-                put("properties", buildJsonObject {})
-            },
-        ),
-        ToolSpec(
-            name = "add_memory",
-            description = "Add a new memory to the SSTM.",
-            schema = objectSchema(
-                "content" to stringSchema("The memory content"),
-            ),
-        ),
-        ToolSpec(
-            name = "update_memory",
-            description = "Replace the content of an existing memory, keeping the same id.",
-            schema = objectSchema(
-                "id" to stringSchema("The memory id"),
-                "content" to stringSchema("The new memory content"),
-            ),
-        ),
-        ToolSpec(
-            name = "delete_memory",
-            description = "Delete an existing memory.",
-            schema = objectSchema(
-                "id" to stringSchema("The memory id"),
-            ),
-        ),
-    )
-
-    override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
-        logger.info { "Executing tool ${request.name} with arguments: ${request.args}" }
-        val args = request.args
-        return when (request.name) {
-            "list_memories" -> textResult(
-                request,
-                sstmService.listMemories().memories.joinToString("\n\n") {
-                    "## Memory ${it.id}\n${it.content}"
-                }
-            )
-
-            "add_memory" -> {
-                val content = args.requiredText("content") ?: return errorResult(
-                    request,
-                    "content is required and must not be blank"
-                )
-                sstmService.createMemory(content)
-                textResult(request, "created")
-            }
-
-            "update_memory" -> {
-                val id = args.requiredLong("id") ?: return errorResult(
-                    request,
-                    "id is required and must be a number"
-                )
-                val content = args.requiredText("content") ?: return errorResult(
-                    request,
-                    "content is required and must not be blank"
-                )
-                if (sstmService.updateMemory(id, content) == null) {
-                    return errorResult(request, "memory $id does not exist")
-                }
-                textResult(request, "updated")
-            }
-
-            "delete_memory" -> {
-                val id = args.requiredLong("id") ?: return errorResult(
-                    request,
-                    "id is required and must be a number"
-                )
-                if (!sstmService.deleteMemory(id)) return errorResult(
-                    request,
-                    "memory $id does not exist"
-                )
-                textResult(request, "deleted")
-            }
-
-            else -> errorResult(request, "Unknown memory tool '${request.name}'")
-        }
-    }
-
-    private fun JsonObject.requiredText(key: String): String? =
-        this[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
-
-    private fun JsonObject.requiredLong(key: String): Long? =
-        this[key]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
-
-    private fun textResult(
-        request: ToolCallRequest,
-        text: String
-    ): ChatMessagePart.ToolResult =
-        ChatMessagePart.ToolResult(
-            id = request.id,
-            tool = request.name,
-            parts = listOf(ChatMessagePart.Text(text)),
-        )
-
-    private fun errorResult(
-        request: ToolCallRequest,
-        error: String
-    ): ChatMessagePart.ToolResult =
-        ChatMessagePart.ToolResult(
-            id = request.id,
-            tool = request.name,
-            parts = listOf(ChatMessagePart.Text("Error: $error")),
-            isError = true,
-        )
-
-    companion object {
-        private fun stringSchema(description: String) = buildJsonObject {
-            put("type", "string")
-            put("description", description)
-        }
-
-        private fun objectSchema(vararg properties: Pair<String, kotlinx.serialization.json.JsonObject>) =
-            buildJsonObject {
-                put("type", "object")
-                put("properties", buildJsonObject {
-                    properties.forEach { (name, schema) -> put(name, schema) }
-                })
-                put("required", buildJsonArray {
-                    properties.forEach { (name, _) -> add(name) }
-                })
-            }
-    }
-}
-
-internal fun buildMergeInput(existing: List<ShortTermMemory>, candidates: String): String {
-    val existingBlock = if (existing.isEmpty()) "(none)"
-    else existing.joinToString("\n\n") { "## Memory ${it.id}\n${it.content}" }
-    return "Current SSTM:\n```\n$existingBlock\n```\n\n" +
-            "Candidate facts extracted from a recent conversation:\n```\n$candidates\n```"
 }

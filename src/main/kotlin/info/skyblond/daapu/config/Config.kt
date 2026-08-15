@@ -49,7 +49,7 @@ data class AppConfig(
     val providers: Map<String, LlmProviderConfig>,
     val server: ServerConfig = ServerConfig(),
     val mcp: McpConfig = McpConfig(),
-    val memory: MemoryConfig = MemoryConfig(),
+    val memory: MemoryConfig,
     /** The hand-pi execution service. */
     val hand: HandConfig = HandConfig(),
     // editor hint declared by config.schema.json and config.example.jsonc;
@@ -96,46 +96,34 @@ data class HandConfig(
 }
 
 /**
- * The memory pipeline settings (history compaction + SSTM extraction, see
- * `agent/oneshot/`). The model ids reference the catalog
- * (`agent/ModelCatalog.kt`); `null` uses the run's model.
- * Catalog membership is validated at startup by `ChatRunService` (the config
- * layer does not know the catalog).
+ * The memory pipeline settings (SSTM extraction, see
+ * `agent/oneshot/sstm/`). The compaction trigger fraction and keep rounds
+ * are per-model (`agent/model/LLM.kt`), since they depend on the model's
+ * context size. All three model ids are REQUIRED and reference the catalog
+ * (`agent/ModelCatalog.kt`); they are resolved once at `ChatRunService`
+ * construction and reused for every run — a chat run's own model is never
+ * used for the one-shot pipeline. Catalog membership is validated at
+ * startup by `ChatRunService` (the config layer does not know the catalog).
  */
 @Serializable
 data class MemoryConfig(
-    /**
-     * Pre-round compaction trigger: compact when the estimated prompt size
-     * exceeds this fraction of the run model's context window. `0.0`
-     * disables the proactive path (the reactive `ContextExhausted` path
-     * still compacts).
-     */
-    val compactionTriggerFraction: Double = 0.8,
-    /** Complete rounds kept verbatim at the tail of a compacted chat. */
-    val compactionKeepRounds: Int = 2,
-    /** Catalog model id for the compaction summarizer; null = the run's model. */
-    val compactModel: String? = null,
+    /** Catalog model id for the compaction summarizer. */
+    val compactModel: String,
     /**
      * Catalog model id for the memory extractor (sees the raw dropped
-     * history, images included); null = the run's model.
+     * history, images included).
      */
-    val extractModel: String? = null,
-    /** Catalog model id for the memory merger (a tool loop); null = the run's model. */
-    val mergeModel: String? = null,
+    val extractModel: String,
+    /** Catalog model id for the memory merger (a tool loop). */
+    val mergeModel: String,
 ) {
     fun validate() {
-        require(compactionTriggerFraction in 0.0..1.0) {
-            "memory.compactionTriggerFraction must be in [0, 1], got $compactionTriggerFraction"
-        }
-        require(compactionKeepRounds >= 1) {
-            "memory.compactionKeepRounds must be at least 1, got $compactionKeepRounds"
-        }
         listOf(
             "memory.compactModel" to compactModel,
             "memory.extractModel" to extractModel,
             "memory.mergeModel" to mergeModel,
         ).forEach { (name, id) ->
-            require(id == null || id.isNotBlank()) { "$name must not be blank when set" }
+            require(id.isNotBlank()) { "$name must not be blank" }
         }
     }
 }

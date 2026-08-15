@@ -34,11 +34,30 @@ class LLM(
     val contextLength: Long,
     val maxOutputTokens: Long,
     val capabilities: Set<LLMCapability>,
+    /**
+     * Pre-round compaction trigger: compact when the measured prompt size
+     * (the last assistant message's provider-reported input tokens) exceeds
+     * this fraction of the model's context window. `0.0` disables the
+     * proactive path (the reactive `context_exhausted` path still compacts).
+     * Per-model: the trigger headroom depends on the context size.
+     */
+    val compactionTriggerFraction: Double,
+    /** Complete rounds kept verbatim at the tail of a compaction. */
+    val compactionKeepRounds: Int,
 ) {
     /**
      * The unique id with provider + model id.
      * */
     val id = "${provider.id}/$modelId"
+
+    init {
+        require(compactionTriggerFraction in 0.0..1.0) {
+            "CompactionTriggerFraction must be in [0, 1], got $compactionTriggerFraction"
+        }
+        require(compactionKeepRounds >= 1) {
+            "CompactionKeepRounds must be at least 1, got $compactionKeepRounds"
+        }
+    }
 
     fun supports(capability: LLMCapability): Boolean =
         capabilities.any { it::class == capability::class }
@@ -56,7 +75,8 @@ class LLM(
      * reasoning support (the effort is omitted on the wire).
      */
     fun reasoningEffort(): String? =
-        capabilities.filterIsInstance<LLMCapability.Output.Reasoning>().firstOrNull()?.reasoningEffort
+        capabilities.filterIsInstance<LLMCapability.Output.Reasoning>()
+            .firstOrNull()?.reasoningEffort
 
     /**
      * Check this model can process every attachment in [chat], throwing

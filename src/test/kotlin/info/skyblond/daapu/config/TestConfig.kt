@@ -14,4 +14,9 @@ fun testAppConfig(mcpServers: List<McpServerConfig> = emptyList()) = AppConfig(
     providers = mapOf("bifrost" to LlmProviderConfig(apiKey = "test", baseUrl = "http://localhost:9")),
     server = ServerConfig(port = 8080),
     mcp = McpConfig(servers = mcpServers),
+    memory = MemoryConfig(
+        compactModel = "bifrost/cerebras/gemma-4-31b",
+        extractModel = "bifrost/cerebras/gemma-4-31b",
+        mergeModel = "bifrost/cerebras/gemma-4-31b",
+    ),
 )

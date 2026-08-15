@@ -21,8 +21,10 @@ class FakeHand(
         error("no complete response scripted")
     },
 ) : HandClient {
-    val requests = mutableListOf<HandRunRequest>()
-    val completeRequests = mutableListOf<HandCompleteRequest>()
+    // thread-safe: the shared-service concurrency test runs several chats
+    // against one FakeHand at the same time
+    val requests = java.util.concurrent.CopyOnWriteArrayList<HandRunRequest>()
+    val completeRequests = java.util.concurrent.CopyOnWriteArrayList<HandCompleteRequest>()
 
     override suspend fun run(request: HandRunRequest): Flow<HandEvent> = flow {
         requests += request

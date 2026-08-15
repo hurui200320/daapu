@@ -149,15 +149,20 @@ class ChatRunServiceTest {
     fun `an unknown memory model id fails fast at construction`() {
         // the one-shot pipeline models are resolved once at startup: a typo
         // must fail here, not silently skip every compaction/extraction
+        val valid = MemoryConfig(
+            compactModel = "bifrost/cerebras/gemma-4-31b",
+            extractModel = "bifrost/cerebras/gemma-4-31b",
+            mergeModel = "bifrost/cerebras/gemma-4-31b",
+        )
         val e = assertFailsWith<IllegalArgumentException> {
-            ChatRunService(testAppConfig().copy(memory = MemoryConfig(compactModel = "bifrost/nope")))
+            ChatRunService(testAppConfig().copy(memory = valid.copy(compactModel = "bifrost/nope")))
         }
         assertTrue(e.message!!.contains("memory.compactModel"), "the error should name the config key: ${e.message}")
         assertFailsWith<IllegalArgumentException> {
-            ChatRunService(testAppConfig().copy(memory = MemoryConfig(extractModel = "bifrost/nope")))
+            ChatRunService(testAppConfig().copy(memory = valid.copy(extractModel = "bifrost/nope")))
         }
         assertFailsWith<IllegalArgumentException> {
-            ChatRunService(testAppConfig().copy(memory = MemoryConfig(mergeModel = "bifrost/nope")))
+            ChatRunService(testAppConfig().copy(memory = valid.copy(mergeModel = "bifrost/nope")))
         }
     }
 }

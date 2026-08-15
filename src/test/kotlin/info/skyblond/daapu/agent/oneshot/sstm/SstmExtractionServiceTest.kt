@@ -1,4 +1,4 @@
-package info.skyblond.daapu.agent.oneshot
+package info.skyblond.daapu.agent.oneshot.sstm
 
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.ModelCatalog
@@ -19,7 +19,7 @@ import kotlinx.serialization.json.put
 import java.time.Instant
 import kotlin.test.*
 
-class ExtractSSTMTest {
+class SstmExtractionServiceTest {
 
     private fun model(id: String) = ModelCatalog(
         mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"))
@@ -67,13 +67,13 @@ class ExtractSSTMTest {
     }
 
     // ------------------------------------------------------------------
-    // MemoryToolProvider
+    // MergeMemoryToolProvider
     // ------------------------------------------------------------------
 
     @Test
     fun `memory tools execute against the service and track modification`() = runBlocking {
         val sstm = FakeSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "old fact")))
-        val provider = MemoryToolProvider(sstm)
+        val provider = MergeMemoryToolProvider(sstm)
 
         val listResult = provider.execute(toolCall("c1", "list_memories", JsonObject(emptyMap())))
         assertEquals(
@@ -109,7 +109,7 @@ class ExtractSSTMTest {
     @Test
     fun `memory tools answer errors without modifying`() = runBlocking {
         val sstm = FakeSstmService()
-        val provider = MemoryToolProvider(sstm)
+        val provider = MergeMemoryToolProvider(sstm)
 
         // missing required arguments (the wire format guarantees parsed
         // JSON objects, so malformed JSON cannot reach the tool anymore)
@@ -136,7 +136,7 @@ class ExtractSSTMTest {
     )
 
     // ------------------------------------------------------------------
-    // SstmExtractor
+    // SstmExtractionService
     // ------------------------------------------------------------------
 
     @Test
@@ -154,7 +154,7 @@ class ExtractSSTMTest {
             },
         )
         val sstm = FakeSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "existing fact")))
-        val extractor = SstmExtractor(
+        val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
             hand = hand,
             sstmService = sstm,
@@ -172,7 +172,7 @@ class ExtractSSTMTest {
             completeScript = { okCompleteResponse(assistantMessage("Nothing worth remember.")) },
         )
         val sstm = FakeSstmService()
-        val extractor = SstmExtractor(
+        val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
             hand = hand,
             sstmService = sstm,
@@ -187,7 +187,7 @@ class ExtractSSTMTest {
         val hand = FakeHand()
         val sstm = FakeSstmService()
         val textOnly = model("bifrost/cerebras/gpt-oss-120b")
-        val extractor = SstmExtractor(
+        val extractor = SstmExtractionService(
             extractModel = textOnly,
             hand = hand,
             sstmService = sstm,
@@ -218,7 +218,7 @@ class ExtractSSTMTest {
             },
         )
         val sstm = FakeSstmService()
-        val extractor = SstmExtractor(
+        val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
             hand = hand,
             sstmService = sstm,
@@ -247,7 +247,7 @@ class ExtractSSTMTest {
             },
         )
         val sstm = FakeSstmService()
-        val extractor = SstmExtractor(
+        val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
             hand = hand,
             sstmService = sstm,

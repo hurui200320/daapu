@@ -1,15 +1,16 @@
-package info.skyblond.daapu.agent.oneshot
+package info.skyblond.daapu.agent.oneshot.compaction
 
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.agent.oneshot.currentPromptTokens
 import info.skyblond.daapu.hand.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlin.test.*
 
-class ContextCompactionTest {
+class ChatCompactionServiceTest {
 
     private fun model() = ModelCatalog(
         mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"))
@@ -47,7 +48,7 @@ class ContextCompactionTest {
     /** [n] complete turns (user + assistant). */
     private fun turns(n: Int) = (1..n).flatMap { listOf(user("u$it"), assistant("a$it")) }
 
-    /** turns with realistic-length texts (the shrink guard needs a real reduction). */
+    /** turns with realistic-length texts (a realistic payload for the summarizer call). */
     private fun longTurns(n: Int) =
         (1..n).flatMap {
             listOf(
@@ -62,7 +63,7 @@ class ContextCompactionTest {
 
     @Test
     fun `split keeps the last N user turns and drops the older ones`() {
-        val compactor = ChatCompactor(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), FakeHand())
         val (toCompact, toPreserve) = assertNotNull(
             compactor.splitMessage(
                 turns(5),
@@ -88,7 +89,7 @@ class ContextCompactionTest {
         // mid-run shape: the current turn has a tool call whose result is
         // still pending — it must land in the preserved part, never in the
         // drop region
-        val compactor = ChatCompactor(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), FakeHand())
         val chat = turns(5) + toolCall("call_1", "search") + toolResult("call_1", "search")
         val (toCompact, toPreserve) = assertNotNull(compactor.splitMessage(chat, lastNRound = 3))
         assertEquals(4, toCompact.size, "only the two oldest complete turns are dropped")
@@ -109,7 +110,7 @@ class ContextCompactionTest {
 
     @Test
     fun `split fails fast for a chat without user messages`() {
-        val compactor = ChatCompactor(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), FakeHand())
         val systemOnly = assertFailsWith<IllegalArgumentException> {
             compactor.splitMessage(emptyList(), lastNRound = 3)
         }
@@ -124,7 +125,7 @@ class ContextCompactionTest {
 
     @Test
     fun `split shrinks the keep count instead of giving up`() {
-        val compactor = ChatCompactor(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), FakeHand())
 
         // 3 rounds with keep=3: keep shrinks to 2 so the oldest round is dropped
         val (dropped3, preserved3) = assertNotNull(compactor.splitMessage(turns(3), lastNRound = 3))
@@ -153,7 +154,7 @@ class ContextCompactionTest {
             completeScript = { okCompleteResponse(assistantMessage("concise summary")) },
         )
         val result = assertNotNull(
-            ChatCompactor(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
         )
         val newChat = result.newChat
         // summary user message + last 3 turns verbatim
@@ -192,7 +193,7 @@ class ContextCompactionTest {
     fun `compactChat fails fast for a chat without user messages`() = runBlocking {
         val hand = FakeHand()
         val e = assertFailsWith<IllegalArgumentException> {
-            ChatCompactor(model(), hand).compactChat(emptyList(), excludeLastNRound = 3)
+            ChatCompactionService(model(), hand).compactChat(emptyList(), excludeLastNRound = 3)
         }
         assertTrue(
             e.message!!.contains("no user messages"),
@@ -209,7 +210,7 @@ class ContextCompactionTest {
             completeScript = { okCompleteResponse(assistantMessage("condensed round")) },
         )
         val result = assertNotNull(
-            ChatCompactor(model(), hand).compactChat(longTurns(1), excludeLastNRound = 3)
+            ChatCompactionService(model(), hand).compactChat(longTurns(1), excludeLastNRound = 3)
         )
         val newChat = result.newChat
         assertEquals(listOf(ChatMessageRole.User), newChat.map { it.role })
@@ -229,7 +230,7 @@ class ContextCompactionTest {
             completeScript = { okCompleteResponse(assistantMessage("")) },
         )
         val e = assertFailsWith<IllegalStateException> {
-            ChatCompactor(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
         }
         assertTrue(e.message!!.contains("no text"), "the error should name the cause: ${e.message}")
     }
@@ -247,10 +248,10 @@ class ContextCompactionTest {
             },
         )
         val e = assertFailsWith<IllegalStateException> {
-            ChatCompactor(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
         }
         assertTrue(
-            e.message!!.contains("Compaction summarization failed (output_budget_exhausted)"),
+            e.message!!.contains("One-shot call failed (output_budget_exhausted)"),
             "the error should name the failure: ${e.message}",
         )
     }
@@ -261,7 +262,7 @@ class ContextCompactionTest {
             completeScript = { throw HandUpstreamException("hand request failed with HTTP 500") },
         )
         val e = assertFailsWith<IllegalStateException> {
-            ChatCompactor(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
         }
         assertTrue(e.message!!.contains("failed"), "the error should name the cause: ${e.message}")
         assertNotNull(e.cause, "the original LLM failure must be kept as the cause")
@@ -294,7 +295,7 @@ class ContextCompactionTest {
             )
         }
         val e = assertFailsWith<ModelCapabilityException> {
-            ChatCompactor(textOnly, hand).compactChat(chat, excludeLastNRound = 3)
+            ChatCompactionService(textOnly, hand).compactChat(chat, excludeLastNRound = 3)
         }
         assertTrue(
             e.message!!.contains("image"),

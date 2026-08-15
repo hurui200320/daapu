@@ -38,6 +38,8 @@ class ModelCatalog(
             contextLength = 131000,
             maxOutputTokens = 40000,
             capabilities = setOf(LLMCapability.Output.Reasoning("high"), LLMCapability.Output.ToolCalls),
+            compactionTriggerFraction = 0.75,
+            compactionKeepRounds = 2,
         ),
         LLM(
             provider = bifrostProvider,
@@ -49,6 +51,8 @@ class ModelCatalog(
                 LLMCapability.Output.Reasoning("high"),
                 LLMCapability.Output.ToolCalls,
             ),
+            compactionTriggerFraction = 0.75,
+            compactionKeepRounds = 2,
         ),
         LLM(
             provider = bifrostProvider,
@@ -60,6 +64,8 @@ class ModelCatalog(
                 LLMCapability.Output.Reasoning("high"),
                 LLMCapability.Output.ToolCalls,
             ),
+            compactionTriggerFraction = 0.8,
+            compactionKeepRounds = 3,
         ),
     )
 

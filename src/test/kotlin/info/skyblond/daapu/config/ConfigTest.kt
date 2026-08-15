@@ -69,6 +69,11 @@ class ConfigTest {
                         },
                     ],
                 },
+                "memory": {
+                    "compactModel": "bifrost/x",
+                    "extractModel": "bifrost/y",
+                    "mergeModel": "bifrost/z",
+                },
             }
             """.trimIndent()
         )
@@ -111,6 +116,7 @@ class ConfigTest {
                         "baseUrl": "http://host/x//y",
                     },
                 },
+                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
             }
             """.trimIndent()
         )
@@ -126,6 +132,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
             }
             """.trimIndent()
         )
@@ -143,6 +150,7 @@ class ConfigTest {
                     "bifrost": { "apiKey": "k1", "baseUrl": "http://h1" },
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
+                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
             }
             """.trimIndent()
         )
@@ -163,6 +171,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
                 }
                 """.trimIndent()
             )
@@ -211,6 +220,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
+                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
             }
             """.trimIndent()
         )
@@ -233,6 +243,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
+                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
                 }
                 """.trimIndent()
             )
@@ -281,6 +292,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "server": { "port": 0 },
+                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
                 }
                 """.trimIndent()
             )
@@ -388,29 +400,13 @@ class ConfigTest {
     }
 
     @Test
-    fun `memory config decodes with defaults and overrides`() {
-        val defaults = decodeAppConfig(
-            """
-            {
-                "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
-                "providers": {}
-            }
-            """.trimIndent()
-        ).memory
-        assertEquals(0.8, defaults.compactionTriggerFraction)
-        assertEquals(2, defaults.compactionKeepRounds)
-        assertEquals(null, defaults.compactModel)
-        assertEquals(null, defaults.extractModel)
-        assertEquals(null, defaults.mergeModel)
-
-        val overrides = decodeAppConfig(
+    fun `memory config decodes`() {
+        val decoded = decodeAppConfig(
             """
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "memory": {
-                    "compactionTriggerFraction": 0.5,
-                    "compactionKeepRounds": 5,
                     "compactModel": "bifrost/x",
                     "extractModel": "bifrost/y",
                     "mergeModel": "bifrost/z"
@@ -418,30 +414,50 @@ class ConfigTest {
             }
             """.trimIndent()
         ).memory
-        assertEquals(0.5, overrides.compactionTriggerFraction)
-        assertEquals(5, overrides.compactionKeepRounds)
-        assertEquals("bifrost/x", overrides.compactModel)
-        assertEquals("bifrost/y", overrides.extractModel)
-        assertEquals("bifrost/z", overrides.mergeModel)
+        assertEquals("bifrost/x", decoded.compactModel)
+        assertEquals("bifrost/y", decoded.extractModel)
+        assertEquals("bifrost/z", decoded.mergeModel)
+    }
+
+    @Test
+    fun `memory config requires all three model ids`() {
+        // all three models are required: a config missing the memory section
+        // or any model id must fail at decode, not fall back to a default
+        val e = assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {}
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(e.message!!.contains("memory"), "the error should name the missing field: ${e.message}")
+        assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": {
+                        "compactModel": "bifrost/x",
+                        "extractModel": "bifrost/y"
+                    }
+                }
+                """.trimIndent()
+            )
+        }
     }
 
     @Test
     fun `memory config validation`() {
-        val e = assertFailsWith<IllegalArgumentException> {
-            MemoryConfig(compactionTriggerFraction = 1.5).validate()
-        }
-        assertTrue(e.message!!.contains("compactionTriggerFraction"))
-
-        // 0 is valid: it disables the proactive compaction path
-        MemoryConfig(compactionTriggerFraction = 0.0).validate()
-
-        val rounds = assertFailsWith<IllegalArgumentException> {
-            MemoryConfig(compactionKeepRounds = 0).validate()
-        }
-        assertTrue(rounds.message!!.contains("compactionKeepRounds"))
-
         val blank = assertFailsWith<IllegalArgumentException> {
-            MemoryConfig(mergeModel = "  ").validate()
+            MemoryConfig(
+                compactModel = "bifrost/x",
+                extractModel = "bifrost/y",
+                mergeModel = "  ",
+            ).validate()
         }
         assertTrue(blank.message!!.contains("mergeModel"))
     }

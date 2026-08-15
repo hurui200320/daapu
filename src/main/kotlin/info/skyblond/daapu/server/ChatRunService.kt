@@ -1,19 +1,15 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.model.ModelProvider
-import info.skyblond.daapu.agent.oneshot.ChatCompactor
-import info.skyblond.daapu.agent.oneshot.SstmExtractor
-import info.skyblond.daapu.agent.persist.renderSystemPrompt
-import info.skyblond.daapu.agent.persist.runChatTurn
-import info.skyblond.daapu.agent.chat.AttachmentContent
-import info.skyblond.daapu.agent.chat.AttachmentKind
-import info.skyblond.daapu.agent.chat.ChatMessage
-import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.agent.chat.ChatStore
-import info.skyblond.daapu.agent.chat.PostgresChatStore
+import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
+import info.skyblond.daapu.agent.persist.PersistChatService
+import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
+import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
@@ -22,13 +18,11 @@ import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HttpHandClient
-import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
@@ -54,10 +48,15 @@ class ChatRunSetup(
  * The hand client is built once (one HTTP client, shared across runs — a
  * run's state lives entirely inside the hand call, so sharing is safe);
  * the model catalog, the chat store, the system prompt, the MCP tool
- * provider (cached clients, #8), the SSTM service (shared with the
+ * provider (cached clients), the SSTM service (shared with the
  * memory CRUD routes), and the hand callback service (the in-flight run
  * registry behind the hand's tool callbacks, `hand/HandCallbackService.kt`)
- * are also reused.
+ * are also reused. The one-shot pipeline services — compaction
+ * (`ChatCompactionService`), SSTM extraction (`SstmExtractionService`),
+ * and the persist loop itself (`PersistChatService`) — are stateless
+ * across runs and are constructed once here as well; their models come
+ * from the REQUIRED `memory.compactModel/extractModel/mergeModel` config,
+ * resolved once at construction (never the run's model).
  */
 class ChatRunService(
     config: AppConfig,
@@ -87,20 +86,23 @@ class ChatRunService(
         )
     )
     private val chatStore: ChatStore = PostgresChatStore()
-    private val systemPrompt = renderSystemPrompt(true)
+    private val systemPrompt = renderMainAgentSystemPrompt(true)
     private val memoryConfig = config.memory
 
     /** This brain's tool callback endpoint the hand POSTs to (loopback PoC). */
     internal val handCallbackUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tool"
 
-    // one-shot pipeline models: resolved once at startup (unchanged)
-    private val configuredCompactModel = memoryConfig.compactModel?.let { id ->
-        modelCatalog.findModel(id) ?: throw IllegalArgumentException("memory.compactModel '$id' is not in the model catalog")
+    // the one-shot pipeline models: all REQUIRED config, resolved once at
+    // construction (a chat run's own model is never used for these)
+    private val compactModel = memoryConfig.compactModel.let { id ->
+        modelCatalog.findModel(id)
+            ?: throw IllegalArgumentException("memory.compactModel '$id' is not in the model catalog")
     }
-    private val configuredExtractModel = memoryConfig.extractModel?.let { id ->
-        modelCatalog.findModel(id) ?: throw IllegalArgumentException("memory.extractModel '$id' is not in the model catalog")
+    private val extractModel = memoryConfig.extractModel.let { id ->
+        modelCatalog.findModel(id)
+            ?: throw IllegalArgumentException("memory.extractModel '$id' is not in the model catalog")
     }
-    private val configuredMergeModel = memoryConfig.mergeModel?.let { id ->
+    private val mergeModel = memoryConfig.mergeModel.let { id ->
         val model = modelCatalog.findModel(id)
             ?: throw IllegalArgumentException("memory.mergeModel '$id' is not in the model catalog")
         require(model.supports(LLMCapability.Output.ToolCalls)) {
@@ -109,8 +111,22 @@ class ChatRunService(
         model
     }
 
-    // serializes the SSTM writes of concurrent runs' extraction merges (unchanged)
-    private val sstmWriteLock = Mutex()
+    // one-shot pipeline services: stateless across runs, so a single
+    // instance is shared by every concurrent chat run
+    private val compactionService = ChatCompactionService(compactModel, hand)
+    private val sstmExtractionService = SstmExtractionService(
+        extractModel = extractModel,
+        mergeModel = mergeModel,
+        hand = hand,
+        sstmService = sstmService,
+    )
+    private val persistService = PersistChatService(
+        chatStore = chatStore,
+        sstmService = sstmService,
+        hand = hand,
+        compactionService = compactionService,
+        sstmExtractionService = sstmExtractionService,
+    )
 
     // one run per chat at a time: a chat's history is loaded and stored as a
     // whole, so concurrent runs would corrupt each other.
@@ -286,47 +302,27 @@ class ChatRunService(
      * hand's tool callbacks (HTTP POSTs back into this process) resolve it
      * through [HandCallbackService.executeToolCall]. The entry is evicted when the
      * run ends.
+     *
+     * The compaction/extraction services are shared, constructed once at
+     * startup; the one-shot pipeline models are fixed at construction (the
+     * run's model is only used for the chat round itself).
      */
     suspend fun runChat(
         setup: ChatRunSetup,
         callback: StreamingExecutionCallback,
     ) {
-        // one-shot models per run: the configured model wins, the run's
-        // model is the fallback. Capability checks (attachments in the
-        // history) happen inside the one-shots and skip with a warning
-        // instead of failing the run. Each model carries its own reasoning
-        // effort (its Reasoning capability), no override.
-        val compactModel = configuredCompactModel ?: setup.model
-        val extractModel = configuredExtractModel ?: setup.model
-        val mergeModel = configuredMergeModel ?: setup.model
-        val compactor = ChatCompactor(compactModel, hand)
-        val extractor = SstmExtractor(
-            extractModel = extractModel,
-            mergeModel = mergeModel,
-            hand = hand,
-            sstmService = sstmService,
-        )
         val runId = UUID.randomUUID().toString()
         handCallback.register(runId, toolProvider, setup.model)
         try {
-            runChatTurn(
+            persistService.runChat(
                 chatId = setup.chatId,
                 model = setup.model,
                 userParts = setup.parts,
                 systemPrompt = systemPrompt,
-                chatStore = chatStore,
-                sstmService = sstmService,
                 toolProvider = toolProvider,
                 callback = callback,
-                hand = hand,
                 runId = runId,
                 toolCallbackUrl = handCallbackUrl,
-                compactor = compactor,
-                // the whole extraction merge holds the write lock, so the
-                // injection read never observes a half-merged SSTM
-                extractSstm = { dropped -> sstmWriteLock.withLock { extractor.processDiscardedMessages(dropped) } },
-                compactionTriggerFraction = memoryConfig.compactionTriggerFraction,
-                compactionKeepRounds = memoryConfig.compactionKeepRounds,
             )
         } finally {
             handCallback.unregister(runId)

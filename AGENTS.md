@@ -27,7 +27,8 @@ and a small TypeScript service (hand-pi). The pieces:
   request: `ChatRunService.prepareRun`
   validates the request (the model is required per message — there is no
   server-side default), `runChat` registers the in-flight run and runs the
-  turn loop; the model catalog (`agent/ModelCatalog.kt`), the chat
+  turn loop (`agent/persist/PersistChatService.kt`); the model catalog
+  (`agent/ModelCatalog.kt`), the chat
   store, and the system prompt are built once and shared (the system prompt
   travels out of band on the hand requests — there is no `system` role in
   the neutral format, and stored chats never contain the system prompt).
@@ -69,23 +70,24 @@ and a small TypeScript service (hand-pi). The pieces:
   callback route maps to `fatal` (ending the hand run with
   `tool_transport`). Result attachments are capability-checked against the
   run's model before being returned.
-- **History compaction and SSTM extraction** (`agent/oneshot/`, wired in
-  `agent/persist/ChatTurnLoop.kt`; config under `memory.*` in
-  `config.jsonc` — see `config/Config.kt`):
+- **History compaction and SSTM extraction** (`agent/oneshot/compaction/` and
+  `agent/oneshot/sstm/`, wired in `agent/persist/PersistChatService.kt`;
+  config under `memory.*` in `config.jsonc` — see `config/Config.kt`):
   - Proactive trigger: before the round, when `currentPromptTokens(chat)`
     (the last assistant message's provider-reported `meta.inputTokens` —
     usage is REQUIRED on every hand response, the hand fails a round when
     the provider reports none, and `ChatMessageMeta`'s token fields are
-    non-null) exceeds
-    `memory.compactionTriggerFraction × model.contextLength` (default 0.8;
-    `0` disables the proactive path). The not-yet-appended input is not
+    non-null) exceeds the run model's
+    `compactionTriggerFraction × model.contextLength` (per-model values on
+    the catalog entries in `agent/model/LLM.kt`, 0.75–0.8 for the current
+    ones; `0` disables the proactive path). The not-yet-appended input is not
     counted; the trigger headroom absorbs the difference. Reactive
     fallback: EVERY hand
     `context_exhausted` round compacts and retries — there is no attempt
     cap, the loop keeps compacting as long as rounds keep exhausting, and a
     compaction that fails or returns a non-clean summary throws and fails
     the run.
-  - `ChatCompactor.compactChat(fullChat, excludeLastNRound)` splits at a
+  - `ChatCompactionService.compactChat(fullChat, excludeLastNRound)` splits at a
     user-turn boundary (never splitting tool_call/tool_result pairs; the
     current run's trailing tool chain always lands in the preserved part),
     feeds the WHOLE chat — drop region, a marker user message ("above are
@@ -96,8 +98,8 @@ and a small TypeScript service (hand-pi). The pieces:
     user message. When the chat has fewer rounds than `excludeLastNRound`,
     the keep count shrinks — down to zero, which compacts the entire body —
     so an over-threshold chat is always compacted, even a single overflowing
-    round. The function never returns null: it either compacts or throws,
-    leaving the history untouched — a chat without user messages throws
+    round. The function either compacts or throws, leaving the history
+    untouched — a chat without user messages throws
     `IllegalArgumentException` (nothing to summarize), a
     failed/truncated/blank summary throws `IllegalStateException`. A prior
     summary is merged via the prompt ("The first message might be a
@@ -106,7 +108,7 @@ and a small TypeScript service (hand-pi). The pieces:
     fast with `ModelCapabilityException` (reusing
     `LLM.checkPromptContentCapabilities`) — it is a `memory.compactModel`
     configuration error.
-  - `SstmExtractor.processDiscardedMessages(droppedMessages)` runs on the
+  - `SstmExtractionService.processDiscardedMessages(droppedMessages)` runs on the
     raw dropped messages BEFORE they are discarded: the **extractor**
     one-shot `/v1/complete` call (raw history, attachments included —
     capability-checked via `LLM.checkPromptContentCapabilities`, failing fast on
@@ -117,21 +119,29 @@ and a small TypeScript service (hand-pi). The pieces:
     throws and fails the run.
     The **merger** is a tool loop (default ≤150 rounds, `/v1/complete` calls
     with `add/update/delete/list` memories over the `sstms` table,
-    ADD/UPDATE/DELETE/NONE semantics). The whole merge runs under
-    `ChatRunService`'s `sstmWriteLock`, so a concurrent run's injection read
-    never observes a half-merged SSTM. Transient `upstream` failures log and
+    ADD/UPDATE/DELETE/NONE semantics). The merge runs without a lock: a
+    concurrent run's injection read may observe a half-merged SSTM, which is
+    healed by the `sstm-updated` flag comparison on the next round. Transient
+    `upstream` failures log and
     retry indefinitely; a classified hand error or a finish reason other
     than `stop`/`tool_calls` throws and fails the run.
     The `sstm-updated` injection flag needs no plumbing: the version digest
     changes when the merge writes, and the loop compares it against
     `chats.sstm_version` (a mid-run reactive compaction regenerates the
-    latest user message's injection with the fresh flag + memories).
+    latest user message's injection with the fresh flag + memories — and,
+    when the compaction's keep count collapses to zero and replaces the
+    whole chat (injected message included), re-appends the injection
+    together with the run's user parts so the retried round still carries
+    the user input).
   - Model resolution: `memory.compactModel/extractModel/mergeModel` are
-    catalog ids resolved once at startup (unknown ids and a merge model
-    without tool-call support fail fast); `null` falls back to the run's
-    model (resolved per run). Compactions emit no dedicated SSE event: the
-    frontend resyncs the chat after the run (done/error), which presents the
-    compacted history.
+    REQUIRED config (a missing id fails at config load) and catalog ids
+    resolved once at ChatRunService construction (unknown ids and a merge
+    model without tool-call support fail fast) — the one-shot services
+    (`ChatCompactionService`, `SstmExtractionService`, `PersistChatService`)
+    are constructed once and shared by every run; a chat run's own model is
+    never used for the pipeline. Compactions emit no dedicated SSE event:
+    the frontend resyncs the chat after the run (done/error), which presents
+    the compacted history.
 - **frontend/** — Svelte 5 + Vite + TypeScript dev server (no build step wired
   into Gradle), styled after llama.cpp's webui: Tailwind v4 (CSS-first, tokens
   in `src/app.css`, dark-only oklch "neutral" palette), bits-ui primitives,

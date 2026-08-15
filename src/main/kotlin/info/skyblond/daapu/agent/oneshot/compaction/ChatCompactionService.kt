@@ -1,44 +1,23 @@
-package info.skyblond.daapu.agent.oneshot
+package info.skyblond.daapu.agent.oneshot.compaction
 
-import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.oneshot.checkAndGetTextResp
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.toHandModelSpec
 import kotlinx.coroutines.CancellationException
 
-data class ChatCompactionResult(
-    /**
-     * Messages that summary has replaced.
-     * */
-    val droppedMessages: List<ChatMessage>,
-    /**
-     * The chat to continue.
-     * */
-    val newChat: List<ChatMessage>,
-)
-
-/**
- * The current prompt size in tokens: the last assistant message's measured
- * `meta.inputTokens` (the FULL prompt of that round, as reported by the
- * provider). There is no estimation: usage meta is required on every hand
- * response, and a stored chat always ends with the last round's assistant
- * message, so the snapshot is the freshest exact measurement available. A
- * chat with no assistant message (a brand-new chat) returns 0 — nothing
- * meaningful to measure yet; the reactive `context_exhausted` path still
- * guards a first run that overflows the window.
- */
-fun currentPromptTokens(chat: List<ChatMessage>): Long =
-    chat.lastOrNull { it.role == ChatMessageRole.Assistant }?.meta?.inputTokens?.toLong() ?: 0L
-
-class ChatCompactor(
+class ChatCompactionService(
     private val model: LLM,
     private val hand: HandClient,
 ) {
     /**
-     * Compact the given chat history, return a summarized text that replaced the history.
+     * Compact the given chat history, returning the compacted chat plus the
+     * dropped raw messages (which feed the SSTM extraction before they are
+     * discarded).
      *
      * The [fullChat] is the raw conversation history (the system prompt is
      * not part of it; the summarizer gets its own prompt out of band).
@@ -64,9 +43,7 @@ class ChatCompactor(
      *   (`memory.compactModel`), so it fails fast instead of silently
      *   skipping the compaction;
      * - [IllegalStateException] when the summarization call failed, was
-     *   truncated, produced no text, or the summary is not smaller than the
-     *   messages it replaces (a degenerate summarizer must not grow the
-     *   history).
+     *   truncated, or produced no text.
      */
     suspend fun compactChat(
         fullChat: List<ChatMessage>,
@@ -115,26 +92,8 @@ class ChatCompactor(
                 e,
             )
         }
-        if (!response.ok) {
-            error(
-                "Compaction summarization failed (${response.error?.type}): " +
-                        "${response.error?.message}; the history was left untouched"
-            )
-        }
-        val assistant = response.message
-            ?: error("Compaction summarization returned no message")
-        if (assistant.finishReason != "stop") {
-            error("Compaction summarization ended with finish_reason=${assistant.finishReason}, not a clean stop")
-        }
-        if (assistant.parts.any { it is ChatMessagePart.ToolCall }) {
-            error("Compaction summarization produced tool calls instead of text")
-        }
-        val summary = assistant.parts.filterIsInstance<ChatMessagePart.Text>()
-            .joinToString("\n") { it.text }
-            .trim()
-            .takeIf { it.isNotBlank() }
-            ?: error("Compaction summarization produced no text")
 
+        val summary = response.checkAndGetTextResp()
         val summaryMessage = ChatMessage(
             role = ChatMessageRole.User,
             parts = listOf(ChatMessagePart.Text(COMPACTION_HEADER + summary)),

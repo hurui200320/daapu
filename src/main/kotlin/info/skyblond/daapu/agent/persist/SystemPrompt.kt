@@ -1,6 +1,6 @@
 package info.skyblond.daapu.agent.persist
 
-fun renderSystemPrompt(
+fun renderMainAgentSystemPrompt(
     isDevelopment: Boolean,
 ): String = """
 # Core instruction

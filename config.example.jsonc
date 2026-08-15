@@ -45,18 +45,15 @@
       // }
     ]
   },
-  // The memory pipeline: history compaction and SSTM extraction. The model
-  // ids reference the catalog; omitting one (or setting null) uses the run's
-  // model for that step.
+  // The memory pipeline: SSTM extraction. All three model ids are REQUIRED
+  // (resolved once at startup and reused for every run; a chat run's own
+  // model is never used for these). They reference the catalog; the merge
+  // model must support tool calls. The compaction trigger fraction and
+  // keep rounds are per-model (agent/model/LLM.kt).
   "memory": {
-    // compact when the estimated prompt exceeds this fraction of the model's
-    // context window (0 disables the proactive path)
-    "compactionTriggerFraction": 0.8,
-    // complete rounds kept verbatim at the tail of a compacted chat
-    "compactionKeepRounds": 3
-    // "compactModel": "bifrost/cerebras/gemma-4-31b",
-    // "extractModel": "bifrost/cerebras/gemma-4-31b",
-    // "mergeModel": "bifrost/cerebras/gemma-4-31b"
+    "compactModel": "bifrost/cerebras/gemma-4-31b",
+    "extractModel": "bifrost/cerebras/gemma-4-31b",
+    "mergeModel": "bifrost/cerebras/gemma-4-31b"
   },
   // The hand-pi execution service (hand-pi/): a stateless
   // Node service that owns LLM execution (streaming, dialects, tool-call
