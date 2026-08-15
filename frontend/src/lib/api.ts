@@ -59,7 +59,10 @@ export interface SendMessageRequest {
  * POST, so the stream is parsed manually from a fetch reader (same technique
  * llama.cpp's own webui uses).
  */
-export async function* streamChat(chatId: string, body: SendMessageRequest): AsyncGenerator<StreamEvent> {
+export async function* streamChat(
+  chatId: string,
+  body: SendMessageRequest
+): AsyncGenerator<StreamEvent> {
   const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -1,81 +1,42 @@
 <script lang="ts">
-  import ChatView from './lib/ChatView.svelte'
-  import MemoriesView from './lib/MemoriesView.svelte'
+  import { onMount } from 'svelte'
+  import { MODEL_STORAGE_KEY, chatStore } from './lib/chat-store.svelte'
+  import ChatView from './lib/components/ChatView.svelte'
+  import MemoriesView from './lib/components/MemoriesView.svelte'
+  import Sidebar from './lib/components/Sidebar.svelte'
 
   let view = $state<'chat' | 'memories'>('chat')
+
+  onMount(() => {
+    void chatStore.init()
+  })
+
+  // model picker persistence: restore the stored id once the catalog is
+  // loaded (a stale id would render a blank picker and a confusing 400 on
+  // send: fall back to the first model), then write every change back
+  $effect(() => {
+    if (chatStore.models.length > 0 && chatStore.selectedModel === '') {
+      const stored = localStorage.getItem(MODEL_STORAGE_KEY)
+      chatStore.selectedModel = chatStore.models.some((m) => m.id === stored)
+        ? stored!
+        : chatStore.models[0].id
+    }
+    if (chatStore.selectedModel) {
+      localStorage.setItem(MODEL_STORAGE_KEY, chatStore.selectedModel)
+    }
+  })
 </script>
 
-<div class="app">
-  <header>
-    <div class="brand">daapu</div>
-    <nav>
-      <button class="tab" class:active={view === 'chat'} onclick={() => (view = 'chat')}>chat</button>
-      <button class="tab" class:active={view === 'memories'} onclick={() => (view = 'memories')}>memories</button>
-    </nav>
-  </header>
-  <main>
+<div class="flex h-dvh gap-2 p-2">
+  <Sidebar {view} onNavigate={(v: 'chat' | 'memories') => (view = v)} />
+  <main class="flex min-w-0 flex-1 flex-col">
     <!-- both views stay mounted so the chat view (messages, live stream)
          survives tab switches; visibility is CSS-only -->
-    <div class="view" class:hidden={view !== 'chat'}><ChatView /></div>
-    <div class="view" class:hidden={view !== 'memories'}><MemoriesView /></div>
+    <div class="flex min-h-0 flex-1 flex-col" class:hidden={view !== 'chat'}>
+      <ChatView />
+    </div>
+    <div class="flex min-h-0 flex-1 flex-col" class:hidden={view !== 'memories'}>
+      <MemoriesView />
+    </div>
   </main>
 </div>
-
-<style>
-  .app {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-  }
-
-  header {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 0.5rem 1rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .brand {
-    font-weight: bold;
-    letter-spacing: 0.05em;
-  }
-
-  nav {
-    display: flex;
-    gap: 0.3rem;
-  }
-
-  .tab {
-    font: inherit;
-    border: none;
-    background: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 0.3rem 0.6rem;
-    border-radius: 0.5rem;
-  }
-
-  .tab.active {
-    color: var(--text);
-    background: var(--input-bg);
-  }
-
-  main {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .view {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .hidden {
-    display: none;
-  }
-</style>

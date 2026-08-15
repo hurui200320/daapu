@@ -133,11 +133,39 @@ and a small TypeScript service (hand-pi). The pieces:
     frontend resyncs the chat after the run (done/error), which presents the
     compacted history.
 - **frontend/** — Svelte 5 + Vite + TypeScript dev server (no build step wired
-  into Gradle). It proxies `/api` to the ktor server; ktor serves the API only.
-  Chat + memories views; a chat picker dropdown loads a chat on selection
-  (re-selecting the same chat acts as a refresh) and is disabled during a run,
-  with new/delete buttons; per-message model picker; image attachment via file
-  picker/paste.
+  into Gradle), styled after llama.cpp's webui: Tailwind v4 (CSS-first, tokens
+  in `src/app.css`, dark-only oklch "neutral" palette), bits-ui primitives,
+  lucide icons, highlight.js code blocks. It proxies `/api` to the ktor
+  server; ktor serves the API only.
+  - Layout: collapsible glass sidebar (chat list + search filter + rename/
+    delete dropdowns via dialogs + Memories nav), centered `max-w-3xl`
+    message column, floating rounded composer with circular send button
+    (disabled while a run is streaming).
+  - State lives in `src/lib/chat-store.svelte.ts` (module-scope singleton —
+    `$effect` runes are NOT usable there; the model-picker persistence lives
+    in `App.svelte`). The SSE event semantics are preserved verbatim:
+    tool-round commits, retry wipes, DB resync on done/error/abnormal close,
+    optimistic user message; a send that never stores (error/connection
+    closed) restores the composer draft. There is no client-side stop: the
+    server only notices a disconnect on its next event write, so aborting
+    the stream does not reliably stop the run. The chat list and model
+    catalog are re-fetched every 30s and on window focus (titles
+    created/renamed in another session only appear via refetch; a failed
+    initial catalog load retries instead of leaving a blank picker), and the
+    memories list resyncs on the same cadence (SSTM merges mutate it
+    server-side). All three replace their list only when the payload
+    actually changed.
+  - User messages render as plain-text pill bubbles (`whitespace-pre-wrap`),
+    assistant messages as full-width markdown (marked + DOMPurify +
+    highlight.js code chrome from `lib/markdown.ts` — language label/copy
+    button/max-height scroll). Reasoning/tool-call/tool-result parts render
+    in collapsible blocks (shimmer title while streaming; a block the user
+    collapses stays collapsed until the next round re-opens it). Auto-scroll
+    pins to the bottom while the user hasn't scrolled up (scroll-down button
+    appears otherwise; switching chats re-pins).
+  - Dialogs replace `window.prompt`/`confirm`; the model picker is a
+    searchable chip dropdown; image attachment via file picker/paste.
+  - Verification: `cd frontend && npm run check && npm run build`.
 
 ## Verification commands
 

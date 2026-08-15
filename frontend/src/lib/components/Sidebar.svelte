@@ -1,0 +1,159 @@
+<script lang="ts">
+  import { Bot, Brain, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Search, SquarePen, Trash2 } from '@lucide/svelte'
+  import { DropdownMenu } from 'bits-ui'
+  import { cn } from '../utils'
+  import { chatStore as store } from '../chat-store.svelte'
+  import type { ChatInfo } from '../types'
+  import DeleteChatDialog from './DeleteChatDialog.svelte'
+  import RenameChatDialog from './RenameChatDialog.svelte'
+  import { buttonVariants } from './ui/button.svelte'
+
+  let { view, onNavigate }: { view: 'chat' | 'memories'; onNavigate: (v: 'chat' | 'memories') => void } = $props()
+
+  let collapsed = $state(localStorage.getItem('daapu.sidebar-collapsed') === 'true')
+  let query = $state('')
+  let renameTarget = $state<ChatInfo | null>(null)
+  let deleteTarget = $state<ChatInfo | null>(null)
+
+  $effect(() => {
+    localStorage.setItem('daapu.sidebar-collapsed', String(collapsed))
+  })
+
+  const filtered = $derived(
+    query.trim()
+      ? store.knownChats.filter((c) => c.title.toLowerCase().includes(query.trim().toLowerCase()))
+      : store.knownChats
+  )
+
+  const iconBtn =
+    'inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40'
+
+  function pickChat(id: string) {
+    store.pickChat(id)
+    onNavigate('chat')
+  }
+
+  async function newChat() {
+    await store.createNewChat()
+    onNavigate('chat')
+  }
+</script>
+
+<aside
+  class="flex h-full shrink-0 flex-col overflow-hidden rounded-2xl border border-sidebar-border bg-sidebar/60 shadow-md backdrop-blur-xl transition-[width] duration-200 {collapsed ? 'w-12' : 'w-72'}"
+>
+  {#if collapsed}
+    <div class="flex h-full flex-col items-center gap-1 py-3">
+      <button title="expand sidebar" class={iconBtn} onclick={() => (collapsed = false)}>
+        <PanelLeftOpen class="size-5" />
+      </button>
+      <button title="new chat" class={iconBtn} disabled={store.streaming} onclick={() => void newChat()}>
+        <SquarePen class="size-5" />
+      </button>
+      <div class="flex-1"></div>
+      <button
+        title="memories"
+        class={cn(iconBtn, view === 'memories' && 'bg-accent text-accent-foreground')}
+        onclick={() => onNavigate('memories')}
+      >
+        <Brain class="size-5" />
+      </button>
+    </div>
+  {:else}
+    <div class="flex items-center gap-2 px-3 py-3">
+      <Bot class="size-5 shrink-0" />
+      <span class="truncate text-sm font-semibold tracking-tight">daapu</span>
+      <button title="collapse sidebar" class={cn(iconBtn, 'ml-auto')} onclick={() => (collapsed = true)}>
+        <PanelLeftClose class="size-4" />
+      </button>
+    </div>
+    <div class="space-y-2 px-2 pb-2">
+      <button
+        class={buttonVariants({ size: 'sm', class: 'w-full justify-start' })}
+        disabled={store.streaming}
+        onclick={() => void newChat()}
+      >
+        <SquarePen class="size-4" />
+        New chat
+      </button>
+      <div class="relative">
+        <Search class="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          bind:value={query}
+          placeholder="Search conversations…"
+          class="h-8 w-full rounded-md border border-transparent bg-transparent pl-8 pr-2 text-sm outline-none transition placeholder:text-muted-foreground hover:bg-foreground/10 focus:border-border"
+        />
+      </div>
+    </div>
+    <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div class="px-2 py-1.5 text-xs font-medium text-muted-foreground">Chats</div>
+      {#if filtered.length === 0}
+        <div class="px-2 py-6 text-center text-xs text-muted-foreground">
+          {store.knownChats.length === 0 ? 'no chats yet' : 'no matches'}
+        </div>
+      {/if}
+      {#each filtered as chat}
+        <div
+          class={cn(
+            'group flex items-center rounded-lg transition-colors',
+            chat.id === store.chatId ? 'bg-foreground/5' : 'hover:bg-foreground/10'
+          )}
+        >
+          <button
+            class="min-w-0 flex-1 rounded-lg py-1.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+            disabled={store.streaming}
+            onclick={() => pickChat(chat.id)}
+            title={chat.id}
+          >
+            <span class="block truncate text-sm font-medium">{chat.title}</span>
+          </button>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger
+              disabled={store.streaming}
+              class="mr-1 rounded-md p-1 text-muted-foreground opacity-0 transition hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 no-hover:opacity-100 disabled:pointer-events-none"
+              title="chat actions"
+            >
+              <MoreHorizontal class="size-4" />
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                class="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+                align="start"
+                sideOffset={6}
+              >
+                <DropdownMenu.Item
+                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+                  onSelect={() => (renameTarget = chat)}
+                >
+                  <Pencil class="size-3.5" />
+                  Rename
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"
+                  onSelect={() => (deleteTarget = chat)}
+                >
+                  <Trash2 class="size-3.5" />
+                  Delete
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        </div>
+      {/each}
+    </div>
+    <div class="border-t border-sidebar-border p-2">
+      <button
+        class={buttonVariants({ variant: 'ghost', class: 'w-full justify-start' })}
+        class:bg-accent={view === 'memories'}
+        class:text-accent-foreground={view === 'memories'}
+        onclick={() => onNavigate('memories')}
+      >
+        <Brain class="size-4" />
+        Memories
+      </button>
+    </div>
+  {/if}
+</aside>
+
+<RenameChatDialog target={renameTarget} onClose={() => (renameTarget = null)} />
+<DeleteChatDialog target={deleteTarget} onClose={() => (deleteTarget = null)} />
