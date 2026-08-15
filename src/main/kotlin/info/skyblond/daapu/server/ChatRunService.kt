@@ -186,35 +186,43 @@ class ChatRunService(
     }
 
     /**
-     * Delete a chat row. Refuses (throws [ChatRunConflictException]) while a
-     * run holds the chat lock: the chat store's upsert would otherwise let
-     * an in-flight run's final store resurrect the deleted row. Returns false
-     * when the chat doesn't exist.
+     * Delete a chat row, but first run the SSTM extraction pipeline over its
+     * full history so the chat's memories survive the deletion. Refuses
+     * (throws [ChatRunConflictException]) while a run holds the chat lock:
+     * the chat store's upsert would otherwise let an in-flight run's final
+     * store resurrect the deleted row. Returns false when the chat doesn't
+     * exist (nothing to extract, no LLM call; an empty chat extracts nothing).
      *
-     * The lock entry is taken and evicted atomically ([ConcurrentHashMap.compute]
-     * serializes both map ops and the `tryLock`), so a delete and a run can never
-     * end up holding two different mutexes for the same chat. A delete that lands
-     * right before a run's lock acquisition can still be resurrected by that run's
-     * final store (accepted for the PoC, same as the mid-run variant).
+     * The lock entry is taken atomically with the `tryLock`
+     * ([ConcurrentHashMap.compute] serializes both map ops) and KEPT in the
+     * map for the whole operation — load, extraction (potentially minutes of
+     * LLM calls) and the row delete — so no new run can start (409) while the
+     * deletion is in progress, and a delete can never pair with a run that
+     * holds a different mutex for the same chat. The entry is evicted before
+     * the unlock ([releaseChatLock]), like a run's lock.
+     *
+     * A failed extraction (a classified hand error, a truncated extractor
+     * round, a model that cannot see the history) throws and FAILS the
+     * delete: the row survives untouched, and the next delete attempt
+     * re-extracts the same history, which the merge agent deduplicates.
      */
     suspend fun deleteChat(chatId: String): Boolean {
         var lock: Mutex? = null
         chatLocks.compute(chatId) { _, existing ->
-            if (existing == null) {
-                // no run ever touched this chat: nothing to lock against
-                null
-            } else if (existing.tryLock()) {
-                lock = existing
-                null // evict while still held; the finally below unlocks it
-            } else {
-                throw ChatRunConflictException("Chat '$chatId' has an active run")
+            val mutex = existing ?: Mutex()
+            if (!mutex.tryLock()) {
+                throw ChatRunConflictException("Chat '$chatId' is currently locked")
             }
+            lock = mutex
+            mutex
         }
-        val mutex = lock
+        val mutex = lock!!
         return try {
+            val entry = chatStore.load(chatId) ?: return false
+            sstmExtractionService.processDiscardedMessages(entry.content.messages)
             chatStore.delete(chatId)
         } finally {
-            mutex?.unlock()
+            releaseChatLock(chatId, mutex)
         }
     }
 
@@ -261,8 +269,8 @@ class ChatRunService(
 
     /**
      * Take the per-chat run lock, or throw [ChatRunConflictException] when the
-     * chat already has an active run. The caller must unlock the result via
-     * [releaseChatLock].
+     * chat is locked by a run or a deletion in progress. The caller must
+     * unlock the result via [releaseChatLock].
      */
     // TODO: instead of acquired by webserver, should be acquired by runChat
     //       or check lock in runChat, throw IllegalStateException if lock not acquired
@@ -273,7 +281,7 @@ class ChatRunService(
         chatLocks.compute(chatId) { _, existing ->
             val mutex = existing ?: Mutex()
             if (!mutex.tryLock()) {
-                throw ChatRunConflictException("Chat '$chatId' already has an active run")
+                throw ChatRunConflictException("Chat '$chatId' is currently locked")
             }
             acquired = mutex
             mutex

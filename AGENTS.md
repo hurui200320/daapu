@@ -56,7 +56,13 @@ and a small TypeScript service (hand-pi). The pieces:
   is identical, so no-op edits don't churn the fingerprint. Per-chat `Mutex`
   guards concurrent runs (409), and deleting a chat takes the same lock:
   `agent/chat/PostgresChatStore.store` is an upsert, so deleting mid-run would let
-  the in-flight run resurrect the row. Lock entries are created atomically
+  the in-flight run resurrect the row. `deleteChat` runs the SSTM extraction
+  pipeline over the chat's full history BEFORE deleting the row and holds the
+  lock (entry kept in the map) for the whole operation — load, extraction
+  (minutes of LLM calls) and the row delete — so no new run can start while
+  a deletion is in progress; a failed extraction fails the delete (the row
+  survives, a retry re-extracts and the merge agent deduplicates). Lock
+  entries are created atomically
   with the `tryLock` (`ConcurrentHashMap.compute`) and evicted on run
   completion/delete, so dead chat ids don't accumulate. All `chats`-table
   access — list/create/rename/delete plus the message load/store — lives
@@ -172,7 +178,14 @@ and a small TypeScript service (hand-pi). The pieces:
     (disabled while a run is streaming).
   - State lives in `src/lib/chat-store.svelte.ts` (module-scope singleton —
     `$effect` runes are NOT usable there; the model-picker persistence lives
-    in `App.svelte`). Transient action errors (sidebar CRUD, chat load, send
+    in `App.svelte`). An in-flight delete locks the chat read-only via the
+    store's `deletingIds` set (the backend extracts SSTM from the history
+    before deleting, which can take minutes): the delete dialog closes as
+    soon as Delete is clicked (fire-and-forget), and the sidebar's rename/
+    title/delete actions and the composer's send stay disabled for that
+    chat until the backend confirms the row is gone or the request fails
+    (the chat view shows a "deleting chat" banner meanwhile). Transient action
+    errors (sidebar CRUD, chat load, send
     failures) surface as global toasts (`lib/toast-store.svelte.ts`, a
     fixed top-right stack rendered in `App.svelte`); contextual errors stay
     tied to their view — the chat view's run-error banner (`streamError`)

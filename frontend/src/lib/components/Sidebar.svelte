@@ -139,7 +139,8 @@
                   </span>
                 </div>
                 <DropdownMenu.Item
-                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+                  disabled={store.deletingIds.has(chat.id)}
                   onSelect={() => (renameTarget = chat)}
                 >
                   <Pencil class="size-3.5" />
@@ -147,7 +148,7 @@
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
-                  disabled={titleGeneratingIds.has(chat.id)}
+                  disabled={titleGeneratingIds.has(chat.id) || store.deletingIds.has(chat.id)}
                   onSelect={() => void generateTitleFor(chat)}
                 >
                   {#if titleGeneratingIds.has(chat.id)}
@@ -158,7 +159,8 @@
                   {titleGeneratingIds.has(chat.id) ? 'Generating…' : 'Generate title'}
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
-                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"
+                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive disabled:pointer-events-none disabled:opacity-40"
+                  disabled={store.deletingIds.has(chat.id)}
                   onSelect={() => (deleteTarget = chat)}
                 >
                   <Trash2 class="size-3.5" />

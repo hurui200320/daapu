@@ -59,6 +59,6 @@ data class MemoryDto(
 data class MemoryWriteRequest(val content: String)
 
 /**
- * The chat already has an active run. Mapped to HTTP 409.
+ * The chat is locked by a run or a deletion in progress. Mapped to HTTP 409.
  */
 class ChatRunConflictException(message: String) : Exception(message)

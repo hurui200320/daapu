@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Trash2 } from '@lucide/svelte'
+  import { Loader2, Trash2 } from '@lucide/svelte'
   import Button from './ui/button.svelte'
   import { Dialog } from './ui/dialog.svelte'
   import DialogContent from './ui/dialog-content.svelte'
@@ -12,9 +12,17 @@
 
   let { target, onClose }: { target: ChatInfo | null; onClose: () => void } = $props()
 
-  async function confirmDelete() {
-    if (!target) return
-    await store.deleteChat(target.id)
+  // the backend extracts SSTM from the history before deleting, which can
+  // take minutes: the confirm button is locked for the whole request
+  const busy = $derived(target !== null && store.deletingIds.has(target.id))
+
+  function confirmDelete() {
+    if (!target || busy) return
+    // fire-and-forget: the backend extracts SSTM from the history before
+    // deleting, which can take minutes — close the dialog right away so the
+    // user isn't stuck waiting. The chat stays locked read-only via
+    // [store.deletingIds] until the backend confirms or fails (toast).
+    store.deleteChat(target.id)
     onClose()
   }
 </script>
@@ -36,7 +44,14 @@
     </DialogHeader>
     <DialogFooter>
       <Button variant="ghost" onclick={onClose}>Cancel</Button>
-      <Button variant="destructive" onclick={() => void confirmDelete()}>Delete</Button>
+      <Button variant="destructive" disabled={busy} onclick={confirmDelete}>
+        {#if busy}
+          <Loader2 class="size-4 animate-spin" />
+          Deleting…
+        {:else}
+          Delete
+        {/if}
+      </Button>
     </DialogFooter>
   </DialogContent>
 </Dialog>

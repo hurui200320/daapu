@@ -8,6 +8,10 @@
   let fileInput: HTMLInputElement
   let textarea: HTMLTextAreaElement
 
+  // the active chat is being deleted (the backend extracts SSTM first, which
+  // can take minutes): no message may be sent to it until it is gone
+  const deleting = $derived(store.deletingIds.has(store.chatId))
+
   const usage = $derived(store.usage)
   const usagePct = $derived(
     usage.used != null && usage.context != null && usage.context > 0
@@ -54,7 +58,7 @@
 
   async function submit() {
     const trimmed = text.trim()
-    if ((!trimmed && images.length === 0) || store.streaming) return
+    if ((!trimmed && images.length === 0) || store.streaming || deleting) return
     const draft = { text, images: [...images] }
     text = ''
     images = []
@@ -108,7 +112,7 @@
         <button
           type="button"
           onclick={() => fileInput.click()}
-          disabled={store.streaming}
+          disabled={store.streaming || deleting}
           title="attach image (or paste)"
           class="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted-foreground/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
         >
@@ -135,7 +139,7 @@
       <button
         type="button"
         onclick={() => void submit()}
-        disabled={store.streaming || (!text.trim() && images.length === 0)}
+        disabled={store.streaming || deleting || (!text.trim() && images.length === 0)}
         title="send"
         class="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
       >

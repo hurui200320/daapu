@@ -43,6 +43,12 @@ class ChatStore {
   // toast: it stays tied to the messages it relates to)
   streamError = $state<string | null>(null)
 
+  // in-flight deletions per chat id: while a delete request is running (the
+  // backend extracts SSTM from the history first, which can take minutes),
+  // the chat is read-only — no rename/title/delete/send — until the backend
+  // confirms the row is gone or reports an error
+  deletingIds = $state<Set<string>>(new Set())
+
   private started = false
 
   /**
@@ -160,6 +166,7 @@ class ChatStore {
   }
 
   async renameChat(id: string, title: string): Promise<void> {
+    if (this.deletingIds.has(id)) return
     try {
       await renameChat(id, title)
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title } : c))
@@ -175,6 +182,7 @@ class ChatStore {
    * call.
    */
   async generateTitle(id: string): Promise<void> {
+    if (this.deletingIds.has(id)) return
     try {
       const chat = await generateTitle(id)
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title: chat.title } : c))
@@ -183,7 +191,16 @@ class ChatStore {
     }
   }
 
+  /**
+   * Delete a chat: the backend extracts SSTM from its history before removing
+   * the row, which can take minutes. While the request is in flight the chat
+   * is read-only ([deletingIds]) — a second delete call is a no-op. On
+   * failure (e.g. the extraction failed and the row is kept) the lock is
+   * released and the error surfaces as a toast, so the user can retry.
+   */
   async deleteChat(id: string): Promise<void> {
+    if (this.deletingIds.has(id)) return
+    this.deletingIds.add(id)
     try {
       await deleteChat(id)
       this.knownChats = this.knownChats.filter((c) => c.id !== id)
@@ -193,6 +210,8 @@ class ChatStore {
       }
     } catch (e) {
       toastStore.push(String(e))
+    } finally {
+      this.deletingIds.delete(id)
     }
   }
 
@@ -200,6 +219,10 @@ class ChatStore {
     const id = this.chatId.trim()
     if (!id) {
       toastStore.push('Select a chat first')
+      return false
+    }
+    if (this.deletingIds.has(id)) {
+      toastStore.push('This chat is being deleted')
       return false
     }
     this.streamError = null
