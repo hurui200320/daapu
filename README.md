@@ -97,6 +97,7 @@ cp config.example.jsonc config.jsonc
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
 | `memory`    | `compactModel`/`extractModel`/`mergeModel` (required) | SSTM extraction settings, see below.                                  |
+| `title`     | `model` (required), `lastNRound` (default `0`)          | Session-title generation (`POST /api/chats/{id}/title`).              |
 | `hand`      | `baseUrl` (`http://127.0.0.1:3100`), `token` (`dev-token`) | The hand-pi execution service endpoint and the shared static token (`HAND_TOKEN`). |
 
 `config.schema.json` is a JSON Schema (draft-07) mirroring the config models
@@ -132,6 +133,24 @@ History compaction and SSTM extraction (see `AGENTS.md` and
   history, images included, so the model must support the content — a
   model that cannot fails the run with a clear error (same as the chat
   model's own capability check), and unknown ids fail fast at startup.
+
+### Session titles (`title`)
+
+`title.model` is a REQUIRED catalog model id for the session-title generator
+(`agent/oneshot/TitleGenerator.kt`, wired to `POST /api/chats/{id}/title`):
+it is resolved once at startup like the memory pipeline models and never the
+chat run's own model. The generator summarizes the chat's stored history
+(empty chats short-circuit to a no-op — the title is left untouched and no
+LLM call happens; a text-only model with image history fails fast with a 400
+as a config error), persists the new title, and the endpoint returns the
+updated `{"id", "title"}`. The endpoint takes no per-chat lock (the store
+upsert never touches the title), so a title generated mid-run reflects the
+last stored history — re-generate after the conversation moves on.
+
+`title.lastNRound` (default `0`) caps the history fed to the title model to
+the last N user rounds (a round is one user message plus the following
+assistant/tool messages), so long chats stay inside the title model's context
+window; `0` means the whole history.
 
 MCP tool servers are configured under `mcp.servers`. Both Streamable HTTP and
 stdio transports are supported — `config.example.jsonc` shows a working
@@ -208,6 +227,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`):
 | `GET /api/chats`                        | Existing chats as `{"id", "title"}` (newest first, capped).  |
 | `POST /api/chats`                       | Create a chat (empty history, title `New chat`).             |
 | `PUT /api/chats/{id}`                   | Rename a chat (`{"title": "..."}`).                          |
+| `POST /api/chats/{id}/title`            | Generate a title from the chat history (no-op on an empty chat, 400 on a capability mismatch). |
 | `DELETE /api/chats/{id}`                | Delete a chat (409 while a run is active).                   |
 | `GET /api/chats/{id}/chat`              | Full chat as neutral-format JSON (raw `chat_json`).         |
 | `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |

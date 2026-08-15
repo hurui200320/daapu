@@ -1,5 +1,6 @@
-import { deleteChat, listChats, listModels, loadChat, newChat, renameChat, streamChat } from './api'
+import { deleteChat, generateTitle, listChats, listModels, loadChat, newChat, renameChat, streamChat } from './api'
 import type { ChatInfo, ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
+import { toastStore } from './toast-store.svelte'
 
 // mirrors the backend's data-URL handling (ChatRunService.parseImagePart:
 // trims the URL and strips whitespace from the base64 payload)
@@ -26,7 +27,6 @@ class ChatStore {
   knownChats = $state<ChatInfo[]>([])
   models = $state<ModelInfo[]>([])
   messages = $state<ChatMessage[]>([])
-  error = $state<string | null>(null)
 
   // the per-message model picker lives in the Composer; the state is lifted
   // here so the usage indicator can show the context of the model that will
@@ -39,6 +39,8 @@ class ChatStore {
   // tool calls of the round currently being streamed (uncommitted: wiped on retry)
   streamToolCalls = $state<{ name: string; args: Record<string, unknown> }[]>([])
   retrying = $state(false)
+  // the current run's failure, shown in the chat view (contextual, not a
+  // toast: it stays tied to the messages it relates to)
   streamError = $state<string | null>(null)
 
   private started = false
@@ -55,7 +57,7 @@ class ChatStore {
       this.models = await listModels()
       this.knownChats = await listChats()
     } catch (e) {
-      this.error = String(e)
+      toastStore.push(String(e))
     }
     setInterval(() => void this.resyncChats(), 30_000)
     window.addEventListener('focus', () => void this.resyncChats())
@@ -133,12 +135,11 @@ class ChatStore {
   }
 
   async loadMessages(id: string) {
-    this.error = null
     this.streamError = null
     try {
       this.messages = await loadChat(id)
     } catch (e) {
-      this.error = String(e)
+      toastStore.push(String(e))
     }
   }
 
@@ -148,29 +149,41 @@ class ChatStore {
   }
 
   async createNewChat(): Promise<void> {
-    this.error = null
     try {
       this.chatId = await newChat()
       // prepend to match the server's newest-first order
       this.knownChats = [{ id: this.chatId, title: DEFAULT_CHAT_TITLE }, ...this.knownChats]
       this.messages = []
     } catch (e) {
-      this.error = String(e)
+      toastStore.push(String(e))
     }
   }
 
   async renameChat(id: string, title: string): Promise<void> {
-    this.error = null
     try {
       await renameChat(id, title)
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title } : c))
     } catch (e) {
-      this.error = String(e)
+      toastStore.push(String(e))
+    }
+  }
+
+  /**
+   * Ask the server to generate a session title from the chat's history and
+   * update the chat list with the returned title. Failures surface as a
+   * global toast; the caller keeps its own "in progress" flag around the
+   * call.
+   */
+  async generateTitle(id: string): Promise<void> {
+    try {
+      const chat = await generateTitle(id)
+      this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title: chat.title } : c))
+    } catch (e) {
+      toastStore.push(String(e))
     }
   }
 
   async deleteChat(id: string): Promise<void> {
-    this.error = null
     try {
       await deleteChat(id)
       this.knownChats = this.knownChats.filter((c) => c.id !== id)
@@ -179,17 +192,16 @@ class ChatStore {
         this.messages = []
       }
     } catch (e) {
-      this.error = String(e)
+      toastStore.push(String(e))
     }
   }
 
   async send(text: string, images: { dataUrl: string }[], model: string): Promise<boolean> {
     const id = this.chatId.trim()
     if (!id) {
-      this.error = 'Select a chat first'
+      toastStore.push('Select a chat first')
       return false
     }
-    this.error = null
     this.streamError = null
     this.retrying = false
     this.streamReasoning = ''
@@ -307,7 +319,7 @@ class ChatStore {
       }
     } catch (e) {
       failed = true
-      this.error = String(e)
+      toastStore.push(String(e))
       // a fetch/parse failure may still have stored the run server-side (or
       // not): sync with the DB so a phantom optimistic message never sticks
       await this.reloadFromDb(id)

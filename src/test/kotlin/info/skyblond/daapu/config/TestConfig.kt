@@ -19,4 +19,5 @@ fun testAppConfig(mcpServers: List<McpServerConfig> = emptyList()) = AppConfig(
         extractModel = "bifrost/cerebras/gemma-4-31b",
         mergeModel = "bifrost/cerebras/gemma-4-31b",
     ),
+    title = TitleConfig(model = "bifrost/cerebras/gemma-4-31b"),
 )

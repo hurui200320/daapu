@@ -6,6 +6,7 @@ import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -71,9 +72,12 @@ class PersistChatService(
         // user input would leave a lone injection message in chat
         require(userParts.isNotEmpty()) { "Empty user message is not allowed" }
 
-        val loaded = chatStore.load(chatId)
-        val chatSstmVersion = loaded.sstmVersion
-        var chat = loaded.chat
+        val loaded = chatStore.load(chatId) ?: ChatEntry(
+            ChatInfo(chatId, DEFAULT_CHAT_TITLE),
+            ChatContent(emptyList(), "")
+        )
+        val chatSstmVersion = loaded.content.sstmVersion
+        var chat = loaded.content.messages
 
         // history compaction: fire before the round when the measured prompt
         // size (the last round's provider-reported input tokens) crosses the
@@ -168,7 +172,7 @@ class PersistChatService(
 
         // only the success path stores: a failed run never reaches here
         chat = chat.stripInjection(contextInjection)
-        chatStore.store(chatId, ChatStoreEntry(chat, sstm.version))
+        chatStore.store(chatId, ChatContent(chat, sstm.version))
     }
 
     private sealed interface HandTerminal {

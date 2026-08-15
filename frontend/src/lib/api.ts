@@ -36,6 +36,13 @@ export async function renameChat(chatId: string, title: string): Promise<void> {
   if (!res.ok) throw new Error(await parseError(res))
 }
 
+/** Generate a session title from the chat's history; returns the new title. */
+export async function generateTitle(chatId: string): Promise<ChatInfo> {
+  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/title`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
 export async function deleteChat(chatId: string): Promise<void> {
   const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await parseError(res))

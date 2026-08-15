@@ -226,10 +226,10 @@ class SstmExtractionServiceTest {
         val e = assertFailsWith<IllegalStateException> {
             extractor.processDiscardedMessages(listOf(userMessage("u1")))
         }
-        assertTrue(
-            e.message!!.contains("output_budget_exhausted"),
-            "the error should name the failure: ${e.message}",
-        )
+        // the outer message names the wrapper only; the detail lives on the cause
+        assertEquals("SSTM extraction failed", e.message)
+        val cause = assertIs<IllegalStateException>(e.cause)
+        assertTrue(cause.message!!.contains("output_budget_exhausted"))
         assertEquals(1, hand.completeRequests.size, "only the extractor round ran")
         assertTrue(sstm.created.isEmpty(), "a truncated extraction must not feed the merger")
     }

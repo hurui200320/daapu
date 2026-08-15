@@ -6,11 +6,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonObject
 
-data class ChatStoreEntry(
-    val chat: List<ChatMessage>,
-    val sstmVersion: String
-)
-
 /**
  * Framework-neutral chat DTOs, owned by this project. The shape mirrors the
  * hand-pi service's needs (pi-ai's message model) closely, so the hand's

@@ -74,6 +74,9 @@ class ConfigTest {
                     "extractModel": "bifrost/y",
                     "mergeModel": "bifrost/z",
                 },
+                "title": {
+                    "model": "bifrost/t",
+                },
             }
             """.trimIndent()
         )
@@ -84,6 +87,7 @@ class ConfigTest {
         assertEquals("http://localhost:8000", config.providers["bifrost"]?.baseUrl)
         assertEquals(9090, config.server.port)
         assertEquals("./config.schema.json", config.schema)
+        assertEquals("bifrost/t", config.title.model)
 
         val exa = config.mcp.servers[0]
         assertEquals("exa", exa.namespace)
@@ -117,6 +121,7 @@ class ConfigTest {
                     },
                 },
                 "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "title": { "model": "t" },
             }
             """.trimIndent()
         )
@@ -133,6 +138,7 @@ class ConfigTest {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "title": { "model": "t" },
             }
             """.trimIndent()
         )
@@ -151,6 +157,7 @@ class ConfigTest {
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
                 "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "title": { "model": "t" },
             }
             """.trimIndent()
         )
@@ -172,6 +179,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
                     "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "title": { "model": "t" },
                 }
                 """.trimIndent()
             )
@@ -221,6 +229,7 @@ class ConfigTest {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
                 "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "title": { "model": "t" },
             }
             """.trimIndent()
         )
@@ -244,6 +253,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
                     "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "title": { "model": "t" },
                 }
                 """.trimIndent()
             )
@@ -293,6 +303,7 @@ class ConfigTest {
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "server": { "port": 0 },
                     "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "title": { "model": "t" },
                 }
                 """.trimIndent()
             )
@@ -307,6 +318,7 @@ class ConfigTest {
         assertEquals(8080, example.server.port)
         assertTrue(example.providers.containsKey("bifrost"))
         assertTrue(example.mcp.servers.isNotEmpty())
+        assertTrue(example.title.model.isNotBlank())
     }
 
     @Test
@@ -410,7 +422,8 @@ class ConfigTest {
                     "compactModel": "bifrost/x",
                     "extractModel": "bifrost/y",
                     "mergeModel": "bifrost/z"
-                }
+                },
+                "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
         ).memory
@@ -443,7 +456,8 @@ class ConfigTest {
                     "memory": {
                         "compactModel": "bifrost/x",
                         "extractModel": "bifrost/y"
-                    }
+                    },
+                    "title": { "model": "bifrost/t" }
                 }
                 """.trimIndent()
             )
@@ -460,5 +474,78 @@ class ConfigTest {
             ).validate()
         }
         assertTrue(blank.message!!.contains("mergeModel"))
+    }
+
+    @Test
+    fun `title config decodes`() {
+        val decoded = decodeAppConfig(
+            """
+            {
+                "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                "providers": {},
+                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "title": { "model": "bifrost/t" }
+            }
+            """.trimIndent()
+        ).title
+        assertEquals("bifrost/t", decoded.model)
+        assertEquals(0, decoded.lastNRound, "lastNRound defaults to 0 (the whole history)")
+    }
+
+    @Test
+    fun `title config decodes lastNRound`() {
+        val decoded = decodeAppConfig(
+            """
+            {
+                "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                "providers": {},
+                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "title": { "model": "bifrost/t", "lastNRound": 3 }
+            }
+            """.trimIndent()
+        ).title
+        assertEquals(3, decoded.lastNRound)
+    }
+
+    @Test
+    fun `title config requires the model id`() {
+        // the model is required: a config without the title section or the
+        // model id must fail at decode, not fall back to a default
+        assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "title": {}
+                }
+                """.trimIndent()
+            )
+        }
+    }
+
+    @Test
+    fun `title config validation`() {
+        val blank = assertFailsWith<IllegalArgumentException> {
+            TitleConfig(model = "  ").validate()
+        }
+        assertTrue(blank.message!!.contains("title.model"))
+
+        val negative = assertFailsWith<IllegalArgumentException> {
+            TitleConfig(model = "t", lastNRound = -1).validate()
+        }
+        assertTrue(negative.message!!.contains("title.lastNRound"))
     }
 }

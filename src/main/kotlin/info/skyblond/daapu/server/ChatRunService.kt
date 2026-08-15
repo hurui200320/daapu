@@ -5,16 +5,13 @@ import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.model.ModelProvider
+import info.skyblond.daapu.agent.oneshot.TitleGenerator
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
 import info.skyblond.daapu.config.AppConfig
-import info.skyblond.daapu.db.Chats
-import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
-import info.skyblond.daapu.db.newChatId
-import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HttpHandClient
@@ -23,13 +20,7 @@ import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
-import org.jetbrains.exposed.v1.core.SortOrder
-import org.jetbrains.exposed.v1.core.eq
-import org.jetbrains.exposed.v1.jdbc.deleteWhere
-import org.jetbrains.exposed.v1.jdbc.insert
-import org.jetbrains.exposed.v1.jdbc.selectAll
-import org.jetbrains.exposed.v1.jdbc.update
-import java.util.UUID
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
 
@@ -53,9 +44,11 @@ class ChatRunSetup(
  * registry behind the hand's tool callbacks, `hand/HandCallbackService.kt`)
  * are also reused. The one-shot pipeline services — compaction
  * (`ChatCompactionService`), SSTM extraction (`SstmExtractionService`),
+ * session titles (`TitleGenerator`),
  * and the persist loop itself (`PersistChatService`) — are stateless
  * across runs and are constructed once here as well; their models come
- * from the REQUIRED `memory.compactModel/extractModel/mergeModel` config,
+ * from the REQUIRED `memory.compactModel/extractModel/mergeModel` +
+ * `title.model` config,
  * resolved once at construction (never the run's model).
  */
 class ChatRunService(
@@ -69,6 +62,9 @@ class ChatRunService(
     private val sstmService: SstmService = PostgresSstmService(),
     private val hand: HandClient = HttpHandClient(config.hand.baseUrl, config.hand.token),
     internal val handCallback: HandCallbackService = HandCallbackService(config.hand.token),
+    // all chats-table access (list/create/rename/delete/title) goes through
+    // this seam, so the service holds no raw DB calls (tests inject a fake)
+    private val chatStore: ChatStore = PostgresChatStore(),
 ) : AutoCloseable {
 
     // PoC: the catalog pins its models to the bifrost gateway (see
@@ -85,7 +81,6 @@ class ChatRunService(
             )
         )
     )
-    private val chatStore: ChatStore = PostgresChatStore()
     private val systemPrompt = renderMainAgentSystemPrompt(true)
     private val memoryConfig = config.memory
 
@@ -110,9 +105,14 @@ class ChatRunService(
         }
         model
     }
+    private val titleModel = config.title.model.let { id ->
+        modelCatalog.findModel(id)
+            ?: throw IllegalArgumentException("title.model '$id' is not in the model catalog")
+    }
 
     // one-shot pipeline services: stateless across runs, so a single
     // instance is shared by every concurrent chat run
+    private val titleGenerator = TitleGenerator(titleModel, hand, config.title.lastNRound)
     private val compactionService = ChatCompactionService(compactModel, hand)
     private val sstmExtractionService = SstmExtractionService(
         extractModel = extractModel,
@@ -145,14 +145,7 @@ class ChatRunService(
         )
     }
 
-    suspend fun listChats(): List<ChatInfo> = withTransaction {
-        Chats.selectAll()
-            // TODO: should add time to Chats, lastUpdatedAt
-            .orderBy(Chats.id to SortOrder.DESC)
-            // TODO: pagination?
-            .limit(200)
-            .map { row -> ChatInfo(row[Chats.id], row[Chats.title]) }
-    }
+    suspend fun listChats(): List<ChatInfo> = chatStore.listChats()
 
     /**
      * Create a chat: a row with the default title and empty history is
@@ -160,14 +153,7 @@ class ChatRunService(
      * renameable before the first run. The turn loop's store upsert only
      * touches `id` + `chat_json`, so the title survives every run untouched.
      */
-    suspend fun newChat(): ChatIdResponse = withTransaction {
-        val id = newChatId()
-        Chats.insert {
-            it[Chats.id] = id
-            it[Chats.title] = DEFAULT_CHAT_TITLE
-        }
-        ChatIdResponse(id)
-    }
+    suspend fun newChat(): ChatIdResponse = ChatIdResponse(chatStore.newChat().id)
 
     /**
      * Rename a chat. Returns null when the chat doesn't exist.
@@ -177,11 +163,26 @@ class ChatRunService(
      * in-flight run cannot clobber a rename (unlike a delete, which the lock
      * guards against the upsert resurrecting the row).
      */
-    suspend fun renameChat(chatId: String, title: String): ChatInfo? = withTransaction {
-        val updated = Chats.update({ Chats.id eq chatId }) {
-            it[Chats.title] = title
-        }
-        if (updated == 0) null else ChatInfo(chatId, title)
+    suspend fun renameChat(chatId: String, title: String): ChatInfo? =
+        chatStore.rename(chatId, title)
+
+    /**
+     * Generate a session title from the chat's stored history and persist it.
+     * Returns null when the chat doesn't exist.
+     *
+     * The row is read exactly once ([ChatStore.load]): an empty history (a
+     * fresh chat) short-circuits to a no-op — the current title is returned
+     * unchanged and the LLM is never called
+     * ([TitleGenerator.generateTitle]), so a custom title on a fresh chat is
+     * never clobbered. A chat deleted after the read (before the rename)
+     * returns null (the rename finds no row).
+     */
+    suspend fun generateTitle(chatId: String): ChatInfo? {
+        val entry = chatStore.load(chatId) ?: return null
+        if (entry.content.messages.isEmpty()) return entry.info
+        return chatStore.rename(
+            chatId, titleGenerator.generateTitle(entry.content.messages)
+        )
     }
 
     /**
@@ -211,13 +212,14 @@ class ChatRunService(
         }
         val mutex = lock
         return try {
-            withTransaction { Chats.deleteWhere { Chats.id eq chatId } > 0 }
+            chatStore.delete(chatId)
         } finally {
             mutex?.unlock()
         }
     }
 
-    suspend fun chat(chatId: String): List<ChatMessage> = chatStore.load(chatId).chat
+    suspend fun chat(chatId: String): List<ChatMessage> =
+        chatStore.load(chatId)?.content?.messages ?: emptyList()
 
     /**
      * Validate and map an incoming message. Throws ktor's

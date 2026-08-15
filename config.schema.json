@@ -8,7 +8,8 @@
   "required": [
     "database",
     "providers",
-    "memory"
+    "memory",
+    "title"
   ],
   "properties": {
     "$schema": {
@@ -98,6 +99,25 @@
           "type": "string",
           "minLength": 1,
           "description": "Required catalog model id for the memory merger tool loop (must support tool calls)."
+        }
+      }
+    },
+    "title": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model"],
+      "description": "Session-title generation settings (agent/oneshot/TitleGenerator.kt): the model id is REQUIRED, resolved once at ChatRunService construction like the memory pipeline models (never the run's model).",
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required catalog model id for the session-title generator."
+        },
+        "lastNRound": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "How many trailing user rounds of the history feed the title generator; 0 (default) means the whole history."
         }
       }
     },

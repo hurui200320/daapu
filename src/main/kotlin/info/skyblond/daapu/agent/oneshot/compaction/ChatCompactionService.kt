@@ -76,24 +76,19 @@ class ChatCompactionService(
             ),
         )
 
-        val response = try {
+        val summary = try {
             hand.complete(
                 HandCompleteRequest(
                     model = model.toHandModelSpec(),
                     messages = chat,
                     systemPrompt = renderSystemPrompt(500),
                 )
-            )
+            ).checkAndGetTextResp()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            throw IllegalStateException(
-                "Compaction summarization failed; the history was left untouched",
-                e,
-            )
+            throw IllegalStateException("Compaction summarization failed", e)
         }
-
-        val summary = response.checkAndGetTextResp()
         val summaryMessage = ChatMessage(
             role = ChatMessageRole.User,
             parts = listOf(ChatMessagePart.Text(COMPACTION_HEADER + summary)),

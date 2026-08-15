@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.MemoryConfig
+import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
 import io.ktor.server.plugins.BadRequestException
 import kotlin.test.Test
@@ -164,5 +165,15 @@ class ChatRunServiceTest {
         assertFailsWith<IllegalArgumentException> {
             ChatRunService(testAppConfig().copy(memory = valid.copy(mergeModel = "bifrost/nope")))
         }
+    }
+
+    @Test
+    fun `an unknown title model id fails fast at construction`() {
+        // same as the memory pipeline models: the title generator's model is
+        // resolved once at startup, so a typo fails here, not on the button
+        val e = assertFailsWith<IllegalArgumentException> {
+            ChatRunService(testAppConfig().copy(title = TitleConfig(model = "bifrost/nope")))
+        }
+        assertTrue(e.message!!.contains("title.model"), "the error should name the config key: ${e.message}")
     }
 }

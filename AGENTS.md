@@ -58,7 +58,15 @@ and a small TypeScript service (hand-pi). The pieces:
   `agent/chat/PostgresChatStore.store` is an upsert, so deleting mid-run would let
   the in-flight run resurrect the row. Lock entries are created atomically
   with the `tryLock` (`ConcurrentHashMap.compute`) and evicted on run
-  completion/delete, so dead chat ids don't accumulate.
+  completion/delete, so dead chat ids don't accumulate. All `chats`-table
+  access — list/create/rename/delete plus the message load/store — lives
+  behind the `ChatStore` interface (`agent/chat/ChatStore.kt`):
+  `ChatRunService` holds no raw DB calls, it delegates to the store
+  (injectable for tests like the `SstmService` seam). `load` returns the
+  full row as a `ChatEntry` (id + title + history + sstm version, or null
+  for a missing row); the small `ChatInfo` (id + title) is the wire shape
+  only — routes never return a full history. `renameChat`/`generateTitle`
+  deliberately take no per-chat lock (the upsert never touches the title).
 - **MCP tool servers** (`mcp/`, config under `mcp.*` in `config.jsonc`) —
   the official MCP Kotlin SDK (`io.modelcontextprotocol:kotlin-sdk-client`
   0.15.0, streamable-HTTP + stdio transports). `McpToolProvider` implements
@@ -133,13 +141,24 @@ and a small TypeScript service (hand-pi). The pieces:
     whole chat (injected message included), re-appends the injection
     together with the run's user parts so the retried round still carries
     the user input).
-  - Model resolution: `memory.compactModel/extractModel/mergeModel` are
+  - Model resolution: `memory.compactModel/extractModel/mergeModel` and the
+    `title.model` (session titles, `agent/oneshot/TitleGenerator.kt`, used by
+    `POST /api/chats/{id}/title`, which takes no per-chat lock — like rename,
+    the store upsert never touches the title — and titles from the last
+    stored history, so a stale title is fixed by re-generating; an empty chat
+    short-circuits to a no-op, leaving its title untouched; a
+    `ModelCapabilityException` (a title model that cannot see the stored
+    history) surfaces as a 400) are
     REQUIRED config (a missing id fails at config load) and catalog ids
     resolved once at ChatRunService construction (unknown ids and a merge
     model without tool-call support fail fast) — the one-shot services
-    (`ChatCompactionService`, `SstmExtractionService`, `PersistChatService`)
+    (`ChatCompactionService`, `SstmExtractionService`, `TitleGenerator`,
+    `PersistChatService`)
     are constructed once and shared by every run; a chat run's own model is
-    never used for the pipeline. Compactions emit no dedicated SSE event:
+    never used for the pipeline. `title.lastNRound` (default `0`) caps the
+    history fed to the title model to the last N user rounds — the title
+    generator reads the chat row exactly once, never the injection (stripped
+    before every store). Compactions emit no dedicated SSE event:
     the frontend resyncs the chat after the run (done/error), which presents
     the compacted history.
 - **frontend/** — Svelte 5 + Vite + TypeScript dev server (no build step wired
@@ -148,12 +167,17 @@ and a small TypeScript service (hand-pi). The pieces:
   lucide icons, highlight.js code blocks. It proxies `/api` to the ktor
   server; ktor serves the API only.
   - Layout: collapsible glass sidebar (chat list + search filter + rename/
-    delete dropdowns via dialogs + Memories nav), centered `max-w-3xl`
+    delete dropdowns via dialogs, generate-title action, + Memories nav), centered `max-w-3xl`
     message column, floating rounded composer with circular send button
     (disabled while a run is streaming).
   - State lives in `src/lib/chat-store.svelte.ts` (module-scope singleton —
     `$effect` runes are NOT usable there; the model-picker persistence lives
-    in `App.svelte`). The SSE event semantics are preserved verbatim:
+    in `App.svelte`). Transient action errors (sidebar CRUD, chat load, send
+    failures) surface as global toasts (`lib/toast-store.svelte.ts`, a
+    fixed top-right stack rendered in `App.svelte`); contextual errors stay
+    tied to their view — the chat view's run-error banner (`streamError`)
+    and the memories view's inline error. The SSE event semantics are
+    preserved verbatim:
     tool-round commits, retry wipes, DB resync on done/error/abnormal close,
     optimistic user message; a send that never stores (error/connection
     closed) restores the composer draft. There is no client-side stop: the

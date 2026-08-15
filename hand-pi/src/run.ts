@@ -191,13 +191,7 @@ export async function executeRun(
       while (true) {
         attempt++;
         const roundOutcome = await streamOneRound(
-          model,
-          history,
-          tools,
-          request,
-          emit,
-          signal,
-          idleTimeoutMs,
+          model, history, tools, request, emit, signal, idleTimeoutMs,
         );
         if (roundOutcome.outcome === "error") {
           if (roundOutcome.aborted) {

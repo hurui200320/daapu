@@ -55,6 +55,14 @@
     "extractModel": "bifrost/cerebras/gemma-4-31b",
     "mergeModel": "bifrost/cerebras/gemma-4-31b"
   },
+  // Session-title generation (agent/oneshot/TitleGenerator.kt): the model id
+  // is REQUIRED and resolved once at startup, like the memory pipeline
+  // models; it is never the chat run's own model. lastNRound caps the
+  // history fed to the title model to the last N user rounds (0 = all).
+  "title": {
+    "model": "bifrost/cerebras/gemma-4-31b",
+    "lastNRound": 0
+  },
   // The hand-pi execution service (hand-pi/): a stateless
   // Node service that owns LLM execution (streaming, dialects, tool-call
   // accumulation, retries, usage). Run it with the same token:

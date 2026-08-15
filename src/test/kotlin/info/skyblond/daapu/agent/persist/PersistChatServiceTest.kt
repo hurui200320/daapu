@@ -1,17 +1,18 @@
 package info.skyblond.daapu.agent.persist
 
-import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
-import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
+import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
@@ -20,11 +21,7 @@ import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -589,7 +586,11 @@ class PersistChatServiceTest {
     private fun answer(text: String, inputTokens: Int = 100): ChatMessage = ChatMessage(
         ChatMessageRole.Assistant,
         listOf(ChatMessagePart.Text(text)),
-        meta = ChatMessageMeta(inputTokens = inputTokens, outputTokens = 10, totalTokens = inputTokens + 10),
+        meta = ChatMessageMeta(
+            inputTokens = inputTokens,
+            outputTokens = 10,
+            totalTokens = inputTokens + 10
+        ),
         finishReason = "stop",
     )
 
@@ -726,10 +727,10 @@ class PersistChatServiceTest {
             },
         )
         val e = assertIs<IllegalStateException>(outcome.error)
-        assertTrue(
-            e.message!!.contains("One-shot call failed (output_budget_exhausted)"),
-            "error should explain the failure: ${e.message}",
-        )
+        // the outer message names the wrapper only; the detail lives on the cause
+        assertEquals("Compaction summarization failed", e.message)
+        val cause = assertIs<IllegalStateException>(e.cause)
+        assertTrue(cause.message!!.contains("One-shot call failed (output_budget_exhausted)"))
         assertEquals(
             2,
             outcome.hand.requests.size,
@@ -1036,14 +1037,30 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
     var storedSstmVersion: String? = null
         private set
 
-    override suspend fun load(chatId: String): ChatStoreEntry =
-        ChatStoreEntry(stored ?: emptyList(), storedSstmVersion ?: "")
+    override suspend fun load(chatId: String): ChatEntry? = stored?.let {
+        ChatEntry(
+            ChatInfo(chatId, DEFAULT_CHAT_TITLE),
+            ChatContent(it, storedSstmVersion ?: "")
+        )
+    }
 
-    override suspend fun store(chatId: String, chat: ChatStoreEntry) {
+    override suspend fun store(chatId: String, chat: ChatContent) {
         storeCount++
-        stored = chat.chat
+        stored = chat.messages
         storedSstmVersion = chat.sstmVersion
     }
+
+    // the chat-row CRUD methods are not part of this fake's contract (the
+    // persist loop tests only exercise load/store)
+    override suspend fun listChats(): List<ChatInfo> =
+        error("not exercised by the persist loop tests")
+
+    override suspend fun newChat(): ChatInfo = error("not exercised by the persist loop tests")
+    override suspend fun rename(chatId: String, title: String): ChatInfo? =
+        error("not exercised by the persist loop tests")
+
+    override suspend fun delete(chatId: String): Boolean =
+        error("not exercised by the persist loop tests")
 }
 
 /**
@@ -1080,20 +1097,36 @@ private class InMemorySstmService(
  * at the same time.
  */
 private class ConcurrentChatStore : ChatStore {
-    private val chats = ConcurrentHashMap<String, ChatStoreEntry>()
+    private val chats = ConcurrentHashMap<String, ChatContent>()
 
     fun seed(chatId: String, chat: List<ChatMessage>, sstmVersion: String = "") {
-        chats[chatId] = ChatStoreEntry(chat, sstmVersion)
+        chats[chatId] = ChatContent(chat, sstmVersion)
     }
 
-    override suspend fun load(chatId: String): ChatStoreEntry =
-        chats[chatId] ?: ChatStoreEntry(emptyList(), "")
+    override suspend fun load(chatId: String): ChatEntry? = chats[chatId]?.let {
+        ChatEntry(
+            ChatInfo(chatId, DEFAULT_CHAT_TITLE),
+            ChatContent(it.messages, it.sstmVersion)
+        )
+    }
 
-    override suspend fun store(chatId: String, chat: ChatStoreEntry) {
+    override suspend fun store(chatId: String, chat: ChatContent) {
         chats[chatId] = chat
     }
 
-    fun stored(chatId: String): List<ChatMessage>? = chats[chatId]?.chat
+    // the chat-row CRUD methods are not part of this fake's contract (the
+    // persist loop concurrency test only exercises load/store)
+    override suspend fun listChats(): List<ChatInfo> =
+        error("not exercised by the persist loop tests")
+
+    override suspend fun newChat(): ChatInfo = error("not exercised by the persist loop tests")
+    override suspend fun rename(chatId: String, title: String): ChatInfo? =
+        error("not exercised by the persist loop tests")
+
+    override suspend fun delete(chatId: String): Boolean =
+        error("not exercised by the persist loop tests")
+
+    fun stored(chatId: String): List<ChatMessage>? = chats[chatId]?.messages
 }
 
 /**

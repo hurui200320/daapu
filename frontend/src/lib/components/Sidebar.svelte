@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, Brain, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Search, SquarePen, Trash2 } from '@lucide/svelte'
+  import { Bot, Brain, Loader2, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2 } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
@@ -14,6 +14,9 @@
   let query = $state('')
   let renameTarget = $state<ChatInfo | null>(null)
   let deleteTarget = $state<ChatInfo | null>(null)
+  // in-flight title generations per chat id: concurrent generations on
+  // different chats each keep their own spinner
+  const titleGeneratingIds = $state<Set<string>>(new Set())
 
   $effect(() => {
     localStorage.setItem('daapu.sidebar-collapsed', String(collapsed))
@@ -36,6 +39,15 @@
   async function newChat() {
     await store.createNewChat()
     onNavigate('chat')
+  }
+
+  async function generateTitleFor(chat: ChatInfo) {
+    titleGeneratingIds.add(chat.id)
+    try {
+      await store.generateTitle(chat.id)
+    } finally {
+      titleGeneratingIds.delete(chat.id)
+    }
   }
 </script>
 
@@ -103,7 +115,7 @@
             class="min-w-0 flex-1 rounded-lg py-1.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
             disabled={store.streaming}
             onclick={() => pickChat(chat.id)}
-            title={chat.id}
+            title={chat.title}
           >
             <span class="block truncate text-sm font-medium">{chat.title}</span>
           </button>
@@ -121,12 +133,29 @@
                 align="start"
                 sideOffset={6}
               >
+                <div class="border-b border-border px-2 py-1.5">
+                  <span class="block max-w-64 break-words text-xs leading-snug text-muted-foreground">
+                    {chat.title}
+                  </span>
+                </div>
                 <DropdownMenu.Item
                   class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
                   onSelect={() => (renameTarget = chat)}
                 >
                   <Pencil class="size-3.5" />
                   Rename
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+                  disabled={titleGeneratingIds.has(chat.id)}
+                  onSelect={() => void generateTitleFor(chat)}
+                >
+                  {#if titleGeneratingIds.has(chat.id)}
+                    <Loader2 class="size-3.5 animate-spin" />
+                  {:else}
+                    <Sparkles class="size-3.5" />
+                  {/if}
+                  {titleGeneratingIds.has(chat.id) ? 'Generating…' : 'Generate title'}
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive"

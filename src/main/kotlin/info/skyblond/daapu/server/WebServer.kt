@@ -1,6 +1,7 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.agent.chat.ChatCodec
+import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.handToolCallback
 import info.skyblond.daapu.mcp.McpToolProvider
@@ -72,6 +73,17 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
         exception<NotFoundException> { call, cause ->
             call.respond(HttpStatusCode.NotFound, ErrorResponse(cause.message ?: "Not found"))
         }
+        // a capability mismatch (e.g. a text-only `title.model` with image
+        // history) is a configuration error the client can act on: surface
+        // the reason as a 400 instead of an opaque 500. In-run capability
+        // failures never reach here (they fail the SSE stream, which handles
+        // them itself).
+        exception<ModelCapabilityException> { call, cause ->
+            call.respond(
+                HttpStatusCode.BadRequest,
+                ErrorResponse(cause.message ?: "Model capability mismatch")
+            )
+        }
         // must be registered before ContentTransformationException: StatusPages
         // picks the nearest registered class, so a directly thrown
         // UnsupportedMediaTypeException (e.g. from multipart handling) gets its
@@ -113,6 +125,13 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                     if (title.isEmpty()) throw BadRequestException("Chat title is empty")
                     call.respond(
                         service.renameChat(id, title)
+                            ?: throw NotFoundException("Chat $id not found")
+                    )
+                }
+                post("/{chatId}/title") {
+                    val id = call.chatIdParam()
+                    call.respond(
+                        service.generateTitle(id)
                             ?: throw NotFoundException("Chat $id not found")
                     )
                 }
@@ -215,7 +234,11 @@ private suspend fun handleChatMessage(call: ApplicationCall, service: ChatRunSer
 }
 
 private fun errorEventData(error: Throwable): String = buildJsonObject {
-    put("message", error.message ?: error.toString())
+    val rootMessage = error.message ?: error.toString()
+    val causeMessage = error.cause?.let { it.message ?: it.toString() }
+        ?.let { "\nCaused by: $it" } ?: ""
+
+    put("message", rootMessage + causeMessage)
     put("type", error::class.simpleName ?: "Unknown")
 }.toString()
 

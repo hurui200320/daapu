@@ -232,7 +232,10 @@ class ChatCompactionServiceTest {
         val e = assertFailsWith<IllegalStateException> {
             ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
         }
-        assertTrue(e.message!!.contains("no text"), "the error should name the cause: ${e.message}")
+        // the outer message names the wrapper only; the detail lives on the cause
+        assertEquals("Compaction summarization failed", e.message)
+        val cause = assertIs<IllegalStateException>(e.cause)
+        assertTrue(cause.message!!.contains("no text"))
     }
 
     @Test
@@ -250,10 +253,9 @@ class ChatCompactionServiceTest {
         val e = assertFailsWith<IllegalStateException> {
             ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
         }
-        assertTrue(
-            e.message!!.contains("One-shot call failed (output_budget_exhausted)"),
-            "the error should name the failure: ${e.message}",
-        )
+        assertEquals("Compaction summarization failed", e.message)
+        val cause = assertIs<IllegalStateException>(e.cause)
+        assertTrue(cause.message!!.contains("One-shot call failed (output_budget_exhausted)"))
     }
 
     @Test

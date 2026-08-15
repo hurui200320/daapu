@@ -4,6 +4,7 @@
   import ChatView from './lib/components/ChatView.svelte'
   import MemoriesView from './lib/components/MemoriesView.svelte'
   import Sidebar from './lib/components/Sidebar.svelte'
+  import { toastStore } from './lib/toast-store.svelte'
 
   let view = $state<'chat' | 'memories'>('chat')
 
@@ -39,4 +40,16 @@
       <MemoriesView />
     </div>
   </main>
+</div>
+
+<!-- global error notifications (top-right stack; click to dismiss) -->
+<div class="pointer-events-none fixed right-4 top-4 z-50 flex w-80 flex-col gap-2">
+  {#each toastStore.toasts as toast (toast.id)}
+    <button
+      onclick={() => toastStore.dismiss(toast.id)}
+      class="pointer-events-auto w-full break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-left text-sm text-destructive shadow-md backdrop-blur-xl"
+    >
+      {toast.message}
+    </button>
+  {/each}
 </div>

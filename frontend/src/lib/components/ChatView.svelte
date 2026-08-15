@@ -21,18 +21,11 @@
       <MessageList />
     </div>
   {/if}
-  {#if store.error || store.streamError}
+  {#if store.streamError}
     <div class="mx-auto w-full max-w-3xl space-y-2 px-4 pb-2">
-      {#if store.error}
-        <div class="break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {store.error}
-        </div>
-      {/if}
-      {#if store.streamError}
-        <div class="break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          run failed: {store.streamError}
-        </div>
-      {/if}
+      <div class="break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        run failed: {store.streamError}
+      </div>
     </div>
   {/if}
   <Composer />

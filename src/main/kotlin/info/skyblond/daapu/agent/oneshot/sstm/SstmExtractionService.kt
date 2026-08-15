@@ -88,15 +88,20 @@ class SstmExtractionService(
             ),
         )
 
-        val response = hand.complete(
-            HandCompleteRequest(
-                model = extractModel.toHandModelSpec(),
-                messages = chat,
-                systemPrompt = renderExtractorSystemPrompt(),
-            )
-        )
         // TODO: when ELTM is ready, detect SSTM length and trigger ELTM
-        return response.checkAndGetTextResp()
+        return try {
+            hand.complete(
+                HandCompleteRequest(
+                    model = extractModel.toHandModelSpec(),
+                    messages = chat,
+                    systemPrompt = renderExtractorSystemPrompt(),
+                )
+            ).checkAndGetTextResp()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw IllegalStateException("SSTM extraction failed", e)
+        }
     }
 
     /**
