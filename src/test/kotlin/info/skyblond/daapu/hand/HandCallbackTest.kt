@@ -385,10 +385,6 @@ class HandCallbackTest {
     private class SlowProvider(
         private val delayMs: Long = 5_000,
     ) : ToolProvider {
-        /** true once the execution ended, cancelled or not. */
-        @Volatile
-        var ended = false
-
         /** true when the execution ended through cancellation. */
         @Volatile
         var cancelled = false
@@ -406,8 +402,6 @@ class HandCallbackTest {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 cancelled = true
                 throw e
-            } finally {
-                ended = true
             }
         }
     }

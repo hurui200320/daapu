@@ -6,13 +6,11 @@ import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.oneshot.sstm.MergeMemoryToolProvider
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.*
-import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
-import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.testutil.RecordingSstmService
+import info.skyblond.daapu.testutil.addMemoryRound
+import info.skyblond.daapu.testutil.mergeRunFlow
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import java.time.Instant
 import kotlin.test.*
 
 /**
@@ -23,38 +21,8 @@ import kotlin.test.*
  */
 class ChatRunServiceDeleteTest {
 
-    /** A fake [SstmService] recording writes. */
-    private class FakeSstmService : SstmService {
-        val created = mutableListOf<String>()
-
-        override suspend fun listMemories(): MemoriesWithVersion =
-            MemoriesWithVersion(emptyList(), "test-version")
-
-        override suspend fun createMemory(content: String): ShortTermMemory {
-            created += content
-            return ShortTermMemory(created.size.toLong(), Instant.EPOCH, content)
-        }
-
-        override suspend fun updateMemory(id: Long, content: String): ShortTermMemory =
-            ShortTermMemory(id, Instant.EPOCH, content)
-
-        override suspend fun deleteMemory(id: Long): Boolean = true
-    }
-
     private fun user(text: String) =
         ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
-
-    /** An assistant message whose only part is one add_memory tool call. */
-    private fun addMemoryRound() = assistantMessage(
-        parts = listOf(
-            ChatMessagePart.ToolCall(
-                id = "call_1",
-                tool = "add_memory",
-                args = buildJsonObject { put("content", "likes coffee") },
-            )
-        ),
-        finishReason = "tool_calls",
-    )
 
     /**
      * A fake hand dispatching on the one-shot system prompts: the extractor
@@ -76,26 +44,12 @@ class ChatRunServiceDeleteTest {
         },
     )
 
-    /** A scripted merge-run flow: one add_memory round (executed through
-     * the merge provider, standing in for the hand's tool callback) followed
-     * by the final confirmation. */
-    private suspend fun mergeRunFlow(sstm: SstmService): List<HandEvent> {
-        val provider = MergeMemoryToolProvider(sstm)
-        val round = addMemoryRound()
-        return listOf(HandEvent.AssistantMessage(round)) +
-                toolRoundEvents(round, provider) +
-                listOf(
-                    HandEvent.AssistantMessage(assistantMessage("done")),
-                    HandEvent.Done("stop"),
-                )
-    }
-
     @Test
     fun `delete extracts SSTM from the chat history before removing the row`() = runBlocking {
         val store = FakeChatStore()
         val history = listOf(user("u1"), assistantMessage("a1"), user("u2"))
         store.seed("chat-1", chat = history)
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val hand = oneShotHand(sstm)
         val service =
             ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
@@ -116,7 +70,7 @@ class ChatRunServiceDeleteTest {
         val store = FakeChatStore()
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         var rounds = 0
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val hand = oneShotHand(
             sstm = sstm,
             extraction = {
@@ -150,12 +104,12 @@ class ChatRunServiceDeleteTest {
         // history instead of discarding unmerged memories
         val store = FakeChatStore()
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val provider = MergeMemoryToolProvider(sstm)
         val hand = oneShotHand(
             sstm = sstm,
             merge = {
-                val round = addMemoryRound()
+                val round = addMemoryRound("call_1", "likes coffee")
                 listOf(HandEvent.AssistantMessage(round)) +
                         toolRoundEvents(round, provider) +
                         listOf(
@@ -183,7 +137,7 @@ class ChatRunServiceDeleteTest {
             testAppConfig(),
             hand = hand,
             chatStore = FakeChatStore(),
-            sstmService = FakeSstmService(),
+            sstmService = RecordingSstmService(),
         )
 
         assertFalse(service.deleteChat("nope"))
@@ -199,7 +153,7 @@ class ChatRunServiceDeleteTest {
             testAppConfig(),
             hand = hand,
             chatStore = store,
-            sstmService = FakeSstmService(),
+            sstmService = RecordingSstmService(),
         )
 
         assertTrue(service.deleteChat("chat-1"))
@@ -213,7 +167,7 @@ class ChatRunServiceDeleteTest {
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         var concurrentAcquireConflicted = false
         lateinit var service: ChatRunService
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val hand = oneShotHand(
             sstm = sstm,
             extraction = {

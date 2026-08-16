@@ -49,7 +49,7 @@ function statusForErrorType(type: string): number {
   }
 }
 
-export async function readBody(req: IncomingMessage, res: ServerResponse): Promise<string> {
+export async function readBody(req: IncomingMessage): Promise<string> {
   const declaredLength = Number(req.headers["content-length"] ?? "0");
   if (declaredLength > MAX_BODY_BYTES) {
     throw new HandFailure({

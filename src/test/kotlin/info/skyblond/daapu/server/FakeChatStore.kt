@@ -27,8 +27,6 @@ class FakeChatStore : ChatStore {
 
     fun title(chatId: String): String? = rows[chatId]?.first
 
-    fun sstmVersion(chatId: String): String? = rows[chatId]?.third
-
     fun deleteRow(chatId: String) {
         rows.remove(chatId)
     }

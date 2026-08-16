@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFakeCallback, type FakeCallback } from "./fake-callback.js";
 import { startFakeUpstream, type FakeScenario } from "./fake-upstream.js";
 import { startServer } from "../src/main.js";
+import { SERVICE_VERSION } from "../src/routes.js";
 
 const TOKEN = "test-token";
 const TINY_PNG =
@@ -35,7 +36,7 @@ describe("/v1/health", () => {
       headers: { "x-daapu-token": TOKEN },
     });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, version: "0.1.0" });
+    expect(await response.json()).toEqual({ ok: true, version: SERVICE_VERSION });
   });
 
   it("rejects requests without a token", async () => {

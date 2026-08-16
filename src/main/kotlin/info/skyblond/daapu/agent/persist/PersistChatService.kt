@@ -175,7 +175,7 @@ class PersistChatService(
     }
 
     private sealed interface HandTerminal {
-        data class Done(val finishReason: String) : HandTerminal
+        data object Done : HandTerminal
 
         data class RunError(val type: String, val message: String) : HandTerminal
     }
@@ -236,7 +236,7 @@ class PersistChatService(
                     newChat = newChat + ChatMessage(ChatMessageRole.ToolResult, listOf(result))
                 }
 
-                is HandEvent.Done -> terminal = HandTerminal.Done(event.finishReason)
+                is HandEvent.Done -> terminal = HandTerminal.Done
                 is HandEvent.RunError -> terminal = HandTerminal.RunError(event.type, event.message)
             }
         }

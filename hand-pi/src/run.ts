@@ -28,7 +28,7 @@ import {
   type ToolSpec,
 } from "./types.js";
 
-export type FinishClassification =
+type FinishClassification =
   | { ok: true; finishReason: string }
   | { ok: false; error: HandError };
 
@@ -123,7 +123,7 @@ function fullInput(usage: NonNullable<PiAssistantMessage["usage"]>): number {
  * network failures, and truncated streams. Terminal: content_filter,
  * context overflow, and non-retryable 4xx responses.
  */
-export function isTransientError(message: PiAssistantMessage, contextWindow: number): boolean {
+function isTransientError(message: PiAssistantMessage, contextWindow: number): boolean {
   const text = message.errorMessage ?? "";
   if (text.includes(CONTENT_FILTER_MARKER)) {
     return false;
@@ -141,7 +141,7 @@ export function isTransientError(message: PiAssistantMessage, contextWindow: num
 }
 
 /** Exponential backoff: `100ms << attempt`, capped at 6.4s. */
-export function backoffDelayMs(attempt: number): number {
+function backoffDelayMs(attempt: number): number {
   return Math.min(100 * 2 ** (attempt - 1), 6400);
 }
 
@@ -585,7 +585,7 @@ async function postToolCallback(
 }
 
 /** Sleeps until the delay elapses (false) or the signal aborts (true). */
-export function sleepOrAbort(ms: number, signal: AbortSignal): Promise<boolean> {
+function sleepOrAbort(ms: number, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) {
     return Promise.resolve(true);
   }

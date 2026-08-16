@@ -77,7 +77,7 @@ export async function loadChat(chatId: string): Promise<ChatMessage[]> {
   return res.json()
 }
 
-export interface SendMessageRequest {
+interface SendMessageRequest {
   text?: string
   images?: { dataUrl: string }[]
   /** required by the server: no default model exists (the UI picks one per message) */

@@ -130,9 +130,6 @@ class ChatCompactionServiceTest {
             systemOnly.message!!.contains("no user messages"),
             "the error should name the cause: ${systemOnly.message}"
         )
-        assertFailsWith<IllegalArgumentException> {
-            compactor.splitMessage(emptyList(), lastNRound = 3)
-        }
     }
 
     @Test

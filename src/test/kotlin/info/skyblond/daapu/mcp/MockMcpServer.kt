@@ -17,7 +17,6 @@ import java.util.concurrent.atomic.AtomicInteger
 internal data class MockTool(
     val name: String,
     val description: String,
-    val inputSchema: JsonObject = buildJsonObject { put("type", JsonPrimitive("object")) },
     val handler: (JsonObject) -> MockToolReply,
 )
 
@@ -35,7 +34,6 @@ internal data class MockToolReply(val text: String, val isError: Boolean = false
 internal class MockMcpServer(
     private val tools: List<MockTool>,
     private val bindPort: Int = 0,
-    private val sessionRequired: Boolean = true,
     /** When true, `initialize` answers 500 (a server that cannot handshake). */
     private val failInitialize: Boolean = false,
 ) : Closeable {
@@ -84,7 +82,7 @@ internal class MockMcpServer(
         }
         val method = request["method"]?.jsonPrimitive?.content
 
-        if (sessionRequired && method != "initialize" && sessionId == null) {
+        if (method != "initialize" && sessionId == null) {
             respond(
                 exchange,
                 400,
@@ -96,7 +94,7 @@ internal class MockMcpServer(
                 })
             return
         }
-        if (sessionRequired && sessionId != null && sessionId !in issuedSessions) {
+        if (sessionId != null && sessionId !in issuedSessions) {
             respond(
                 exchange,
                 404,
@@ -150,7 +148,7 @@ internal class MockMcpServer(
                         add(buildJsonObject {
                             put("name", JsonPrimitive(tool.name))
                             put("description", JsonPrimitive(tool.description))
-                            put("inputSchema", tool.inputSchema)
+                            put("inputSchema", buildJsonObject { put("type", JsonPrimitive("object")) })
                         })
                     }
                 })

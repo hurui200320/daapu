@@ -6,7 +6,6 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
-import info.skyblond.daapu.agent.oneshot.sstm.MergeMemoryToolProvider
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
@@ -22,6 +21,7 @@ import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.testutil.mergeRunFlow
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
@@ -654,31 +654,6 @@ class PersistChatServiceTest {
         ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 4)))),
         answer(turnText(answerPrefix, 4), lastInputTokens),
     )
-
-    /**
-     * A scripted merge-run flow: one `add_memory` tool round (executed
-     * through the merge provider, standing in for the hand's tool callback)
-     * followed by the final confirmation.
-     */
-    private suspend fun mergeRunFlow(sstm: SstmService, content: String): List<HandEvent> {
-        val provider = MergeMemoryToolProvider(sstm)
-        val round = assistantMessage(
-            parts = listOf(
-                ChatMessagePart.ToolCall(
-                    id = "call_merge",
-                    tool = "add_memory",
-                    args = buildJsonObject { put("content", content) },
-                )
-            ),
-            finishReason = "tool_calls",
-        )
-        return listOf(HandEvent.AssistantMessage(round)) +
-                toolRoundEvents(round, provider) +
-                listOf(
-                    HandEvent.AssistantMessage(assistantMessage("done")),
-                    HandEvent.Done("stop"),
-                )
-    }
 
     @Test
     fun `pre-round compaction fires when the estimated prompt exceeds the trigger`() {

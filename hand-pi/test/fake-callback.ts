@@ -4,7 +4,7 @@ export interface ToolCallbackRequest {
   runId: string;
   id: string;
   name: string;
-  args: string;
+  args: unknown;
   /** The advertised tool budget, echoed back to the brain. */
   timeoutSeconds: number;
 }
@@ -19,7 +19,6 @@ interface QueueEntry {
 }
 
 export interface FakeCallback {
-  port: number;
   url: string;
   /** Respond to each callback with the next queued response. */
   scripted: (...responses: ToolCallbackResponse[]) => void;
@@ -50,7 +49,7 @@ export function startFakeCallback(): Promise<FakeCallback> {
       try {
         requests.push(JSON.parse(raw) as ToolCallbackRequest);
       } catch {
-        requests.push({ runId: "", id: "", name: "", args: raw });
+        requests.push({ runId: "", id: "", name: "", args: raw, timeoutSeconds: 0 });
       }
       if (hangNext) {
         // never answer; the client's abort closes the connection (note:
@@ -81,7 +80,6 @@ export function startFakeCallback(): Promise<FakeCallback> {
         return;
       }
       resolve({
-        port: address.port,
         url: `http://127.0.0.1:${address.port}`,
         scripted: (...responses) => {
           queue = [...queue, ...responses.map((response) => ({ delayMs: 0, response }))];

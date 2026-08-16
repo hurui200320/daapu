@@ -5,7 +5,7 @@ package info.skyblond.daapu.config
  * LLM (the values are placeholders; a chat run would fail, but every tested
  * path below either validates or fails before reaching them).
  */
-fun testAppConfig(mcpServers: List<McpServerConfig> = emptyList()) = AppConfig(
+fun testAppConfig() = AppConfig(
     database = DatabaseConfig(
         url = "jdbc:postgresql://localhost:5432/postgres",
         user = "postgres",
@@ -18,7 +18,7 @@ fun testAppConfig(mcpServers: List<McpServerConfig> = emptyList()) = AppConfig(
         )
     ),
     server = ServerConfig(port = 8080),
-    mcp = McpConfig(servers = mcpServers),
+    mcp = McpConfig(servers = emptyList()),
     memory = MemoryConfig(
         compactModel = "bifrost/cerebras/gemma-4-31b",
         extractModel = "bifrost/cerebras/gemma-4-31b",

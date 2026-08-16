@@ -36,7 +36,7 @@ const ZERO_USAGE: PiUsage = {
 };
 
 /** The full prompt size pi-ai's cache-subtracted usage represents. */
-export function fullInputTokens(usage: PiUsage): number {
+function fullInputTokens(usage: PiUsage): number {
   return (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
 }
 

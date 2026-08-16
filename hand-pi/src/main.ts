@@ -37,7 +37,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
     return;
   }
   if (req.method === "POST" && url.pathname === "/v1/run") {
-    const body = await readBody(req, res);
+    const body = await readBody(req);
     await handleRun(res, body, token, requestAbortSignal(res));
     return;
   }

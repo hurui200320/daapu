@@ -5,9 +5,9 @@
  * lowercase names — no framework type strings cross the API.
  */
 
-export type Role = 'user' | 'assistant' | 'tool_result'
+type Role = 'user' | 'assistant' | 'tool_result'
 
-export interface ChatMessageMeta {
+interface ChatMessageMeta {
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
@@ -23,17 +23,17 @@ export interface ChatMessage {
 
 export type ChatMessagePart = TextPart | ReasoningPart | ToolCallPart | ChatToolResultPart | ChatAttachmentPart
 
-export interface TextPart {
+interface TextPart {
   type: 'text'
   text: string
 }
 
-export interface ReasoningPart {
+interface ReasoningPart {
   type: 'reasoning'
   content: string
 }
 
-export interface ToolCallPart {
+interface ToolCallPart {
   type: 'tool_call'
   /** required by the format: a blank id would brick the chat on re-send */
   id: string
@@ -51,9 +51,9 @@ export interface ChatToolResultPart {
 }
 
 /** Text and attachments may also appear nested inside a tool_result. */
-export type ChatContentPart = TextPart | ChatAttachmentPart
+type ChatContentPart = TextPart | ChatAttachmentPart
 
-export type AttachmentKind = 'image' | 'video' | 'audio' | 'file'
+type AttachmentKind = 'image' | 'video' | 'audio' | 'file'
 
 export interface ChatAttachmentPart {
   type: 'attachment'
@@ -64,7 +64,7 @@ export interface ChatAttachmentPart {
 
 // URL attachment content is deliberately not supported (blocked at the
 // backend boundary) until a real use case exists.
-export type AttachmentContent = { type: 'base64'; base64: string }
+type AttachmentContent = { type: 'base64'; base64: string }
 
 export interface ModelInfo {
   id: string

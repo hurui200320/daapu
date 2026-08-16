@@ -12,8 +12,6 @@
 
   --background: oklch(0.16 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
@@ -30,8 +28,6 @@
   --input: oklch(1 0 0 / 30%);
   --ring: oklch(0.556 0 0);
   --sidebar: oklch(0.2 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --code-background: oklch(0.225 0 0);
   --code-foreground: oklch(0.875 0 0);
@@ -41,22 +37,18 @@
 
   /* chat layout metrics (llama.cpp webui's, mirrored) */
   --chat-form-area-height: 8rem;
-  --chat-form-padding-top: 6rem;
   --max-message-height: max(24rem, min(80dvh, calc(100dvh - var(--chat-form-area-height) - 12rem)));
 }
 
 @media (min-width: 640px) {
   :root {
     --chat-form-area-height: 24rem;
-    --chat-form-padding-top: 6rem;
   }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
@@ -73,8 +65,6 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
   --color-code-background: var(--code-background);
   --color-code-foreground: var(--code-foreground);

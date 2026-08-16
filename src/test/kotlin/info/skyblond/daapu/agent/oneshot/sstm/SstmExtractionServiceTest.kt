@@ -6,9 +6,10 @@ import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.hand.*
-import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.testutil.RecordingSstmService
+import info.skyblond.daapu.testutil.addMemoryRound
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -50,40 +51,13 @@ class SstmExtractionServiceTest {
         streamIdleTimeoutMs = 0,
     )
 
-    /** A fake [SstmService] recording writes. */
-    private class FakeSstmService(
-        private val memories: List<ShortTermMemory> = emptyList(),
-    ) : SstmService {
-        val created = mutableListOf<String>()
-        val updated = mutableListOf<Pair<Long, String>>()
-        val deleted = mutableListOf<Long>()
-
-        override suspend fun listMemories(): MemoriesWithVersion =
-            MemoriesWithVersion(memories, "test-version")
-
-        override suspend fun createMemory(content: String): ShortTermMemory {
-            created += content
-            return ShortTermMemory(created.size.toLong(), Instant.EPOCH, content)
-        }
-
-        override suspend fun updateMemory(id: Long, content: String): ShortTermMemory {
-            updated += id to content
-            return ShortTermMemory(id, Instant.EPOCH, content)
-        }
-
-        override suspend fun deleteMemory(id: Long): Boolean {
-            deleted += id
-            return true
-        }
-    }
-
     // ------------------------------------------------------------------
     // MergeMemoryToolProvider
     // ------------------------------------------------------------------
 
     @Test
     fun `memory tools execute against the service and track modification`() = runBlocking {
-        val sstm = FakeSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "old fact")))
+        val sstm = RecordingSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "old fact")))
         val provider = MergeMemoryToolProvider(sstm)
 
         val listResult = provider.execute(toolCall("c1", "list_memories", JsonObject(emptyMap())))
@@ -119,7 +93,7 @@ class SstmExtractionServiceTest {
 
     @Test
     fun `memory tools answer errors without modifying`() = runBlocking {
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val provider = MergeMemoryToolProvider(sstm)
 
         // missing required arguments (the wire format guarantees parsed
@@ -134,18 +108,6 @@ class SstmExtractionServiceTest {
     private fun toolCall(id: String, name: String, arguments: JsonObject) =
         ToolCallRequest(id = id, name = name, args = arguments)
 
-    /** An assistant message whose only part is one add_memory tool call. */
-    private fun addMemoryRound(id: String, content: String) = assistantMessage(
-        parts = listOf(
-            ChatMessagePart.ToolCall(
-                id = id,
-                tool = "add_memory",
-                args = buildJsonObject { put("content", content) },
-            )
-        ),
-        finishReason = "tool_calls",
-    )
-
     // ------------------------------------------------------------------
     // SstmExtractionService
     // ------------------------------------------------------------------
@@ -156,7 +118,7 @@ class SstmExtractionServiceTest {
         // add_memory round (executed through the merge provider, standing
         // in for the hand's tool callback) then the final confirmation
         var calls = 0
-        val sstm = FakeSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "existing fact")))
+        val sstm = RecordingSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "existing fact")))
         val mergeProvider = MergeMemoryToolProvider(sstm)
         val hand = FakeHand(
             runScript = {
@@ -187,7 +149,7 @@ class SstmExtractionServiceTest {
         val hand = FakeHand(
             runScript = { textRunFlow("Nothing worth remember.") },
         )
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val extractor = service(hand, sstm)
         extractor.processDiscardedMessages(listOf(userMessage("u1")))
         assertEquals(1, hand.requests.size, "only the extractor run happened")
@@ -197,7 +159,7 @@ class SstmExtractionServiceTest {
     @Test
     fun `extraction fails fast when the model cannot see the content`() = runBlocking {
         val hand = FakeHand()
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val textOnly = model("bifrost/cerebras/gpt-oss-120b")
         val extractor = SstmExtractionService(
             extractModel = textOnly,
@@ -228,7 +190,7 @@ class SstmExtractionServiceTest {
                 errorRunFlow("output_budget_exhausted", "output hit the token budget")
             },
         )
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val extractor = service(hand, sstm)
         val e = assertFailsWith<IllegalStateException> {
             extractor.processDiscardedMessages(listOf(userMessage("u1")))
@@ -247,7 +209,7 @@ class SstmExtractionServiceTest {
         // calls: the run loop fails it as empty_response, and the failed
         // merge must fail the whole extraction pipeline
         var calls = 0
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val mergeProvider = MergeMemoryToolProvider(sstm)
         val hand = FakeHand(
             runScript = {
@@ -281,7 +243,7 @@ class SstmExtractionServiceTest {
         // maxRounds with a round_limit error, and the failed merge fails
         // the pipeline (a deletion must not lose unmerged memories)
         var calls = 0
-        val sstm = FakeSstmService()
+        val sstm = RecordingSstmService()
         val mergeProvider = MergeMemoryToolProvider(sstm)
         val hand = FakeHand(
             runScript = {

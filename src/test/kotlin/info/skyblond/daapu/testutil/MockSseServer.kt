@@ -13,14 +13,11 @@ import kotlin.concurrent.thread
 /**
  * What the mock SSE server answers for one connection: an HTTP status (a
  * non-2xx exercises the retry policy's HTTP-error path) and the canned data
- * lines. The default `text/event-stream` framing serves SSE streams (the
- * streaming chat model); `application/json` serves one raw JSON body (the
- * non-streaming chat model used by the one-shots, `agent/oneshot/`).
+ * lines, framed as a `text/event-stream` response.
  */
 internal data class MockSseResponse(
     val status: Int = 200,
     val lines: List<String>,
-    val contentType: String = "text/event-stream",
 )
 
 /**
@@ -37,7 +34,6 @@ internal class MockSseServer(private val respond: (attempt: Int) -> MockSseRespo
     private val capturedRequests = CopyOnWriteArrayList<String>()
     private val attempts = AtomicInteger(0)
     val port: Int get() = server.localPort
-    val count: Int get() = attempts.get()
 
     init {
         thread(isDaemon = true, name = "mock-sse") {
@@ -105,13 +101,9 @@ internal class MockSseServer(private val respond: (attempt: Int) -> MockSseRespo
                 429 -> "Too Many Requests"
                 else -> "Error"
             }
-            val payload = if (response.contentType == "application/json") {
-                response.lines.joinToString("")
-            } else {
-                response.lines.joinToString("\n\n") + "\n\n"
-            }
+            val payload = response.lines.joinToString("\n\n") + "\n\n"
             val header = "HTTP/1.1 ${response.status} $reason\r\n" +
-                    "Content-Type: ${response.contentType}\r\nConnection: close\r\n" +
+                    "Content-Type: text/event-stream\r\nConnection: close\r\n" +
                     "Content-Length: ${payload.toByteArray().size}\r\n\r\n"
             output.write((header + payload).toByteArray())
             output.flush()
@@ -121,45 +113,4 @@ internal class MockSseServer(private val respond: (attempt: Int) -> MockSseRespo
             socket.close()
         }
     }
-}
-
-/** One SSE data line. */
-internal fun sseEvent(json: String) = "data: $json"
-
-/** The terminal `[DONE]` line of an OpenAI-style stream. */
-internal const val SSE_DONE = "data: [DONE]"
-
-/**
- * A plain JSON `chat.completion` body for the non-streaming chat model
- * (`agent/oneshot/`): [content] is the assistant text (null when the message
- * carries only [toolCalls]), [finishReason] the choice's finish_reason, and
- * [toolCalls] the raw `tool_calls` array JSON.
- */
-internal fun jsonCompletion(
-    content: String? = null,
-    finishReason: String = "stop",
-    toolCalls: String? = null,
-): String {
-    val messageFields = buildList {
-        add("\"role\":\"assistant\"")
-        if (content != null) add("\"content\":\"${content.replace("\"", "\\\"")}\"")
-        if (toolCalls != null) add("\"tool_calls\":$toolCalls")
-    }.joinToString(",")
-    return """{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"mock",""" +
-            """"choices":[{"index":0,"message":{$messageFields},"finish_reason":"$finishReason"}]}"""
-}
-
-/**
- * One `chat.completion.chunk` SSE payload. [delta] is the raw JSON object
- * body of the `delta` field (e.g. `{"content":"hi"}`); [finishReason] and
- * [usage] are optional top-level fields.
- */
-internal fun sseChunk(
-    delta: String = "{}",
-    finishReason: String? = null,
-    usage: String? = null,
-): String {
-    val usagePart = usage?.let { ",\"usage\":$it" } ?: ""
-    return """{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"mock",""" +
-            """"choices":[{"index":0,"delta":$delta,"finish_reason":${if (finishReason == null) "null" else "\"$finishReason\""}}]$usagePart}"""
 }

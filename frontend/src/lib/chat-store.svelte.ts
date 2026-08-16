@@ -157,7 +157,7 @@ class ChatStore {
     }
   }
 
-  async loadMessages(id: string) {
+  private async loadMessages(id: string) {
     this.streamError = null
     try {
       this.messages = await loadChat(id)

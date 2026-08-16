@@ -10,7 +10,7 @@ import type {
 import type { ModelSpec, ToolSpec } from "./types.js";
 
 /** Fixed provider id, matching none of pi-ai's auto-detect heuristics. */
-export const HAND_PROVIDER_ID = "daapu";
+const HAND_PROVIDER_ID = "daapu";
 
 /**
  * Synthesizes the full pi-ai Model from a ModelSpec. The `reasoning` flag is
@@ -42,7 +42,7 @@ function toPiTools(tools: ToolSpec[]): PiTool[] {
   }));
 }
 
-export interface StreamOptions {
+interface StreamOptions {
   apiKey: string;
   /** Required per request: the brain always sends its output budget. */
   maxTokens: number;
