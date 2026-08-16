@@ -83,7 +83,7 @@ class HandCallbackTest {
         args: JsonObject = JsonObject(emptyMap()),
         timeoutSeconds: Long = 0,
     ) = HandToolCallbackRequest(
-        runId = runId, chatId = "chat-1", id = "call_1", name = name, args = args,
+        runId = runId, id = "call_1", name = name, args = args,
         timeoutSeconds = timeoutSeconds,
     )
 

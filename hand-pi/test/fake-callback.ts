@@ -2,7 +2,6 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 export interface ToolCallbackRequest {
   runId: string;
-  chatId: string;
   id: string;
   name: string;
   args: string;
@@ -44,7 +43,7 @@ export function startFakeCallback(): Promise<FakeCallback> {
       try {
         requests.push(JSON.parse(raw) as ToolCallbackRequest);
       } catch {
-        requests.push({ runId: "", chatId: "", id: "", name: "", args: raw });
+        requests.push({ runId: "", id: "", name: "", args: raw });
       }
       if (hangNext) {
         // never answer; the client's abort closes the connection (note:

@@ -74,7 +74,6 @@ function runRequest(upstreamPort: number, extra: Record<string, unknown> = {}): 
     model: modelSpec(upstreamPort),
     messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
     runId: "run-test",
-    chatId: "chat-test",
     // the hand holds no defaults: every parameter is required per request
     maxTokens: 40000,
     maxRounds: 64,
@@ -316,7 +315,6 @@ describe("POST /v1/run", () => {
       expect(requests).toHaveLength(2);
       expect(requests[0]).toMatchObject({
         runId: "run-test",
-        chatId: "chat-test",
         id: "call_1",
         name: "search",
         args: { query: "hello" },

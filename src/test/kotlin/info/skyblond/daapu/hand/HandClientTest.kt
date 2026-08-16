@@ -41,7 +41,6 @@ class HandClientTest {
         // the pure transport never fills the runId — HandService generates
         // it per /v1/run call (the wire contract still requires it)
         runId = "r1",
-        chatId = "c1",
         maxTokens = 40000,
         maxRounds = 64,
         maxRetries = 0,

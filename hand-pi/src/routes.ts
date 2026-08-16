@@ -98,7 +98,7 @@ export async function handleRun(
 ): Promise<void> {
   const request = validateRunRequest(body);
   console.log(
-    `[hand] run start runId=${request.runId} chatId=${request.chatId} model=${request.model.modelId}`,
+    `[hand] run start runId=${request.runId} model=${request.model.modelId}`,
   );
   await executeRun(res, request, token, signal);
 }
@@ -107,7 +107,6 @@ function validateRunRequest(body: string): RunRequest {
   const raw = parseBody(body);
   const base = validateCompleteBody(raw);
   const runId = validateString(raw.runId, "runId");
-  const chatId = validateString(raw.chatId, "chatId");
   const maxRounds = validateNonNegativeInt(raw.maxRounds, "maxRounds");
   const maxRetries = validateNonNegativeInt(raw.maxRetries, "maxRetries");
   const streamIdleTimeoutMs =
@@ -121,7 +120,7 @@ function validateRunRequest(body: string): RunRequest {
       failInvalid("toolCallbackUrl must be an http(s) URL");
     }
   }
-  return { ...base, runId, chatId, toolCallbackUrl, maxRounds, maxRetries, streamIdleTimeoutMs, callbackTimeoutMs };
+  return { ...base, runId, toolCallbackUrl, maxRounds, maxRetries, streamIdleTimeoutMs, callbackTimeoutMs };
 }
 
 function validateModelSpec(value: unknown): ModelSpec {

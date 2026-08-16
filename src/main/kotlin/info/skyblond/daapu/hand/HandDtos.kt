@@ -70,7 +70,6 @@ data class HandRunRequest(
      * the wire (the hand requires it).
      */
     val runId: String? = null,
-    val chatId: String,
     val toolCallbackUrl: String? = null,
     /** Round cap; 0 = unlimited. */
     val maxRounds: Int,
@@ -153,7 +152,6 @@ data class HandDonePayload(val finishReason: String)
 @Serializable
 data class HandToolCallbackRequest(
     val runId: String,
-    val chatId: String,
     val id: String,
     val name: String,
     val args: JsonObject,

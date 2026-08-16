@@ -127,7 +127,6 @@ class PersistChatService(
             model.checkPromptContentCapabilities(chat)
             val attemptStartSize = chat.size
             val (newChat, terminal) = runHandRun(
-                chatId = chatId,
                 model = model,
                 chat = chat,
                 systemPrompt = systemPrompt,
@@ -190,7 +189,6 @@ class PersistChatService(
      * [HandService.run].
      */
     private suspend fun runHandRun(
-        chatId: String,
         model: LLM,
         chat: List<ChatMessage>,
         systemPrompt: String,
@@ -208,7 +206,6 @@ class PersistChatService(
             tools = specs.takeIf { it.isNotEmpty() }
                 ?.map { HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds) },
             maxTokens = model.maxOutputTokens,
-            chatId = chatId,
             maxRounds = maxRounds,
             maxRetries = maxRetries,
             callbackTimeoutMs = callbackTimeoutMs,

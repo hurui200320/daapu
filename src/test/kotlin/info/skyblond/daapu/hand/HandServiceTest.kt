@@ -43,7 +43,6 @@ class HandServiceTest {
         model = model().toHandModelSpec(),
         messages = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("hi")))),
         runId = runId,
-        chatId = "c1",
         tools = tools,
         toolCallbackUrl = toolCallbackUrl,
         maxTokens = 100,
@@ -62,7 +61,6 @@ class HandServiceTest {
 
     private fun callback(runId: String) = HandToolCallbackRequest(
         runId = runId,
-        chatId = "c1",
         id = "call_1",
         name = "flag",
         args = JsonObject(emptyMap()),

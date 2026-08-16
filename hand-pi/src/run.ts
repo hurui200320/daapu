@@ -488,7 +488,6 @@ async function executeToolCalls(
       token,
       {
         runId: request.runId,
-        chatId: request.chatId,
         id: part.id,
         name: part.tool,
         args: part.args,

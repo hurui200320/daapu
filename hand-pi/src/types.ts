@@ -115,7 +115,6 @@ export type CompleteResponse =
 
 export interface RunRequest extends CompleteRequest {
   runId: string;
-  chatId: string;
   /** Required iff `tools` is non-empty. */
   toolCallbackUrl?: string;
   /** Round cap; 0 = unlimited. */
