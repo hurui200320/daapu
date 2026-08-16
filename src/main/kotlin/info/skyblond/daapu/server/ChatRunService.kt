@@ -14,13 +14,13 @@ import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
+import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
-import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
 
@@ -40,9 +40,11 @@ class ChatRunSetup(
  * run's state lives entirely inside the hand call, so sharing is safe);
  * the model catalog, the chat store, the system prompt, the MCP tool
  * provider (cached clients), the SSTM service (shared with the
- * memory CRUD routes), and the hand callback service (the in-flight run
- * registry behind the hand's tool callbacks, `hand/HandCallbackService.kt`)
- * are also reused. The one-shot pipeline services — compaction
+ * memory CRUD routes), the hand callback service (the in-flight run
+ * registry behind the hand's tool callbacks, `hand/HandCallbackService.kt`),
+ * and the hand service wrapping them (`hand/HandService.kt`: the agent
+ * layer's hand seam, which wires the runId + in-flight registration around
+ * every `/v1/run` call) are also reused. The one-shot pipeline services — compaction
  * (`ChatCompactionService`), SSTM extraction (`SstmExtractionService`),
  * session titles (`TitleGenerator`),
  * and the persist loop itself (`PersistChatService`) — are stateless
@@ -85,7 +87,16 @@ class ChatRunService(
     private val memoryConfig = config.memory
 
     /** This brain's tool callback endpoint the hand POSTs to (loopback PoC). */
-    internal val handCallbackUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tool"
+    // TODO: configurable. Currently fine but will break in docker when move to production.
+    private val handCallbackUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tool"
+
+    /**
+     * The agent layer's hand seam: the HTTP client plus the tool-callback
+     * wiring (the in-flight run registry behind the hand's tool callbacks,
+     * `hand/HandService.kt`). The runId and the register/unregister
+     * lifecycle live here — the chat loop never sees them.
+     */
+    private val handService = HandService(hand, handCallback, handCallbackUrl)
 
     // the one-shot pipeline models: all REQUIRED config, resolved once at
     // construction (a chat run's own model is never used for these)
@@ -112,18 +123,18 @@ class ChatRunService(
 
     // one-shot pipeline services: stateless across runs, so a single
     // instance is shared by every concurrent chat run
-    private val titleGenerator = TitleGenerator(titleModel, hand, config.title.lastNRound)
-    private val compactionService = ChatCompactionService(compactModel, hand)
+    private val titleGenerator = TitleGenerator(titleModel, handService, config.title.lastNRound)
+    private val compactionService = ChatCompactionService(compactModel, handService)
     private val sstmExtractionService = SstmExtractionService(
         extractModel = extractModel,
         mergeModel = mergeModel,
-        hand = hand,
+        hand = handService,
         sstmService = sstmService,
     )
     private val persistService = PersistChatService(
         chatStore = chatStore,
         sstmService = sstmService,
-        hand = hand,
+        hand = handService,
         compactionService = compactionService,
         sstmExtractionService = sstmExtractionService,
         maxRounds = config.hand.maxRounds,
@@ -409,10 +420,10 @@ class ChatRunService(
      * stored by the turn loop when the run completes, so a failed or aborted
      * run leaves the chat untouched.
      *
-     * The run is registered under a fresh [runId] before the hand call: the
-     * hand's tool callbacks (HTTP POSTs back into this process) resolve it
-     * through [HandCallbackService.executeToolCall]. The entry is evicted when the
-     * run ends.
+     * The tool callback wiring is handled by [HandService]: a fresh runId is
+     * generated per hand `/v1/run` call, the in-flight run is registered
+     * before the request goes out and evicted when the stream ends — the
+     * chat loop never sees a runId.
      *
      * The compaction/extraction services are shared, constructed once at
      * startup; the one-shot pipeline models are fixed at construction (the
@@ -422,22 +433,14 @@ class ChatRunService(
         setup: ChatRunSetup,
         callback: StreamingExecutionCallback,
     ) {
-        val runId = UUID.randomUUID().toString()
-        handCallback.register(runId, toolProvider, setup.model)
-        try {
-            persistService.runChat(
-                chatId = setup.chatId,
-                model = setup.model,
-                userParts = setup.parts,
-                systemPrompt = systemPrompt,
-                toolProvider = toolProvider,
-                callback = callback,
-                runId = runId,
-                toolCallbackUrl = handCallbackUrl,
-            )
-        } finally {
-            handCallback.unregister(runId)
-        }
+        persistService.runChat(
+            chatId = setup.chatId,
+            model = setup.model,
+            userParts = setup.parts,
+            systemPrompt = systemPrompt,
+            toolProvider = toolProvider,
+            callback = callback,
+        )
     }
 
     /**
@@ -446,7 +449,7 @@ class ChatRunService(
      */
     override fun close() {
         toolProvider.close()
-        hand.close()
+        handService.close()
     }
 
     companion object {

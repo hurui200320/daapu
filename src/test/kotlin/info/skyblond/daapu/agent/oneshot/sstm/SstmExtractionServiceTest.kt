@@ -9,6 +9,7 @@ import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.failedCompleteResponse
 import info.skyblond.daapu.hand.okCompleteResponse
+import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -156,7 +157,7 @@ class SstmExtractionServiceTest {
         val sstm = FakeSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "existing fact")))
         val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = hand,
+            hand = testHandService(hand),
             sstmService = sstm,
         )
         extractor.processDiscardedMessages(listOf(userMessage("u1"), userMessage("u2")))
@@ -174,7 +175,7 @@ class SstmExtractionServiceTest {
         val sstm = FakeSstmService()
         val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = hand,
+            hand = testHandService(hand),
             sstmService = sstm,
         )
         extractor.processDiscardedMessages(listOf(userMessage("u1")))
@@ -189,7 +190,7 @@ class SstmExtractionServiceTest {
         val textOnly = model("bifrost/cerebras/gpt-oss-120b")
         val extractor = SstmExtractionService(
             extractModel = textOnly,
-            hand = hand,
+            hand = testHandService(hand),
             sstmService = sstm,
         )
         // a text-only extraction model with an image in the dropped
@@ -220,7 +221,7 @@ class SstmExtractionServiceTest {
         val sstm = FakeSstmService()
         val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = hand,
+            hand = testHandService(hand),
             sstmService = sstm,
         )
         val e = assertFailsWith<IllegalStateException> {
@@ -249,7 +250,7 @@ class SstmExtractionServiceTest {
         val sstm = FakeSstmService()
         val extractor = SstmExtractionService(
             extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = hand,
+            hand = testHandService(hand),
             sstmService = sstm,
             maxMergeRounds = 2,
         )

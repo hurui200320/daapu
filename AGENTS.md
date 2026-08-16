@@ -17,16 +17,24 @@ and a small TypeScript service (hand-pi). The pieces:
   catalog, no sessions, no prompt opinions — everything arrives per request.
   Kotlin owns everything *content*: history, prompts, injection, compaction
   policy, extraction, tools, memory, persistence. The Kotlin side talks to
-  the hand through `hand/HandClient.kt` (`/v1/run` SSE round loop,
-  `/v1/complete` one-shots), and the hand calls back into the brain for
-  tool execution via `hand/HandCallbackRoute.kt` (`POST /api/hand/tool`,
+  the hand through `hand/HandService.kt` — the agent layer's hand seam,
+  which wraps the pure HTTP transport (`hand/HandClient.kt`, `/v1/run` SSE
+  round loop, `/v1/complete` one-shots) and owns the run/callback plumbing:
+  a fresh `runId` is generated per `/v1/run` call (internal to the run
+  plumbing, never seen by the chat loop), the in-flight run is registered
+  under it before the request goes out and evicted when the stream ends
+  (success, error, or cancellation; a duplicate runId registration fails
+  fast), and the tool callback URL is attached on every request (the hand
+  only POSTs it when a tool call needs executing, so it is harmless without
+  tools). The hand calls back into the brain for tool
+  execution via `hand/HandCallbackRoute.kt` (`POST /api/hand/tool`,
   in-flight runs registered by `runId` in `hand/HandCallbackService.kt`).
 - **ktor HTTP API** (`server/`) — the input loop: `Main.kt` loads the
   configuration from `config.jsonc` (models in `config/Config.kt`, loaded by
   `loadConfig`), starts the database and the API server. One chat run per
   request: `ChatRunService.prepareRun`
   validates the request (the model is required per message — there is no
-  server-side default), `runChat` registers the in-flight run and runs the
+  server-side default), `runChat` runs the
   turn loop (`agent/persist/PersistChatService.kt`); the model catalog
   (`agent/ModelCatalog.kt`), the chat
   store, and the system prompt are built once and shared (the system prompt

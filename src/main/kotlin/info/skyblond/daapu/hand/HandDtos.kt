@@ -63,7 +63,13 @@ data class HandRunRequest(
     val systemPrompt: String? = null,
     val tools: List<HandToolSpec>? = null,
     val maxTokens: Long,
-    val runId: String,
+    /**
+     * The in-flight run's id, echoed back by the hand's tool callbacks.
+     * INTERNAL to the run/callback plumbing: [HandService] generates it
+     * when absent, so the chat loop never provides it. Always non-null on
+     * the wire (the hand requires it).
+     */
+    val runId: String? = null,
     val chatId: String,
     val toolCallbackUrl: String? = null,
     /** Round cap; 0 = unlimited. */

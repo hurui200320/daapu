@@ -39,10 +39,14 @@ class HandCallbackService(
     /**
      * Register an in-flight run so the hand's tool callbacks can resolve
      * its tool provider and model. Evicted by [unregister] when the run
-     * ends, so stale ids don't accumulate.
+     * ends, so stale ids don't accumulate. A duplicate [runId] fails fast
+     * instead of silently overriding the first run's provider/model (each
+     * in-flight run must own its id; a sequential reuse after [unregister]
+     * is fine).
      */
     fun register(runId: String, toolProvider: ToolProvider, model: LLM) {
-        activeRuns[runId] = ActiveRun(toolProvider, model)
+        val previous = activeRuns.putIfAbsent(runId, ActiveRun(toolProvider, model))
+        check(previous == null) { "A run with runId '$runId' is already registered" }
     }
 
     fun unregister(runId: String) {

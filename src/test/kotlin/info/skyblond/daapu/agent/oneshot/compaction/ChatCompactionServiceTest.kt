@@ -6,6 +6,7 @@ import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
 import info.skyblond.daapu.hand.*
+import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlin.test.*
@@ -63,7 +64,7 @@ class ChatCompactionServiceTest {
 
     @Test
     fun `split keeps the last N user turns and drops the older ones`() {
-        val compactor = ChatCompactionService(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), testHandService(FakeHand()))
         val (toCompact, toPreserve) = assertNotNull(
             compactor.splitMessage(
                 turns(5),
@@ -89,7 +90,7 @@ class ChatCompactionServiceTest {
         // mid-run shape: the current turn has a tool call whose result is
         // still pending — it must land in the preserved part, never in the
         // drop region
-        val compactor = ChatCompactionService(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), testHandService(FakeHand()))
         val chat = turns(5) + toolCall("call_1", "search") + toolResult("call_1", "search")
         val (toCompact, toPreserve) = assertNotNull(compactor.splitMessage(chat, lastNRound = 3))
         assertEquals(4, toCompact.size, "only the two oldest complete turns are dropped")
@@ -110,7 +111,7 @@ class ChatCompactionServiceTest {
 
     @Test
     fun `split fails fast for a chat without user messages`() {
-        val compactor = ChatCompactionService(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), testHandService(FakeHand()))
         val systemOnly = assertFailsWith<IllegalArgumentException> {
             compactor.splitMessage(emptyList(), lastNRound = 3)
         }
@@ -125,7 +126,7 @@ class ChatCompactionServiceTest {
 
     @Test
     fun `split shrinks the keep count instead of giving up`() {
-        val compactor = ChatCompactionService(model(), FakeHand())
+        val compactor = ChatCompactionService(model(), testHandService(FakeHand()))
 
         // 3 rounds with keep=3: keep shrinks to 2 so the oldest round is dropped
         val (dropped3, preserved3) = assertNotNull(compactor.splitMessage(turns(3), lastNRound = 3))
@@ -154,7 +155,7 @@ class ChatCompactionServiceTest {
             completeScript = { okCompleteResponse(assistantMessage("concise summary")) },
         )
         val result = assertNotNull(
-            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), testHandService(hand)).compactChat(longTurns(5), excludeLastNRound = 3)
         )
         val newChat = result.newChat
         // summary user message + last 3 turns verbatim
@@ -193,7 +194,7 @@ class ChatCompactionServiceTest {
     fun `compactChat fails fast for a chat without user messages`() = runBlocking {
         val hand = FakeHand()
         val e = assertFailsWith<IllegalArgumentException> {
-            ChatCompactionService(model(), hand).compactChat(emptyList(), excludeLastNRound = 3)
+            ChatCompactionService(model(), testHandService(hand)).compactChat(emptyList(), excludeLastNRound = 3)
         }
         assertTrue(
             e.message!!.contains("no user messages"),
@@ -210,7 +211,7 @@ class ChatCompactionServiceTest {
             completeScript = { okCompleteResponse(assistantMessage("condensed round")) },
         )
         val result = assertNotNull(
-            ChatCompactionService(model(), hand).compactChat(longTurns(1), excludeLastNRound = 3)
+            ChatCompactionService(model(), testHandService(hand)).compactChat(longTurns(1), excludeLastNRound = 3)
         )
         val newChat = result.newChat
         assertEquals(listOf(ChatMessageRole.User), newChat.map { it.role })
@@ -230,7 +231,7 @@ class ChatCompactionServiceTest {
             completeScript = { okCompleteResponse(assistantMessage("")) },
         )
         val e = assertFailsWith<IllegalStateException> {
-            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), testHandService(hand)).compactChat(longTurns(5), excludeLastNRound = 3)
         }
         // the outer message names the wrapper only; the detail lives on the cause
         assertEquals("Compaction summarization failed", e.message)
@@ -251,7 +252,7 @@ class ChatCompactionServiceTest {
             },
         )
         val e = assertFailsWith<IllegalStateException> {
-            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), testHandService(hand)).compactChat(longTurns(5), excludeLastNRound = 3)
         }
         assertEquals("Compaction summarization failed", e.message)
         val cause = assertIs<IllegalStateException>(e.cause)
@@ -264,7 +265,7 @@ class ChatCompactionServiceTest {
             completeScript = { throw HandUpstreamException("hand request failed with HTTP 500") },
         )
         val e = assertFailsWith<IllegalStateException> {
-            ChatCompactionService(model(), hand).compactChat(longTurns(5), excludeLastNRound = 3)
+            ChatCompactionService(model(), testHandService(hand)).compactChat(longTurns(5), excludeLastNRound = 3)
         }
         assertTrue(e.message!!.contains("failed"), "the error should name the cause: ${e.message}")
         assertNotNull(e.cause, "the original LLM failure must be kept as the cause")
@@ -297,7 +298,7 @@ class ChatCompactionServiceTest {
             )
         }
         val e = assertFailsWith<ModelCapabilityException> {
-            ChatCompactionService(textOnly, hand).compactChat(chat, excludeLastNRound = 3)
+            ChatCompactionService(textOnly, testHandService(hand)).compactChat(chat, excludeLastNRound = 3)
         }
         assertTrue(
             e.message!!.contains("image"),

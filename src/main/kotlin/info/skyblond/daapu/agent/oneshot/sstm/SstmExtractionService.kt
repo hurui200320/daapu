@@ -8,7 +8,7 @@ import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.oneshot.checkAndGetTextResp
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService.Companion.NOTHING_TO_REMEMBER_TEXT
 import info.skyblond.daapu.agent.tool.ToolCallRequest
-import info.skyblond.daapu.hand.HandClient
+import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.HandToolSpec
 import info.skyblond.daapu.hand.toHandModelSpec
@@ -46,7 +46,7 @@ import kotlinx.coroutines.CancellationException
 class SstmExtractionService(
     private val extractModel: LLM,
     private val mergeModel: LLM = extractModel,
-    private val hand: HandClient,
+    private val hand: HandService,
     private val sstmService: SstmService,
     private val maxMergeRounds: Int = 150,
 ) {

@@ -29,6 +29,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -36,6 +37,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -84,6 +86,25 @@ class HandCallbackTest {
         runId = runId, chatId = "chat-1", id = "call_1", name = name, args = args,
         timeoutSeconds = timeoutSeconds,
     )
+
+    @Test
+    fun `duplicate runId registration fails fast and eviction allows reuse`() = runBlocking {
+        val service = HandCallbackService("test-token")
+        service.register("run-1", EmptyProvider(), textModel())
+        // a second in-flight run must not silently override the first
+        assertFailsWith<IllegalStateException> {
+            service.register("run-1", EchoProvider(), textModel())
+        }
+        // the first registration is untouched
+        val response = service.executeToolCall(callbackRequest(args = buildJsonObject { put("text", "hi") }))
+        assertNull(response.fatal, "the original in-flight run must still resolve")
+        // eviction frees the id for a legitimate sequential reuse
+        service.unregister("run-1")
+        service.register("run-1", EchoProvider(), textModel())
+        val after = service.executeToolCall(callbackRequest(args = buildJsonObject { put("text", "hi") }))
+        assertNull(after.fatal, "a re-registered runId must resolve")
+        service.unregister("run-1")
+    }
 
     @Test
     fun `missing or wrong token is rejected`() = testApplication {

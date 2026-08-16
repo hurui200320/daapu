@@ -16,6 +16,7 @@ import info.skyblond.daapu.hand.HandUpstreamException
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.failedCompleteResponse
 import info.skyblond.daapu.hand.okCompleteResponse
+import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -45,7 +46,7 @@ class TitleGeneratorTest {
     @Test
     fun `empty history returns the default title without calling the hand`() {
         val hand = FakeHand()
-        val generator = TitleGenerator(model(), hand)
+        val generator = TitleGenerator(model(), testHandService(hand))
         assertEquals(DEFAULT_CHAT_TITLE, runBlocking { generator.generateTitle(emptyList()) })
         assertTrue(hand.completeRequests.isEmpty(), "an empty chat must not call the LLM")
     }
@@ -55,7 +56,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { okCompleteResponse(assistantMessage("My title")) }
         )
-        val generator = TitleGenerator(model(), hand)
+        val generator = TitleGenerator(model(), testHandService(hand))
         val history = turns(2)
 
         val title = runBlocking { generator.generateTitle(history) }
@@ -76,7 +77,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { okCompleteResponse(assistantMessage("half", finishReason = "length")) }
         )
-        val generator = TitleGenerator(model(), hand)
+        val generator = TitleGenerator(model(), testHandService(hand))
         val e = assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
@@ -91,7 +92,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { okCompleteResponse(assistantMessage("")) }
         )
-        val generator = TitleGenerator(model(), hand)
+        val generator = TitleGenerator(model(), testHandService(hand))
         assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
@@ -102,7 +103,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { failedCompleteResponse("upstream", "boom") }
         )
-        val generator = TitleGenerator(model(), hand)
+        val generator = TitleGenerator(model(), testHandService(hand))
         val e = assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
@@ -116,7 +117,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { throw HandUpstreamException("hand request failed with HTTP 500") }
         )
-        val generator = TitleGenerator(model(), hand)
+        val generator = TitleGenerator(model(), testHandService(hand))
         val e = assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
@@ -129,7 +130,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { okCompleteResponse(assistantMessage("My title")) }
         )
-        val generator = TitleGenerator(model(), hand, lastNRound = 1)
+        val generator = TitleGenerator(model(), testHandService(hand), lastNRound = 1)
         val history = turns(3)
 
         val title = runBlocking { generator.generateTitle(history) }
@@ -148,7 +149,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { okCompleteResponse(assistantMessage("My title")) }
         )
-        val generator = TitleGenerator(model(), hand, lastNRound = 10)
+        val generator = TitleGenerator(model(), testHandService(hand), lastNRound = 10)
         val history = turns(3)
 
         runBlocking { generator.generateTitle(history) }
@@ -163,7 +164,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { okCompleteResponse(assistantMessage("My title")) }
         )
-        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), hand, lastNRound = 1)
+        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), testHandService(hand), lastNRound = 1)
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(
@@ -186,7 +187,7 @@ class TitleGeneratorTest {
         // the image survives the round cap and reaches the text-only model:
         // capability mismatch, no LLM call
         val hand = FakeHand()
-        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), hand, lastNRound = 1)
+        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), testHandService(hand), lastNRound = 1)
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(
@@ -209,7 +210,7 @@ class TitleGeneratorTest {
         // capability mismatch is a `title.model` configuration error: fail
         // before the LLM call instead of sending a doomed prompt
         val hand = FakeHand()
-        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), hand)
+        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), testHandService(hand))
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(
@@ -231,7 +232,7 @@ class TitleGeneratorTest {
         val hand = FakeHand(
             completeScript = { okCompleteResponse(assistantMessage("My title")) }
         )
-        val generator = TitleGenerator(model("bifrost/cerebras/gemma-4-31b"), hand)
+        val generator = TitleGenerator(model("bifrost/cerebras/gemma-4-31b"), testHandService(hand))
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(

@@ -6,14 +6,14 @@ import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
-import info.skyblond.daapu.hand.HandClient
+import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.toHandModelSpec
 import kotlinx.coroutines.CancellationException
 
 class TitleGenerator(
     private val model: LLM,
-    private val hand: HandClient,
+    private val hand: HandService,
     /**
      * How many trailing user rounds of the history feed the title generator;
      * `0` means the whole history. One round is one user message plus the

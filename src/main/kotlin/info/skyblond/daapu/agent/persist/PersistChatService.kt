@@ -43,7 +43,7 @@ import java.time.ZonedDateTime
 class PersistChatService(
     private val chatStore: ChatStore,
     private val sstmService: SstmService,
-    private val hand: HandClient,
+    private val hand: HandService,
     private val compactionService: ChatCompactionService,
     /**
      * SSTM extraction over the raw messages a compaction is about to discard
@@ -68,10 +68,6 @@ class PersistChatService(
         systemPrompt: String,
         toolProvider: ToolProvider,
         callback: StreamingExecutionCallback,
-        /** The in-flight run's id; the hand's tool callbacks carry it. */
-        runId: String,
-        /** This brain's tool callback endpoint the hand POSTs to. */
-        toolCallbackUrl: String,
     ) {
         val contextInjection = ContextInjection()
 
@@ -137,8 +133,6 @@ class PersistChatService(
                 systemPrompt = systemPrompt,
                 toolProvider = toolProvider,
                 callback = callback,
-                runId = runId,
-                toolCallbackUrl = toolCallbackUrl,
             )
             chat = newChat
             when (terminal) {
@@ -191,7 +185,9 @@ class PersistChatService(
     /**
      * One hand `/v1/run` call: advertises the provider's tools, streams the
      * events into the callback and the history, and returns the new history
-     * with the terminal event.
+     * with the terminal event. The tool callback wiring — runId
+     * generation, the in-flight registry, the callback URL — is handled by
+     * [HandService.run].
      */
     private suspend fun runHandRun(
         chatId: String,
@@ -200,8 +196,6 @@ class PersistChatService(
         systemPrompt: String,
         toolProvider: ToolProvider,
         callback: StreamingExecutionCallback,
-        runId: String,
-        toolCallbackUrl: String,
     ): Pair<List<ChatMessage>, HandTerminal> {
         val specs = toolProvider.specifications()
         val request = HandRunRequest(
@@ -209,12 +203,11 @@ class PersistChatService(
             messages = chat,
             systemPrompt = systemPrompt,
             // tools are attached only when non-empty (some gateways reject
-            // `tools: []`), and the callback URL is required iff tools exist
+            // `tools: []`); HandService attaches the callback URL on every
+            // request, so no callback plumbing lives here
             tools = specs.takeIf { it.isNotEmpty() }
                 ?.map { HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds) },
             maxTokens = model.maxOutputTokens,
-            toolCallbackUrl = specs.takeIf { it.isNotEmpty() }?.let { toolCallbackUrl },
-            runId = runId,
             chatId = chatId,
             maxRounds = maxRounds,
             maxRetries = maxRetries,
@@ -223,7 +216,7 @@ class PersistChatService(
         )
         var newChat = chat
         var terminal: HandTerminal? = null
-        hand.run(request).collect { event ->
+        hand.run(request, toolProvider, model).collect { event ->
             when (event) {
                 is HandEvent.TextDelta -> callback.onTextDelta(event.text)
                 is HandEvent.ReasoningDelta -> callback.onReasoningDelta(event.text)

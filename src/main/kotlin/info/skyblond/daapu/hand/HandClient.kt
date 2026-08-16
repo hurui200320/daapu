@@ -16,7 +16,9 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 
 /**
- * The seam the brain talks to the hand through. Kotlin
+ * The pure HTTP transport to the hand: wire format only, no run/callback
+ * state. The agent layer talks to [HandService], which wraps this client
+ * and owns the runId + in-flight tool-callback registration. Kotlin
  * owns all content decisions; the hand owns LLM execution.
  */
 interface HandClient : AutoCloseable {

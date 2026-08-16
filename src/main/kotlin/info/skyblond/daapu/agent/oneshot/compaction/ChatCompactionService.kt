@@ -5,14 +5,14 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.oneshot.checkAndGetTextResp
-import info.skyblond.daapu.hand.HandClient
+import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.toHandModelSpec
 import kotlinx.coroutines.CancellationException
 
 class ChatCompactionService(
     private val model: LLM,
-    private val hand: HandClient,
+    private val hand: HandService,
 ) {
     /**
      * Compact the given chat history, returning the compacted chat plus the
