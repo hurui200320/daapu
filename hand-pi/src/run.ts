@@ -34,9 +34,6 @@ export type FinishClassification =
 
 const CONTENT_FILTER_MARKER = "Provider finish_reason: content_filter";
 
-const DEFAULT_MAX_ROUNDS = 64;
-const DEFAULT_CALLBACK_TIMEOUT_MS = 120_000;
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 /**
  * The brain enforces each tool's advertised `timeoutSeconds` itself and
  * always answers the callback within the budget, so the callback POST waits
@@ -167,11 +164,11 @@ export async function executeRun(
   const model = buildModel(request.model);
   const history: ChatMessage[] = [...request.messages];
   const tools = request.tools;
-  const maxRounds = request.maxRounds ?? DEFAULT_MAX_ROUNDS;
-  const maxRetries = request.maxRetries ?? 0;
-  const callbackTimeoutMs = request.callbackTimeoutMs ?? DEFAULT_CALLBACK_TIMEOUT_MS;
-  const idleTimeoutMs = request.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
-  const effectiveMaxTokens = request.maxTokens ?? request.model.maxOutputTokens;
+  const maxRounds = request.maxRounds;
+  const maxRetries = request.maxRetries;
+  const callbackTimeoutMs = request.callbackTimeoutMs;
+  const idleTimeoutMs = request.streamIdleTimeoutMs;
+  const effectiveMaxTokens = request.maxTokens;
 
   let brainGone = false;
   const emit: Emit = (event, payload) => {
@@ -401,7 +398,7 @@ async function streamOneRound(
   resetIdle();
   const events = openStream(model, context, tools, {
     apiKey: request.model.apiKey,
-    maxTokens: request.maxTokens ?? request.model.maxOutputTokens,
+    maxTokens: request.maxTokens,
     reasoningEffort: request.model.reasoningEffort,
     signal: AbortSignal.any([signal, idleController.signal]),
   });

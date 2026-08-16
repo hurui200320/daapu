@@ -75,6 +75,12 @@ function runRequest(upstreamPort: number, extra: Record<string, unknown> = {}): 
     messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
     runId: "run-test",
     chatId: "chat-test",
+    // the hand holds no defaults: every parameter is required per request
+    maxTokens: 40000,
+    maxRounds: 64,
+    maxRetries: 0,
+    callbackTimeoutMs: 120000,
+    streamIdleTimeoutMs: 300000,
     ...extra,
   };
 }
@@ -705,6 +711,26 @@ describe("POST /v1/run", () => {
     },
     20_000,
   );
+
+  it("rejects a run missing a run-policy knob", async () => {
+    const upstream = await startFakeUpstream(NORMAL);
+    try {
+      for (const omitted of ["maxTokens", "maxRounds", "maxRetries", "callbackTimeoutMs", "streamIdleTimeoutMs"]) {
+        const body = runRequest(upstream.port);
+        delete body[omitted];
+        const response = await fetch(`http://127.0.0.1:${port}/v1/run`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ ok: false, error: { type: "invalid_request" } });
+      }
+      expect(upstream.connectionCount()).toBe(0);
+    } finally {
+      await upstream.close();
+    }
+  });
 
   it("rejects a run with tools but no toolCallbackUrl", async () => {
     const upstream = await startFakeUpstream(NORMAL);

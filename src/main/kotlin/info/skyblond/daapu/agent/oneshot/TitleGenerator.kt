@@ -52,6 +52,7 @@ class TitleGenerator(
                         )
                     ),
                     systemPrompt = renderSystemPrompt(15),
+                    maxTokens = model.maxOutputTokens,
                 )
             ).checkAndGetTextResp()
         } catch (e: CancellationException) {

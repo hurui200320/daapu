@@ -124,7 +124,7 @@
     "hand": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The hand-pi execution service (hand-pi/): a stateless Node service that owns LLM execution. The token is shared with the hand's tool callbacks into this process.",
+      "description": "The hand-pi execution service (hand-pi/): a stateless Node service that owns LLM execution. The token is shared with the hand's tool callbacks into this process. The run-policy knobs are sent with every /v1/run request (the hand holds no defaults).",
       "properties": {
         "baseUrl": {
           "type": "string",
@@ -137,6 +137,30 @@
           "minLength": 0,
           "default": "dev-token",
           "description": "The shared static token (HAND_TOKEN on the hand's side)."
+        },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 64,
+          "description": "Round cap per /v1/run; 0 = unlimited."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Transient retries per round; 0 = unlimited."
+        },
+        "callbackTimeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 120000,
+          "description": "Tool callback POST timeout in ms; 0 = no timeout."
+        },
+        "streamIdleTimeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 300000,
+          "description": "Stream idle timeout per round in ms; 0 = disabled."
         }
       }
     }

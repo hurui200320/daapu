@@ -86,6 +86,7 @@ describe("POST /v1/complete", () => {
       const { status, body } = await complete({
         model: modelSpec(upstream.port, { reasoningEffort: "high" }),
         messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+        maxTokens: 40000,
       });
       expect(status).toBe(200);
       expect(body).toEqual({
@@ -124,6 +125,7 @@ describe("POST /v1/complete", () => {
         model: modelSpec(upstream.port),
         messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
         tools: [{ name: "get_weather", description: "weather", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+        maxTokens: 40000,
       });
       expect(status).toBe(200);
       expect(body).toMatchObject({ ok: true });
@@ -149,6 +151,7 @@ describe("POST /v1/complete", () => {
       const { status, body } = await complete({
         model: modelSpec(upstream.port),
         messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+        maxTokens: 40000,
       });
       expect(status).toBe(200);
       expect(body).toMatchObject({ ok: false, error: { type: "context_exhausted" } });
@@ -172,6 +175,7 @@ describe("POST /v1/complete", () => {
       const { status, body } = await complete({
         model: modelSpec(upstream.port),
         messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+        maxTokens: 40000,
       });
       expect(status).toBe(200);
       expect(body).toMatchObject({ ok: false, error: { type: "output_budget_exhausted" } });
@@ -192,6 +196,7 @@ describe("POST /v1/complete", () => {
       const { status, body } = await complete({
         model: modelSpec(upstream.port),
         messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+        maxTokens: 40000,
       });
       expect(status).toBe(200);
       expect(body).toMatchObject({ ok: false, error: { type: "context_exhausted" } });
@@ -210,9 +215,27 @@ describe("POST /v1/complete", () => {
       const { status, body } = await complete({
         model: modelSpec(upstream.port),
         messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+        maxTokens: 40000,
       });
       expect(status).toBe(200);
       expect(body).toMatchObject({ ok: false, error: { type: "content_filter" } });
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("rejects a request without an explicit maxTokens", async () => {
+    const upstream = await startFakeUpstream(NORMAL_SCENARIO);
+    try {
+      const { status, body } = await complete({
+        model: modelSpec(upstream.port),
+        messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
+      });
+      expect(status).toBe(400);
+      expect(body).toMatchObject({
+        ok: false,
+        error: { type: "invalid_request", message: "maxTokens must be a positive integer" },
+      });
     } finally {
       await upstream.close();
     }
@@ -224,6 +247,7 @@ describe("POST /v1/complete", () => {
       const { status, body } = await complete({
         model: modelSpec(upstream.port, { contextWindow: -1 }),
         messages: [],
+        maxTokens: 40000,
       });
       expect(status).toBe(400);
       expect(body).toMatchObject({ ok: false, error: { type: "invalid_request" } });

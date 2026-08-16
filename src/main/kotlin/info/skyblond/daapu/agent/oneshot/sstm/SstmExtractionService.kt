@@ -95,6 +95,7 @@ class SstmExtractionService(
                     model = extractModel.toHandModelSpec(),
                     messages = chat,
                     systemPrompt = renderExtractorSystemPrompt(),
+                    maxTokens = extractModel.maxOutputTokens,
                 )
             ).checkAndGetTextResp()
         } catch (e: CancellationException) {
@@ -140,6 +141,7 @@ class SstmExtractionService(
                         tools = toolProvider.specifications().map {
                             HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds)
                         },
+                        maxTokens = mergeModel.maxOutputTokens,
                     )
                 )
             } catch (e: CancellationException) {

@@ -53,6 +53,13 @@ class PersistChatService(
      * reads the final state.
      */
     private val sstmExtractionService: SstmExtractionService,
+    // the hand's /v1/run policy knobs (config `hand.*`): the hand holds no
+    // defaults, every parameter is REQUIRED per request, so the brain
+    // sources them here
+    private val maxRounds: Int,
+    private val maxRetries: Int,
+    private val callbackTimeoutMs: Long,
+    private val streamIdleTimeoutMs: Long,
 ) {
     suspend fun runChat(
         chatId: String,
@@ -205,9 +212,14 @@ class PersistChatService(
             // `tools: []`), and the callback URL is required iff tools exist
             tools = specs.takeIf { it.isNotEmpty() }
                 ?.map { HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds) },
+            maxTokens = model.maxOutputTokens,
             toolCallbackUrl = specs.takeIf { it.isNotEmpty() }?.let { toolCallbackUrl },
             runId = runId,
             chatId = chatId,
+            maxRounds = maxRounds,
+            maxRetries = maxRetries,
+            callbackTimeoutMs = callbackTimeoutMs,
+            streamIdleTimeoutMs = streamIdleTimeoutMs,
         )
         var newChat = chat
         var terminal: HandTerminal? = null

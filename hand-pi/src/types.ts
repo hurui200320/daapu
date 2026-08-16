@@ -105,8 +105,8 @@ export interface CompleteRequest {
   /** The system prompt; never a message in the chat. */
   systemPrompt?: string;
   tools?: ToolSpec[];
-  /** Overrides `model.maxOutputTokens`. */
-  maxTokens?: number;
+  /** The output budget for this call; always explicit. */
+  maxTokens: number;
 }
 
 export type CompleteResponse =
@@ -118,12 +118,14 @@ export interface RunRequest extends CompleteRequest {
   chatId: string;
   /** Required iff `tools` is non-empty. */
   toolCallbackUrl?: string;
-  /** Default 64; 0 = unlimited. */
-  maxRounds?: number;
-  /** Transient retries per round; default 0 = unlimited. */
-  maxRetries?: number;
-  streamIdleTimeoutMs?: number;
-  callbackTimeoutMs?: number;
+  /** Round cap; 0 = unlimited. */
+  maxRounds: number;
+  /** Transient retries per round; 0 = unlimited. */
+  maxRetries: number;
+  /** Idle timeout per streamed round in ms; 0 = disabled. */
+  streamIdleTimeoutMs: number;
+  /** Tool callback POST timeout in ms; 0 = no timeout. */
+  callbackTimeoutMs: number;
 }
 
 /** Error thrown by handlers; mapped onto the `{ok:false,error}` contract. */

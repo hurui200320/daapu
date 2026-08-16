@@ -71,8 +71,19 @@
   // Node service that owns LLM execution (streaming, dialects, tool-call
   // accumulation, retries, usage). Run it with the same token:
   //   HAND_PORT=3100 HAND_TOKEN=dev-token npm --prefix hand-pi start
+  // The run-policy knobs are REQUIRED per request (the hand holds no
+  // defaults) and sent with every run; the values below mirror the
+  // previous hand-side defaults.
   "hand": {
     "baseUrl": "http://127.0.0.1:3100",
-    "token": "dev-token"
+    "token": "dev-token",
+    // Round cap per /v1/run; 0 = unlimited.
+    "maxRounds": 64,
+    // Transient retries per round; 0 = unlimited.
+    "maxRetries": 0,
+    // Tool callback POST timeout in ms; 0 = no timeout.
+    "callbackTimeoutMs": 120000,
+    // Stream idle timeout per round in ms; 0 = disabled.
+    "streamIdleTimeoutMs": 300000
   }
 }

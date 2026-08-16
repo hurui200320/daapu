@@ -25,7 +25,7 @@ export async function handleComplete(
   const request = validateCompleteRequest(body);
   const model = buildModel(request.model);
   const context = toPiContext(request.messages, request.systemPrompt, request.model);
-  const effectiveMaxTokens = request.maxTokens ?? request.model.maxOutputTokens;
+  const effectiveMaxTokens = request.maxTokens;
   const terminal = await driveToCompletion(model, context, request.tools, {
     apiKey: request.model.apiKey,
     maxTokens: effectiveMaxTokens,
@@ -71,7 +71,7 @@ function validateCompleteBody(raw: Record<string, unknown>): CompleteRequest {
     failInvalid("messages must be an array");
   }
   const tools = raw.tools === undefined ? undefined : validateTools(raw.tools);
-  const maxTokens = raw.maxTokens === undefined ? undefined : validatePositiveInt(raw.maxTokens, "maxTokens");
+  const maxTokens = validatePositiveInt(raw.maxTokens, "maxTokens");
   const systemPrompt = raw.systemPrompt === undefined ? undefined : validateString(raw.systemPrompt, "systemPrompt");
   return { model, messages: messages as ChatMessage[], systemPrompt, tools, maxTokens };
 }
@@ -108,18 +108,12 @@ function validateRunRequest(body: string): RunRequest {
   const base = validateCompleteBody(raw);
   const runId = validateString(raw.runId, "runId");
   const chatId = validateString(raw.chatId, "chatId");
-  const maxRounds =
-    raw.maxRounds === undefined ? undefined : validateNonNegativeInt(raw.maxRounds, "maxRounds");
-  const maxRetries =
-    raw.maxRetries === undefined ? undefined : validateNonNegativeInt(raw.maxRetries, "maxRetries");
+  const maxRounds = validateNonNegativeInt(raw.maxRounds, "maxRounds");
+  const maxRetries = validateNonNegativeInt(raw.maxRetries, "maxRetries");
   const streamIdleTimeoutMs =
-    raw.streamIdleTimeoutMs === undefined
-      ? undefined
-      : validateNonNegativeInt(raw.streamIdleTimeoutMs, "streamIdleTimeoutMs");
+    validateNonNegativeInt(raw.streamIdleTimeoutMs, "streamIdleTimeoutMs");
   const callbackTimeoutMs =
-    raw.callbackTimeoutMs === undefined
-      ? undefined
-      : validateNonNegativeInt(raw.callbackTimeoutMs, "callbackTimeoutMs");
+    validateNonNegativeInt(raw.callbackTimeoutMs, "callbackTimeoutMs");
   let toolCallbackUrl: string | undefined;
   if (base.tools !== undefined && base.tools.length > 0) {
     toolCallbackUrl = validateString(raw.toolCallbackUrl, "toolCallbackUrl");

@@ -82,6 +82,7 @@ class ChatCompactionService(
                     model = model.toHandModelSpec(),
                     messages = chat,
                     systemPrompt = renderSystemPrompt(500),
+                    maxTokens = model.maxOutputTokens,
                 )
             ).checkAndGetTextResp()
         } catch (e: CancellationException) {

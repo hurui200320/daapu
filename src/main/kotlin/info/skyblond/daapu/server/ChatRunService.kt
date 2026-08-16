@@ -126,6 +126,10 @@ class ChatRunService(
         hand = hand,
         compactionService = compactionService,
         sstmExtractionService = sstmExtractionService,
+        maxRounds = config.hand.maxRounds,
+        maxRetries = config.hand.maxRetries,
+        callbackTimeoutMs = config.hand.callbackTimeoutMs,
+        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
 
     // one run per chat at a time: a chat's history is loaded and stored as a

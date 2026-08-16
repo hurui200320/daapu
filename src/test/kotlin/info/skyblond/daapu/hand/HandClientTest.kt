@@ -40,6 +40,11 @@ class HandClientTest {
         messages = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("hi")))),
         runId = "r1",
         chatId = "c1",
+        maxTokens = 40000,
+        maxRounds = 64,
+        maxRetries = 0,
+        callbackTimeoutMs = 120_000,
+        streamIdleTimeoutMs = 300_000,
     )
 
     private fun toolSpec() = HandToolSpec(
@@ -173,6 +178,7 @@ class HandClientTest {
                     HandCompleteRequest(
                         model = modelSpec(server.port),
                         messages = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("hi")))),
+                        maxTokens = 40000,
                     )
                 )
             }
@@ -201,6 +207,7 @@ class HandClientTest {
                     HandCompleteRequest(
                         model = modelSpec(server.port),
                         messages = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("hi")))),
+                        maxTokens = 40000,
                     )
                 )
             }

@@ -109,6 +109,10 @@ class PersistChatServiceTest {
                             ),
                             sstmService = sstmService,
                         ),
+                    maxRounds = 64,
+                    maxRetries = 0,
+                    callbackTimeoutMs = 120_000,
+                    streamIdleTimeoutMs = 300_000,
                 ).runChat(
                     chatId = "chat-1",
                     model = model,
@@ -785,6 +789,10 @@ class PersistChatServiceTest {
                         hand = hand,
                         sstmService = sstm,
                     ),
+                    maxRounds = 64,
+                    maxRetries = 0,
+                    callbackTimeoutMs = 120_000,
+                    streamIdleTimeoutMs = 300_000,
                 ).runChat(
                     chatId = "chat-1",
                     model = model,
@@ -934,6 +942,10 @@ class PersistChatServiceTest {
             hand = hand,
             compactionService = compactionService,
             sstmExtractionService = extractionService,
+            maxRounds = 64,
+            maxRetries = 0,
+            callbackTimeoutMs = 120_000,
+            streamIdleTimeoutMs = 300_000,
         )
 
         val chats = listOf(

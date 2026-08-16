@@ -44,7 +44,7 @@ function toPiTools(tools: ToolSpec[]): PiTool[] {
 
 export interface StreamOptions {
   apiKey: string;
-  /** Always explicit: an omitted maxTokens sends no output cap on the wire. */
+  /** Required per request: the brain always sends its output budget. */
   maxTokens: number;
   reasoningEffort?: string;
   signal?: AbortSignal;

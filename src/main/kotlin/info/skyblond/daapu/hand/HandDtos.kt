@@ -52,7 +52,8 @@ data class HandCompleteRequest(
      */
     val systemPrompt: String? = null,
     val tools: List<HandToolSpec>? = null,
-    val maxTokens: Long? = null,
+    /** The output budget for this call; always explicit (no hand-side default). */
+    val maxTokens: Long,
 )
 
 @Serializable
@@ -61,14 +62,18 @@ data class HandRunRequest(
     val messages: List<ChatMessage>,
     val systemPrompt: String? = null,
     val tools: List<HandToolSpec>? = null,
-    val maxTokens: Long? = null,
+    val maxTokens: Long,
     val runId: String,
     val chatId: String,
     val toolCallbackUrl: String? = null,
-    val maxRounds: Int? = null,
-    val maxRetries: Int? = null,
-    val streamIdleTimeoutMs: Long? = null,
-    val callbackTimeoutMs: Long? = null,
+    /** Round cap; 0 = unlimited. */
+    val maxRounds: Int,
+    /** Transient retries per round; 0 = unlimited. */
+    val maxRetries: Int,
+    /** Idle timeout per streamed round in ms; 0 = disabled. */
+    val streamIdleTimeoutMs: Long,
+    /** Tool callback POST timeout in ms; 0 = no timeout. */
+    val callbackTimeoutMs: Long,
 )
 
 @Serializable
