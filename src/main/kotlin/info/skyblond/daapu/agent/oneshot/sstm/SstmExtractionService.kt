@@ -5,11 +5,11 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.oneshot.checkAndGetTextResp
+import info.skyblond.daapu.agent.oneshot.lastMessageText
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService.Companion.NOTHING_TO_REMEMBER_TEXT
-import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.agent.tool.EmptyToolProvider
+import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.HandToolSpec
 import info.skyblond.daapu.hand.toHandModelSpec
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -21,14 +21,14 @@ import kotlinx.coroutines.CancellationException
  * when messages are removed from context, extract info from the raw messages
  * and merge it into the SSTM before discarding them):
  *
- * 1. **Extractor** — one hand `/complete` call with the raw dropped history
- *    (attachments included, so the model needs the matching input
+ * 1. **Extractor** — one hand `/v1/run` call (no tools) with the raw dropped
+ *    history (attachments included, so the model needs the matching input
  *    capabilities) plus the extraction system prompt, returning a free-text
  *    list of candidate memories (or the [NOTHING_TO_REMEMBER_TEXT]
  *    sentinel).
- * 2. **Merger** — a hand `/complete` tool loop against the existing SSTM
- *    ([SstmService]) with add/update/delete/list tools, following the
- *    ADD/UPDATE/DELETE/NONE semantics. No lock is held: a concurrent run's
+ * 2. **Merger** — one hand `/v1/run` call (tool loop, the hand executes the
+ *    add/update/delete/list tools back through the callback route) against
+ *    the existing SSTM ([SstmService]). No lock is held: a concurrent run's
  *    injection read may observe a half-merged SSTM, which is healed by the
  *    `sstm-updated` flag comparison on the next round.
  *
@@ -39,9 +39,13 @@ import kotlinx.coroutines.CancellationException
  *   and fails fast;
  * - a failed extraction (a classified hand error such as a truncated
  *   `length` finish) or one producing tool calls or no text;
- * - a classified hand error or a non-`stop`/`tool_calls` finish in a merge
- *   round. Transient `upstream` merge failures retry indefinitely; the SSTM
- *   keeps whatever was already applied when a later round fails.
+ * - any terminal merge failure: a classified hand error, an exhausted
+ *   transient-retry budget, the `round_limit` cap (the model is stuck in a
+ *   loop or failed to merge everything in time) or an `empty_response` (no
+ *   text and no tool calls). A failed merge fails the run — and with it the
+ *   deletion when triggered from there, so a retry re-extracts from the
+ *   still-existing history instead of losing memories. The SSTM keeps
+ *   whatever was already applied when a later round fails.
  */
 class SstmExtractionService(
     private val extractModel: LLM,
@@ -49,11 +53,20 @@ class SstmExtractionService(
     private val hand: HandService,
     private val sstmService: SstmService,
     private val maxMergeRounds: Int = 150,
+    // the hand's /v1/run policy knobs for the one-shot calls (config
+    // `hand.*`): transient failures retry with the same budget/backoff as
+    // the chat loop, the merge rounds are capped by [maxMergeRounds]
+    private val maxRetries: Int,
+    private val callbackTimeoutMs: Long,
+    private val streamIdleTimeoutMs: Long,
 ) {
     /**
      * Extract memories from [droppedMessages] (the raw messages compaction is
      * about to discard) and merge them into the SSTM. Throws per the class
-     * KDoc (the extraction pipeline fails the run on failure).
+     * KDoc (the extraction pipeline fails the run on failure). The
+     * [NOTHING_TO_REMEMBER_TEXT] sentinel is the only skip path: a blank
+     * answer is a hand `empty_response` error and fails the run, it cannot
+     * silently skip the merge.
      */
     suspend fun processDiscardedMessages(
         droppedMessages: List<ChatMessage>,
@@ -66,7 +79,7 @@ class SstmExtractionService(
         // semantics, applied to the configured extraction model)
         extractModel.checkPromptContentCapabilities(droppedMessages)
         val extraction = extract(droppedMessages)
-        if (extraction.isBlank() || extraction == NOTHING_TO_REMEMBER_TEXT) {
+        if (extraction == NOTHING_TO_REMEMBER_TEXT) {
             return
         }
 
@@ -90,14 +103,23 @@ class SstmExtractionService(
 
         // TODO: when ELTM is ready, detect SSTM length and trigger ELTM
         return try {
-            hand.complete(
-                HandCompleteRequest(
+            hand.runCollect(
+                HandRunRequest(
                     model = extractModel.toHandModelSpec(),
                     messages = chat,
                     systemPrompt = renderExtractorSystemPrompt(),
                     maxTokens = extractModel.maxOutputTokens,
-                )
-            ).checkAndGetTextResp()
+                    // 0 = no round cap, safe here: no tools are declared
+                    // (and [EmptyToolProvider] answers stray calls with an
+                    // error result), so the loop ends on the first stop
+                    maxRounds = 0,
+                    maxRetries = maxRetries,
+                    callbackTimeoutMs = callbackTimeoutMs,
+                    streamIdleTimeoutMs = streamIdleTimeoutMs,
+                ),
+                toolProvider = EmptyToolProvider,
+                model = extractModel,
+            ).lastMessageText()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -106,18 +128,22 @@ class SstmExtractionService(
     }
 
     /**
-     * Run the merge agent: a tool loop over the SSTM until the model answers
-     * without tool calls (or the round cap is hit). Transient upstream
-     * failures retry indefinitely; a non-`stop`/`tool_calls` finish or a
-     * classified hand error fails the merge (the run stays alive; the SSTM
-     * keeps whatever was already applied).
+     * Run the merge agent: one hand `/v1/run` tool loop over the SSTM until
+     * the model answers without tool calls (the hand owns the loop, the tool
+     * execution, the transient retries and the `maxMergeRounds` cap). The
+     * collected messages are not needed here — the merge already happened
+     * through the tool callbacks — but keeping them gives future callers
+     * the full exchange to inspect.
+     *
+     * Any terminal failure throws and fails the run (see the class KDoc);
+     * the SSTM keeps whatever was already applied.
      */
     private suspend fun mergeToSstm(extraction: String) {
         require(mergeModel.supports(LLMCapability.Output.ToolCalls)) {
             "Merge model ${mergeModel.id} does not support tool calls"
         }
         val toolProvider = MergeMemoryToolProvider(sstmService)
-        var chat = listOf(
+        val chat = listOf(
             ChatMessage(
                 ChatMessageRole.User,
                 listOf(
@@ -130,61 +156,24 @@ class SstmExtractionService(
                 )
             ),
         )
-        var rounds = 0
-        while (true) {
-            val response = try {
-                hand.complete(
-                    HandCompleteRequest(
-                        model = mergeModel.toHandModelSpec(),
-                        messages = chat,
-                        systemPrompt = renderMergerSystemPrompt(),
-                        tools = toolProvider.specifications().map {
-                            HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds)
-                        },
-                        maxTokens = mergeModel.maxOutputTokens,
-                    )
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) { // TODO: maybe don't retry blindly?
-                logger.warn(e) { "SSTM merge round failed; retry..." }
-                continue
-            }
-            if (!response.ok) {
-                val error = response.error!!
-                if (error.type == "upstream") {
-                    logger.warn { "SSTM merge round failed (upstream); retry..." }
-                    continue
-                }
-                error("SSTM merge round failed: ${error.type} — ${error.message}")
-            }
-            val assistant = response.message
-                ?: error("SSTM merge round returned no message")
-
-            if (assistant.finishReason !in listOf("stop", "tool_calls")) {
-                error("SSTM merge round failed: ${assistant.finishReason}")
-            }
-
-            chat = chat + assistant
-            if (assistant.parts.none { it is ChatMessagePart.ToolCall }) {
-                logger.info { "SSTM merge round done, no tool call, return" }
-                return // no tool call, done, return
-            }
-            // the hand guarantees non-blank tool-call ids (uuidv7 synthesis
-            // for id-less calls), so no id normalization is needed here
-            val results = assistant.parts
-                .filterIsInstance<ChatMessagePart.ToolCall>()
-                .map { call ->
-                    toolProvider.execute(
-                        ToolCallRequest(call.id, call.tool, call.args)
-                    )
-                }
-            chat = chat + results.map { ChatMessage(ChatMessageRole.ToolResult, listOf(it)) }
-            if (++rounds >= maxMergeRounds) {
-                logger.warn { "SSTM merge round exceeded max rounds, force stop" }
-                return
-            }
-        }
+        val result = hand.runCollect(
+            HandRunRequest(
+                model = mergeModel.toHandModelSpec(),
+                messages = chat,
+                systemPrompt = renderMergerSystemPrompt(),
+                tools = toolProvider.specifications().map {
+                    HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds)
+                },
+                maxTokens = mergeModel.maxOutputTokens,
+                maxRounds = maxMergeRounds,
+                maxRetries = maxRetries,
+                callbackTimeoutMs = callbackTimeoutMs,
+                streamIdleTimeoutMs = streamIdleTimeoutMs,
+            ),
+            toolProvider = toolProvider,
+            model = mergeModel,
+        )
+        logger.info { "SSTM merge done, ${result.size} message(s) collected" }
     }
 
     companion object {

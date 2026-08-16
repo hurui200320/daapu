@@ -122,14 +122,33 @@ class ChatRunService(
     }
 
     // one-shot pipeline services: stateless across runs, so a single
-    // instance is shared by every concurrent chat run
-    private val titleGenerator = TitleGenerator(titleModel, handService, config.title.lastNRound)
-    private val compactionService = ChatCompactionService(compactModel, handService)
+    // instance is shared by every concurrent chat run. They talk to the
+    // hand through the same `/v1/run` seam as the chat loop, carrying the
+    // same `hand.*` policy knobs (transient retry budget, callbacks, idle
+    // timeout); the merge's round cap lives in SstmExtractionService.
+    private val titleGenerator = TitleGenerator(
+        model = titleModel,
+        hand = handService,
+        lastNRound = config.title.lastNRound,
+        maxRetries = config.hand.maxRetries,
+        callbackTimeoutMs = config.hand.callbackTimeoutMs,
+        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+    )
+    private val compactionService = ChatCompactionService(
+        model = compactModel,
+        hand = handService,
+        maxRetries = config.hand.maxRetries,
+        callbackTimeoutMs = config.hand.callbackTimeoutMs,
+        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+    )
     private val sstmExtractionService = SstmExtractionService(
         extractModel = extractModel,
         mergeModel = mergeModel,
         hand = handService,
         sstmService = sstmService,
+        maxRetries = config.hand.maxRetries,
+        callbackTimeoutMs = config.hand.callbackTimeoutMs,
+        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
     private val persistService = PersistChatService(
         chatStore = chatStore,

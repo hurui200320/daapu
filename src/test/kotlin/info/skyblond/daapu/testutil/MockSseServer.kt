@@ -148,13 +148,6 @@ internal fun jsonCompletion(
             """"choices":[{"index":0,"message":{$messageFields},"finish_reason":"$finishReason"}]}"""
 }
 
-/** A [MockSseResponse] that serves one raw JSON body (non-streaming). */
-internal fun jsonResponse(vararg lines: String) = MockSseResponse(
-    status = 200,
-    lines = lines.toList(),
-    contentType = "application/json",
-)
-
 /**
  * One `chat.completion.chunk` SSE payload. [delta] is the raw JSON object
  * body of the `delta` field (e.g. `{"content":"hi"}`); [finishReason] and

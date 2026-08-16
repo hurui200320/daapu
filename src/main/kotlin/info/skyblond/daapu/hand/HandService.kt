@@ -1,8 +1,13 @@
 package info.skyblond.daapu.hand
 
+import info.skyblond.daapu.agent.chat.ChatMessage
+import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.tool.ToolProvider
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import java.util.UUID
 
@@ -59,11 +64,70 @@ class HandService(
         }
     }
 
-    /** Non-streaming one-shot (extractor, compactor, merger rounds). */
-    suspend fun complete(request: HandCompleteRequest): HandCompleteResponse = hand.complete(request)
+    /**
+     * Non-streaming variant of [run]: consumes the full run flow and returns
+     * every [ChatMessage] it produced, in order — the per-round assistant
+     * message followed by its tool results (the same reconstruction the chat
+     * loop uses). The caller decides what to keep; the one-shot services
+     * only look at the last message.
+     *
+     * The run ends on exactly one of:
+     * - a `done` event: the collected messages are returned (by construction
+     *   the last message is the final assistant `stop` message — tool-call
+     *   rounds continue the loop, so a successful run never ends on a tool
+     *   result);
+     * - a `run_error` event: throws [HandRunException] with the hand's error
+     *   type (including `round_limit`, `empty_response`, and `upstream` when
+     *   the retries are exhausted);
+     * - a dropped connection before a terminal event: throws
+     *   [HandUpstreamException].
+     */
+    suspend fun runCollect(
+        request: HandRunRequest,
+        toolProvider: ToolProvider,
+        model: LLM,
+    ): List<ChatMessage> {
+        val messages = mutableListOf<ChatMessage>()
+        var terminal: HandEvent.Done? = null
+        run(request, toolProvider, model).collect { event ->
+            when (event) {
+                // per-round authoritative message; the deltas are dropped
+                is HandEvent.AssistantMessage -> messages += event.message
+                // paired with the assistant's tool_call parts by id: the args
+                // already live in the call, so no extra lookup is needed
+                is HandEvent.ToolResult -> messages += ChatMessage(
+                    ChatMessageRole.ToolResult,
+                    listOf(
+                        ChatMessagePart.ToolResult(
+                            id = event.id,
+                            tool = event.name,
+                            parts = event.parts,
+                            isError = event.isError,
+                        )
+                    ),
+                )
+
+                is HandEvent.Done -> terminal = event
+                is HandEvent.Retry -> logger.info { "one-shot retry: ${event.message}" }
+                is HandEvent.RunError -> throw HandRunException(event.type, event.message)
+                // stream noise or display echoes: nothing to collect
+                is HandEvent.TextDelta,
+                is HandEvent.ReasoningDelta,
+                is HandEvent.ToolCall -> Unit
+            }
+        }
+        // defensive: [HandClient.run] already fails a stream that closes
+        // without a terminal event, so this should not be reachable
+        check(terminal != null) { "one-shot run ended without a terminal event" }
+        return messages
+    }
 
     /** Close the underlying hand HTTP client (see [HandClient.close]). */
     override fun close() {
         hand.close()
+    }
+
+    companion object {
+        private val logger = KotlinLogging.logger {}
     }
 }

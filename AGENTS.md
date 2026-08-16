@@ -18,16 +18,22 @@ and a small TypeScript service (hand-pi). The pieces:
   Kotlin owns everything *content*: history, prompts, injection, compaction
   policy, extraction, tools, memory, persistence. The Kotlin side talks to
   the hand through `hand/HandService.kt` — the agent layer's hand seam,
-  which wraps the pure HTTP transport (`hand/HandClient.kt`, `/v1/run` SSE
-  round loop, `/v1/complete` one-shots) and owns the run/callback plumbing:
+  which wraps the pure HTTP transport (`hand/HandClient.kt`, the `/v1/run`
+  SSE round loop) and owns the run/callback plumbing:
   a fresh `runId` is generated per `/v1/run` call (internal to the run
   plumbing, never seen by the chat loop), the in-flight run is registered
   under it before the request goes out and evicted when the stream ends
   (success, error, or cancellation; a duplicate runId registration fails
   fast), and the tool callback URL is attached on every request (the hand
   only POSTs it when a tool call needs executing, so it is harmless without
-  tools). The hand calls back into the brain for tool
-  execution via `hand/HandCallbackRoute.kt` (`POST /api/hand/tool`,
+  tools). Every LLM call in the system — the chat loop, the one-shots, the
+  memory merger — is a `/v1/run`: `run` streams [HandEvent]s to the chat
+  loop, `runCollect` (the one-shots) consumes the same flow to a terminal
+  `List<ChatMessage>` (per-round assistant message + its tool results;
+  callers keep what they need, the text one-shots only take the last
+  message), so there is ONE loop implementation, retry policy, and
+  classification in the whole system. The hand calls back into the brain
+  for tool execution via `hand/HandCallbackRoute.kt` (`POST /api/hand/tool`,
   in-flight runs registered by `runId` in `hand/HandCallbackService.kt`).
 - **ktor HTTP API** (`server/`) — the input loop: `Main.kt` loads the
   configuration from `config.jsonc` (models in `config/Config.kt`, loaded by
@@ -143,8 +149,9 @@ and a small TypeScript service (hand-pi). The pieces:
     current run's trailing tool chain always lands in the preserved part),
     feeds the WHOLE chat — drop region, a marker user message ("above are
     the messages to summarize, below are messages for context"), the
-    preserved tail, and a final instruction — to a hand `/v1/complete`
-    one-shot with a dedicated compaction system prompt (~500 words target),
+    preserved tail, and a final instruction — to a hand `/v1/run` one-shot
+    (via `HandService.runCollect`, no tools) with a dedicated compaction
+    system prompt (~500 words target),
     and replaces the drop region with one `CONTEXT COMPACTION: `-marked
     user message. When the chat has fewer rounds than `excludeLastNRound`,
     the keep count shrinks — down to zero, which compacts the entire body —
@@ -161,21 +168,30 @@ and a small TypeScript service (hand-pi). The pieces:
     configuration error.
   - `SstmExtractionService.processDiscardedMessages(droppedMessages)` runs on the
     raw dropped messages BEFORE they are discarded: the **extractor**
-    one-shot `/v1/complete` call (raw history, attachments included —
+    one-shot `/v1/run` call (no tools; raw history, attachments included —
     capability-checked via `LLM.checkPromptContentCapabilities`, failing fast on
     a mismatch, a `memory.extractModel` configuration error) returns a
-    free-text fact list or the `Nothing worth remember.` sentinel (a blank
-    extraction also skips the merge); a failed extraction (a hand error such
+    free-text fact list or the `Nothing worth remember.` sentinel (the only
+    skip path: a blank extraction is a hand `empty_response` error); a
+    failed extraction (a hand error such
     as a truncated `length` finish) or one producing tool calls/no text
     throws and fails the run.
-    The **merger** is a tool loop (default ≤150 rounds, `/v1/complete` calls
-    with `add/update/delete/list` memories over the `sstms` table,
-    ADD/UPDATE/DELETE/NONE semantics). The merge runs without a lock: a
+    The **merger** is one `/v1/run` tool loop (default ≤150 rounds, the hand
+    executes the `add/update/delete/list` memory tools back through the
+    callback route against the `sstms` table, ADD/UPDATE/DELETE/NONE
+    semantics). The merge runs without a lock: a
     concurrent run's injection read may observe a half-merged SSTM, which is
     healed by the `sstm-updated` flag comparison on the next round. Transient
-    `upstream` failures log and
-    retry indefinitely; a classified hand error or a finish reason other
-    than `stop`/`tool_calls` throws and fails the run.
+    `upstream` failures retry with the hand's backoff (the same `hand.*`
+    knobs as the chat loop); ANY terminal merge failure — a classified hand
+    error, an exhausted retry budget, the `round_limit` cap (the model is
+    stuck in a loop or failed to merge everything in time) or an
+    `empty_response` (no text, no tool calls) — throws and fails the run:
+    a failed merger fails a compaction-triggered run (nothing is stored, the
+    retry re-runs the whole pipeline) and fails a deletion (the row
+    survives, a retry re-extracts and the merge agent deduplicates), so
+    unmerged memories are never lost. The SSTM keeps whatever was already
+    applied when a run fails.
     The `sstm-updated` injection flag needs no plumbing: the version digest
     changes when the merge writes, and the loop compares it against
     `chats.sstm_version` (a mid-run reactive compaction regenerates the

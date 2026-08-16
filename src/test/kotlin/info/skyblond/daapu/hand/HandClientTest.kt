@@ -2,7 +2,6 @@ package info.skyblond.daapu.hand
 
 import info.skyblond.daapu.testutil.MockSseResponse
 import info.skyblond.daapu.testutil.MockSseServer
-import info.skyblond.daapu.testutil.jsonResponse
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
@@ -14,7 +13,6 @@ import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -158,62 +156,6 @@ class HandClientTest {
                 runCatching { client.run(runRequest(server.port)).toList() }.exceptionOrNull()
             }
             assertIs<HandUpstreamException>(e)
-            client.close()
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `complete parses the one-shot response`() {
-        val server = MockSseServer {
-            jsonResponse(
-                """{"ok":true,"finishReason":"stop","message":{"role":"assistant","parts":[{"type":"text","text":"summary"}],""" +
-                        """"meta":{"inputTokens":1,"outputTokens":2,"totalTokens":3},"finishReason":"stop"}}"""
-            )
-        }
-        try {
-            val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
-            val response = runBlocking {
-                client.complete(
-                    HandCompleteRequest(
-                        model = modelSpec(server.port),
-                        messages = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("hi")))),
-                        maxTokens = 40000,
-                    )
-                )
-            }
-            assertEquals(true, response.ok)
-            assertEquals("stop", response.finishReason)
-            assertEquals("summary", (response.message?.parts?.single() as ChatMessagePart.Text).text)
-            assertNull(response.error)
-            client.close()
-        } finally {
-            server.close()
-        }
-    }
-
-    @Test
-    fun `complete surfaces the hand error taxonomy on failure`() {
-        val server = MockSseServer {
-            jsonResponse("""{"ok":false,"error":{"type":"output_budget_exhausted","message":"output hit the token budget"}}""")
-        }
-        try {
-            val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
-            // an ok:false body is a VALID one-shot response: the merger's
-            // retry policy and the extractor/compactor fail-fast semantics
-            // live in Kotlin, not the client
-            val response = runBlocking {
-                client.complete(
-                    HandCompleteRequest(
-                        model = modelSpec(server.port),
-                        messages = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("hi")))),
-                        maxTokens = 40000,
-                    )
-                )
-            }
-            assertEquals(false, response.ok)
-            assertEquals("output_budget_exhausted", response.error?.type)
             client.close()
         } finally {
             server.close()

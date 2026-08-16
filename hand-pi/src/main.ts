@@ -6,7 +6,7 @@
 
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
 import {readBody, requestAbortSignal, respondFailure, respondJson} from "./http.js";
-import {handleComplete, handleHealth, handleRun} from "./routes.js";
+import {handleHealth, handleRun} from "./routes.js";
 
 const HAND_PORT = Number(process.env.HAND_PORT ?? "3100");
 const HAND_TOKEN = process.env.HAND_TOKEN ?? "";
@@ -34,11 +34,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
   const url = new URL(req.url ?? "/", "http://localhost");
   if (req.method === "GET" && url.pathname === "/v1/health") {
     handleHealth(res);
-    return;
-  }
-  if (req.method === "POST" && url.pathname === "/v1/complete") {
-    const body = await readBody(req, res);
-    await handleComplete(res, body, requestAbortSignal(res));
     return;
   }
   if (req.method === "POST" && url.pathname === "/v1/run") {

@@ -8,14 +8,15 @@ import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.FakeHand
-import info.skyblond.daapu.hand.HandCompleteRequest
+import info.skyblond.daapu.hand.HandRunException
 import info.skyblond.daapu.hand.HandUpstreamException
 import info.skyblond.daapu.hand.assistantMessage
-import info.skyblond.daapu.hand.failedCompleteResponse
-import info.skyblond.daapu.hand.okCompleteResponse
+import info.skyblond.daapu.hand.errorRunFlow
+import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -29,6 +30,19 @@ class TitleGeneratorTest {
     private fun model(id: String = "bifrost/cerebras/gemma-4-31b") = ModelCatalog(
         mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"))
     ).findModel(id)!!
+
+    private fun generator(
+        hand: FakeHand,
+        model: LLM = model(),
+        lastNRound: Int = 0,
+    ) = TitleGenerator(
+        model = model,
+        hand = testHandService(hand),
+        lastNRound = lastNRound,
+        maxRetries = 0,
+        callbackTimeoutMs = 0,
+        streamIdleTimeoutMs = 0,
+    )
 
     private fun user(text: String) =
         ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
@@ -46,24 +60,24 @@ class TitleGeneratorTest {
     @Test
     fun `empty history returns the default title without calling the hand`() {
         val hand = FakeHand()
-        val generator = TitleGenerator(model(), testHandService(hand))
+        val generator = generator(hand)
         assertEquals(DEFAULT_CHAT_TITLE, runBlocking { generator.generateTitle(emptyList()) })
-        assertTrue(hand.completeRequests.isEmpty(), "an empty chat must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
     }
 
     @Test
     fun `history is sent with the instruction and the title system prompt`() {
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("My title")) }
+            runScript = { textRunFlow("My title") }
         )
-        val generator = TitleGenerator(model(), testHandService(hand))
+        val generator = generator(hand)
         val history = turns(2)
 
         val title = runBlocking { generator.generateTitle(history) }
 
         assertEquals("My title", title)
-        assertEquals(1, hand.completeRequests.size)
-        val request = hand.completeRequests[0]
+        assertEquals(1, hand.requests.size)
+        val request = hand.requests[0]
         assertEquals("cerebras/gemma-4-31b", request.model.modelId)
         // the history plus the appended generation instruction
         assertEquals(history + user("Generate a title according to the system prompt."), request.messages)
@@ -74,25 +88,27 @@ class TitleGeneratorTest {
 
     @Test
     fun `a truncated response fails`() {
+        // the hand classifies a truncated round itself and fails the run
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("half", finishReason = "length")) }
+            runScript = { errorRunFlow("output_budget_exhausted", "output hit the token budget") }
         )
-        val generator = TitleGenerator(model(), testHandService(hand))
+        val generator = generator(hand)
         val e = assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
         // the outer message names the wrapper only; the detail lives on the cause
         assertEquals("Title generation failed", e.message)
-        val cause = assertIs<IllegalStateException>(e.cause)
-        assertTrue(cause.message!!.contains("finish_reason"))
+        val cause = assertIs<HandRunException>(e.cause)
+        assertEquals("output_budget_exhausted", cause.type)
     }
 
     @Test
     fun `a blank response fails`() {
+        // a stop with neither text nor tool calls fails the run loop itself
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("")) }
+            runScript = { errorRunFlow("empty_response", "assistant finished with neither text nor tool calls") }
         )
-        val generator = TitleGenerator(model(), testHandService(hand))
+        val generator = generator(hand)
         assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
@@ -101,23 +117,23 @@ class TitleGeneratorTest {
     @Test
     fun `a failed hand response fails`() {
         val hand = FakeHand(
-            completeScript = { failedCompleteResponse("upstream", "boom") }
+            runScript = { errorRunFlow("upstream", "boom") }
         )
-        val generator = TitleGenerator(model(), testHandService(hand))
+        val generator = generator(hand)
         val e = assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
         assertEquals("Title generation failed", e.message)
-        val cause = assertIs<IllegalStateException>(e.cause)
+        val cause = assertIs<HandRunException>(e.cause)
         assertTrue(cause.message!!.contains("boom"))
     }
 
     @Test
     fun `a hand transport failure is wrapped`() {
         val hand = FakeHand(
-            completeScript = { throw HandUpstreamException("hand request failed with HTTP 500") }
+            runScript = { throw HandUpstreamException("hand request failed with HTTP 500") }
         )
-        val generator = TitleGenerator(model(), testHandService(hand))
+        val generator = generator(hand)
         val e = assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
@@ -128,33 +144,33 @@ class TitleGeneratorTest {
     @Test
     fun `history is truncated to the last N user rounds`() {
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("My title")) }
+            runScript = { textRunFlow("My title") }
         )
-        val generator = TitleGenerator(model(), testHandService(hand), lastNRound = 1)
+        val generator = generator(hand, lastNRound = 1)
         val history = turns(3)
 
         val title = runBlocking { generator.generateTitle(history) }
 
         assertEquals("My title", title)
-        assertEquals(1, hand.completeRequests.size)
+        assertEquals(1, hand.requests.size)
         // only the last user round survives, plus the generation instruction
         assertEquals(
             listOf(user("u3"), assistant("a3"), user("Generate a title according to the system prompt.")),
-            hand.completeRequests[0].messages
+            hand.requests[0].messages
         )
     }
 
     @Test
     fun `lastNRound beyond the round count keeps the whole history`() {
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("My title")) }
+            runScript = { textRunFlow("My title") }
         )
-        val generator = TitleGenerator(model(), testHandService(hand), lastNRound = 10)
+        val generator = generator(hand, lastNRound = 10)
         val history = turns(3)
 
         runBlocking { generator.generateTitle(history) }
 
-        assertEquals(history + user("Generate a title according to the system prompt."), hand.completeRequests[0].messages)
+        assertEquals(history + user("Generate a title according to the system prompt."), hand.requests[0].messages)
     }
 
     @Test
@@ -162,9 +178,9 @@ class TitleGeneratorTest {
         // the title generator only sees the kept tail: an image dropped by
         // the round cap must not fail a text-only title model
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("My title")) }
+            runScript = { textRunFlow("My title") }
         )
-        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), testHandService(hand), lastNRound = 1)
+        val generator = generator(hand, model("bifrost/cerebras/gpt-oss-120b"), lastNRound = 1)
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(
@@ -179,7 +195,7 @@ class TitleGeneratorTest {
         val title = runBlocking { generator.generateTitle(history) }
 
         assertEquals("My title", title)
-        assertEquals(1, hand.completeRequests.size)
+        assertEquals(1, hand.requests.size)
     }
 
     @Test
@@ -187,7 +203,7 @@ class TitleGeneratorTest {
         // the image survives the round cap and reaches the text-only model:
         // capability mismatch, no LLM call
         val hand = FakeHand()
-        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), testHandService(hand), lastNRound = 1)
+        val generator = generator(hand, model("bifrost/cerebras/gpt-oss-120b"), lastNRound = 1)
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(
@@ -202,7 +218,7 @@ class TitleGeneratorTest {
         assertFailsWith<ModelCapabilityException> {
             runBlocking { generator.generateTitle(history) }
         }
-        assertTrue(hand.completeRequests.isEmpty(), "the LLM must not be called on a capability mismatch")
+        assertTrue(hand.requests.isEmpty(), "the LLM must not be called on a capability mismatch")
     }
 
     @Test
@@ -210,7 +226,7 @@ class TitleGeneratorTest {
         // capability mismatch is a `title.model` configuration error: fail
         // before the LLM call instead of sending a doomed prompt
         val hand = FakeHand()
-        val generator = TitleGenerator(model("bifrost/cerebras/gpt-oss-120b"), testHandService(hand))
+        val generator = generator(hand, model("bifrost/cerebras/gpt-oss-120b"))
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(
@@ -224,15 +240,15 @@ class TitleGeneratorTest {
         assertFailsWith<ModelCapabilityException> {
             runBlocking { generator.generateTitle(history) }
         }
-        assertTrue(hand.completeRequests.isEmpty(), "the LLM must not be called on a capability mismatch")
+        assertTrue(hand.requests.isEmpty(), "the LLM must not be called on a capability mismatch")
     }
 
     @Test
     fun `a vision model accepts image history`() {
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("My title")) }
+            runScript = { textRunFlow("My title") }
         )
-        val generator = TitleGenerator(model("bifrost/cerebras/gemma-4-31b"), testHandService(hand))
+        val generator = generator(hand, model("bifrost/cerebras/gemma-4-31b"))
         val history = turns(1) + ChatMessage(
             ChatMessageRole.User,
             listOf(
@@ -245,6 +261,6 @@ class TitleGeneratorTest {
         )
         val title = runBlocking { generator.generateTitle(history) }
         assertEquals("My title", title)
-        assertEquals(1, hand.completeRequests.size)
+        assertEquals(1, hand.requests.size)
     }
 }

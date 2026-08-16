@@ -3,7 +3,6 @@ package info.skyblond.daapu.agent.oneshot
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
-import info.skyblond.daapu.hand.HandCompleteResponse
 
 /**
  * The current prompt size in tokens: the last assistant message's measured
@@ -19,16 +18,22 @@ fun currentPromptTokens(chat: List<ChatMessage>): Long =
     chat.lastOrNull { it.role == ChatMessageRole.Assistant }?.meta?.inputTokens?.toLong() ?: 0L
 
 
-fun HandCompleteResponse.checkAndGetTextResp(): String {
-    if (!this.ok) {
-        error("One-shot call failed (${this.error?.type}): ${this.error?.message}")
+/**
+ * The one-shot text answer: the final message of a collected run
+ * ([HandService.runCollect]'s list — by construction the last message of a
+ * successful run is the assistant's clean `stop` message, because tool-call
+ * rounds continue the loop and a stop without text fails as
+ * `empty_response` before `done`). The checks below stay as a defensive
+ * backstop on top of the hand's own guarantees.
+ */
+fun List<ChatMessage>.lastMessageText(): String {
+    val assistant = lastOrNull()
+        ?: error("One-shot call produced no messages")
+    if (assistant.role != ChatMessageRole.Assistant) {
+        error("One-shot call produced no assistant message")
     }
-    val assistant = this.message ?: error("One-shot call returned no message")
     if (assistant.finishReason != "stop") {
         error("One-shot call ended with finish_reason=${assistant.finishReason}, not a clean stop")
-    }
-    if (assistant.parts.any { it is ChatMessagePart.ToolCall }) {
-        error("One-shot call produced tool calls instead of text")
     }
     return assistant.parts.filterIsInstance<ChatMessagePart.Text>()
         .joinToString("\n") { it.text }

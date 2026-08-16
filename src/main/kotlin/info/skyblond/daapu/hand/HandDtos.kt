@@ -42,21 +42,6 @@ data class HandToolSpec(
 )
 
 @Serializable
-data class HandCompleteRequest(
-    val model: HandModelSpec,
-    val messages: List<ChatMessage>,
-    /**
-     * The system prompt for this call. Kept out of [messages] (there is no
-     * system role) and never stored in the chat: the caller renders it per
-     * call, so identical text hits the provider cache.
-     */
-    val systemPrompt: String? = null,
-    val tools: List<HandToolSpec>? = null,
-    /** The output budget for this call; always explicit (no hand-side default). */
-    val maxTokens: Long,
-)
-
-@Serializable
 data class HandRunRequest(
     val model: HandModelSpec,
     val messages: List<ChatMessage>,
@@ -85,14 +70,6 @@ data class HandRunRequest(
 data class HandError(
     val type: String,
     val message: String,
-)
-
-@Serializable
-data class HandCompleteResponse(
-    val ok: Boolean,
-    val message: ChatMessage? = null,
-    val finishReason: String? = null,
-    val error: HandError? = null,
 )
 
 /** SSE events the hand emits during a `/v1/run` stream. */

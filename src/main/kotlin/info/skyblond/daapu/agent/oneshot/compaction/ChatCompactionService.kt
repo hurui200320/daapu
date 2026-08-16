@@ -4,15 +4,21 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.oneshot.checkAndGetTextResp
+import info.skyblond.daapu.agent.oneshot.lastMessageText
+import info.skyblond.daapu.agent.tool.EmptyToolProvider
+import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.toHandModelSpec
 import kotlinx.coroutines.CancellationException
 
 class ChatCompactionService(
     private val model: LLM,
     private val hand: HandService,
+    // the hand's /v1/run policy knobs for this one-shot (config `hand.*`):
+    // transient failures retry with the same budget/backoff as the chat loop
+    private val maxRetries: Int,
+    private val callbackTimeoutMs: Long,
+    private val streamIdleTimeoutMs: Long,
 ) {
     /**
      * Compact the given chat history, returning the compacted chat plus the
@@ -77,14 +83,23 @@ class ChatCompactionService(
         )
 
         val summary = try {
-            hand.complete(
-                HandCompleteRequest(
+            hand.runCollect(
+                HandRunRequest(
                     model = model.toHandModelSpec(),
                     messages = chat,
                     systemPrompt = renderSystemPrompt(500),
                     maxTokens = model.maxOutputTokens,
-                )
-            ).checkAndGetTextResp()
+                    // 0 = no round cap, safe here: no tools are declared
+                    // (and [EmptyToolProvider] answers stray calls with an
+                    // error result), so the loop ends on the first stop
+                    maxRounds = 0,
+                    maxRetries = maxRetries,
+                    callbackTimeoutMs = callbackTimeoutMs,
+                    streamIdleTimeoutMs = streamIdleTimeoutMs,
+                ),
+                toolProvider = EmptyToolProvider,
+                model = model,
+            ).lastMessageText()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

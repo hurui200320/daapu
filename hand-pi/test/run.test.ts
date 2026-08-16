@@ -29,6 +29,22 @@ interface RunEvent {
   data: unknown;
 }
 
+describe("/v1/health", () => {
+  it("answers with the service version", async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/health`, {
+      headers: { "x-daapu-token": TOKEN },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, version: "0.1.0" });
+  });
+
+  it("rejects requests without a token", async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/health`);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ ok: false, error: { type: "auth" } });
+  });
+});
+
 function parseSse(text: string): RunEvent[] {
   return text
     .split("\n\n")

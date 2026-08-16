@@ -12,7 +12,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 
 /**
@@ -22,9 +21,6 @@ import kotlinx.serialization.json.Json
  * owns all content decisions; the hand owns LLM execution.
  */
 interface HandClient : AutoCloseable {
-    /** Non-streaming one-shot (extractor, compactor, merger rounds). */
-    suspend fun complete(request: HandCompleteRequest): HandCompleteResponse
-
     /**
      * The chat round loop as a stream of [HandEvent]s, terminated by
      * exactly one of [HandEvent.Done]/[HandEvent.RunError]. A connection
@@ -59,27 +55,6 @@ class HttpHandClient(
         // the SSE plugin is required for sseSession; reconnect stays off
         // (passed per request as `reconnectionTime = null`)
         install(SSE)
-    }
-
-    override suspend fun complete(request: HandCompleteRequest): HandCompleteResponse {
-        val response = withTimeout(COMPLETE_TIMEOUT_MS) {
-            client.post("$baseUrl/v1/complete") {
-                contentType(ContentType.Application.Json)
-                header("x-daapu-token", token)
-                setBody(json.encodeToString(HandCompleteRequest.serializer(), request))
-            }
-        }
-        val text = response.bodyAsText()
-        if (response.status.value !in 200..299) {
-            throw parseHandFailure(response.status.value, text)
-        }
-        return try {
-            json.decodeFromString(HandCompleteResponse.serializer(), text)
-        } catch (e: Exception) {
-            throw HandUpstreamException(
-                "hand returned an unparseable complete response: ${e.message}", e
-            )
-        }
     }
 
     override suspend fun run(request: HandRunRequest): Flow<HandEvent> = flow {
@@ -201,11 +176,6 @@ class HttpHandClient(
             return HandRunException(error.type, error.message)
         }
         return HandUpstreamException("hand request failed with HTTP $status: ${text.take(200)}")
-    }
-
-    companion object {
-        /** Parity with the old one-shot model timeout (60s) plus margin. */
-        private const val COMPLETE_TIMEOUT_MS = 65_000L
     }
 }
 

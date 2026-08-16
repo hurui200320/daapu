@@ -9,7 +9,7 @@ import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
-import info.skyblond.daapu.hand.okCompleteResponse
+import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -309,7 +309,7 @@ class WebServerTest {
         val store = FakeChatStore()
         store.seed("chat-1", chat = listOf(user("hi"), assistantMessage("hello")))
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("Generated title")) }
+            runScript = { textRunFlow("Generated title") }
         )
         testApplication {
             application { module(ChatRunService(testAppConfig(), hand = hand, chatStore = store), PostgresSstmService()) }
@@ -320,7 +320,7 @@ class WebServerTest {
             assertEquals("Generated title", body["title"]?.jsonPrimitive?.content)
         }
         assertEquals("Generated title", store.title("chat-1"))
-        assertEquals(1, hand.completeRequests.size)
+        assertEquals(1, hand.requests.size)
     }
 
     @Test
@@ -331,7 +331,7 @@ class WebServerTest {
             val response = client.post("/api/chats/nope/title")
             assertEquals(HttpStatusCode.NotFound, response.status)
         }
-        assertTrue(hand.completeRequests.isEmpty(), "a missing chat must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "a missing chat must not call the LLM")
     }
 
     @Test
@@ -346,7 +346,7 @@ class WebServerTest {
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
             assertEquals("My custom title", body["title"]?.jsonPrimitive?.content)
         }
-        assertTrue(hand.completeRequests.isEmpty(), "an empty chat must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
         assertEquals("My custom title", store.title("chat-1"), "a custom title must never be clobbered")
     }
 
@@ -391,6 +391,6 @@ class WebServerTest {
                 "the 400 must carry the capability reason"
             )
         }
-        assertTrue(hand.completeRequests.isEmpty(), "a capability mismatch must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "a capability mismatch must not call the LLM")
     }
 }

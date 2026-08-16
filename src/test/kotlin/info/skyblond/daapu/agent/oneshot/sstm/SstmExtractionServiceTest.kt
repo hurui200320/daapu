@@ -5,10 +5,7 @@ import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.chat.*
-import info.skyblond.daapu.hand.FakeHand
-import info.skyblond.daapu.hand.assistantMessage
-import info.skyblond.daapu.hand.failedCompleteResponse
-import info.skyblond.daapu.hand.okCompleteResponse
+import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
@@ -38,6 +35,20 @@ class SstmExtractionServiceTest {
                 mimeType = "image/png",
             )
         ),
+    )
+
+    private fun service(
+        hand: FakeHand,
+        sstm: SstmService,
+        maxMergeRounds: Int = 150,
+    ) = SstmExtractionService(
+        extractModel = model("bifrost/cerebras/gemma-4-31b"),
+        hand = testHandService(hand),
+        sstmService = sstm,
+        maxMergeRounds = maxMergeRounds,
+        maxRetries = 0,
+        callbackTimeoutMs = 0,
+        streamIdleTimeoutMs = 0,
     )
 
     /** A fake [SstmService] recording writes. */
@@ -142,44 +153,45 @@ class SstmExtractionServiceTest {
 
     @Test
     fun `processDiscardedMessages runs the extractor and the merge tool loop`() = runBlocking {
-        // complete 1 = extractor (fact text), complete 2 = merge round 1
-        // (add_memory tool call), complete 3 = merge round 2 (done)
-        var round = 0
+        // run 1 = extractor (fact text), run 2 = the merge tool loop: one
+        // add_memory round (executed through the merge provider, standing
+        // in for the hand's tool callback) then the final confirmation
+        var calls = 0
+        val sstm = FakeSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "existing fact")))
+        val mergeProvider = MergeMemoryToolProvider(sstm)
         val hand = FakeHand(
-            completeScript = {
-                when (++round) {
-                    1 -> okCompleteResponse(assistantMessage("likes coffee"))
-                    2 -> okCompleteResponse(addMemoryRound("call_1", "likes coffee"))
-                    else -> okCompleteResponse(assistantMessage("done"))
+            runScript = {
+                when (++calls) {
+                    1 -> textRunFlow("likes coffee")
+                    else -> listOf(
+                        HandEvent.AssistantMessage(addMemoryRound("call_1", "likes coffee"))
+                    ) + toolRoundEvents(addMemoryRound("call_1", "likes coffee"), mergeProvider) +
+                        listOf(
+                            HandEvent.AssistantMessage(assistantMessage("done")),
+                            HandEvent.Done("stop"),
+                        )
                 }
             },
         )
-        val sstm = FakeSstmService(listOf(ShortTermMemory(1, Instant.EPOCH, "existing fact")))
-        val extractor = SstmExtractionService(
-            extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = testHandService(hand),
-            sstmService = sstm,
-        )
+        val extractor = service(hand, sstm)
         extractor.processDiscardedMessages(listOf(userMessage("u1"), userMessage("u2")))
         assertEquals(listOf("likes coffee"), sstm.created)
-        assertEquals(3, hand.completeRequests.size, "extractor + merge round + final round")
-        // the merge rounds advertised the memory tools
-        assertTrue(hand.completeRequests[1].tools!!.map { it.name }.contains("add_memory"))
+        assertEquals(2, hand.requests.size, "extractor run + one merge run")
+        // the merge run advertised the memory tools
+        assertTrue(hand.requests[1].tools!!.map { it.name }.contains("add_memory"))
+        // the merge run carries the round cap
+        assertEquals(150, hand.requests[1].maxRounds)
     }
 
     @Test
     fun `the nothing-worth-remembering sentinel skips the merge`() = runBlocking {
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("Nothing worth remember.")) },
+            runScript = { textRunFlow("Nothing worth remember.") },
         )
         val sstm = FakeSstmService()
-        val extractor = SstmExtractionService(
-            extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = testHandService(hand),
-            sstmService = sstm,
-        )
+        val extractor = service(hand, sstm)
         extractor.processDiscardedMessages(listOf(userMessage("u1")))
-        assertEquals(1, hand.completeRequests.size, "only the extractor round ran")
+        assertEquals(1, hand.requests.size, "only the extractor run happened")
         assertTrue(sstm.created.isEmpty())
     }
 
@@ -192,6 +204,9 @@ class SstmExtractionServiceTest {
             extractModel = textOnly,
             hand = testHandService(hand),
             sstmService = sstm,
+            maxRetries = 0,
+            callbackTimeoutMs = 0,
+            streamIdleTimeoutMs = 0,
         )
         // a text-only extraction model with an image in the dropped
         // history: the capability mismatch is a configuration error and
@@ -203,7 +218,7 @@ class SstmExtractionServiceTest {
             e.message!!.contains("image"),
             "the error should name the unsupported kind: ${e.message}"
         )
-        assertTrue(hand.completeRequests.isEmpty(), "no LLM call for an incapable model")
+        assertTrue(hand.requests.isEmpty(), "no LLM call for an incapable model")
     }
 
     @Test
@@ -211,53 +226,79 @@ class SstmExtractionServiceTest {
         // a truncated extractor response is a broken extraction: it fails
         // the run instead of feeding the merger
         val hand = FakeHand(
-            completeScript = {
-                failedCompleteResponse(
-                    "output_budget_exhausted",
-                    "output hit the token budget"
-                )
+            runScript = {
+                errorRunFlow("output_budget_exhausted", "output hit the token budget")
             },
         )
         val sstm = FakeSstmService()
-        val extractor = SstmExtractionService(
-            extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = testHandService(hand),
-            sstmService = sstm,
-        )
+        val extractor = service(hand, sstm)
         val e = assertFailsWith<IllegalStateException> {
             extractor.processDiscardedMessages(listOf(userMessage("u1")))
         }
         // the outer message names the wrapper only; the detail lives on the cause
         assertEquals("SSTM extraction failed", e.message)
-        val cause = assertIs<IllegalStateException>(e.cause)
-        assertTrue(cause.message!!.contains("output_budget_exhausted"))
-        assertEquals(1, hand.completeRequests.size, "only the extractor round ran")
+        val cause = assertIs<HandRunException>(e.cause)
+        assertEquals("output_budget_exhausted", cause.type)
+        assertEquals(1, hand.requests.size, "only the extractor run happened")
         assertTrue(sstm.created.isEmpty(), "a truncated extraction must not feed the merger")
     }
 
     @Test
-    fun `the merge round cap stops an endless tool loop`() = runBlocking {
-        // the model keeps calling add_memory forever; the loop must stop
-        var round = 0
+    fun `a merge round with no answer fails the merge`() = runBlocking {
+        // the merge run's assistant answers with neither text nor tool
+        // calls: the run loop fails it as empty_response, and the failed
+        // merge must fail the whole extraction pipeline
+        var calls = 0
+        val sstm = FakeSstmService()
+        val mergeProvider = MergeMemoryToolProvider(sstm)
         val hand = FakeHand(
-            completeScript = {
-                when (++round) {
-                    1 -> okCompleteResponse(assistantMessage("x"))
-                    else -> okCompleteResponse(addMemoryRound("call_$round", "x"))
+            runScript = {
+                when (++calls) {
+                    1 -> textRunFlow("x")
+                    else -> listOf(
+                        HandEvent.AssistantMessage(addMemoryRound("call_1", "x"))
+                    ) + toolRoundEvents(addMemoryRound("call_1", "x"), mergeProvider) +
+                        listOf(HandEvent.RunError("empty_response", "assistant finished with neither text nor tool calls"))
                 }
             },
         )
+        val extractor = service(hand, sstm)
+        val e = assertFailsWith<HandRunException> {
+            extractor.processDiscardedMessages(listOf(userMessage("u1")))
+        }
+        assertEquals("empty_response", e.type)
+        // the memory applied before the failure stays (healed by the next
+        // sstm-updated comparison)
+        assertEquals(listOf("x"), sstm.created)
+    }
+
+    @Test
+    fun `the merge round cap fails the merge instead of force-stopping`() = runBlocking {
+        // the model keeps calling add_memory forever; the run loop stops at
+        // maxRounds with a round_limit error, and the failed merge fails
+        // the pipeline (a deletion must not lose unmerged memories)
+        var calls = 0
         val sstm = FakeSstmService()
-        val extractor = SstmExtractionService(
-            extractModel = model("bifrost/cerebras/gemma-4-31b"),
-            hand = testHandService(hand),
-            sstmService = sstm,
-            maxMergeRounds = 2,
+        val mergeProvider = MergeMemoryToolProvider(sstm)
+        val hand = FakeHand(
+            runScript = {
+                if (++calls == 1) {
+                    textRunFlow("x")
+                } else {
+                    val round = addMemoryRound("call_$calls", "x")
+                    listOf(HandEvent.AssistantMessage(round)) +
+                        toolRoundEvents(round, mergeProvider) +
+                        listOf(HandEvent.RunError("round_limit", "maxRounds (2) reached at round 2"))
+                }
+            },
         )
-        extractor.processDiscardedMessages(listOf(userMessage("u1")))
-        // extractor round + 2 capped merge rounds
-        assertEquals(3, hand.completeRequests.size)
-        assertEquals(listOf("x", "x"), sstm.created)
+        val extractor = service(hand, sstm, maxMergeRounds = 2)
+        val e = assertFailsWith<HandRunException> {
+            extractor.processDiscardedMessages(listOf(userMessage("u1")))
+        }
+        assertEquals("round_limit", e.type)
+        // the memory applied before the cap stays
+        assertEquals(listOf("x"), sstm.created)
     }
 
     @Test

@@ -8,7 +8,7 @@ import info.skyblond.daapu.agent.chat.ChatStore
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
-import info.skyblond.daapu.hand.okCompleteResponse
+import info.skyblond.daapu.hand.textRunFlow
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,7 +25,7 @@ class ChatRunServiceStoreTest {
 
     private val store = FakeChatStore()
     private val hand = FakeHand(
-        completeScript = { okCompleteResponse(assistantMessage("Generated title")) }
+        runScript = { textRunFlow("Generated title") }
     )
 
     private fun service() = ChatRunService(testAppConfig(), hand = hand, chatStore = store)
@@ -36,7 +36,7 @@ class ChatRunServiceStoreTest {
     @Test
     fun `generateTitle returns null for a missing chat without calling the LLM`() {
         assertNull(runBlocking { service().generateTitle("nope") })
-        assertTrue(hand.completeRequests.isEmpty(), "a missing chat must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "a missing chat must not call the LLM")
     }
 
     @Test
@@ -46,7 +46,7 @@ class ChatRunServiceStoreTest {
         val result = runBlocking { service().generateTitle("chat-1") }
 
         assertEquals(ChatInfo("chat-1", "My custom title"), result)
-        assertTrue(hand.completeRequests.isEmpty(), "an empty chat must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
         assertEquals("My custom title", store.title("chat-1"), "a custom title must never be clobbered")
     }
 
@@ -58,16 +58,16 @@ class ChatRunServiceStoreTest {
 
         assertEquals(ChatInfo("chat-1", "Generated title"), result)
         assertEquals("Generated title", store.title("chat-1"))
-        assertEquals(1, hand.completeRequests.size)
+        assertEquals(1, hand.requests.size)
     }
 
     @Test
     fun `a chat deleted mid-generation returns null`() {
         store.seed("chat-1", chat = listOf(user("hi"), assistantMessage("hello")))
         val deletingHand = FakeHand(
-            completeScript = {
+            runScript = {
                 store.deleteRow("chat-1")
-                okCompleteResponse(assistantMessage("Generated title"))
+                textRunFlow("Generated title")
             }
         )
 

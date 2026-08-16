@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -191,22 +192,57 @@ class HandServiceTest {
     }
 
     @Test
-    fun `complete delegates to the client`() = runBlocking {
+    fun `runCollect returns every message of a tool round in order`() = runBlocking {
         val hand = FakeHand(
-            completeScript = { okCompleteResponse(assistantMessage("summary")) }
+            runScript = {
+                val call = ChatMessagePart.ToolCall(
+                    id = "call_1",
+                    tool = "flag",
+                    args = JsonObject(emptyMap()),
+                )
+                listOf(
+                    HandEvent.AssistantMessage(
+                        assistantMessage(parts = listOf(call), finishReason = "tool_calls")
+                    ),
+                    HandEvent.ToolCall("call_1", "flag", call.args),
+                    HandEvent.ToolResult("call_1", "flag", listOf(ChatMessagePart.Text("done")), false),
+                    HandEvent.AssistantMessage(assistantMessage("finished")),
+                    HandEvent.Done("stop"),
+                )
+            }
         )
         val service = HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
 
-        val response = service.complete(
-            HandCompleteRequest(
-                model = model().toHandModelSpec(),
-                messages = emptyList(),
-                maxTokens = 10,
-            )
-        )
+        val messages = service.runCollect(runRequest(tools = listOf(toolSpec())), EmptyToolProvider, model())
 
-        assertTrue(response.ok)
-        assertEquals("summary", (response.message?.parts?.single() as ChatMessagePart.Text).text)
-        assertEquals(1, hand.completeRequests.size)
+        assertEquals(3, messages.size, "assistant + tool result + final assistant")
+        assertTrue(messages[0].parts.single() is ChatMessagePart.ToolCall)
+        val toolResult = assertIs<ChatMessagePart.ToolResult>(messages[1].parts.single())
+        assertEquals("call_1", toolResult.id)
+        assertEquals("flag", toolResult.tool)
+        assertFalse(toolResult.isError)
+        assertEquals("finished", (messages[2].parts.single() as ChatMessagePart.Text).text)
+    }
+
+    @Test
+    fun `runCollect throws the hand error taxonomy on a terminal error`() = runBlocking {
+        val hand = FakeHand(runScript = { errorRunFlow("round_limit", "maxRounds reached") })
+        val service = HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+
+        val e = assertFailsWith<HandRunException> {
+            service.runCollect(runRequest(), EmptyToolProvider, model())
+        }
+        assertEquals("round_limit", e.type)
+    }
+
+    @Test
+    fun `runCollect fails a stream without a terminal event`() = runBlocking {
+        val hand = FakeHand(runScript = { listOf(HandEvent.AssistantMessage(assistantMessage("partial"))) })
+        val service = HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+
+        val e = assertFailsWith<IllegalStateException> {
+            service.runCollect(runRequest(), EmptyToolProvider, model())
+        }
+        assertTrue(e.message!!.contains("terminal event"), "message: ${e.message}")
     }
 }

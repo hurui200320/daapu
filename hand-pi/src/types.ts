@@ -99,7 +99,7 @@ export interface HandError {
   message: string;
 }
 
-export interface CompleteRequest {
+export interface RunRequest {
   model: ModelSpec;
   messages: ChatMessage[];
   /** The system prompt; never a message in the chat. */
@@ -107,13 +107,6 @@ export interface CompleteRequest {
   tools?: ToolSpec[];
   /** The output budget for this call; always explicit. */
   maxTokens: number;
-}
-
-export type CompleteResponse =
-  | { ok: true; message: ChatMessage; finishReason: string }
-  | { ok: false; error: HandError };
-
-export interface RunRequest extends CompleteRequest {
   runId: string;
   /** Required iff `tools` is non-empty. */
   toolCallbackUrl?: string;

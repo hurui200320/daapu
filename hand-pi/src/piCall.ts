@@ -78,22 +78,3 @@ export function openStream(
     },
   );
 }
-
-/** Drives a stream to its terminal event, discarding intermediate events. */
-export async function driveToCompletion(
-  model: PiModel<"openai-completions">,
-  context: PiContext,
-  tools: ToolSpec[] | undefined,
-  options: StreamOptions,
-): Promise<TerminalOutcome> {
-  const events = openStream(model, context, tools, options);
-  for await (const event of events) {
-    if (event.type === "done") {
-      return { outcome: "done", message: event.message };
-    }
-    if (event.type === "error") {
-      return { outcome: "error", message: event.error, aborted: event.reason === "aborted" };
-    }
-  }
-  throw new Error("pi-ai stream ended without a terminal event");
-}

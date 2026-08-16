@@ -5,9 +5,10 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
+import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.HandCompleteRequest
 import info.skyblond.daapu.hand.toHandModelSpec
 import kotlinx.coroutines.CancellationException
 
@@ -21,6 +22,11 @@ class TitleGenerator(
      * user-message boundary never splits tool_call/tool_result pairs.
      */
     private val lastNRound: Int = 0,
+    // the hand's /v1/run policy knobs for this one-shot (config `hand.*`):
+    // transient failures retry with the same budget/backoff as the chat loop
+    private val maxRetries: Int,
+    private val callbackTimeoutMs: Long,
+    private val streamIdleTimeoutMs: Long,
 ) {
     /**
      * Generate a session title from [history]. An empty history returns the
@@ -40,8 +46,8 @@ class TitleGenerator(
         model.checkPromptContentCapabilities(truncated)
 
         return try {
-            hand.complete(
-                HandCompleteRequest(
+            hand.runCollect(
+                HandRunRequest(
                     model = model.toHandModelSpec(),
                     messages = truncated + ChatMessage(
                         role = ChatMessageRole.User,
@@ -53,8 +59,17 @@ class TitleGenerator(
                     ),
                     systemPrompt = renderSystemPrompt(15),
                     maxTokens = model.maxOutputTokens,
-                )
-            ).checkAndGetTextResp()
+                    // 0 = no round cap, safe here: no tools are declared
+                    // (and [EmptyToolProvider] answers stray calls with an
+                    // error result), so the loop ends on the first stop
+                    maxRounds = 0,
+                    maxRetries = maxRetries,
+                    callbackTimeoutMs = callbackTimeoutMs,
+                    streamIdleTimeoutMs = streamIdleTimeoutMs,
+                ),
+                toolProvider = EmptyToolProvider,
+                model = model,
+            ).lastMessageText()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

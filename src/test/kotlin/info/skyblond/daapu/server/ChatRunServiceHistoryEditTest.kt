@@ -69,7 +69,7 @@ class ChatRunServiceHistoryEditTest {
 
     private fun service(
         store: FakeChatStore,
-        hand: FakeHand = FakeHand(completeScript = { error("the LLM must not be called") }),
+        hand: FakeHand = FakeHand(runScript = { error("the LLM must not be called") }),
     ) = ChatRunService(testAppConfig(), hand = hand, chatStore = store)
 
     // ---- truncate ----
