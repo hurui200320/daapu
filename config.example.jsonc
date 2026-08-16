@@ -81,8 +81,6 @@
     "maxRounds": 64,
     // Transient retries per round; 0 = unlimited.
     "maxRetries": 0,
-    // Tool callback POST timeout in ms; 0 = no timeout.
-    "callbackTimeoutMs": 120000,
     // Stream idle timeout per round in ms; 0 = disabled.
     "streamIdleTimeoutMs": 300000
   }

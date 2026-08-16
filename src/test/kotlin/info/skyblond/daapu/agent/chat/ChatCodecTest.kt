@@ -1,13 +1,9 @@
 package info.skyblond.daapu.agent.chat
 
-import java.io.File
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.File
+import kotlin.test.*
 
 /**
  * DB-free tests for the neutral history JSON codec behind [ChatCodec].
@@ -89,14 +85,14 @@ class ChatCodecTest {
      */
     private val goldenJson =
         """[{"role":"user","parts":[{"type":"text","text":"<injection><real-time-info/></injection>"},{""" +
-            """"type":"text","text":"Hello!"}]},{"role":"assistant","parts":[{"type":"reasoning","content":""" +
-            """"thinking..."},{"type":"text","text":"Hi there"},{"type":"tool_call","id":"call_1","tool":"flag",""" +
-            """"args":{"flag":true}}],"meta":{"inputTokens":700,"outputTokens":112,"totalTokens":812},""" +
-            """"finishReason":"tool_calls"},{"role":"tool_result","parts":[{"type":"tool_result","id":"call_1",""" +
-            """"tool":"flag","parts":[{"type":"text","text":"ok"}],"isError":false}]},{"role":"user","parts":[{""" +
-            """"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"image/png"}]},""" +
-            """{"role":"assistant","parts":[{"type":"text","text":"I see the image."}],""" +
-            """"meta":{"inputTokens":10,"outputTokens":2,"totalTokens":12},"finishReason":"stop"}]"""
+                """"type":"text","text":"Hello!"}]},{"role":"assistant","parts":[{"type":"reasoning","content":""" +
+                """"thinking..."},{"type":"text","text":"Hi there"},{"type":"tool_call","id":"call_1","tool":"flag",""" +
+                """"args":{"flag":true}}],"meta":{"inputTokens":700,"outputTokens":112,"totalTokens":812},""" +
+                """"finishReason":"tool_calls"},{"role":"tool_result","parts":[{"type":"tool_result","id":"call_1",""" +
+                """"tool":"flag","parts":[{"type":"text","text":"ok"}],"isError":false}]},{"role":"user","parts":[{""" +
+                """"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"image/png"}]},""" +
+                """{"role":"assistant","parts":[{"type":"text","text":"I see the image."}],""" +
+                """"meta":{"inputTokens":10,"outputTokens":2,"totalTokens":12},"finishReason":"stop"}]"""
 
     @Test
     fun `history round-trips through the codec`() {
@@ -147,12 +143,16 @@ class ChatCodecTest {
     @Test
     fun `unknown keys in messages and parts are tolerated`() {
         // forward-compatible: a newer format may add fields
-        val json = """[{"role":"user","parts":[{"type":"text","text":"hi","extra":"x"}],"future":1},""" +
-            """{"role":"assistant","parts":[{"type":"text","text":"ok"}]""" + assistantMetaJson +
-            ""","finishReason":"stop"}]"""
+        val json =
+            """[{"role":"user","parts":[{"type":"text","text":"hi","extra":"x"}],"future":1},""" +
+                    """{"role":"assistant","parts":[{"type":"text","text":"ok"}]""" + assistantMetaJson +
+                    ""","finishReason":"stop"}]"""
         assertEquals(
             listOf(
-                ChatMessage(role = ChatMessageRole.User, parts = listOf(ChatMessagePart.Text("hi"))),
+                ChatMessage(
+                    role = ChatMessageRole.User,
+                    parts = listOf(ChatMessagePart.Text("hi"))
+                ),
                 ChatMessage(
                     role = ChatMessageRole.Assistant,
                     parts = listOf(ChatMessagePart.Text("ok")),
@@ -253,7 +253,7 @@ class ChatCodecTest {
             ChatCodec.decodeChat(
                 "chat-1",
                 """[{"role":"tool_result","parts":[{"type":"tool_result","id":"c1","tool":"t","parts":[{"type":"text","text":"ok"}]}]},""" +
-                    """{"role":"assistant","parts":[{"type":"text","text":"done"}]""" + assistantMetaJson + ""","finishReason":"stop"}]""",
+                        """{"role":"assistant","parts":[{"type":"text","text":"done"}]""" + assistantMetaJson + ""","finishReason":"stop"}]""",
             )
         }
         assertTrue(
@@ -360,9 +360,9 @@ class ChatCodecTest {
             ChatCodec.decodeChat(
                 "chat-1",
                 """[{"role":"assistant","parts":[{"type":"tool_call","id":"c1","tool":"a","args":{}},""" +
-                    """{"type":"tool_call","id":"c1","tool":"b","args":{}}]""" + assistantMetaJson + ""","finishReason":"tool_calls"},""" +
-                    """{"role":"tool_result","parts":[{"type":"tool_result","id":"c1","tool":"a","parts":[{"type":"text","text":"1"}]}]},""" +
-                    """{"role":"assistant","parts":[{"type":"text","text":"done"}]""" + assistantMetaJson + ""","finishReason":"stop"}]""",
+                        """{"type":"tool_call","id":"c1","tool":"b","args":{}}]""" + assistantMetaJson + ""","finishReason":"tool_calls"},""" +
+                        """{"role":"tool_result","parts":[{"type":"tool_result","id":"c1","tool":"a","parts":[{"type":"text","text":"1"}]}]},""" +
+                        """{"role":"assistant","parts":[{"type":"text","text":"done"}]""" + assistantMetaJson + ""","finishReason":"stop"}]""",
             )
         }
         assertTrue(
@@ -397,8 +397,8 @@ class ChatCodecTest {
             ChatCodec.decodeChat(
                 "chat-1",
                 """[{"role":"assistant","parts":[{"type":"tool_call","id":"c1","tool":"a","args":{}}]""" + assistantMetaJson + """,""" +
-                    """"finishReason":"tool_calls"},{"role":"assistant","parts":[{"type":"text","text":"done"}]""" + assistantMetaJson +
-                    ""","finishReason":"stop"}]""",
+                        """"finishReason":"tool_calls"},{"role":"assistant","parts":[{"type":"text","text":"done"}]""" + assistantMetaJson +
+                        ""","finishReason":"stop"}]""",
             )
         }
         assertTrue(

@@ -23,7 +23,7 @@ class SstmServiceTest {
         override suspend fun createMemory(content: String): ShortTermMemory =
             error("not used in digest tests")
 
-        override suspend fun updateMemory(id: Long, content: String): ShortTermMemory? =
+        override suspend fun updateMemory(id: Long, content: String): ShortTermMemory =
             error("not used in digest tests")
 
         override suspend fun deleteMemory(id: Long): Boolean = error("not used in digest tests")

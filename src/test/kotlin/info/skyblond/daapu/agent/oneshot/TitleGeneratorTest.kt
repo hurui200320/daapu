@@ -1,29 +1,15 @@
 package info.skyblond.daapu.agent.oneshot
 
 import info.skyblond.daapu.agent.ModelCatalog
-import info.skyblond.daapu.agent.chat.AttachmentContent
-import info.skyblond.daapu.agent.chat.AttachmentKind
-import info.skyblond.daapu.agent.chat.ChatMessage
-import info.skyblond.daapu.agent.chat.ChatMessageMeta
-import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.agent.chat.ChatMessageRole
-import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
-import info.skyblond.daapu.hand.FakeHand
-import info.skyblond.daapu.hand.HandRunException
-import info.skyblond.daapu.hand.HandUpstreamException
-import info.skyblond.daapu.hand.assistantMessage
-import info.skyblond.daapu.hand.errorRunFlow
-import info.skyblond.daapu.hand.textRunFlow
+import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertIs
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 class TitleGeneratorTest {
 
@@ -40,7 +26,6 @@ class TitleGeneratorTest {
         hand = testHandService(hand),
         lastNRound = lastNRound,
         maxRetries = 0,
-        callbackTimeoutMs = 0,
         streamIdleTimeoutMs = 0,
     )
 
@@ -80,9 +65,12 @@ class TitleGeneratorTest {
         val request = hand.requests[0]
         assertEquals("cerebras/gemma-4-31b", request.model.modelId)
         // the history plus the appended generation instruction
-        assertEquals(history + user("Generate a title according to the system prompt."), request.messages)
+        assertEquals(
+            history + user("Generate a title according to the system prompt."),
+            request.messages
+        )
         assertTrue(request.systemPrompt!!.contains("ONE LINE"))
-        assertTrue(request.systemPrompt!!.contains("15"))
+        assertTrue(request.systemPrompt.contains("15"))
         assertEquals(ChatMessageRole.User, request.messages.last().role)
     }
 
@@ -106,7 +94,12 @@ class TitleGeneratorTest {
     fun `a blank response fails`() {
         // a stop with neither text nor tool calls fails the run loop itself
         val hand = FakeHand(
-            runScript = { errorRunFlow("empty_response", "assistant finished with neither text nor tool calls") }
+            runScript = {
+                errorRunFlow(
+                    "empty_response",
+                    "assistant finished with neither text nor tool calls"
+                )
+            }
         )
         val generator = generator(hand)
         assertFailsWith<IllegalStateException> {
@@ -155,7 +148,11 @@ class TitleGeneratorTest {
         assertEquals(1, hand.requests.size)
         // only the last user round survives, plus the generation instruction
         assertEquals(
-            listOf(user("u3"), assistant("a3"), user("Generate a title according to the system prompt.")),
+            listOf(
+                user("u3"),
+                assistant("a3"),
+                user("Generate a title according to the system prompt.")
+            ),
             hand.requests[0].messages
         )
     }
@@ -170,7 +167,10 @@ class TitleGeneratorTest {
 
         runBlocking { generator.generateTitle(history) }
 
-        assertEquals(history + user("Generate a title according to the system prompt."), hand.requests[0].messages)
+        assertEquals(
+            history + user("Generate a title according to the system prompt."),
+            hand.requests[0].messages
+        )
     }
 
     @Test

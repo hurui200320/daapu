@@ -11,6 +11,7 @@ import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
  */
 class FakeChatStore : ChatStore {
     private val rows = mutableMapOf<String, Triple<String, List<ChatMessage>, String>>()
+
     // ids are `chat-{n}`; a counter that skips ids already taken by [seed]
     // so newChat never overwrites a seeded row
     private var nextId = 0

@@ -95,8 +95,6 @@ data class HandConfig(
     val maxRounds: Int = 64,
     /** Transient retries per round; 0 = unlimited. */
     val maxRetries: Int = 0,
-    /** Tool callback POST timeout in ms; 0 = no timeout. */
-    val callbackTimeoutMs: Long = 120_000,
     /** Stream idle timeout per round in ms; 0 = disabled. */
     val streamIdleTimeoutMs: Long = 300_000,
 ) {
@@ -107,7 +105,6 @@ data class HandConfig(
         }
         require(maxRounds >= 0) { "hand.maxRounds must be >= 0, got $maxRounds" }
         require(maxRetries >= 0) { "hand.maxRetries must be >= 0, got $maxRetries" }
-        require(callbackTimeoutMs >= 0) { "hand.callbackTimeoutMs must be >= 0, got $callbackTimeoutMs" }
         require(streamIdleTimeoutMs >= 0) { "hand.streamIdleTimeoutMs must be >= 0, got $streamIdleTimeoutMs" }
     }
 }
@@ -303,6 +300,7 @@ data class McpServerConfig(
             McpTransportType.Http -> if (url.isNullOrBlank()) {
                 throw IllegalArgumentException("MCP server '$namespace': type 'http' requires a url")
             }
+
             McpTransportType.Stdio -> if (command.isEmpty()) {
                 throw IllegalArgumentException("MCP server '$namespace': type 'stdio' requires a command")
             }

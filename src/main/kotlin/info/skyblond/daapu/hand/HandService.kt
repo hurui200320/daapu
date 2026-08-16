@@ -7,9 +7,8 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.tool.ToolProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
-import java.util.UUID
+import java.util.*
 
 /**
  * The brain's hand-facing service: the [HandClient] transport plus the

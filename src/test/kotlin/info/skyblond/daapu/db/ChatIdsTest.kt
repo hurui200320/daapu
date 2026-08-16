@@ -24,7 +24,8 @@ class ChatIdsTest {
         val millis = parts[0].toLong()
         assertTrue(millis in before..after, "millis prefix out of range: $millis")
         assertEquals("42", parts[1])
-        val random = assertNotNull(parts[2].toIntOrNull(), "random part should be an int: ${parts[2]}")
+        val random =
+            assertNotNull(parts[2].toIntOrNull(), "random part should be an int: ${parts[2]}")
         assertTrue(random >= 0, "random part should be non-negative: $random")
     }
 

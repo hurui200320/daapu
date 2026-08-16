@@ -1,10 +1,10 @@
 package info.skyblond.daapu.agent.oneshot.compaction
 
-import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.ModelCatalog
-import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.testutil.testHandService
@@ -25,7 +25,6 @@ class ChatCompactionServiceTest {
         model = model,
         hand = testHandService(hand),
         maxRetries = 0,
-        callbackTimeoutMs = 0,
         streamIdleTimeoutMs = 0,
     )
 
@@ -241,7 +240,12 @@ class ChatCompactionServiceTest {
     fun `compactChat throws on a blank summary`() = runBlocking {
         // a stop with neither text nor tool calls fails the run loop itself
         val hand = FakeHand(
-            runScript = { errorRunFlow("empty_response", "assistant finished with neither text nor tool calls") },
+            runScript = {
+                errorRunFlow(
+                    "empty_response",
+                    "assistant finished with neither text nor tool calls"
+                )
+            },
         )
         val e = assertFailsWith<IllegalStateException> {
             compactor(hand).compactChat(longTurns(5), excludeLastNRound = 3)
@@ -317,8 +321,18 @@ class ChatCompactionServiceTest {
     fun `currentPromptTokens uses the last assistant input snapshot`() {
         val chat = listOf(
             user("u"),
-            assistant("a", meta = ChatMessageMeta(inputTokens = 90, outputTokens = 10, totalTokens = 100)),
-            assistant("b", meta = ChatMessageMeta(inputTokens = 200_000, outputTokens = 10, totalTokens = 200_010)),
+            assistant(
+                "a",
+                meta = ChatMessageMeta(inputTokens = 90, outputTokens = 10, totalTokens = 100)
+            ),
+            assistant(
+                "b",
+                meta = ChatMessageMeta(
+                    inputTokens = 200_000,
+                    outputTokens = 10,
+                    totalTokens = 200_010
+                )
+            ),
         )
         assertEquals(200_000, currentPromptTokens(chat))
     }
@@ -329,7 +343,10 @@ class ChatCompactionServiceTest {
         // message); trailing user input is not part of the snapshot
         val chat = listOf(
             user("u"),
-            assistant("a", meta = ChatMessageMeta(inputTokens = 100, outputTokens = 5, totalTokens = 105)),
+            assistant(
+                "a",
+                meta = ChatMessageMeta(inputTokens = 100, outputTokens = 5, totalTokens = 105)
+            ),
             user("new input " + "x".repeat(80)),
         )
         assertEquals(100, currentPromptTokens(chat))

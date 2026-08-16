@@ -1,15 +1,15 @@
 package info.skyblond.daapu.agent.oneshot.sstm
 
-import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
-import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.hand.*
-import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -47,7 +47,6 @@ class SstmExtractionServiceTest {
         sstmService = sstm,
         maxMergeRounds = maxMergeRounds,
         maxRetries = 0,
-        callbackTimeoutMs = 0,
         streamIdleTimeoutMs = 0,
     )
 
@@ -166,10 +165,10 @@ class SstmExtractionServiceTest {
                     else -> listOf(
                         HandEvent.AssistantMessage(addMemoryRound("call_1", "likes coffee"))
                     ) + toolRoundEvents(addMemoryRound("call_1", "likes coffee"), mergeProvider) +
-                        listOf(
-                            HandEvent.AssistantMessage(assistantMessage("done")),
-                            HandEvent.Done("stop"),
-                        )
+                            listOf(
+                                HandEvent.AssistantMessage(assistantMessage("done")),
+                                HandEvent.Done("stop"),
+                            )
                 }
             },
         )
@@ -205,7 +204,6 @@ class SstmExtractionServiceTest {
             hand = testHandService(hand),
             sstmService = sstm,
             maxRetries = 0,
-            callbackTimeoutMs = 0,
             streamIdleTimeoutMs = 0,
         )
         // a text-only extraction model with an image in the dropped
@@ -258,7 +256,12 @@ class SstmExtractionServiceTest {
                     else -> listOf(
                         HandEvent.AssistantMessage(addMemoryRound("call_1", "x"))
                     ) + toolRoundEvents(addMemoryRound("call_1", "x"), mergeProvider) +
-                        listOf(HandEvent.RunError("empty_response", "assistant finished with neither text nor tool calls"))
+                            listOf(
+                                HandEvent.RunError(
+                                    "empty_response",
+                                    "assistant finished with neither text nor tool calls"
+                                )
+                            )
                 }
             },
         )
@@ -287,8 +290,13 @@ class SstmExtractionServiceTest {
                 } else {
                     val round = addMemoryRound("call_$calls", "x")
                     listOf(HandEvent.AssistantMessage(round)) +
-                        toolRoundEvents(round, mergeProvider) +
-                        listOf(HandEvent.RunError("round_limit", "maxRounds (2) reached at round 2"))
+                            toolRoundEvents(round, mergeProvider) +
+                            listOf(
+                                HandEvent.RunError(
+                                    "round_limit",
+                                    "maxRounds (2) reached at round 2"
+                                )
+                            )
                 }
             },
         )

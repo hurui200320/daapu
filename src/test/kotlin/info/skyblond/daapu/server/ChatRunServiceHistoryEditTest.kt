@@ -8,16 +8,11 @@ import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
-import io.ktor.server.plugins.BadRequestException
+import io.ktor.server.plugins.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 /**
  * Pins [ChatRunService.truncateChat] and [ChatRunService.forkChat]: both
@@ -214,8 +209,10 @@ class ChatRunServiceHistoryEditTest {
 
             // fork at index 3 (a2): the new chat carries u1/a1/u2/a2
             val forked = srv.forkChat("chat-1", 3)!!
-            assertEquals(listOf(user("u1"), assistant("a1"), user("u2"), assistant("a2")),
-                store.load(forked.id)!!.content.messages)
+            assertEquals(
+                listOf(user("u1"), assistant("a1"), user("u2"), assistant("a2")),
+                store.load(forked.id)!!.content.messages
+            )
             assertEquals(DEFAULT_CHAT_TITLE, forked.title)
             // a fork has never seen a memory list: its first run must flag
             // `sstm-updated`, so the version starts fresh instead of copying
@@ -300,8 +297,10 @@ class ChatRunServiceHistoryEditTest {
             // fork is a pure read + insert into a NEW row: a locked source
             // chat must not block it (the snapshot may lack the in-flight turn)
             val forked = srv.forkChat("chat-1", 1)!!
-            assertEquals(listOf(user("u1"), assistant("a1")),
-                store.load(forked.id)!!.content.messages)
+            assertEquals(
+                listOf(user("u1"), assistant("a1")),
+                store.load(forked.id)!!.content.messages
+            )
         } finally {
             srv.releaseChatLock("chat-1", lock)
         }

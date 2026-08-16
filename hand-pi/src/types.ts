@@ -76,8 +76,9 @@ export interface ToolSpec {
   /**
    * The tool's execution budget in seconds, 0 = no timeout. Required on
    * every advertised tool: the callback POST waits `timeoutSeconds + 30s`
-   * (the brain enforces the budget itself and always answers in time), a
-   * 0-timeout tool falls back to the run-level `callbackTimeoutMs`.
+   * (the brain enforces the budget itself and always answers in time); a
+   * 0-timeout tool's callback waits indefinitely (until the brain answers
+   * or the client disconnects).
    */
   timeoutSeconds: number;
 }
@@ -116,8 +117,6 @@ export interface RunRequest {
   maxRetries: number;
   /** Idle timeout per streamed round in ms; 0 = disabled. */
   streamIdleTimeoutMs: number;
-  /** Tool callback POST timeout in ms; 0 = no timeout. */
-  callbackTimeoutMs: number;
 }
 
 /** Error thrown by handlers; mapped onto the `{ok:false,error}` contract. */

@@ -17,7 +17,6 @@ class ChatCompactionService(
     // the hand's /v1/run policy knobs for this one-shot (config `hand.*`):
     // transient failures retry with the same budget/backoff as the chat loop
     private val maxRetries: Int,
-    private val callbackTimeoutMs: Long,
     private val streamIdleTimeoutMs: Long,
 ) {
     /**
@@ -94,7 +93,6 @@ class ChatCompactionService(
                     // error result), so the loop ends on the first stop
                     maxRounds = 0,
                     maxRetries = maxRetries,
-                    callbackTimeoutMs = callbackTimeoutMs,
                     streamIdleTimeoutMs = streamIdleTimeoutMs,
                 ),
                 toolProvider = EmptyToolProvider,

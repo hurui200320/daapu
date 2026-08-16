@@ -1,47 +1,28 @@
 package info.skyblond.daapu.hand
 
-import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.ModelCatalog
-import info.skyblond.daapu.agent.tool.ToolCallRequest
-import info.skyblond.daapu.agent.tool.ToolProvider
-import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.agent.model.LLMCapability
+import info.skyblond.daapu.agent.model.ModelProvider
+import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
-import info.skyblond.daapu.mcp.McpToolProvider
-import info.skyblond.daapu.mcp.MockMcpServer
-import info.skyblond.daapu.mcp.MockTool
-import info.skyblond.daapu.mcp.MockToolReply
-import info.skyblond.daapu.mcp.McpTransportException
+import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.mcp.*
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.server.ChatRunService
 import info.skyblond.daapu.server.module
-import io.ktor.client.request.header
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
-import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
-import io.ktor.server.testing.ApplicationTestBuilder
-import io.ktor.server.testing.testApplication
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
+import io.ktor.server.testing.*
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
-import kotlin.jvm.Volatile
+import kotlinx.serialization.json.*
+import kotlin.test.*
 
 /**
  * Pins the hand-pi tool callback route (`POST /api/hand/tool`):
@@ -74,7 +55,13 @@ class HandCallbackTest {
     }
 
     private fun textModel() = ModelCatalog(
-        mapOf("bifrost" to ModelProvider(id = "bifrost", baseUrl = "http://127.0.0.1:9/v1", apiKey = "test"))
+        mapOf(
+            "bifrost" to ModelProvider(
+                id = "bifrost",
+                baseUrl = "http://127.0.0.1:9/v1",
+                apiKey = "test"
+            )
+        )
     ).findModel("bifrost/cerebras/gpt-oss-120b")!!
 
     private fun callbackRequest(
@@ -96,12 +83,14 @@ class HandCallbackTest {
             service.register("run-1", EchoProvider(), textModel())
         }
         // the first registration is untouched
-        val response = service.executeToolCall(callbackRequest(args = buildJsonObject { put("text", "hi") }))
+        val response =
+            service.executeToolCall(callbackRequest(args = buildJsonObject { put("text", "hi") }))
         assertNull(response.fatal, "the original in-flight run must still resolve")
         // eviction frees the id for a legitimate sequential reuse
         service.unregister("run-1")
         service.register("run-1", EchoProvider(), textModel())
-        val after = service.executeToolCall(callbackRequest(args = buildJsonObject { put("text", "hi") }))
+        val after =
+            service.executeToolCall(callbackRequest(args = buildJsonObject { put("text", "hi") }))
         assertNull(after.fatal, "a re-registered runId must resolve")
         service.unregister("run-1")
     }
@@ -122,7 +111,8 @@ class HandCallbackTest {
         runApplicationWithService { service ->
             val (status, body) = client.callback(body = callbackRequest(runId = "nope"))
             assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            val response =
+                json().parseToJsonElement(body).let { it as JsonObject }
             assertNotNull(response["fatal"])
         }
     }
@@ -132,9 +122,15 @@ class HandCallbackTest {
         runApplicationWithService { service ->
             val provider = EchoProvider()
             service.handCallback.register("run-1", provider, textModel())
-            val (status, body) = client.callback(body = callbackRequest(args = buildJsonObject { put("text", "hi") }))
+            val (status, body) = client.callback(body = callbackRequest(args = buildJsonObject {
+                put(
+                    "text",
+                    "hi"
+                )
+            }))
             assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            val response =
+                json().parseToJsonElement(body).let { it as JsonObject }
             assertNull(response["fatal"], "a successful tool must not answer fatal: $body")
             assertEquals("""[{"type":"text","text":"hi"}]""", response["parts"].toString())
             assertEquals("false", response["isError"].toString())
@@ -151,7 +147,8 @@ class HandCallbackTest {
             service.handCallback.register("run-1", FailingProvider(), textModel())
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            val response =
+                json().parseToJsonElement(body).let { it as JsonObject }
             assertNull(response["fatal"])
             assertEquals("true", response["isError"].toString())
         }
@@ -163,7 +160,8 @@ class HandCallbackTest {
             service.handCallback.register("run-1", TransportFailingProvider(), textModel())
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            val response =
+                json().parseToJsonElement(body).let { it as JsonObject }
             assertTrue(response["fatal"].toString().contains("transport"))
         }
     }
@@ -176,9 +174,13 @@ class HandCallbackTest {
             service.handCallback.register("run-1", ImageProvider(), textModel())
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            val response =
+                json().parseToJsonElement(body).let { it as JsonObject }
             val fatal = response["fatal"].toString()
-            assertTrue(fatal.contains("does not support image"), "fatal must name the mismatch: $fatal")
+            assertTrue(
+                fatal.contains("does not support image"),
+                "fatal must name the mismatch: $fatal"
+            )
         }
     }
 
@@ -186,115 +188,149 @@ class HandCallbackTest {
     fun `a result attachment passes for a vision model`() = testApplication {
         runApplicationWithService { service ->
             val visionModel = ModelCatalog(
-                mapOf("bifrost" to ModelProvider(id = "bifrost", baseUrl = "http://127.0.0.1:9/v1", apiKey = "test"))
+                mapOf(
+                    "bifrost" to ModelProvider(
+                        id = "bifrost",
+                        baseUrl = "http://127.0.0.1:9/v1",
+                        apiKey = "test"
+                    )
+                )
             ).findModel("bifrost/cerebras/gemma-4-31b")!!
             assertTrue(visionModel.supports(LLMCapability.Input.Vision.Image))
             service.handCallback.register("run-1", ImageProvider(), visionModel)
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            val response =
+                json().parseToJsonElement(body).let { it as JsonObject }
             assertNull(response["fatal"])
         }
     }
 
     @Test
-    fun `an overrunning tool is cancelled and answers an isError timeout result`() = testApplication {
-        runApplicationWithService { service ->
-            val provider = SlowProvider()
-            service.handCallback.register("run-1", provider, textModel())
-            val start = System.currentTimeMillis()
-            val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 1))
-            val elapsed = System.currentTimeMillis() - start
-            assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
-            assertNull(response["fatal"], "a timeout is a tool-level error, not a fatal: $body")
-            assertEquals("true", response["isError"].toString())
-            assertTrue(
-                response["parts"].toString().contains("timed out after 1s"),
-                "the timeout result must name the tool and budget: $body",
-            )
-            assertTrue(elapsed < 3_000, "the timeout must answer within the budget: ${elapsed}ms")
-            assertTrue(provider.cancelled, "the tool execution must be cancelled with the timeout")
-        }
-    }
-
-    @Test
-    fun `a tool with a disabled timeout answers normally after the budget would have expired`() = testApplication {
-        runApplicationWithService { service ->
-            val provider = SlowProvider(delayMs = 1_500)
-            service.handCallback.register("run-1", provider, textModel())
-            val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 0))
-            assertEquals(HttpStatusCode.OK, status)
-            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
-            assertNull(response["fatal"])
-            assertEquals("false", response["isError"].toString())
-        }
-    }
-
-    @Test
-    fun `an overrunning MCP tool answers an isError timeout result without a retry and keeps the connection`() = testApplication {
-        runApplicationWithService { service ->
-            // the real MCP stack: the provider's in-flight call hangs until
-            // the budget expires (enforced by the callback route's withTimeout)
-            val server = MockMcpServer(
-                listOf(
-                    MockTool(name = "hang", description = "hangs", handler = {
-                        Thread.sleep(30_000)
-                        MockToolReply("late")
-                    }),
-                    MockTool(name = "echo", description = "echo", handler = { args ->
-                        MockToolReply(args["text"]?.jsonPrimitive?.content ?: "")
-                    }),
-                )
-            )
-            val provider = McpToolProvider(
-                listOf(
-                    McpServerConfig(
-                        namespace = "calc",
-                        type = McpTransportType.Http,
-                        url = server.baseUrl,
-                        toolExecutionTimeoutSeconds = 1,
-                        reconnectAttempts = 1,
-                        reconnectDelayMs = 50,
-                    )
-                )
-            )
-            try {
-                kotlinx.coroutines.runBlocking { provider.specifications() }
+    fun `an overrunning tool is cancelled and answers an isError timeout result`() =
+        testApplication {
+            runApplicationWithService { service ->
+                val provider = SlowProvider()
                 service.handCallback.register("run-1", provider, textModel())
                 val start = System.currentTimeMillis()
-                val (status, body) = client.callback(body = callbackRequest(name = "calc__hang", timeoutSeconds = 1))
+                val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 1))
                 val elapsed = System.currentTimeMillis() - start
                 assertEquals(HttpStatusCode.OK, status)
-                val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+                val response = json().parseToJsonElement(body)
+                    .let { it as JsonObject }
                 assertNull(response["fatal"], "a timeout is a tool-level error, not a fatal: $body")
                 assertEquals("true", response["isError"].toString())
                 assertTrue(
                     response["parts"].toString().contains("timed out after 1s"),
                     "the timeout result must name the tool and budget: $body",
                 )
-                assertTrue(elapsed < 3_000, "the timeout must answer within the budget: ${elapsed}ms")
-                assertEquals(1, server.toolCalls.size, "a timeout must not retry the call")
-
-                // the connection survives the client-side abort: the next call
-                // reuses it (no reconnect) and succeeds
-                val (status2, body2) = client.callback(
-                    body = callbackRequest(
-                        name = "calc__echo",
-                        args = buildJsonObject { put("text", "hi") },
-                        timeoutSeconds = 1,
-                    )
+                assertTrue(
+                    elapsed < 3_000,
+                    "the timeout must answer within the budget: ${elapsed}ms"
                 )
-                assertEquals(HttpStatusCode.OK, status2)
-                assertEquals(1, server.initializeCount.get(), "a timeout is not a transport failure: the connection must be kept")
-                assertEquals(2, server.toolCalls.size)
-                assertTrue(body2.contains("hi"), "the kept connection must still work: $body2")
-            } finally {
-                provider.close()
-                server.close()
+                assertTrue(
+                    provider.cancelled,
+                    "the tool execution must be cancelled with the timeout"
+                )
             }
         }
-    }
+
+    @Test
+    fun `a tool with a disabled timeout answers normally after the budget would have expired`() =
+        testApplication {
+            runApplicationWithService { service ->
+                val provider = SlowProvider(delayMs = 1_500)
+                service.handCallback.register("run-1", provider, textModel())
+                val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 0))
+                assertEquals(HttpStatusCode.OK, status)
+                val response = json().parseToJsonElement(body)
+                    .let { it as JsonObject }
+                assertNull(response["fatal"])
+                assertEquals("false", response["isError"].toString())
+            }
+        }
+
+    @Test
+    fun `an overrunning MCP tool answers an isError timeout result without a retry and keeps the connection`() =
+        testApplication {
+            runApplicationWithService { service ->
+                // the real MCP stack: the provider's in-flight call hangs until
+                // the budget expires (enforced by the callback route's withTimeout)
+                val server = MockMcpServer(
+                    listOf(
+                        MockTool(name = "hang", description = "hangs", handler = {
+                            Thread.sleep(30_000)
+                            MockToolReply("late")
+                        }),
+                        MockTool(name = "echo", description = "echo", handler = { args ->
+                            MockToolReply(args["text"]?.jsonPrimitive?.content ?: "")
+                        }),
+                    )
+                )
+                val provider = McpToolProvider(
+                    listOf(
+                        McpServerConfig(
+                            namespace = "calc",
+                            type = McpTransportType.Http,
+                            url = server.baseUrl,
+                            toolExecutionTimeoutSeconds = 1,
+                            reconnectAttempts = 1,
+                            reconnectDelayMs = 50,
+                        )
+                    )
+                )
+                try {
+                    kotlinx.coroutines.runBlocking { provider.specifications() }
+                    service.handCallback.register("run-1", provider, textModel())
+                    val start = System.currentTimeMillis()
+                    val (status, body) = client.callback(
+                        body = callbackRequest(
+                            name = "calc__hang",
+                            timeoutSeconds = 1
+                        )
+                    )
+                    val elapsed = System.currentTimeMillis() - start
+                    assertEquals(HttpStatusCode.OK, status)
+                    val response = json().parseToJsonElement(body)
+                        .let { it as JsonObject }
+                    assertNull(
+                        response["fatal"],
+                        "a timeout is a tool-level error, not a fatal: $body"
+                    )
+                    assertEquals("true", response["isError"].toString())
+                    assertTrue(
+                        response["parts"].toString().contains("timed out after 1s"),
+                        "the timeout result must name the tool and budget: $body",
+                    )
+                    assertTrue(
+                        elapsed < 3_000,
+                        "the timeout must answer within the budget: ${elapsed}ms"
+                    )
+                    assertEquals(1, server.toolCalls.size, "a timeout must not retry the call")
+
+                    // the connection survives the client-side abort: the next call
+                    // reuses it (no reconnect) and succeeds
+                    val (status2, body2) = client.callback(
+                        body = callbackRequest(
+                            name = "calc__echo",
+                            args = buildJsonObject { put("text", "hi") },
+                            timeoutSeconds = 1,
+                        )
+                    )
+                    assertEquals(HttpStatusCode.OK, status2)
+                    assertEquals(
+                        1,
+                        server.initializeCount.get(),
+                        "a timeout is not a transport failure: the connection must be kept"
+                    )
+                    assertEquals(2, server.toolCalls.size)
+                    assertTrue(body2.contains("hi"), "the kept connection must still work: $body2")
+                } finally {
+                    provider.close()
+                    server.close()
+                }
+            }
+        }
 
     // ------------------------------------------------------------------
     // providers

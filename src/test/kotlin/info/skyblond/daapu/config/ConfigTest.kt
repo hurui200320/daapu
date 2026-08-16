@@ -332,7 +332,11 @@ class ConfigTest {
 
     @Test
     fun `a valid stdio server passes validation`() {
-        server(type = McpTransportType.Stdio, url = null, command = listOf("npx", "-y", "some-server")).validate()
+        server(
+            type = McpTransportType.Stdio,
+            url = null,
+            command = listOf("npx", "-y", "some-server")
+        ).validate()
     }
 
     @Test
@@ -377,8 +381,12 @@ class ConfigTest {
         // namespaces the harness reserves for internal/harness tools: an
         // MCP server using one would collide with those tools' names
         for (reserved in MCP_RESERVED_NAMESPACES) {
-            val e = assertFailsWith<IllegalArgumentException> { server(namespace = reserved).validate() }
-            assertTrue(e.message!!.contains("reserved"), "reserved namespace '$reserved': ${e.message}")
+            val e =
+                assertFailsWith<IllegalArgumentException> { server(namespace = reserved).validate() }
+            assertTrue(
+                e.message!!.contains("reserved"),
+                "reserved namespace '$reserved': ${e.message}"
+            )
         }
     }
 
@@ -480,7 +488,10 @@ class ConfigTest {
                 """.trimIndent()
             )
         }
-        assertTrue(e.message!!.contains("memory"), "the error should name the missing field: ${e.message}")
+        assertTrue(
+            e.message!!.contains("memory"),
+            "the error should name the missing field: ${e.message}"
+        )
         assertFailsWith<Exception> {
             decodeAppConfig(
                 """

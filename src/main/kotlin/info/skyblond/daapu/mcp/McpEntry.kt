@@ -1,46 +1,27 @@
 package info.skyblond.daapu.mcp
 
-import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.client.*
+import io.ktor.client.engine.cio.*
+import io.ktor.client.request.*
 import io.modelcontextprotocol.kotlin.sdk.LIB_VERSION
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.client.StdioClientTransport
 import io.modelcontextprotocol.kotlin.sdk.client.mcpStreamableHttp
-import io.modelcontextprotocol.kotlin.sdk.types.AudioContent
-import io.modelcontextprotocol.kotlin.sdk.types.BlobResourceContents
-import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
-import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
-import io.modelcontextprotocol.kotlin.sdk.types.ContentBlock
-import io.modelcontextprotocol.kotlin.sdk.types.EmbeddedResource
-import io.modelcontextprotocol.kotlin.sdk.types.ImageContent
-import io.modelcontextprotocol.kotlin.sdk.types.Implementation
-import io.modelcontextprotocol.kotlin.sdk.types.TextContent
-import io.modelcontextprotocol.kotlin.sdk.types.TextResourceContents
-import io.modelcontextprotocol.kotlin.sdk.types.Tool
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.request.header
-import io.modelcontextprotocol.kotlin.sdk.types.UnknownResourceContents
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import io.modelcontextprotocol.kotlin.sdk.types.*
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.io.asSink
 import kotlinx.io.asSource
 import kotlinx.io.buffered
-import kotlinx.serialization.json.put
+import kotlinx.serialization.json.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
@@ -279,68 +260,69 @@ class ClientEntry(
      * results) throw — the provider turns that into an error tool result the
      * model can react to.
      */
-    private fun ContentBlock.toChatMessageContentPart(): ChatMessagePart.ContentPart? = when (this) {
-        is TextContent -> ChatMessagePart.Text(text)
-            .takeIf { it.text.isNotBlank() }
-
-        is ImageContent -> ChatMessagePart.Attachment(
-            kind = AttachmentKind.Image,
-            content = AttachmentContent.Base64(data),
-            mimeType = mimeType,
-        )
-
-        is AudioContent -> ChatMessagePart.Attachment(
-            kind = AttachmentKind.Audio,
-            content = AttachmentContent.Base64(data),
-            mimeType = mimeType,
-        )
-
-        is EmbeddedResource -> when (val resource = resource) {
-            is TextResourceContents -> ChatMessagePart.Text(resource.text)
+    private fun ContentBlock.toChatMessageContentPart(): ChatMessagePart.ContentPart? =
+        when (this) {
+            is TextContent -> ChatMessagePart.Text(text)
                 .takeIf { it.text.isNotBlank() }
 
-            is BlobResourceContents -> {
-                val mimeType = resource.mimeType
-                when {
-                    mimeType == null ->
-                        error("Unsupported embedded resource without a mime type (uri ${resource.uri})")
+            is ImageContent -> ChatMessagePart.Attachment(
+                kind = AttachmentKind.Image,
+                content = AttachmentContent.Base64(data),
+                mimeType = mimeType,
+            )
 
-                    mimeType.startsWith("image/") -> ChatMessagePart.Attachment(
-                        kind = AttachmentKind.Image,
-                        content = AttachmentContent.Base64(resource.blob),
-                        mimeType = mimeType,
-                    )
+            is AudioContent -> ChatMessagePart.Attachment(
+                kind = AttachmentKind.Audio,
+                content = AttachmentContent.Base64(data),
+                mimeType = mimeType,
+            )
 
-                    mimeType.startsWith("video/") -> ChatMessagePart.Attachment(
-                        kind = AttachmentKind.Video,
-                        content = AttachmentContent.Base64(resource.blob),
-                        mimeType = mimeType,
-                    )
+            is EmbeddedResource -> when (val resource = resource) {
+                is TextResourceContents -> ChatMessagePart.Text(resource.text)
+                    .takeIf { it.text.isNotBlank() }
 
-                    mimeType.startsWith("audio/") -> ChatMessagePart.Attachment(
-                        kind = AttachmentKind.Audio,
-                        content = AttachmentContent.Base64(resource.blob),
-                        mimeType = mimeType,
-                    )
+                is BlobResourceContents -> {
+                    val mimeType = resource.mimeType
+                    when {
+                        mimeType == null ->
+                            error("Unsupported embedded resource without a mime type (uri ${resource.uri})")
 
-                    mimeType == "application/pdf" -> ChatMessagePart.Attachment(
-                        kind = AttachmentKind.File,
-                        content = AttachmentContent.Base64(resource.blob),
-                        mimeType = mimeType,
-                    )
+                        mimeType.startsWith("image/") -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.Image,
+                            content = AttachmentContent.Base64(resource.blob),
+                            mimeType = mimeType,
+                        )
 
-                    else -> error("Unsupported blob content type '$mimeType' (uri ${resource.uri})")
+                        mimeType.startsWith("video/") -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.Video,
+                            content = AttachmentContent.Base64(resource.blob),
+                            mimeType = mimeType,
+                        )
+
+                        mimeType.startsWith("audio/") -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.Audio,
+                            content = AttachmentContent.Base64(resource.blob),
+                            mimeType = mimeType,
+                        )
+
+                        mimeType == "application/pdf" -> ChatMessagePart.Attachment(
+                            kind = AttachmentKind.File,
+                            content = AttachmentContent.Base64(resource.blob),
+                            mimeType = mimeType,
+                        )
+
+                        else -> error("Unsupported blob content type '$mimeType' (uri ${resource.uri})")
+                    }
                 }
+
+                is UnknownResourceContents ->
+                    error("Unsupported embedded resource content (uri ${resource.uri})")
             }
 
-            is UnknownResourceContents ->
-                error("Unsupported embedded resource content (uri ${resource.uri})")
+            // a resource LINK is not content the model can consume directly, and
+            // nested tool results/uses are out of scope for the PoC
+            else -> error("Unsupported MCP content type ${this::class.simpleName}")
         }
-
-        // a resource LINK is not content the model can consume directly, and
-        // nested tool results/uses are out of scope for the PoC
-        else -> error("Unsupported MCP content type ${this::class.simpleName}")
-    }
 
     companion object {
         private val logger = KotlinLogging.logger { }

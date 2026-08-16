@@ -150,12 +150,6 @@
           "default": 0,
           "description": "Transient retries per round; 0 = unlimited."
         },
-        "callbackTimeoutMs": {
-          "type": "integer",
-          "minimum": 0,
-          "default": 120000,
-          "description": "Tool callback POST timeout in ms; 0 = no timeout."
-        },
         "streamIdleTimeoutMs": {
           "type": "integer",
           "minimum": 0,

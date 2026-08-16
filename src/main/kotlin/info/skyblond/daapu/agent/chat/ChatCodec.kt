@@ -1,6 +1,5 @@
 package info.skyblond.daapu.agent.chat
 
-import info.skyblond.daapu.agent.chat.ChatCodec.validateChat
 import kotlinx.serialization.json.Json
 
 /**

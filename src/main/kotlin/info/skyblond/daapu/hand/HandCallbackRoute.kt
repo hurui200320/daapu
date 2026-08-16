@@ -1,10 +1,9 @@
 package info.skyblond.daapu.hand
 
-import io.ktor.http.HttpStatusCode
-import io.ktor.server.request.receive
-import io.ktor.server.response.respond
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.post
+import io.ktor.http.*
+import io.ktor.server.request.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
 
 /**
  * The hand-pi tool callback route: the hand POSTs each tool call here

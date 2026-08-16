@@ -62,8 +62,6 @@ data class HandRunRequest(
     val maxRetries: Int,
     /** Idle timeout per streamed round in ms; 0 = disabled. */
     val streamIdleTimeoutMs: Long,
-    /** Tool callback POST timeout in ms; 0 = no timeout. */
-    val callbackTimeoutMs: Long,
 )
 
 @Serializable

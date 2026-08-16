@@ -57,7 +57,6 @@ class SstmExtractionService(
     // `hand.*`): transient failures retry with the same budget/backoff as
     // the chat loop, the merge rounds are capped by [maxMergeRounds]
     private val maxRetries: Int,
-    private val callbackTimeoutMs: Long,
     private val streamIdleTimeoutMs: Long,
 ) {
     /**
@@ -114,7 +113,6 @@ class SstmExtractionService(
                     // error result), so the loop ends on the first stop
                     maxRounds = 0,
                     maxRetries = maxRetries,
-                    callbackTimeoutMs = callbackTimeoutMs,
                     streamIdleTimeoutMs = streamIdleTimeoutMs,
                 ),
                 toolProvider = EmptyToolProvider,
@@ -167,7 +165,6 @@ class SstmExtractionService(
                 maxTokens = mergeModel.maxOutputTokens,
                 maxRounds = maxMergeRounds,
                 maxRetries = maxRetries,
-                callbackTimeoutMs = callbackTimeoutMs,
                 streamIdleTimeoutMs = streamIdleTimeoutMs,
             ),
             toolProvider = toolProvider,

@@ -121,7 +121,9 @@ and a small TypeScript service (hand-pi). The pieces:
   `timeoutSeconds`: the callback route enforces the budget with
   `withTimeout` (an overrun answers an `isError` tool result, the run
   survives) and the hand waits `budget + 30s` (a hand-side-only slack)
-  for the callback, so a timed-out tool always gets an answer. Transport
+  for the callback, so a timed-out tool always gets an answer; a
+  0-timeout tool's callback waits indefinitely (until the brain answers
+  or the client disconnects), matching the no-timeout config. Transport
   failures drop the connection and retry the
   call once; reconnect exhaustion throws `McpTransportException`, which the
   callback route maps to `fatal` (ending the hand run with

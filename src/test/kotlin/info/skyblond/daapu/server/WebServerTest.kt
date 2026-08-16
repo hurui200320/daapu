@@ -11,17 +11,10 @@ import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
-import io.ktor.client.request.delete
-import io.ktor.client.request.get
-import io.ktor.client.request.post
-import io.ktor.client.request.put
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
-import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
-import io.ktor.server.testing.testApplication
-import kotlinx.serialization.encodeToString
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
+import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -72,7 +65,10 @@ class WebServerTest {
     fun `missing and unknown models are rejected with 400`() {
         testApplication {
             application { module(service(), PostgresSstmService()) }
-            listOf("""{"text":"hi"}""", """{"text":"hi","model":"no/such-model"}""").forEach { body ->
+            listOf(
+                """{"text":"hi"}""",
+                """{"text":"hi","model":"no/such-model"}"""
+            ).forEach { body ->
                 val response = client.post("/api/chats/chat-1/messages") {
                     contentType(ContentType.Application.Json)
                     setBody(body)
@@ -150,12 +146,23 @@ class WebServerTest {
     @Test
     fun `truncate drops the tail and answers 204`() {
         val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2")))
+        store.seed(
+            "chat-1",
+            chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2"))
+        )
         testApplication {
-            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            application {
+                module(
+                    ChatRunService(testAppConfig(), chatStore = store),
+                    PostgresSstmService()
+                )
+            }
             val response = client.delete("/api/chats/chat-1/messages/2")
             assertEquals(HttpStatusCode.NoContent, response.status)
-            assertEquals(listOf(user("u1"), assistantMessage("a1")), store.load("chat-1")!!.content.messages)
+            assertEquals(
+                listOf(user("u1"), assistantMessage("a1")),
+                store.load("chat-1")!!.content.messages
+            )
         }
     }
 
@@ -163,7 +170,10 @@ class WebServerTest {
     fun `truncate on a missing chat is 404`() {
         testApplication {
             application {
-                module(ChatRunService(testAppConfig(), chatStore = FakeChatStore()), PostgresSstmService())
+                module(
+                    ChatRunService(testAppConfig(), chatStore = FakeChatStore()),
+                    PostgresSstmService()
+                )
             }
             val response = client.delete("/api/chats/nope/messages/0")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -175,7 +185,12 @@ class WebServerTest {
         val store = FakeChatStore()
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         testApplication {
-            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            application {
+                module(
+                    ChatRunService(testAppConfig(), chatStore = store),
+                    PostgresSstmService()
+                )
+            }
             // non-numeric, out of bounds, and an index pointing at an assistant
             // message are all rejected before any store write
             listOf(
@@ -211,9 +226,17 @@ class WebServerTest {
     @Test
     fun `fork copies the prefix into a new chat and answers 201 with its info`() {
         val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2")))
+        store.seed(
+            "chat-1",
+            chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2"))
+        )
         testApplication {
-            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            application {
+                module(
+                    ChatRunService(testAppConfig(), chatStore = store),
+                    PostgresSstmService()
+                )
+            }
             val response = client.post("/api/chats/chat-1/fork/1")
             assertEquals(HttpStatusCode.Created, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -221,7 +244,10 @@ class WebServerTest {
             assertTrue(newId != "chat-1")
             assertEquals("New chat", body["title"]?.jsonPrimitive?.content)
             // the fork carries the prefix, the source keeps everything
-            assertEquals(listOf(user("u1"), assistantMessage("a1")), store.load(newId)!!.content.messages)
+            assertEquals(
+                listOf(user("u1"), assistantMessage("a1")),
+                store.load(newId)!!.content.messages
+            )
             assertEquals(4, store.load("chat-1")!!.content.messages.size)
         }
     }
@@ -230,7 +256,10 @@ class WebServerTest {
     fun `fork on a missing chat is 404`() {
         testApplication {
             application {
-                module(ChatRunService(testAppConfig(), chatStore = FakeChatStore()), PostgresSstmService())
+                module(
+                    ChatRunService(testAppConfig(), chatStore = FakeChatStore()),
+                    PostgresSstmService()
+                )
             }
             val response = client.post("/api/chats/nope/fork/0")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -242,7 +271,12 @@ class WebServerTest {
         val store = FakeChatStore()
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         testApplication {
-            application { module(ChatRunService(testAppConfig(), chatStore = store), PostgresSstmService()) }
+            application {
+                module(
+                    ChatRunService(testAppConfig(), chatStore = store),
+                    PostgresSstmService()
+                )
+            }
             // non-numeric, out of bounds, and a user-message index are all
             // rejected; no fork chat is created
             listOf(
@@ -312,7 +346,12 @@ class WebServerTest {
             runScript = { textRunFlow("Generated title") }
         )
         testApplication {
-            application { module(ChatRunService(testAppConfig(), hand = hand, chatStore = store), PostgresSstmService()) }
+            application {
+                module(
+                    ChatRunService(testAppConfig(), hand = hand, chatStore = store),
+                    PostgresSstmService()
+                )
+            }
             val response = client.post("/api/chats/chat-1/title")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -327,7 +366,15 @@ class WebServerTest {
     fun `generate title on a missing chat is 404`() {
         val hand = FakeHand()
         testApplication {
-            application { module(ChatRunService(testAppConfig(), hand = hand, chatStore = FakeChatStore()), PostgresSstmService()) }
+            application {
+                module(
+                    ChatRunService(
+                        testAppConfig(),
+                        hand = hand,
+                        chatStore = FakeChatStore()
+                    ), PostgresSstmService()
+                )
+            }
             val response = client.post("/api/chats/nope/title")
             assertEquals(HttpStatusCode.NotFound, response.status)
         }
@@ -340,14 +387,23 @@ class WebServerTest {
         store.seed("chat-1", title = "My custom title")
         val hand = FakeHand()
         testApplication {
-            application { module(ChatRunService(testAppConfig(), hand = hand, chatStore = store), PostgresSstmService()) }
+            application {
+                module(
+                    ChatRunService(testAppConfig(), hand = hand, chatStore = store),
+                    PostgresSstmService()
+                )
+            }
             val response = client.post("/api/chats/chat-1/title")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
             assertEquals("My custom title", body["title"]?.jsonPrimitive?.content)
         }
         assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
-        assertEquals("My custom title", store.title("chat-1"), "a custom title must never be clobbered")
+        assertEquals(
+            "My custom title",
+            store.title("chat-1"),
+            "a custom title must never be clobbered"
+        )
     }
 
     @Test

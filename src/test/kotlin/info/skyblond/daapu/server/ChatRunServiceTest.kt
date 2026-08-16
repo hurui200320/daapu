@@ -6,13 +6,8 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.MemoryConfig
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
-import io.ktor.server.plugins.BadRequestException
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertIs
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import io.ktor.server.plugins.*
+import kotlin.test.*
 
 /**
  * Pins the request → neutral parts mapping done by [ChatRunService.prepareRun].
@@ -49,7 +44,8 @@ class ChatRunServiceTest {
     fun `image only is allowed`() {
         // an image-only message is valid; the turn loop's capability check
         // (not the API) decides whether the model can handle it
-        val setup = service.prepareRun("chat-1", request(images = listOf("data:image/jpeg;base64,BBBB")))
+        val setup =
+            service.prepareRun("chat-1", request(images = listOf("data:image/jpeg;base64,BBBB")))
         assertEquals(1, setup.parts.size)
         assertIs<ChatMessagePart.Attachment>(setup.parts[0])
     }
@@ -61,7 +57,10 @@ class ChatRunServiceTest {
         // API layer doesn't grow a partial validation that misses history.
         val setup = service.prepareRun(
             "chat-1",
-            request(images = listOf("data:image/png;base64,AAAA"), model = "bifrost/cerebras/gpt-oss-120b"),
+            request(
+                images = listOf("data:image/png;base64,AAAA"),
+                model = "bifrost/cerebras/gpt-oss-120b"
+            ),
         )
         assertEquals("bifrost/cerebras/gpt-oss-120b", setup.model.id)
         assertEquals(1, setup.parts.size)
@@ -105,7 +104,10 @@ class ChatRunServiceTest {
     fun `invalid base64 payload is rejected`() {
         // decodes to garbage, not valid base64
         val e = assertFailsWith<BadRequestException> {
-            service.prepareRun("chat-1", request(images = listOf("data:image/png;base64,@@@not-base64@@@")))
+            service.prepareRun(
+                "chat-1",
+                request(images = listOf("data:image/png;base64,@@@not-base64@@@"))
+            )
         }
         assertNotNull(e.message)
     }
@@ -114,7 +116,8 @@ class ChatRunServiceTest {
     fun `base64 with line breaks is accepted`() {
         // data URLs produced by FileReader are single-line, but folded base64
         // (whitespace-separated) is legal; whitespace must be stripped
-        val setup = service.prepareRun("chat-1", request(images = listOf("data:image/png;base64,AAA\nA")))
+        val setup =
+            service.prepareRun("chat-1", request(images = listOf("data:image/png;base64,AAA\nA")))
         val attachment = assertIs<ChatMessagePart.Attachment>(setup.parts[0])
         assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
     }
@@ -129,7 +132,11 @@ class ChatRunServiceTest {
 
     @Test
     fun `known models are accepted`() {
-        listOf("bifrost/cerebras/gpt-oss-120b", "bifrost/cerebras/gemma-4-31b", "bifrost/novita/google/gemma-4-31b-it")
+        listOf(
+            "bifrost/cerebras/gpt-oss-120b",
+            "bifrost/cerebras/gemma-4-31b",
+            "bifrost/novita/google/gemma-4-31b-it"
+        )
             .forEach { id ->
                 val setup = service.prepareRun("chat-1", request(text = "hi", model = id))
                 assertEquals(id, setup.model.id)
@@ -158,7 +165,10 @@ class ChatRunServiceTest {
         val e = assertFailsWith<IllegalArgumentException> {
             ChatRunService(testAppConfig().copy(memory = valid.copy(compactModel = "bifrost/nope")))
         }
-        assertTrue(e.message!!.contains("memory.compactModel"), "the error should name the config key: ${e.message}")
+        assertTrue(
+            e.message!!.contains("memory.compactModel"),
+            "the error should name the config key: ${e.message}"
+        )
         assertFailsWith<IllegalArgumentException> {
             ChatRunService(testAppConfig().copy(memory = valid.copy(extractModel = "bifrost/nope")))
         }
@@ -174,6 +184,9 @@ class ChatRunServiceTest {
         val e = assertFailsWith<IllegalArgumentException> {
             ChatRunService(testAppConfig().copy(title = TitleConfig(model = "bifrost/nope")))
         }
-        assertTrue(e.message!!.contains("title.model"), "the error should name the config key: ${e.message}")
+        assertTrue(
+            e.message!!.contains("title.model"),
+            "the error should name the config key: ${e.message}"
+        )
     }
 }

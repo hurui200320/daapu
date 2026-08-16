@@ -58,7 +58,6 @@ class PersistChatService(
     // sources them here
     private val maxRounds: Int,
     private val maxRetries: Int,
-    private val callbackTimeoutMs: Long,
     private val streamIdleTimeoutMs: Long,
 ) {
     suspend fun runChat(
@@ -208,7 +207,6 @@ class PersistChatService(
             maxTokens = model.maxOutputTokens,
             maxRounds = maxRounds,
             maxRetries = maxRetries,
-            callbackTimeoutMs = callbackTimeoutMs,
             streamIdleTimeoutMs = streamIdleTimeoutMs,
         )
         var newChat = chat

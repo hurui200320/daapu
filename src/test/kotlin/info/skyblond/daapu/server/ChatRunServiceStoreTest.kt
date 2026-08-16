@@ -1,20 +1,12 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.agent.chat.ChatInfo
-import info.skyblond.daapu.agent.chat.ChatMessage
-import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.agent.chat.ChatMessageRole
-import info.skyblond.daapu.agent.chat.ChatStore
+import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
 import kotlinx.coroutines.runBlocking
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 /**
  * Pins [ChatRunService]'s chat-row operations against the [ChatStore] seam:
@@ -47,7 +39,11 @@ class ChatRunServiceStoreTest {
 
         assertEquals(ChatInfo("chat-1", "My custom title"), result)
         assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
-        assertEquals("My custom title", store.title("chat-1"), "a custom title must never be clobbered")
+        assertEquals(
+            "My custom title",
+            store.title("chat-1"),
+            "a custom title must never be clobbered"
+        )
     }
 
     @Test
@@ -72,7 +68,11 @@ class ChatRunServiceStoreTest {
         )
 
         val result = runBlocking {
-            ChatRunService(testAppConfig(), hand = deletingHand, chatStore = store).generateTitle("chat-1")
+            ChatRunService(
+                testAppConfig(),
+                hand = deletingHand,
+                chatStore = store
+            ).generateTitle("chat-1")
         }
 
         assertNull(result, "a chat that vanished before the rename must not be resurrected")
@@ -83,7 +83,9 @@ class ChatRunServiceStoreTest {
     fun `renameChat delegates to the store`() {
         store.seed("chat-1")
 
-        assertEquals(ChatInfo("chat-1", "renamed"), runBlocking { service().renameChat("chat-1", "renamed") })
+        assertEquals(
+            ChatInfo("chat-1", "renamed"),
+            runBlocking { service().renameChat("chat-1", "renamed") })
         assertEquals("renamed", store.title("chat-1"))
         assertNull(runBlocking { service().renameChat("nope", "x") })
     }

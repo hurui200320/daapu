@@ -166,7 +166,6 @@ export async function executeRun(
   const tools = request.tools;
   const maxRounds = request.maxRounds;
   const maxRetries = request.maxRetries;
-  const callbackTimeoutMs = request.callbackTimeoutMs;
   const idleTimeoutMs = request.streamIdleTimeoutMs;
   const effectiveMaxTokens = request.maxTokens;
 
@@ -313,7 +312,6 @@ export async function executeRun(
             request,
             token,
             signal,
-            callbackTimeoutMs,
             emit,
           );
           if (callbackOutcome === "abort") {
@@ -459,7 +457,6 @@ async function executeToolCalls(
   request: RunRequest,
   token: string,
   signal: AbortSignal,
-  callbackTimeoutMs: number,
   emit: Emit,
 ): Promise<ToolCallsOutcome> {
   const callbackUrl = request.toolCallbackUrl;
@@ -469,8 +466,9 @@ async function executeToolCalls(
   }
   // per-tool execution budget from the advertised specs (required field):
   // the brain enforces the same budget and answers within it, so the POST
-  // waits budget + a fixed slack (hand-side only); a 0-timeout tool falls
-  // back to the run-level callback timeout
+  // waits budget + a fixed slack (hand-side only); a 0-timeout tool's
+  // callback waits indefinitely (until the brain answers or the client
+  // disconnects)
   const timeoutByTool = new Map((request.tools ?? []).map((tool) => [tool.name, tool.timeoutSeconds]));
   for (const part of assistantMessage.parts) {
     if (part.type !== "tool_call") {
@@ -482,7 +480,7 @@ async function executeToolCalls(
     const budgetSeconds = timeoutByTool.get(part.tool) ?? 0;
     const timeoutMs = budgetSeconds > 0
       ? budgetSeconds * 1000 + CALLBACK_TIMEOUT_SLACK_MS
-      : callbackTimeoutMs;
+      : undefined;
     const result = await postToolCallback(
       callbackUrl,
       token,
@@ -532,7 +530,7 @@ async function postToolCallback(
   token: string,
   payload: unknown,
   signal: AbortSignal,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
 ): Promise<CallbackResult> {
   let response: Response;
   try {
@@ -540,7 +538,11 @@ async function postToolCallback(
       method: "POST",
       headers: { "content-type": "application/json", "x-daapu-token": token },
       body: JSON.stringify(payload),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+      // no timeout for a 0-budget tool: the client disconnect is the only
+      // abort
+      signal: timeoutMs === undefined
+        ? signal
+        : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     });
   } catch (error) {
     if (signal.aborted) {

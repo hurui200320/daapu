@@ -70,7 +70,8 @@ internal class MockSseServer(private val respond: (attempt: Int) -> MockSseRespo
         private val socket: Socket,
         private val captured: MutableList<String>,
     ) : AutoCloseable {
-        private val input = BufferedReader(InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))
+        private val input =
+            BufferedReader(InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))
         private val output = socket.getOutputStream()
 
         init {
@@ -110,8 +111,8 @@ internal class MockSseServer(private val respond: (attempt: Int) -> MockSseRespo
                 response.lines.joinToString("\n\n") + "\n\n"
             }
             val header = "HTTP/1.1 ${response.status} $reason\r\n" +
-                "Content-Type: ${response.contentType}\r\nConnection: close\r\n" +
-                "Content-Length: ${payload.toByteArray().size}\r\n\r\n"
+                    "Content-Type: ${response.contentType}\r\nConnection: close\r\n" +
+                    "Content-Length: ${payload.toByteArray().size}\r\n\r\n"
             output.write((header + payload).toByteArray())
             output.flush()
         }
@@ -160,5 +161,5 @@ internal fun sseChunk(
 ): String {
     val usagePart = usage?.let { ",\"usage\":$it" } ?: ""
     return """{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"mock",""" +
-        """"choices":[{"index":0,"delta":$delta,"finish_reason":${if (finishReason == null) "null" else "\"$finishReason\""}}]$usagePart}"""
+            """"choices":[{"index":0,"delta":$delta,"finish_reason":${if (finishReason == null) "null" else "\"$finishReason\""}}]$usagePart}"""
 }

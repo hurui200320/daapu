@@ -1,11 +1,11 @@
 package info.skyblond.daapu.hand
 
-import info.skyblond.daapu.testutil.MockSseResponse
-import info.skyblond.daapu.testutil.MockSseServer
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.testutil.MockSseResponse
+import info.skyblond.daapu.testutil.MockSseServer
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
@@ -42,7 +42,6 @@ class HandClientTest {
         maxTokens = 40000,
         maxRounds = 64,
         maxRetries = 0,
-        callbackTimeoutMs = 120_000,
         streamIdleTimeoutMs = 300_000,
     )
 
@@ -67,7 +66,10 @@ class HandClientTest {
                                     """"meta":{"inputTokens":10,"outputTokens":2,"totalTokens":12,"modelId":"m"},"finishReason":"stop"}}""",
                             event = "assistant_message",
                         ),
-                        handSse("""{"attempt":2,"delayMs":200,"message":"hiccup"}""", event = "retry"),
+                        handSse(
+                            """{"attempt":2,"delayMs":200,"message":"hiccup"}""",
+                            event = "retry"
+                        ),
                         handSse("""{"finishReason":"stop"}""", event = "done"),
                     )
                 )
@@ -78,7 +80,12 @@ class HandClientTest {
         try {
             val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
             val events = runBlocking {
-                client.run(runRequest(server.port).copy(tools = listOf(toolSpec()), toolCallbackUrl = "http://cb"))
+                client.run(
+                    runRequest(server.port).copy(
+                        tools = listOf(toolSpec()),
+                        toolCallbackUrl = "http://cb"
+                    )
+                )
                     .toList()
             }
             assertEquals(
@@ -89,7 +96,12 @@ class HandClientTest {
                         ChatMessage(
                             role = ChatMessageRole.Assistant,
                             parts = listOf(ChatMessagePart.Text("Hello")),
-                            meta = ChatMessageMeta(inputTokens = 10, outputTokens = 2, totalTokens = 12, modelId = "m"),
+                            meta = ChatMessageMeta(
+                                inputTokens = 10,
+                                outputTokens = 2,
+                                totalTokens = 12,
+                                modelId = "m"
+                            ),
                             finishReason = "stop",
                         )
                     ),
@@ -101,13 +113,19 @@ class HandClientTest {
 
             // the request carried the model spec and the tools
             val request = server.lastRequest()!!
-            assertTrue(request.contains(""""modelId":"cerebras/gpt-oss-120b""""), "request: $request")
+            assertTrue(
+                request.contains(""""modelId":"cerebras/gpt-oss-120b""""),
+                "request: $request"
+            )
             assertTrue(request.contains(""""maxOutputTokens":40000"""), "request: $request")
             assertTrue(request.contains(""""reasoning":true"""), "request: $request")
             assertTrue(request.contains(""""input":["text"]"""), "request: $request")
             assertTrue(request.contains(""""name":"get_weather""""), "request: $request")
             assertTrue(request.contains(""""toolCallbackUrl":"http://cb""""), "request: $request")
-            assertTrue(request.contains("x-daapu-token: test-token", ignoreCase = true), "request: $request")
+            assertTrue(
+                request.contains("x-daapu-token: test-token", ignoreCase = true),
+                "request: $request"
+            )
             client.close()
         } finally {
             server.close()
@@ -116,7 +134,12 @@ class HandClientTest {
 
     @Test
     fun `a dropped stream without a terminal event is a terminal upstream failure`() {
-        val server = MockSseServer { MockSseResponse(200, listOf(handSse("""{"text":"partial"}""", event = "text_delta"))) }
+        val server = MockSseServer {
+            MockSseResponse(
+                200,
+                listOf(handSse("""{"text":"partial"}""", event = "text_delta"))
+            )
+        }
         try {
             val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
             val e = runBlocking {
@@ -132,7 +155,10 @@ class HandClientTest {
     @Test
     fun `a non-200 response surfaces the hand error taxonomy`() {
         val server = MockSseServer {
-            MockSseResponse(400, listOf("""{"ok":false,"error":{"type":"invalid_request","message":"attachment kind 'video' is not supported"}}"""))
+            MockSseResponse(
+                400,
+                listOf("""{"ok":false,"error":{"type":"invalid_request","message":"attachment kind 'video' is not supported"}}""")
+            )
         }
         try {
             val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")

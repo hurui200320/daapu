@@ -124,21 +124,19 @@ class ChatRunService(
     // one-shot pipeline services: stateless across runs, so a single
     // instance is shared by every concurrent chat run. They talk to the
     // hand through the same `/v1/run` seam as the chat loop, carrying the
-    // same `hand.*` policy knobs (transient retry budget, callbacks, idle
-    // timeout); the merge's round cap lives in SstmExtractionService.
+    // same `hand.*` policy knobs (transient retry budget, idle timeout);
+    // the merge's round cap lives in SstmExtractionService.
     private val titleGenerator = TitleGenerator(
         model = titleModel,
         hand = handService,
         lastNRound = config.title.lastNRound,
         maxRetries = config.hand.maxRetries,
-        callbackTimeoutMs = config.hand.callbackTimeoutMs,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
     private val compactionService = ChatCompactionService(
         model = compactModel,
         hand = handService,
         maxRetries = config.hand.maxRetries,
-        callbackTimeoutMs = config.hand.callbackTimeoutMs,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
     private val sstmExtractionService = SstmExtractionService(
@@ -147,7 +145,6 @@ class ChatRunService(
         hand = handService,
         sstmService = sstmService,
         maxRetries = config.hand.maxRetries,
-        callbackTimeoutMs = config.hand.callbackTimeoutMs,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
     private val persistService = PersistChatService(
@@ -158,7 +155,6 @@ class ChatRunService(
         sstmExtractionService = sstmExtractionService,
         maxRounds = config.hand.maxRounds,
         maxRetries = config.hand.maxRetries,
-        callbackTimeoutMs = config.hand.callbackTimeoutMs,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
 
@@ -282,8 +278,8 @@ class ChatRunService(
         if (kept.isNotEmpty() && kept.last().role != ChatMessageRole.Assistant) {
             throw BadRequestException(
                 "Refusing to truncate at message $index: the kept prefix would end " +
-                    "mid-turn (a user message follows a user message, e.g. after a " +
-                    "compaction), which the stored chat format cannot represent"
+                        "mid-turn (a user message follows a user message, e.g. after a " +
+                        "compaction), which the stored chat format cannot represent"
             )
         }
         // still validate defensively: a violating truncation would brick the

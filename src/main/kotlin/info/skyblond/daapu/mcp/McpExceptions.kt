@@ -16,4 +16,6 @@ import info.skyblond.daapu.agent.tool.ToolTransportException
  * but fails the call twice surfaces as an error tool-result instead, so the
  * model sees the failure and the run continues.)
  */
-class McpTransportException(message: String, cause: Throwable) : ToolTransportException(message, cause)
+class McpTransportException(
+    message: String, cause: Throwable
+) : ToolTransportException(message, cause)

@@ -1,9 +1,8 @@
 package info.skyblond.daapu.agent
 
-import info.skyblond.daapu.agent.model.ModelCapabilityException
-import info.skyblond.daapu.agent.ModelCatalog
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.model.ModelProvider
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull

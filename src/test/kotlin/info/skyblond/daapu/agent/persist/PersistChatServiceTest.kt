@@ -116,7 +116,6 @@ class PersistChatServiceTest {
             model = model,
             hand = handService,
             maxRetries = 0,
-            callbackTimeoutMs = 120_000,
             streamIdleTimeoutMs = 300_000,
         )
         val callback = RecordingCallback()
@@ -136,12 +135,10 @@ class PersistChatServiceTest {
                             hand = handService,
                             sstmService = sstmService,
                             maxRetries = 0,
-                            callbackTimeoutMs = 120_000,
                             streamIdleTimeoutMs = 300_000,
                         ),
                     maxRounds = 64,
                     maxRetries = 0,
-                    callbackTimeoutMs = 120_000,
                     streamIdleTimeoutMs = 300_000,
                 ).runChat(
                     chatId = "chat-1",
@@ -556,7 +553,11 @@ class PersistChatServiceTest {
             val advertised = outcome.hand.requests.last().tools?.single()
             assertEquals("calc__add", advertised?.name)
             assertTrue(advertised!!.schema.isNotEmpty(), "the tool schema must be advertised")
-            assertEquals(30L, advertised.timeoutSeconds, "the server's execution budget must be advertised")
+            assertEquals(
+                30L,
+                advertised.timeoutSeconds,
+                "the server's execution budget must be advertised"
+            )
             assertEquals(
                 "http://127.0.0.1:9/api/hand/tool",
                 outcome.hand.requests.last().toolCallbackUrl,
@@ -672,11 +673,11 @@ class PersistChatServiceTest {
             finishReason = "tool_calls",
         )
         return listOf(HandEvent.AssistantMessage(round)) +
-            toolRoundEvents(round, provider) +
-            listOf(
-                HandEvent.AssistantMessage(assistantMessage("done")),
-                HandEvent.Done("stop"),
-            )
+                toolRoundEvents(round, provider) +
+                listOf(
+                    HandEvent.AssistantMessage(assistantMessage("done")),
+                    HandEvent.Done("stop"),
+                )
     }
 
     @Test
@@ -756,7 +757,11 @@ class PersistChatServiceTest {
         // reported exhaustion, the compactor's one-shot run happened (plus
         // the sentinel extraction), and a fresh hand run received the
         // compacted history
-        assertEquals(4, outcome.hand.requests.size, "exhausted run -> compactor -> extractor -> fresh run")
+        assertEquals(
+            4,
+            outcome.hand.requests.size,
+            "exhausted run -> compactor -> extractor -> fresh run"
+        )
         assertTrue(outcome.hand.requests[1].systemPrompt!!.startsWith("You're summarizing"))
         assertTrue(outcome.callback.errors.isEmpty())
 
@@ -825,7 +830,6 @@ class PersistChatServiceTest {
             model = model,
             hand = handService,
             maxRetries = 0,
-            callbackTimeoutMs = 120_000,
             streamIdleTimeoutMs = 300_000,
         )
         val callback = RecordingCallback()
@@ -842,12 +846,10 @@ class PersistChatServiceTest {
                         hand = handService,
                         sstmService = sstm,
                         maxRetries = 0,
-                        callbackTimeoutMs = 120_000,
                         streamIdleTimeoutMs = 300_000,
                     ),
                     maxRounds = 64,
                     maxRetries = 0,
-                    callbackTimeoutMs = 120_000,
                     streamIdleTimeoutMs = 300_000,
                 ).runChat(
                     chatId = "chat-1",
@@ -914,7 +916,11 @@ class PersistChatServiceTest {
 
         // exhausted attempt -> compaction -> fresh run with the re-appended
         // input
-        assertEquals(4, outcome.hand.requests.size, "exhausted run -> compactor -> extractor -> fresh run")
+        assertEquals(
+            4,
+            outcome.hand.requests.size,
+            "exhausted run -> compactor -> extractor -> fresh run"
+        )
         val retried = outcome.hand.requests.last()
         assertTrue(
             retried.messages.any { message ->
@@ -973,7 +979,6 @@ class PersistChatServiceTest {
             model = model,
             hand = handService,
             maxRetries = 0,
-            callbackTimeoutMs = 120_000,
             streamIdleTimeoutMs = 300_000,
         )
         val extractionService = SstmExtractionService(
@@ -981,7 +986,6 @@ class PersistChatServiceTest {
             hand = handService,
             sstmService = sstm,
             maxRetries = 0,
-            callbackTimeoutMs = 120_000,
             streamIdleTimeoutMs = 300_000,
         )
         val chatStore = ConcurrentChatStore()
@@ -993,7 +997,6 @@ class PersistChatServiceTest {
             sstmExtractionService = extractionService,
             maxRounds = 64,
             maxRetries = 0,
-            callbackTimeoutMs = 120_000,
             streamIdleTimeoutMs = 300_000,
         )
 
@@ -1115,7 +1118,7 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
         error("not exercised by the persist loop tests")
 
     override suspend fun newChat(): ChatInfo = error("not exercised by the persist loop tests")
-    override suspend fun rename(chatId: String, title: String): ChatInfo? =
+    override suspend fun rename(chatId: String, title: String): ChatInfo =
         error("not exercised by the persist loop tests")
 
     override suspend fun delete(chatId: String): Boolean =
@@ -1179,7 +1182,7 @@ private class ConcurrentChatStore : ChatStore {
         error("not exercised by the persist loop tests")
 
     override suspend fun newChat(): ChatInfo = error("not exercised by the persist loop tests")
-    override suspend fun rename(chatId: String, title: String): ChatInfo? =
+    override suspend fun rename(chatId: String, title: String): ChatInfo =
         error("not exercised by the persist loop tests")
 
     override suspend fun delete(chatId: String): Boolean =

@@ -1,14 +1,7 @@
 package info.skyblond.daapu.mcp
 
+import kotlinx.serialization.json.*
 import java.io.File
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Minimal MCP stdio server for tests, run as a subprocess by
@@ -50,7 +43,9 @@ fun main() {
                     put("result", buildJsonObject {
                         put("protocolVersion", JsonPrimitive("2025-11-25"))
                         put("capabilities", buildJsonObject {
-                            put("tools", buildJsonObject { put("listChanged", JsonPrimitive(false)) })
+                            put(
+                                "tools",
+                                buildJsonObject { put("listChanged", JsonPrimitive(false)) })
                         })
                         put("serverInfo", buildJsonObject {
                             put("name", JsonPrimitive("kotlin-stdio-mock-mcp"))

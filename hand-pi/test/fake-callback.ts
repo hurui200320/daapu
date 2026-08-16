@@ -13,11 +13,18 @@ export type ToolCallbackResponse =
   | { parts: unknown[]; isError: boolean }
   | { fatal: { message: string } };
 
+interface QueueEntry {
+  delayMs: number;
+  response: ToolCallbackResponse;
+}
+
 export interface FakeCallback {
   port: number;
   url: string;
   /** Respond to each callback with the next queued response. */
   scripted: (...responses: ToolCallbackResponse[]) => void;
+  /** The next callback answers after `delayMs`, with the queued response. */
+  scriptedDelayed: (delayMs: number, response: ToolCallbackResponse) => void;
   /** The next callback never answers (the caller must abort it). */
   scriptedHang: () => void;
   /** All callback requests received, in order. */
@@ -33,7 +40,7 @@ export interface FakeCallback {
  */
 export function startFakeCallback(): Promise<FakeCallback> {
   const requests: ToolCallbackRequest[] = [];
-  let queue: ToolCallbackResponse[] = [];
+  let queue: QueueEntry[] = [];
   let hangNext = false;
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
@@ -52,14 +59,17 @@ export function startFakeCallback(): Promise<FakeCallback> {
         hangNext = false;
         return;
       }
-      const response = queue.shift();
-      if (response === undefined) {
+      const entry = queue.shift();
+      if (entry === undefined) {
         res.writeHead(500, { "content-type": "application/json" });
         res.end(JSON.stringify({ fatal: { message: "unscripted callback" } }));
         return;
       }
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(response));
+      setTimeout(() => {
+        const response = entry.response;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(response));
+      }, entry.delayMs);
     });
   });
   return new Promise((resolve, reject) => {
@@ -74,7 +84,10 @@ export function startFakeCallback(): Promise<FakeCallback> {
         port: address.port,
         url: `http://127.0.0.1:${address.port}`,
         scripted: (...responses) => {
-          queue = [...queue, ...responses];
+          queue = [...queue, ...responses.map((response) => ({ delayMs: 0, response }))];
+        },
+        scriptedDelayed: (delayMs, response) => {
+          queue = [...queue, { delayMs, response }];
         },
         scriptedHang: () => {
           hangNext = true;

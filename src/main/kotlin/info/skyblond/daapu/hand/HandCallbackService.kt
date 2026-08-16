@@ -1,15 +1,11 @@
 package info.skyblond.daapu.hand
 
+import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolTransportException
-import info.skyblond.daapu.agent.chat.ChatMessagePart
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
 
 /** The tool-execution context of one in-flight run, looked up by `runId`. */
@@ -76,10 +72,14 @@ class HandCallbackService(
             withContext(Dispatchers.IO) {
                 if (request.timeoutSeconds > 0) {
                     withTimeout(request.timeoutSeconds * 1_000L) {
-                        run.toolProvider.execute(ToolCallRequest(request.id, request.name, request.args))
+                        run.toolProvider.execute(
+                            ToolCallRequest(request.id, request.name, request.args)
+                        )
                     }
                 } else {
-                    run.toolProvider.execute(ToolCallRequest(request.id, request.name, request.args))
+                    run.toolProvider.execute(
+                        ToolCallRequest(request.id, request.name, request.args)
+                    )
                 }
             }
         } catch (e: TimeoutCancellationException) {
@@ -96,9 +96,17 @@ class HandCallbackService(
         } catch (e: CancellationException) {
             throw e
         } catch (e: ToolTransportException) {
-            return HandToolCallbackResponse(fatal = HandToolCallbackFatal(e.message ?: "Tool transport failure"))
+            return HandToolCallbackResponse(
+                fatal = HandToolCallbackFatal(
+                    e.message ?: "Tool transport failure"
+                )
+            )
         } catch (e: Exception) {
-            return HandToolCallbackResponse(fatal = HandToolCallbackFatal(e.message ?: "tool execution failed"))
+            return HandToolCallbackResponse(
+                fatal = HandToolCallbackFatal(
+                    e.message ?: "tool execution failed"
+                )
+            )
         }
         // the model must be able to process the result's attachments
         // before the next round sends them (today's per-round capability

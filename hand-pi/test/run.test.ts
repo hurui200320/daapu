@@ -94,7 +94,6 @@ function runRequest(upstreamPort: number, extra: Record<string, unknown> = {}): 
     maxTokens: 40000,
     maxRounds: 64,
     maxRetries: 0,
-    callbackTimeoutMs: 120000,
     streamIdleTimeoutMs: 300000,
     ...extra,
   };
@@ -626,13 +625,47 @@ describe("POST /v1/run", () => {
   });
 
   it(
-    "waits a hanging callback out past the global callback timeout when the tool has its own budget",
+    "waits budget + slack for a callback, not just the budget",
     async () => {
-      // the tool advertises a 1s budget, so the callback POST waits 1s + the
-      // fixed 30s slack — far longer than the 50ms global callback timeout.
-      // Waiting for the real abort would take 31s, so the test only proves
-      // the global timeout did NOT fire early (which would end the run with
-      // tool_transport within milliseconds).
+      // the tool advertises a 1s budget, so the callback POST waits 1s +
+      // the fixed 30s slack. The callback answers after 2s — past the
+      // budget, well inside the slack — and the run must accept it and
+      // continue to done: a wait of just `budget` would have aborted the
+      // POST and failed the run with tool_transport.
+      const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
+      const callback = await startFakeCallback();
+      callback.scriptedDelayed(2_000, {
+        parts: [{ type: "text", text: "late answer" }],
+        isError: false,
+      });
+      await withCallback(upstream, callback, async (callbackUrl) => {
+        const { events } = await run(
+          runRequest(upstream.port, {
+            tools: [SLOW_TOOL],
+            toolCallbackUrl: callbackUrl,
+          }),
+        );
+        expect(eventNames(events).at(-1)).toBe("done");
+        const toolResult = events.find((event) => event.event === "tool_result");
+        expect(toolResult?.data).toMatchObject({
+          name: "get_image",
+          parts: [{ type: "text", text: "late answer" }],
+        });
+        // the advertised budget was echoed back to the brain
+        expect(callback.requests()[0]?.timeoutSeconds).toBe(1);
+      });
+    },
+    10_000,
+  );
+
+  it(
+    "does not time out a 0-budget tool's hanging callback",
+    async () => {
+      // `timeoutSeconds: 0` = no timeout: the callback POST waits for the
+      // brain indefinitely, so a hanging callback must not fail the run
+      // early. Waiting for the real abort would take forever, so the test
+      // only proves no error arrived within the observation window, then
+      // aborts via the client.
       const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
       const callback = await startFakeCallback();
       callback.scriptedHang();
@@ -643,9 +676,8 @@ describe("POST /v1/run", () => {
           headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
           body: JSON.stringify(
             runRequest(upstream.port, {
-              tools: [SLOW_TOOL],
+              tools: [{ ...SLOW_TOOL, timeoutSeconds: 0 }],
               toolCallbackUrl: callback.url,
-              callbackTimeoutMs: 50,
             }),
           ),
           signal: controller.signal,
@@ -678,8 +710,6 @@ describe("POST /v1/run", () => {
         expect(buffer).toContain("event: tool_call");
         expect(sawError).toBe(false);
         expect(streamEnded).toBe(false);
-        // the advertised budget was echoed back to the brain
-        expect(callback.requests()[0]?.timeoutSeconds).toBe(1);
         controller.abort();
       } finally {
         await upstream.close();
@@ -729,7 +759,7 @@ describe("POST /v1/run", () => {
   it("rejects a run missing a run-policy knob", async () => {
     const upstream = await startFakeUpstream(NORMAL);
     try {
-      for (const omitted of ["maxTokens", "maxRounds", "maxRetries", "callbackTimeoutMs", "streamIdleTimeoutMs"]) {
+      for (const omitted of ["maxTokens", "maxRounds", "maxRetries", "streamIdleTimeoutMs"]) {
         const body = runRequest(upstream.port);
         delete body[omitted];
         const response = await fetch(`http://127.0.0.1:${port}/v1/run`, {

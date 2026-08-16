@@ -54,8 +54,6 @@ function validateRunRequest(body: string): RunRequest {
   const maxRetries = validateNonNegativeInt(raw.maxRetries, "maxRetries");
   const streamIdleTimeoutMs =
     validateNonNegativeInt(raw.streamIdleTimeoutMs, "streamIdleTimeoutMs");
-  const callbackTimeoutMs =
-    validateNonNegativeInt(raw.callbackTimeoutMs, "callbackTimeoutMs");
   let toolCallbackUrl: string | undefined;
   if (tools !== undefined && tools.length > 0) {
     toolCallbackUrl = validateString(raw.toolCallbackUrl, "toolCallbackUrl");
@@ -63,7 +61,7 @@ function validateRunRequest(body: string): RunRequest {
       failInvalid("toolCallbackUrl must be an http(s) URL");
     }
   }
-  return { model, messages, systemPrompt, tools, maxTokens, runId, toolCallbackUrl, maxRounds, maxRetries, streamIdleTimeoutMs, callbackTimeoutMs };
+  return { model, messages, systemPrompt, tools, maxTokens, runId, toolCallbackUrl, maxRounds, maxRetries, streamIdleTimeoutMs };
 }
 
 function validateModelSpec(value: unknown): ModelSpec {

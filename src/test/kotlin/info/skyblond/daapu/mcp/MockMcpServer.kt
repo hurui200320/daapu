@@ -2,21 +2,13 @@ package info.skyblond.daapu.mcp
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import kotlinx.serialization.json.*
 import java.io.Closeable
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonObjectBuilder
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * One advertised tool of the mock MCP server: [handler] produces the reply
@@ -93,11 +85,22 @@ internal class MockMcpServer(
         val method = request["method"]?.jsonPrimitive?.content
 
         if (sessionRequired && method != "initialize" && sessionId == null) {
-            respond(exchange, 400, buildJsonObject { put("error", JsonPrimitive("Mcp-Session-Id header is required")) })
+            respond(
+                exchange,
+                400,
+                buildJsonObject {
+                    put(
+                        "error",
+                        JsonPrimitive("Mcp-Session-Id header is required")
+                    )
+                })
             return
         }
         if (sessionRequired && sessionId != null && sessionId !in issuedSessions) {
-            respond(exchange, 404, buildJsonObject { put("error", JsonPrimitive("Unknown session: $sessionId")) })
+            respond(
+                exchange,
+                404,
+                buildJsonObject { put("error", JsonPrimitive("Unknown session: $sessionId")) })
             return
         }
 
@@ -113,7 +116,10 @@ internal class MockMcpServer(
             "initialize" -> {
                 initializeCount.incrementAndGet()
                 if (failInitialize) {
-                    respond(exchange, 500, buildJsonObject { put("error", JsonPrimitive("initialization failed")) })
+                    respond(
+                        exchange,
+                        500,
+                        buildJsonObject { put("error", JsonPrimitive("initialization failed")) })
                     return
                 }
                 val newSession = "mock-session-${sessionCounter.incrementAndGet()}"
@@ -124,7 +130,9 @@ internal class MockMcpServer(
                     jsonRpc(id) {
                         put("protocolVersion", JsonPrimitive("2025-11-25"))
                         put("capabilities", buildJsonObject {
-                            put("tools", buildJsonObject { put("listChanged", JsonPrimitive(false)) })
+                            put(
+                                "tools",
+                                buildJsonObject { put("listChanged", JsonPrimitive(false)) })
                         })
                         put("serverInfo", buildJsonObject {
                             put("name", JsonPrimitive("kotlin-mock-mcp"))
@@ -174,20 +182,22 @@ internal class MockMcpServer(
         }
     }
 
-    private fun jsonRpc(id: JsonElement, body: JsonObjectBuilder.() -> Unit): JsonObject = buildJsonObject {
-        put("jsonrpc", JsonPrimitive("2.0"))
-        put("id", id)
-        put("result", buildJsonObject(body))
-    }
+    private fun jsonRpc(id: JsonElement, body: JsonObjectBuilder.() -> Unit): JsonObject =
+        buildJsonObject {
+            put("jsonrpc", JsonPrimitive("2.0"))
+            put("id", id)
+            put("result", buildJsonObject(body))
+        }
 
-    private fun jsonRpcError(id: JsonElement, code: Int, message: String): JsonObject = buildJsonObject {
-        put("jsonrpc", JsonPrimitive("2.0"))
-        put("id", id)
-        put("error", buildJsonObject {
-            put("code", JsonPrimitive(code))
-            put("message", JsonPrimitive(message))
-        })
-    }
+    private fun jsonRpcError(id: JsonElement, code: Int, message: String): JsonObject =
+        buildJsonObject {
+            put("jsonrpc", JsonPrimitive("2.0"))
+            put("id", id)
+            put("error", buildJsonObject {
+                put("code", JsonPrimitive(code))
+                put("message", JsonPrimitive(message))
+            })
+        }
 
     private fun respond(exchange: HttpExchange, status: Int, response: JsonObject) {
         val bytes = response.toString().toByteArray(StandardCharsets.UTF_8)

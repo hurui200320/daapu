@@ -3,8 +3,8 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
-import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.agent.oneshot.sstm.MergeMemoryToolProvider
+import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
@@ -13,12 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Instant
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 /**
  * Pins [ChatRunService.deleteChat]'s extract-before-delete behavior: the full
@@ -88,11 +83,11 @@ class ChatRunServiceDeleteTest {
         val provider = MergeMemoryToolProvider(sstm)
         val round = addMemoryRound()
         return listOf(HandEvent.AssistantMessage(round)) +
-            toolRoundEvents(round, provider) +
-            listOf(
-                HandEvent.AssistantMessage(assistantMessage("done")),
-                HandEvent.Done("stop"),
-            )
+                toolRoundEvents(round, provider) +
+                listOf(
+                    HandEvent.AssistantMessage(assistantMessage("done")),
+                    HandEvent.Done("stop"),
+                )
     }
 
     @Test
@@ -102,7 +97,8 @@ class ChatRunServiceDeleteTest {
         store.seed("chat-1", chat = history)
         val sstm = FakeSstmService()
         val hand = oneShotHand(sstm)
-        val service = ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+        val service =
+            ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
 
         assertTrue(service.deleteChat("chat-1"))
         assertNull(store.load("chat-1"), "the row is deleted only after extraction")
@@ -133,7 +129,8 @@ class ChatRunServiceDeleteTest {
                 }
             },
         )
-        val service = ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+        val service =
+            ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
 
         assertFailsWith<IllegalStateException> { service.deleteChat("chat-1") }
         assertTrue(store.load("chat-1") != null, "a failed extraction must keep the row")
@@ -160,11 +157,17 @@ class ChatRunServiceDeleteTest {
             merge = {
                 val round = addMemoryRound()
                 listOf(HandEvent.AssistantMessage(round)) +
-                    toolRoundEvents(round, provider) +
-                    listOf(HandEvent.RunError("round_limit", "maxRounds (150) reached at round 150"))
+                        toolRoundEvents(round, provider) +
+                        listOf(
+                            HandEvent.RunError(
+                                "round_limit",
+                                "maxRounds (150) reached at round 150"
+                            )
+                        )
             },
         )
-        val service = ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+        val service =
+            ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
 
         val e = assertFailsWith<HandRunException> { service.deleteChat("chat-1") }
         assertEquals("round_limit", e.type)
@@ -232,7 +235,10 @@ class ChatRunServiceDeleteTest {
         )
 
         assertTrue(service.deleteChat("chat-1"))
-        assertTrue(concurrentAcquireConflicted, "a run must not start while the delete's extraction runs")
+        assertTrue(
+            concurrentAcquireConflicted,
+            "a run must not start while the delete's extraction runs"
+        )
         // the lock entry was evicted with the delete: the chat is acquirable again
         val lock = service.acquireChatLock("chat-1")
         service.releaseChatLock("chat-1", lock)

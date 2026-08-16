@@ -37,7 +37,10 @@ class ModelCatalog(
             modelId = "cerebras/gpt-oss-120b",
             contextLength = 131000,
             maxOutputTokens = 40000,
-            capabilities = setOf(LLMCapability.Output.Reasoning("high"), LLMCapability.Output.ToolCalls),
+            capabilities = setOf(
+                LLMCapability.Output.Reasoning("high"),
+                LLMCapability.Output.ToolCalls
+            ),
             compactionTriggerFraction = 0.75,
             compactionKeepRounds = 2,
         ),

@@ -11,7 +11,12 @@ fun testAppConfig(mcpServers: List<McpServerConfig> = emptyList()) = AppConfig(
         user = "postgres",
         password = "postgres",
     ),
-    providers = mapOf("bifrost" to LlmProviderConfig(apiKey = "test", baseUrl = "http://localhost:9")),
+    providers = mapOf(
+        "bifrost" to LlmProviderConfig(
+            apiKey = "test",
+            baseUrl = "http://localhost:9"
+        )
+    ),
     server = ServerConfig(port = 8080),
     mcp = McpConfig(servers = mcpServers),
     memory = MemoryConfig(

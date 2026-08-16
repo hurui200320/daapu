@@ -58,7 +58,9 @@ interface ToolProvider {
  * producing an error tool-result. Thrown by [execute]; the hand callback
  * route maps it onto a `fatal` response, ending the hand run.
  */
-open class ToolTransportException(message: String, cause: Throwable? = null) : Exception(message, cause)
+open class ToolTransportException(
+    message: String, cause: Throwable? = null
+) : Exception(message, cause)
 
 /**
  * The default empty tool provider.

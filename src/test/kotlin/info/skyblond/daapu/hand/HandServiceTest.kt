@@ -6,22 +6,11 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertIs
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 /**
  * Pins the HandService run/callback wiring: the runId is generated per
@@ -49,7 +38,6 @@ class HandServiceTest {
         maxTokens = 100,
         maxRounds = 4,
         maxRetries = 0,
-        callbackTimeoutMs = 0,
         streamIdleTimeoutMs = 0,
     )
 
@@ -107,7 +95,7 @@ class HandServiceTest {
     fun `evicts the run when the stream is cancelled`() {
         runBlocking {
             val callbackService = HandCallbackService("test-token")
-            val hand = FakeHand(runScript = { kotlinx.coroutines.awaitCancellation() })
+            val hand = FakeHand(runScript = { awaitCancellation() })
             val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
 
             val job = launch {
@@ -161,18 +149,24 @@ class HandServiceTest {
             hand.requests[1].toolCallbackUrl,
             "the callback URL is attached even without tools (the hand only POSTs it on a tool call)",
         )
-        assertEquals("http://custom", hand.requests[2].toolCallbackUrl, "an explicit URL is preserved")
+        assertEquals(
+            "http://custom",
+            hand.requests[2].toolCallbackUrl,
+            "an explicit URL is preserved"
+        )
     }
 
     @Test
     fun `a reused explicit runId fails fast instead of overriding the in-flight run`() {
         runBlocking {
             val callbackService = HandCallbackService("test-token")
-            val hand = FakeHand(runScript = { kotlinx.coroutines.awaitCancellation() })
+            val hand = FakeHand(runScript = { awaitCancellation() })
             val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
 
             val first = launch {
-                runCatching { service.run(runRequest(runId = "dup"), EmptyToolProvider, model()).toList() }
+                runCatching {
+                    service.run(runRequest(runId = "dup"), EmptyToolProvider, model()).toList()
+                }
             }
             // wait until the first run is in flight, then reuse its runId
             withTimeout(5_000) {
@@ -181,7 +175,10 @@ class HandServiceTest {
             val error = assertFailsWith<IllegalStateException> {
                 service.run(runRequest(runId = "dup"), EmptyToolProvider, model()).toList()
             }
-            assertTrue(error.message!!.contains("dup"), "the error must name the runId: ${error.message}")
+            assertTrue(
+                error.message!!.contains("dup"),
+                "the error must name the runId: ${error.message}"
+            )
             assertEquals(
                 1,
                 hand.requests.size,
@@ -205,15 +202,22 @@ class HandServiceTest {
                         assistantMessage(parts = listOf(call), finishReason = "tool_calls")
                     ),
                     HandEvent.ToolCall("call_1", "flag", call.args),
-                    HandEvent.ToolResult("call_1", "flag", listOf(ChatMessagePart.Text("done")), false),
+                    HandEvent.ToolResult(
+                        "call_1",
+                        "flag",
+                        listOf(ChatMessagePart.Text("done")),
+                        false
+                    ),
                     HandEvent.AssistantMessage(assistantMessage("finished")),
                     HandEvent.Done("stop"),
                 )
             }
         )
-        val service = HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
 
-        val messages = service.runCollect(runRequest(tools = listOf(toolSpec())), EmptyToolProvider, model())
+        val messages =
+            service.runCollect(runRequest(tools = listOf(toolSpec())), EmptyToolProvider, model())
 
         assertEquals(3, messages.size, "assistant + tool result + final assistant")
         assertTrue(messages[0].parts.single() is ChatMessagePart.ToolCall)
@@ -227,7 +231,8 @@ class HandServiceTest {
     @Test
     fun `runCollect throws the hand error taxonomy on a terminal error`() = runBlocking {
         val hand = FakeHand(runScript = { errorRunFlow("round_limit", "maxRounds reached") })
-        val service = HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
 
         val e = assertFailsWith<HandRunException> {
             service.runCollect(runRequest(), EmptyToolProvider, model())
@@ -237,8 +242,10 @@ class HandServiceTest {
 
     @Test
     fun `runCollect fails a stream without a terminal event`() = runBlocking {
-        val hand = FakeHand(runScript = { listOf(HandEvent.AssistantMessage(assistantMessage("partial"))) })
-        val service = HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+        val hand =
+            FakeHand(runScript = { listOf(HandEvent.AssistantMessage(assistantMessage("partial"))) })
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
 
         val e = assertFailsWith<IllegalStateException> {
             service.runCollect(runRequest(), EmptyToolProvider, model())

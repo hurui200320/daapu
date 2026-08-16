@@ -1,9 +1,9 @@
 package info.skyblond.daapu.mcp
 
+import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
-import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.McpServerConfig
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.modelcontextprotocol.kotlin.sdk.types.McpException
