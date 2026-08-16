@@ -19,7 +19,7 @@ class ConfigTest {
         url: String? = "https://mcp.exa.ai/mcp",
         command: List<String> = emptyList(),
         initializationTimeoutSeconds: Long? = null,
-        toolExecutionTimeoutSeconds: Long? = null,
+        toolExecutionTimeoutSeconds: Long = 0,
         reconnectAttempts: Int = 3,
         reconnectDelayMs: Long = 1000L,
     ) = McpServerConfig(
@@ -60,12 +60,14 @@ class ConfigTest {
                             "type": "http",
                             "url": "https://mcp.exa.ai/mcp",
                             "headers": { "Authorization": "Bearer sk-exa" },
+                            "toolExecutionTimeoutSeconds": 120,
                         },
                         {
                             "namespace": "fs",
                             "type": "stdio",
                             "command": ["npx", "-y", "some-server"],
                             "environment": { "FOO": "bar" },
+                            "toolExecutionTimeoutSeconds": 0,
                         },
                     ],
                 },
@@ -94,6 +96,7 @@ class ConfigTest {
         assertEquals(McpTransportType.Http, exa.type)
         assertEquals("https://mcp.exa.ai/mcp", exa.url)
         assertEquals(mapOf("Authorization" to "Bearer sk-exa"), exa.headers)
+        assertEquals(120L, exa.toolExecutionTimeoutSeconds)
         assertEquals(3, exa.reconnectAttempts)
         assertEquals(1000L, exa.reconnectDelayMs)
 
@@ -101,6 +104,7 @@ class ConfigTest {
         assertEquals(McpTransportType.Stdio, fs.type)
         assertEquals(listOf("npx", "-y", "some-server"), fs.command)
         assertEquals(mapOf("FOO" to "bar"), fs.environment)
+        assertEquals(0L, fs.toolExecutionTimeoutSeconds)
     }
 
     @Test
@@ -400,15 +404,45 @@ class ConfigTest {
         assertFailsWith<IllegalArgumentException> {
             server(initializationTimeoutSeconds = -1).validate()
         }
-        assertFailsWith<IllegalArgumentException> {
-            server(toolExecutionTimeoutSeconds = 0).validate()
-        }
+        // toolExecutionTimeoutSeconds is REQUIRED and 0 disables it
         assertFailsWith<IllegalArgumentException> {
             server(toolExecutionTimeoutSeconds = -5).validate()
         }
         // null means "use the SDK default": valid
-        server(initializationTimeoutSeconds = null, toolExecutionTimeoutSeconds = null).validate()
+        server(initializationTimeoutSeconds = null).validate()
         server(initializationTimeoutSeconds = 30, toolExecutionTimeoutSeconds = 60).validate()
+        server(toolExecutionTimeoutSeconds = 0).validate()
+    }
+
+    @Test
+    fun `an MCP server without toolExecutionTimeoutSeconds fails to decode`() {
+        // every advertised tool must carry an explicit execution budget:
+        // a server config missing the field fails at decode, not at runtime
+        val e = assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "title": { "model": "t" },
+                    "mcp": {
+                        "servers": [
+                            {
+                                "namespace": "exa",
+                                "type": "http",
+                                "url": "https://mcp.exa.ai/mcp"
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("toolExecutionTimeoutSeconds"),
+            "the error should name the missing field: ${e.message}"
+        )
     }
 
     @Test

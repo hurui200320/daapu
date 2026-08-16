@@ -481,7 +481,8 @@ class PersistChatServiceTest {
                 McpServerConfig(
                     namespace = "calc",
                     type = McpTransportType.Http,
-                    url = mcpServer.baseUrl
+                    url = mcpServer.baseUrl,
+                    toolExecutionTimeoutSeconds = 30,
                 )
             )
         )
@@ -518,6 +519,7 @@ class PersistChatServiceTest {
             val advertised = outcome.hand.requests.last().tools?.single()
             assertEquals("calc__add", advertised?.name)
             assertTrue(advertised!!.schema.isNotEmpty(), "the tool schema must be advertised")
+            assertEquals(30L, advertised.timeoutSeconds, "the server's execution budget must be advertised")
             assertEquals(
                 "http://127.0.0.1:9/api/hand/tool",
                 outcome.hand.requests.last().toolCallbackUrl,

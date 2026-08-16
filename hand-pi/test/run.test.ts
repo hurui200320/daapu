@@ -202,9 +202,12 @@ const OVERFLOW_BODY = {
 };
 
 const WEATHER_TOOLS = [
-  { name: "search", description: "search", schema: { type: "object", properties: {} } },
-  { name: "fetch", description: "fetch", schema: { type: "object", properties: {} } },
+  { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+  { name: "fetch", description: "fetch", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
 ];
+
+/** One tool that advertises a 1s execution budget (for the timeout tests). */
+const SLOW_TOOL = { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 1 };
 
 async function withCallback(
   upstream: Awaited<ReturnType<typeof startFakeUpstream>>,
@@ -313,6 +316,8 @@ describe("POST /v1/run", () => {
         args: { query: "hello" },
       });
       expect(requests[1]).toMatchObject({ name: "fetch", args: { url: "x" } });
+      // the advertised execution budget is echoed back for the brain to enforce
+      expect(requests.map((request) => request.timeoutSeconds)).toEqual([0, 0]);
 
       const secondBody = upstream.capturedAll()[1] as { messages: { role: string; tool_call_id?: string; content: unknown }[] };
       const toolMessages = secondBody.messages.filter((message) => message.role === "tool");
@@ -519,7 +524,7 @@ describe("POST /v1/run", () => {
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
+          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
           toolCallbackUrl: callbackUrl,
           model: modelSpec(upstream.port, { input: ["text", "image"] }),
         }),
@@ -555,7 +560,7 @@ describe("POST /v1/run", () => {
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
+          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
           toolCallbackUrl: callbackUrl,
           maxRounds: 1,
         }),
@@ -573,7 +578,7 @@ describe("POST /v1/run", () => {
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
+          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
           toolCallbackUrl: callbackUrl,
         }),
       );
@@ -588,7 +593,7 @@ describe("POST /v1/run", () => {
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
+          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
           toolCallbackUrl: callbackUrl,
         }),
       );
@@ -599,6 +604,70 @@ describe("POST /v1/run", () => {
       });
     });
   });
+
+  it(
+    "waits a hanging callback out past the global callback timeout when the tool has its own budget",
+    async () => {
+      // the tool advertises a 1s budget, so the callback POST waits 1s + the
+      // fixed 30s slack — far longer than the 50ms global callback timeout.
+      // Waiting for the real abort would take 31s, so the test only proves
+      // the global timeout did NOT fire early (which would end the run with
+      // tool_transport within milliseconds).
+      const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
+      const callback = await startFakeCallback();
+      callback.scriptedHang();
+      try {
+        const controller = new AbortController();
+        const response = await fetch(`http://127.0.0.1:${port}/v1/run`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
+          body: JSON.stringify(
+            runRequest(upstream.port, {
+              tools: [SLOW_TOOL],
+              toolCallbackUrl: callback.url,
+              callbackTimeoutMs: 50,
+            }),
+          ),
+          signal: controller.signal,
+        });
+        expect(response.status).toBe(200);
+        const reader = response.body?.getReader();
+        expect(reader).toBeDefined();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let streamEnded = false;
+        let sawError = false;
+        const deadline = Date.now() + 1_000;
+        while (reader && Date.now() < deadline) {
+          const chunk = await Promise.race([
+            reader.read().then((result) => ({ kind: "read" as const, ...result })),
+            new Promise<{ kind: "wait" }>((resolve) => setTimeout(() => resolve({ kind: "wait" }), 50)),
+          ]);
+          if (chunk.kind === "read") {
+            if (chunk.done) {
+              streamEnded = true;
+              break;
+            }
+            buffer += decoder.decode(chunk.value, { stream: true });
+            if (buffer.includes("event: error")) {
+              sawError = true;
+              break;
+            }
+          }
+        }
+        expect(buffer).toContain("event: tool_call");
+        expect(sawError).toBe(false);
+        expect(streamEnded).toBe(false);
+        // the advertised budget was echoed back to the brain
+        expect(callback.requests()[0]?.timeoutSeconds).toBe(1);
+        controller.abort();
+      } finally {
+        await upstream.close();
+        await callback.close();
+      }
+    },
+    10_000,
+  );
 
   it(
     "aborts the upstream stream when the client disconnects",
@@ -647,6 +716,30 @@ describe("POST /v1/run", () => {
       });
       expect(response.status).toBe(400);
       expect(await response.json()).toMatchObject({ ok: false, error: { type: "invalid_request" } });
+      expect(upstream.connectionCount()).toBe(0);
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("rejects a tool without an explicit timeoutSeconds", async () => {
+    const upstream = await startFakeUpstream(NORMAL);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
+        body: JSON.stringify(
+          runRequest(upstream.port, {
+            tools: [{ name: "search", description: "search", schema: { type: "object", properties: {} } }],
+            toolCallbackUrl: "http://127.0.0.1:9/api/hand/tool",
+          }),
+        ),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        ok: false,
+        error: { type: "invalid_request", message: "tools[0].timeoutSeconds must be a non-negative integer" },
+      });
       expect(upstream.connectionCount()).toBe(0);
     } finally {
       await upstream.close();

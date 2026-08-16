@@ -28,20 +28,24 @@
   "mcp": {
     "servers": [
       {
-        // Streamable HTTP server: url + optional headers
+        // Streamable HTTP server: url + optional headers. Every server MUST
+        // provide toolExecutionTimeoutSeconds (the execution budget of each
+        // tool in seconds; 0 = no timeout).
         "namespace": "exa",
         "type": "http",
         "url": "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa,web_search_advanced_exa",
         "headers": {
           "Authorization": "Bearer replace-me"
-        }
+        },
+        "toolExecutionTimeoutSeconds": 120
       }
       // stdio example: a local subprocess (command + optional
       // environment); uncomment and adapt to use it
       // {
       //     "namespace": "fs",
       //     "type": "stdio",
-      //     "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      //     "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      //     "toolExecutionTimeoutSeconds": 60
       // }
     ]
   },

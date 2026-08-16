@@ -22,6 +22,9 @@ class MergeMemoryToolProvider(
                 put("type", "object")
                 put("properties", buildJsonObject {})
             },
+            // local in-process calls, executed directly (never through the
+            // hand callback): no timeout needed
+            timeoutSeconds = 0,
         ),
         ToolSpec(
             name = "add_memory",
@@ -29,6 +32,7 @@ class MergeMemoryToolProvider(
             schema = objectSchema(
                 "content" to stringSchema("The memory content"),
             ),
+            timeoutSeconds = 0,
         ),
         ToolSpec(
             name = "update_memory",
@@ -37,6 +41,7 @@ class MergeMemoryToolProvider(
                 "id" to stringSchema("The memory id"),
                 "content" to stringSchema("The new memory content"),
             ),
+            timeoutSeconds = 0,
         ),
         ToolSpec(
             name = "delete_memory",
@@ -44,6 +49,7 @@ class MergeMemoryToolProvider(
             schema = objectSchema(
                 "id" to stringSchema("The memory id"),
             ),
+            timeoutSeconds = 0,
         ),
     )
 

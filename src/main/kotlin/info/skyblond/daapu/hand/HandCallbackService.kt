@@ -7,7 +7,9 @@ import info.skyblond.daapu.agent.tool.ToolTransportException
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentHashMap
 
 /** The tool-execution context of one in-flight run, looked up by `runId`. */
@@ -60,14 +62,33 @@ class HandCallbackService(
         val run = activeRuns[request.runId]
             ?: return HandToolCallbackResponse(fatal = HandToolCallbackFatal("Unknown runId '${request.runId}'"))
         val result = try {
-            // TODO: the hand aborts its callback POST after its callback
-            // timeout (default 120s), but this execution is not cancelled
-            // with it: the tool keeps running (and its result is discarded
-            // when the hand ends the run with tool_transport). Consider
-            // tying the execution to a per-callback timeout/cancellation.
+            // The hand waits `timeoutSeconds + 30s` for this callback before
+            // it aborts the POST and fails the run with tool_transport, so
+            // the execution must answer within the advertised budget:
+            // `withTimeout` cancels an overrunning tool instead of letting it
+            // keep running past the run's death (its result would be
+            // discarded), and the timeout answers an isError result the model
+            // can react to in the next round. 0 = no timeout.
             withContext(Dispatchers.IO) {
-                run.toolProvider.execute(ToolCallRequest(request.id, request.name, request.args))
+                if (request.timeoutSeconds > 0) {
+                    withTimeout(request.timeoutSeconds * 1_000L) {
+                        run.toolProvider.execute(ToolCallRequest(request.id, request.name, request.args))
+                    }
+                } else {
+                    run.toolProvider.execute(ToolCallRequest(request.id, request.name, request.args))
+                }
             }
+        } catch (e: TimeoutCancellationException) {
+            // must precede the CancellationException rethrow: a timeout is a
+            // cancellation, but one we answer with a model-visible error
+            return HandToolCallbackResponse(
+                parts = listOf(
+                    ChatMessagePart.Text(
+                        "Error: tool '${request.name}' timed out after ${request.timeoutSeconds}s"
+                    )
+                ),
+                isError = true,
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: ToolTransportException) {

@@ -32,6 +32,13 @@ data class HandToolSpec(
     val name: String,
     val description: String,
     val schema: JsonObject,
+    /**
+     * The tool's execution budget in seconds (0 = no timeout). REQUIRED on
+     * every advertised tool: the hand waits `timeoutSeconds + 30s` for the
+     * callback POST, and the callback route enforces the budget itself
+     * ([HandCallbackService]), so a timed-out tool always answers the hand.
+     */
+    val timeoutSeconds: Long,
 )
 
 @Serializable
@@ -139,6 +146,12 @@ data class HandToolCallbackRequest(
     val id: String,
     val name: String,
     val args: JsonObject,
+    /**
+     * The advertised tool's execution budget, echoed back by the hand: the
+     * callback route enforces it with `withTimeout` (0 = no timeout), so the
+     * hand — which waits `timeoutSeconds + 30s` — always receives an answer.
+     */
+    val timeoutSeconds: Long,
 )
 
 @Serializable

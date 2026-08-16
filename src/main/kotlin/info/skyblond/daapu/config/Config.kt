@@ -249,7 +249,9 @@ data class McpServerConfig(
     val command: List<String> = emptyList(),
     val environment: Map<String, String> = emptyMap(),
     val initializationTimeoutSeconds: Long? = null,
-    val toolExecutionTimeoutSeconds: Long? = null,
+    // REQUIRED: every advertised tool carries it as its execution timeout
+    // (seconds, 0 = no timeout), enforced on the hand tool callback path
+    val toolExecutionTimeoutSeconds: Long,
     // total connect attempts including the first one (the provider connects
     // eagerly at startup and reconnects in-turn on demand, see
     // mcp/McpToolProvider.kt); 1 means no retry. 0 is rejected by validate()
@@ -299,8 +301,9 @@ data class McpServerConfig(
         require(initializationTimeoutSeconds == null || initializationTimeoutSeconds >= 1) {
             "MCP server '$namespace': initializationTimeoutSeconds must be at least 1, got $initializationTimeoutSeconds"
         }
-        require(toolExecutionTimeoutSeconds == null || toolExecutionTimeoutSeconds >= 1) {
-            "MCP server '$namespace': toolExecutionTimeoutSeconds must be at least 1, got $toolExecutionTimeoutSeconds"
+        // required, 0 = no timeout
+        require(toolExecutionTimeoutSeconds >= 0) {
+            "MCP server '$namespace': toolExecutionTimeoutSeconds must be non-negative, got $toolExecutionTimeoutSeconds"
         }
         require(reconnectAttempts >= 1) {
             "MCP server '$namespace': reconnectAttempts must be at least 1 (it is the total number of connect attempts, the first one included)"

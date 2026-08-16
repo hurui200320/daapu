@@ -204,7 +204,7 @@ class PersistChatService(
             // tools are attached only when non-empty (some gateways reject
             // `tools: []`), and the callback URL is required iff tools exist
             tools = specs.takeIf { it.isNotEmpty() }
-                ?.map { HandToolSpec(it.name, it.description, it.schema) },
+                ?.map { HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds) },
             toolCallbackUrl = specs.takeIf { it.isNotEmpty() }?.let { toolCallbackUrl },
             runId = runId,
             chatId = chatId,

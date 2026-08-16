@@ -123,7 +123,7 @@ describe("POST /v1/complete", () => {
       const { status, body } = await complete({
         model: modelSpec(upstream.port),
         messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }],
-        tools: [{ name: "get_weather", description: "weather", schema: { type: "object", properties: {} } }],
+        tools: [{ name: "get_weather", description: "weather", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
       });
       expect(status).toBe(200);
       expect(body).toMatchObject({ ok: true });

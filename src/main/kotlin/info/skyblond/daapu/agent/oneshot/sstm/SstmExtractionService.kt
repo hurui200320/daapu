@@ -138,7 +138,7 @@ class SstmExtractionService(
                         messages = chat,
                         systemPrompt = renderMergerSystemPrompt(),
                         tools = toolProvider.specifications().map {
-                            HandToolSpec(it.name, it.description, it.schema)
+                            HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds)
                         },
                     )
                 )

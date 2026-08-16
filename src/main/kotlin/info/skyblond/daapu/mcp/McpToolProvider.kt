@@ -25,12 +25,19 @@ import kotlinx.coroutines.runBlocking
  *   (~0.5–11s) is paid once per server, never per run. `listTools` is cached
  *   client-side (default), so per-round advertisement is a local lookup.
  * - A transport failure mid-execution (connect refused, stdio process died)
- *   drops the cached client and retries the call once on a fresh connection
- *   (the reconnect itself retries [McpServerConfig.reconnectAttempts] times).
+ *   drops the cached client and retries the call once (the reconnect itself
+ *   retries [McpServerConfig.reconnectAttempts] times).
  *   If the reconnect cannot restore the connection, [McpTransportException]
  *   fails the run (surfaces as a clear SSE `error` event); if the call fails
  *   twice but the server stays up, a generic *error tool-result* is returned
  *   so the model sees the failure and can react in the next round.
+ *   An execution timeout (the advertised budget) never retries: the callback
+ *   route ([HandCallbackService]) has already answered an *error tool-result*
+ *   and cancelled the execution. The connection is KEPT: a timeout is a
+ *   tool-level failure, not a transport failure — the server is usually fine
+ *   and just slow, and a fresh connection would only pay a full reconnect on
+ *   the next call. A genuinely broken connection surfaces a transport failure
+ *   on the next call, which drops and reconnects then.
  *   Tool-level failures (server-side `isError`, bad arguments) return an
  *   *error tool-result* without touching the connection.
  * - [close] closes every client (called on JVM shutdown).
@@ -110,16 +117,24 @@ class McpToolProvider(
         // one retry: a transport failure drops the connection (the reconnection
         // itself retries up to `reconnectAttempts` times) and re-executes the
         // call once on the fresh connection. If the server stays down, the
-        // reconnection throws McpTransportException, failing the run.
+        // reconnection throws McpTransportException, failing the run. A timeout
+        // never retries: the callback route's `withTimeout` (HandCallbackService)
+        // has already answered the isError result and cancelled this coroutine,
+        // so its catch below only logs — the connection is kept (a slow tool is
+        // not a broken transport).
         repeat(2) {
             return try {
                 entry.executeRequestOnce(request.id, request.args, advertisedName)
             } catch (e: TimeoutCancellationException) {
-                // the tool-execution timeout: a hung server is a transport
-                // failure — drop the connection and retry once
-                logger.warn { "MCP server ${entry.namespace} timed out, retry..." }
-                entry.dropConnection()
-                return@repeat
+                // the execution budget (enforced by the callback route's
+                // `withTimeout`, see HandCallbackService) expired: the run
+                // already got its isError timeout answer and this coroutine is
+                // cancelled, so a retry could never complete. The connection is
+                // kept: the server is usually fine and just slow, and a
+                // genuinely broken one surfaces a transport failure on the next
+                // call, which drops and reconnects then.
+                logger.warn { "MCP server ${entry.namespace} timed out" }
+                throw e
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Error) {

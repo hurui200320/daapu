@@ -102,7 +102,13 @@ and a small TypeScript service (hand-pi). The pieces:
   the neutral tool seam (`agent/tool/ToolProvider.kt`) and namespaces every
   advertised tool as `{namespace}__{tool}`; the hand executes tool calls
   back through the callback route, which looks up the in-flight run's
-  provider and model. Transport failures drop the connection and retry the
+  provider and model. `toolExecutionTimeoutSeconds` is REQUIRED per server
+  config (0 = no timeout) and every advertised tool carries it as its
+  `timeoutSeconds`: the callback route enforces the budget with
+  `withTimeout` (an overrun answers an `isError` tool result, the run
+  survives) and the hand waits `budget + 30s` (a hand-side-only slack)
+  for the callback, so a timed-out tool always gets an answer. Transport
+  failures drop the connection and retry the
   call once; reconnect exhaustion throws `McpTransportException`, which the
   callback route maps to `fatal` (ending the hand run with
   `tool_transport`). Result attachments are capability-checked against the

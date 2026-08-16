@@ -46,6 +46,7 @@ class HandClientTest {
         name = "get_weather",
         description = "weather",
         schema = buildJsonObject { put("type", "object") },
+        timeoutSeconds = 30,
     )
 
     @Test

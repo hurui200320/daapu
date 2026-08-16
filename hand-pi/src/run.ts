@@ -37,6 +37,14 @@ const CONTENT_FILTER_MARKER = "Provider finish_reason: content_filter";
 const DEFAULT_MAX_ROUNDS = 64;
 const DEFAULT_CALLBACK_TIMEOUT_MS = 120_000;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
+/**
+ * The brain enforces each tool's advertised `timeoutSeconds` itself and
+ * always answers the callback within the budget, so the callback POST waits
+ * `budget + slack` — a timed-out tool still receives the brain's error
+ * result instead of a dropped connection. Hand-side only: the brain never
+ * sees this value.
+ */
+const CALLBACK_TIMEOUT_SLACK_MS = 30_000;
 
 /**
  * Classifies a pi-ai terminal message. `outcome` is `done`/`error` matching
@@ -445,7 +453,8 @@ type ToolCallsOutcome = "done" | "abort" | "transport_failure";
 /**
  * Executes the round's tool calls sequentially, in source order — the hand
  * never fires callbacks concurrently, and never retries a callback POST (a
- * retry could duplicate a side-effecting tool).
+ * retry could duplicate a side-effecting tool). The callback carries the
+ * tool's advertised `timeoutSeconds` back to the brain, which enforces it.
  */
 async function executeToolCalls(
   assistantMessage: ChatMessage,
@@ -461,6 +470,11 @@ async function executeToolCalls(
     emit("error", { type: "internal", message: "tool calls received but no toolCallbackUrl" });
     return "transport_failure";
   }
+  // per-tool execution budget from the advertised specs (required field):
+  // the brain enforces the same budget and answers within it, so the POST
+  // waits budget + a fixed slack (hand-side only); a 0-timeout tool falls
+  // back to the run-level callback timeout
+  const timeoutByTool = new Map((request.tools ?? []).map((tool) => [tool.name, tool.timeoutSeconds]));
   for (const part of assistantMessage.parts) {
     if (part.type !== "tool_call") {
       continue;
@@ -468,6 +482,10 @@ async function executeToolCalls(
     if (!emit("tool_call", { id: part.id, name: part.tool, args: part.args })) {
       return "abort";
     }
+    const budgetSeconds = timeoutByTool.get(part.tool) ?? 0;
+    const timeoutMs = budgetSeconds > 0
+      ? budgetSeconds * 1000 + CALLBACK_TIMEOUT_SLACK_MS
+      : callbackTimeoutMs;
     const result = await postToolCallback(
       callbackUrl,
       token,
@@ -477,9 +495,10 @@ async function executeToolCalls(
         id: part.id,
         name: part.tool,
         args: part.args,
+        timeoutSeconds: budgetSeconds,
       },
       signal,
-      callbackTimeoutMs,
+      timeoutMs,
     );
     if (result.kind === "abort") {
       return "abort";

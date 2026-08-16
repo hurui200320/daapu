@@ -10,6 +10,12 @@ import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.config.McpServerConfig
+import info.skyblond.daapu.config.McpTransportType
+import info.skyblond.daapu.mcp.McpToolProvider
+import info.skyblond.daapu.mcp.MockMcpServer
+import info.skyblond.daapu.mcp.MockTool
+import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.mcp.McpTransportException
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.server.ChatRunService
@@ -26,12 +32,14 @@ import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.jvm.Volatile
 
 /**
  * Pins the hand-pi tool callback route (`POST /api/hand/tool`):
@@ -67,8 +75,15 @@ class HandCallbackTest {
         mapOf("bifrost" to ModelProvider(id = "bifrost", baseUrl = "http://127.0.0.1:9/v1", apiKey = "test"))
     ).findModel("bifrost/cerebras/gpt-oss-120b")!!
 
-    private fun callbackRequest(runId: String = "run-1", name: String = "flag", args: JsonObject = JsonObject(emptyMap())) =
-        HandToolCallbackRequest(runId = runId, chatId = "chat-1", id = "call_1", name = name, args = args)
+    private fun callbackRequest(
+        runId: String = "run-1",
+        name: String = "flag",
+        args: JsonObject = JsonObject(emptyMap()),
+        timeoutSeconds: Long = 0,
+    ) = HandToolCallbackRequest(
+        runId = runId, chatId = "chat-1", id = "call_1", name = name, args = args,
+        timeoutSeconds = timeoutSeconds,
+    )
 
     @Test
     fun `missing or wrong token is rejected`() = testApplication {
@@ -161,6 +176,105 @@ class HandCallbackTest {
         }
     }
 
+    @Test
+    fun `an overrunning tool is cancelled and answers an isError timeout result`() = testApplication {
+        runApplicationWithService { service ->
+            val provider = SlowProvider()
+            service.handCallback.register("run-1", provider, textModel())
+            val start = System.currentTimeMillis()
+            val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 1))
+            val elapsed = System.currentTimeMillis() - start
+            assertEquals(HttpStatusCode.OK, status)
+            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            assertNull(response["fatal"], "a timeout is a tool-level error, not a fatal: $body")
+            assertEquals("true", response["isError"].toString())
+            assertTrue(
+                response["parts"].toString().contains("timed out after 1s"),
+                "the timeout result must name the tool and budget: $body",
+            )
+            assertTrue(elapsed < 3_000, "the timeout must answer within the budget: ${elapsed}ms")
+            assertTrue(provider.cancelled, "the tool execution must be cancelled with the timeout")
+        }
+    }
+
+    @Test
+    fun `a tool with a disabled timeout answers normally after the budget would have expired`() = testApplication {
+        runApplicationWithService { service ->
+            val provider = SlowProvider(delayMs = 1_500)
+            service.handCallback.register("run-1", provider, textModel())
+            val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 0))
+            assertEquals(HttpStatusCode.OK, status)
+            val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+            assertNull(response["fatal"])
+            assertEquals("false", response["isError"].toString())
+        }
+    }
+
+    @Test
+    fun `an overrunning MCP tool answers an isError timeout result without a retry and keeps the connection`() = testApplication {
+        runApplicationWithService { service ->
+            // the real MCP stack: the provider's in-flight call hangs until
+            // the budget expires (enforced by the callback route's withTimeout)
+            val server = MockMcpServer(
+                listOf(
+                    MockTool(name = "hang", description = "hangs", handler = {
+                        Thread.sleep(30_000)
+                        MockToolReply("late")
+                    }),
+                    MockTool(name = "echo", description = "echo", handler = { args ->
+                        MockToolReply(args["text"]?.jsonPrimitive?.content ?: "")
+                    }),
+                )
+            )
+            val provider = McpToolProvider(
+                listOf(
+                    McpServerConfig(
+                        namespace = "calc",
+                        type = McpTransportType.Http,
+                        url = server.baseUrl,
+                        toolExecutionTimeoutSeconds = 1,
+                        reconnectAttempts = 1,
+                        reconnectDelayMs = 50,
+                    )
+                )
+            )
+            try {
+                kotlinx.coroutines.runBlocking { provider.specifications() }
+                service.handCallback.register("run-1", provider, textModel())
+                val start = System.currentTimeMillis()
+                val (status, body) = client.callback(body = callbackRequest(name = "calc__hang", timeoutSeconds = 1))
+                val elapsed = System.currentTimeMillis() - start
+                assertEquals(HttpStatusCode.OK, status)
+                val response = json().parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonObject }
+                assertNull(response["fatal"], "a timeout is a tool-level error, not a fatal: $body")
+                assertEquals("true", response["isError"].toString())
+                assertTrue(
+                    response["parts"].toString().contains("timed out after 1s"),
+                    "the timeout result must name the tool and budget: $body",
+                )
+                assertTrue(elapsed < 3_000, "the timeout must answer within the budget: ${elapsed}ms")
+                assertEquals(1, server.toolCalls.size, "a timeout must not retry the call")
+
+                // the connection survives the client-side abort: the next call
+                // reuses it (no reconnect) and succeeds
+                val (status2, body2) = client.callback(
+                    body = callbackRequest(
+                        name = "calc__echo",
+                        args = buildJsonObject { put("text", "hi") },
+                        timeoutSeconds = 1,
+                    )
+                )
+                assertEquals(HttpStatusCode.OK, status2)
+                assertEquals(1, server.initializeCount.get(), "a timeout is not a transport failure: the connection must be kept")
+                assertEquals(2, server.toolCalls.size)
+                assertTrue(body2.contains("hi"), "the kept connection must still work: $body2")
+            } finally {
+                provider.close()
+                server.close()
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // providers
     // ------------------------------------------------------------------
@@ -209,6 +323,36 @@ class HandCallbackTest {
 
         override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult =
             throw McpTransportException("MCP transport failure", RuntimeException("boom"))
+    }
+
+    private class SlowProvider(
+        private val delayMs: Long = 5_000,
+    ) : ToolProvider {
+        /** true once the execution ended, cancelled or not. */
+        @Volatile
+        var ended = false
+
+        /** true when the execution ended through cancellation. */
+        @Volatile
+        var cancelled = false
+
+        override suspend fun specifications(): List<ToolSpec> = emptyList()
+
+        override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
+            try {
+                kotlinx.coroutines.delay(delayMs)
+                return ChatMessagePart.ToolResult(
+                    id = request.id,
+                    tool = request.name,
+                    parts = listOf(ChatMessagePart.Text("slow result")),
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                cancelled = true
+                throw e
+            } finally {
+                ended = true
+            }
+        }
     }
 
     private class ImageProvider : ToolProvider {

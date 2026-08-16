@@ -7,11 +7,17 @@ import kotlinx.serialization.json.JsonObject
  * One tool advertisement in the neutral (framework-free) format: the name
  * the model sees on the wire, a human-readable description, and the raw
  * JSON schema (JSON Schema object) sent to the gateway.
+ *
+ * [timeoutSeconds] is the tool's execution budget (0 = no timeout),
+ * REQUIRED on every advertised tool: the callback route enforces it with
+ * `withTimeout` ([HandCallbackService]) and the hand waits a little longer
+ * than it for the callback answer, so a timed-out tool always gets a result.
  */
 data class ToolSpec(
     val name: String,
     val description: String,
     val schema: JsonObject,
+    val timeoutSeconds: Long,
 )
 
 /**

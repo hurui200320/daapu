@@ -68,6 +68,7 @@ class McpToolProviderTest {
                             url = "http://127.0.0.1:1/mcp",
                             reconnectAttempts = 2,
                             reconnectDelayMs = 50,
+                            toolExecutionTimeoutSeconds = 0,
                         ),
                     )
                 )
@@ -97,11 +98,12 @@ class McpToolProviderTest {
     @Test
     fun `advertised tool names are namespaced by namespace`() {
         val server = MockMcpServer(listOf(addTool(), echoTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        val provider = McpToolProvider(listOf(httpConfig("calc", server, toolExecutionTimeoutSeconds = 60)))
         try {
             val specs = runBlocking { provider.specifications() }
             assertEquals(listOf("calc__add", "calc__echo"), specs.map { it.name })
             assertTrue(specs.all { it.description.isNotBlank() })
+            assertTrue(specs.all { it.timeoutSeconds == 60L }, "the server's execution timeout must reach every advertised tool")
         } finally {
             provider.close()
             server.close()
@@ -334,6 +336,7 @@ class McpToolProviderTest {
                     type = McpTransportType.Stdio,
                     command = stdioMockCommand(),
                     environment = mapOf("MCP_STDIO_COUNT_FILE" to countFile.absolutePath),
+                    toolExecutionTimeoutSeconds = 0,
                 )
             )
         )
@@ -372,6 +375,7 @@ class McpToolProviderTest {
                     type = McpTransportType.Stdio,
                     command = stdioMockCommand(),
                     environment = mapOf("MCP_STDIO_COUNT_FILE" to countFile.absolutePath),
+                    toolExecutionTimeoutSeconds = 0,
                 )
             )
         )
@@ -399,12 +403,14 @@ class McpToolProviderTest {
         server: MockMcpServer,
         reconnectAttempts: Int = 3,
         reconnectDelayMs: Long = 1000L,
+        toolExecutionTimeoutSeconds: Long = 0,
     ) = McpServerConfig(
         namespace = namespace,
         type = McpTransportType.Http,
         url = server.baseUrl,
         reconnectAttempts = reconnectAttempts,
         reconnectDelayMs = reconnectDelayMs,
+        toolExecutionTimeoutSeconds = toolExecutionTimeoutSeconds,
     )
 
     private fun request(id: String, name: String, argsJson: JsonObject): ToolCallRequest =

@@ -221,7 +221,12 @@ class ClientEntry(
                 "Tool name $name already exists in MCP server '${namespace}'"
             }
             toolNameMapping[name] = rawName
-            ToolSpec(name = name, description = tool.description.orEmpty(), schema = tool.toSchemaJson())
+            ToolSpec(
+                name = name,
+                description = tool.description.orEmpty(),
+                schema = tool.toSchemaJson(),
+                timeoutSeconds = config.toolExecutionTimeoutSeconds,
+            )
         }
     }
 
@@ -237,9 +242,12 @@ class ClientEntry(
 
         val client = getConnectedClient().client
         val request = CallToolRequest(CallToolRequestParams(name = rawName, arguments = arguments))
-        val result = config.toolExecutionTimeoutSeconds?.let { seconds ->
+        val seconds = config.toolExecutionTimeoutSeconds
+        val result = if (seconds > 0) {
             withTimeout(seconds * 1_000L) { client.callTool(request) }
-        } ?: client.callTool(request)
+        } else {
+            client.callTool(request)
+        }
 
         return ChatMessagePart.ToolResult(
             id = id,

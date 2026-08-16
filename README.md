@@ -162,15 +162,20 @@ e.g. `exa__search` — the separator is `__`, so it must not contain it; only
 `[0-9a-z_-]` is allowed, and the harness-reserved namespaces
 `system`/`inner`/`internal`/`gsg` are rejected because internal tools will
 use them), a `type` (`http` needs `url` + optional `headers`; `stdio` needs
-`command` + optional `environment`), and may set
-`initializationTimeoutSeconds` / `toolExecutionTimeoutSeconds`, plus
+`command` + optional `environment`), and `toolExecutionTimeoutSeconds` (the
+execution budget of every advertised tool in seconds, 0 = no timeout — each
+tool must carry one, and the brain enforces it on the tool callback while
+the hand waits budget + 30s for the answer). It may also set
+`initializationTimeoutSeconds`, plus
 `reconnectAttempts` (total connect attempts including the first, default 3)
 and `reconnectDelayMs` (delay between attempts, default 1000). The provider
 connects eagerly at startup, so a server that cannot be reached aborts
 startup. Mid-session transport failures drop the connection, reconnect, and
 re-execute the tool call once; if the reconnect fails the chat run fails with
 a clear `error` event, and a call that fails twice while the server stays up
-returns an error tool-result the model can react to.
+returns an error tool-result the model can react to. A tool that overruns its
+budget answers an error tool-result too (the execution is cancelled, the
+model can react in the next round).
 
 The system prompt and the model catalog are hardcoded in code:
 `agent/persist/SystemPrompt.kt` and `agent/ModelCatalog.kt` (each model

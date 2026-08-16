@@ -73,6 +73,13 @@ export interface ToolSpec {
   name: string;
   description: string;
   schema: JsonSchema;
+  /**
+   * The tool's execution budget in seconds, 0 = no timeout. Required on
+   * every advertised tool: the callback POST waits `timeoutSeconds + 30s`
+   * (the brain enforces the budget itself and always answers in time), a
+   * 0-timeout tool falls back to the run-level `callbackTimeoutMs`.
+   */
+  timeoutSeconds: number;
 }
 
 export type HandErrorType =
