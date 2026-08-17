@@ -21,6 +21,25 @@ interface QueueEntry {
   response: ToolCallbackResponse;
 }
 
+/** A gated batch: hold the first `count` callbacks until all have arrived. */
+interface GateEntry {
+  count: number;
+  responder: (request: ToolCallbackRequest) => ToolCallbackResponse;
+}
+
+/** A request held open while a gated batch is still filling. */
+interface HeldRequest {
+  res: ServerResponse;
+  request: ToolCallbackRequest;
+}
+
+/** The in-progress gated batch, filling with held requests. */
+interface InFlightGate {
+  expected: number;
+  responder: (request: ToolCallbackRequest) => ToolCallbackResponse;
+  held: HeldRequest[];
+}
+
 export interface FakeCallback {
   url: string;
   /** The tool-listing endpoint the hand queries before each LLM request. */
@@ -29,6 +48,18 @@ export interface FakeCallback {
   scripted: (...responses: ToolCallbackResponse[]) => void;
   /** The next callback answers after `delayMs`, with the queued response. */
   scriptedDelayed: (delayMs: number, response: ToolCallbackResponse) => void;
+  /**
+   * The next `count` callbacks wait until all `count` requests have arrived,
+   * then each is answered with `responder(request)`. A deterministic proof
+   * that the hand fired the callbacks concurrently (none of them could answer
+   * before every request was in flight); the responder keys the response on
+   * the call's identity, since parallel arrival order is not guaranteed.
+   *
+   * A gate only opens when the queue is empty (the queue is checked first),
+   * so it must not be mixed with `scripted`/`scriptedDelayed` — a mix throws
+   * at setup time instead of silently mis-answering the gate's requests.
+   */
+  scriptedGate: (count: number, responder: (request: ToolCallbackRequest) => ToolCallbackResponse) => void;
   /** The next callback never answers (the caller must abort it). */
   scriptedHang: () => void;
   /**
@@ -61,6 +92,8 @@ export interface FakeCallback {
 export function startFakeCallback(): Promise<FakeCallback> {
   const requests: ToolCallbackRequest[] = [];
   let queue: QueueEntry[] = [];
+  let gates: GateEntry[] = [];
+  let inFlightGate: InFlightGate | undefined;
   let hangNext = false;
   let toolQueue: ToolListResponse[] = [];
   let hangNextToolList = false;
@@ -109,6 +142,29 @@ export function startFakeCallback(): Promise<FakeCallback> {
       }
       const entry = queue.shift();
       if (entry === undefined) {
+        // a gated batch holds its requests until the whole batch has
+        // arrived, then each is answered with the batch's responder
+        if (inFlightGate === undefined) {
+          const gate = gates.shift();
+          if (gate !== undefined) {
+            inFlightGate = { expected: gate.count, responder: gate.responder, held: [] };
+          }
+        }
+        if (inFlightGate !== undefined) {
+          inFlightGate.held.push({ res, request: requests[requests.length - 1] });
+          if (inFlightGate.held.length === inFlightGate.expected) {
+            const held = inFlightGate.held;
+            const responder = inFlightGate.responder;
+            inFlightGate = undefined;
+            for (const heldEntry of held) {
+              const response = responder(heldEntry.request);
+              heldEntry.res.writeHead(200, { "content-type": "application/json" });
+              heldEntry.res.end(JSON.stringify(response));
+            }
+          }
+          // hold this request unanswered until the whole batch has arrived
+          return;
+        }
         res.writeHead(500, { "content-type": "application/json" });
         res.end(JSON.stringify({ fatal: { message: "unscripted callback" } }));
         return;
@@ -132,12 +188,39 @@ export function startFakeCallback(): Promise<FakeCallback> {
         url: `http://127.0.0.1:${address.port}`,
         toolsUrl: `http://127.0.0.1:${address.port}/tools`,
         scripted: (...responses) => {
+          if (inFlightGate !== undefined || gates.length > 0) {
+            throw new Error(
+              "scripted: a scriptedGate batch is pending; the queue is checked before the gate, " +
+                "so mixing would silently steal the gate's requests",
+            );
+          }
           queue = [...queue, ...responses.map((response) => ({ delayMs: 0, response }))];
         },
         scriptedDelayed: (delayMs, response) => {
+          if (inFlightGate !== undefined || gates.length > 0) {
+            throw new Error(
+              "scriptedDelayed: a scriptedGate batch is pending; the queue is checked before the gate, " +
+                "so mixing would silently steal the gate's requests",
+            );
+          }
           queue = [...queue, { delayMs, response }];
         },
+        scriptedGate: (count, responder) => {
+          if (inFlightGate !== undefined || queue.length > 0) {
+            throw new Error(
+              "scriptedGate: an earlier gate is still open or queued responses are pending; " +
+                "the queue is checked before the gate, so mixing would silently steal the gate's requests",
+            );
+          }
+          gates = [...gates, { count, responder }];
+        },
         scriptedHang: () => {
+          if (inFlightGate !== undefined || gates.length > 0 || queue.length > 0) {
+            throw new Error(
+              "scriptedHang: a scriptedGate batch or queued responses are pending; the hang is " +
+                "checked before the queue and the gate, so mixing would silently steal them",
+            );
+          }
           hangNext = true;
         },
         scriptedToolList: (...responses) => {

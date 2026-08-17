@@ -23,6 +23,7 @@ import { writeSseComment, writeSseEvent, writeSseHead, type SseEventName } from 
 import {
   HandFailure,
   type ChatMessage,
+  type ChatMessagePart,
   type ContentPart,
   type HandError,
   type RunRequest,
@@ -323,9 +324,11 @@ export async function executeRun(
             emit,
           );
           if (callbackOutcome === "abort") {
+            outcome = "aborted";
             return;
           }
           if (callbackOutcome === "transport_failure") {
+            outcome = "error:tool_transport";
             return;
           }
           continue rounds;
@@ -453,14 +456,35 @@ function hasText(message: PiAssistantMessage): boolean {
 
 type ToolCallsOutcome = "done" | "abort" | "transport_failure";
 
+/** A round's tool-call part (the object `parts` filters down to). */
+type ToolCallPart = Extract<ChatMessagePart, { type: "tool_call" }>;
+
+/** A callback that answered with a tool result. */
+type CallbackOk = Extract<CallbackResult, { kind: "ok" }>;
+
 /**
- * Executes the round's tool calls sequentially, in source order — the hand
- * never fires callbacks concurrently, and never retries a callback POST (a
- * retry could duplicate a side-effecting tool). The callback applies no
- * deadline of its own: the brain enforces each tool's execution budget and
- * always answers (a result, an `isError` timeout, or a `fatal`); if the
- * brain crashes mid-call, the connection drop fails the fetch and the run
- * ends with `tool_transport`.
+ * Executes the round's tool calls in parallel: the hand fires every callback
+ * POST of the round at once and reassembles the results in source order (the
+ * same order the model emitted the calls), so the stored history and the
+ * next round's request keep the call→result pairing strict providers expect.
+ * The `tool_call` events all precede the `tool_result` events — the frontend
+ * commits the round's assistant message on the first result, so it must see
+ * the full call set first.
+ *
+ * The hand never retries a callback POST (a retry could duplicate a
+ * side-effecting tool), and the callback applies no deadline of its own: the
+ * brain enforces each tool's execution budget and always answers (a result,
+ * an `isError` timeout, or a `fatal`); if the brain crashes mid-call, the
+ * connection drop fails the fetch and the run ends with `tool_transport`.
+ * A client disconnect aborts every in-flight POST via the shared signal; a
+ * hang simply stalls until then, exactly like the serial loop.
+ *
+ * Parallelism has one semantic cost: every tool of the round has ALREADY
+ * executed (and any side effects committed) by the time the results are
+ * checked. A `fatal`/transport failure on ANY call fails the whole run with
+ * `tool_transport` and discards every result — including the successes — so
+ * a tool that answered fine still ran even though the round is thrown away.
+ * (The serial loop stopped at the first failure, so later tools never ran.)
  */
 async function executeToolCalls(
   assistantMessage: ChatMessage,
@@ -475,24 +499,39 @@ async function executeToolCalls(
     emit("error", { type: "internal", message: "tool calls received but no toolCallbackUrl" });
     return "transport_failure";
   }
-  for (const part of assistantMessage.parts) {
-    if (part.type !== "tool_call") {
-      continue;
-    }
+  const isToolCall = (part: ChatMessagePart): part is ToolCallPart =>
+    part.type === "tool_call";
+  const parts = assistantMessage.parts.filter(isToolCall);
+  for (const part of parts) {
     if (!emit("tool_call", { id: part.id, name: part.tool, args: part.args })) {
       return "abort";
     }
-    const result = await postToolCallback(
-      callbackUrl,
-      token,
-      {
-        runId: request.runId,
-        id: part.id,
-        name: part.tool,
-        args: part.args,
-      },
-      signal,
-    );
+  }
+  // fire every callback concurrently and wait for all of them: the brain
+  // always answers, so the wait is bounded by the callbacks themselves, and
+  // `postToolCallback` resolves (never rejects) even on abort/transport
+  // failure, so no promise is left unhandled
+  const outcomes = await Promise.all(
+    parts.map((part) =>
+      postToolCallback(
+        callbackUrl,
+        token,
+        { runId: request.runId, id: part.id, name: part.tool, args: part.args },
+        signal,
+      ),
+    ),
+  );
+  // all callbacks have settled: check every outcome before assembling
+  // anything, so a failure discards every result (the successes included).
+  // `Promise.all` preserves length and order, so `outcomes[index]` is always
+  // present; the guard only satisfies `noUncheckedIndexedAccess`
+  const results: { part: ToolCallPart; result: CallbackOk }[] = [];
+  for (const [index, part] of parts.entries()) {
+    const result = outcomes[index];
+    if (result === undefined) {
+      emit("error", { type: "internal", message: "tool callback outcome missing" });
+      return "transport_failure";
+    }
     if (result.kind === "abort") {
       return "abort";
     }
@@ -500,6 +539,9 @@ async function executeToolCalls(
       emit("error", { type: "tool_transport", message: result.message });
       return "transport_failure";
     }
+    results.push({ part, result });
+  }
+  for (const { part, result } of results) {
     history.push({
       role: "tool_result",
       parts: [

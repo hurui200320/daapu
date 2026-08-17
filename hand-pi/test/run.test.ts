@@ -290,20 +290,27 @@ describe("POST /v1/run", () => {
     const upstream = await startFakeUpstream([TOOL_CALLS, STOP]);
     const callback = await startFakeCallback();
     callback.scriptedToolList({ tools: WEATHER_TOOLS });
-    callback.scripted(
-      { parts: [{ type: "text", text: "Berlin: 22C" }], isError: false },
-      { parts: [{ type: "text", text: "fetched" }], isError: false },
+    // responses are keyed by call identity: parallel arrival order is not
+    // deterministic, so the queue-based `scripted` pairing would be racy.
+    // The gate also proves concurrency: neither callback answers until BOTH
+    // requests have arrived, so a serial hand would deadlock the run.
+    callback.scriptedGate(2, (request) =>
+      request.name === "search"
+        ? { parts: [{ type: "text", text: "Berlin: 22C" }], isError: false }
+        : { parts: [{ type: "text", text: "fetched" }], isError: false },
     );
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { status, events } = await run(
         runRequest(upstream.port, { toolListUrl: callback.toolsUrl, toolCallbackUrl: callbackUrl }),
       );
       expect(status).toBe(200);
+      // the round's tool calls are announced up front (all `tool_call`
+      // events precede the `tool_result` events, which arrive in call order)
       expect(eventNames(events)).toEqual([
         "assistant_message",
         "tool_call",
-        "tool_result",
         "tool_call",
+        "tool_result",
         "tool_result",
         "text_delta",
         "assistant_message",
@@ -320,23 +327,32 @@ describe("POST /v1/run", () => {
       expect(fetchCall?.id).not.toBe(searchCall?.id);
 
       expect(events[1]?.data).toEqual({ id: "call_1", name: "search", args: { query: "hello" } });
-      expect(events[2]?.data).toEqual({
+      // the fetch call is id-less in the stream, so the hand synthesizes one
+      expect(events[2]?.data).toMatchObject({ name: "fetch", args: { url: "x" } });
+      // tool_result events are reassembled in source order, not completion order
+      expect(events[3]?.data).toEqual({
         id: "call_1",
         name: "search",
         parts: [{ type: "text", text: "Berlin: 22C" }],
         isError: false,
       });
-      expect(events[3]?.data).toMatchObject({ name: "fetch", args: { url: "x" } });
+      expect(events[4]?.data).toMatchObject({
+        name: "fetch",
+        parts: [{ type: "text", text: "fetched" }],
+        isError: false,
+      });
 
+      // the callbacks fire concurrently: both requests arrived (in any order)
       const requests = callback.requests();
       expect(requests).toHaveLength(2);
-      expect(requests[0]).toMatchObject({
+      const searchRequest = requests.find((request) => request.name === "search");
+      const fetchRequest = requests.find((request) => request.name === "fetch");
+      expect(searchRequest).toMatchObject({
         runId: "run-test",
         id: "call_1",
-        name: "search",
         args: { query: "hello" },
       });
-      expect(requests[1]).toMatchObject({ name: "fetch", args: { url: "x" } });
+      expect(fetchRequest).toMatchObject({ name: "fetch", args: { url: "x" } });
 
       // the tools were re-fetched before every LLM request (two rounds)
       expect(callback.toolListRequests()).toEqual(["run-test", "run-test"]);
@@ -344,7 +360,37 @@ describe("POST /v1/run", () => {
       const secondBody = upstream.capturedAll()[1] as { messages: { role: string; tool_call_id?: string; content: unknown }[] };
       const toolMessages = secondBody.messages.filter((message) => message.role === "tool");
       expect(toolMessages).toHaveLength(2);
+      // history keeps the results in the same order as their calls
       expect(toolMessages[0]).toMatchObject({ tool_call_id: "call_1", content: "Berlin: 22C" });
+      expect(toolMessages[1]).toMatchObject({ content: "fetched" });
+    });
+  });
+
+  it("a fatal callback in a parallel batch fails the run and drops every result", async () => {
+    // one call fails fatally while its sibling succeeds: the whole round
+    // fails with tool_transport and NO result is assembled into history or
+    // the SSE stream, even though the successful tool DID execute server-side
+    // — its result is discarded because the round is thrown away.
+    const upstream = await startFakeUpstream([TOOL_CALLS, STOP]);
+    const callback = await startFakeCallback();
+    callback.scriptedToolList({ tools: WEATHER_TOOLS });
+    callback.scriptedGate(2, (request) =>
+      request.name === "search"
+        ? { fatal: { message: "search exploded" } }
+        : { parts: [{ type: "text", text: "fetched" }], isError: false },
+    );
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { status, events } = await run(
+        runRequest(upstream.port, { toolListUrl: callback.toolsUrl, toolCallbackUrl: callbackUrl }),
+      );
+      expect(status).toBe(200);
+      // both calls were announced, no result was assembled, the run failed
+      expect(eventNames(events)).toEqual(["assistant_message", "tool_call", "tool_call", "error"]);
+      expect(events[3]?.data).toEqual({ type: "tool_transport", message: "search exploded" });
+      // both tools DID execute (the fetch result is discarded, not stored)
+      expect(callback.requests()).toHaveLength(2);
+      // the failure ended the run: no second LLM round
+      expect(upstream.connectionCount()).toBe(1);
     });
   });
 

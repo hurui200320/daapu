@@ -33,7 +33,10 @@ frontend + Node/TS "hand-pi" service.
     the LLM request's `tools` only — execution budgets never leave the
     brain. Tool execution calls back via
     `POST /api/hand/tool` (`hand/HandCallbackRoute.kt`), resolving the
-    in-flight run by `runId` in `hand/HandCallbackService.kt`. The callback
+    in-flight run by `runId` in `hand/HandCallbackService.kt`. A round's
+    tool calls execute IN PARALLEL (all callback POSTs fire at once; results
+    are reassembled into history and the SSE stream in the model's call
+    order, so the wire format keeps the call→result pairing). The callback
     POST applies no hand-side deadline: the brain always answers (it
     enforces each tool's budget itself), a client disconnect aborts it, and
     a brain crash drops the connection — which fails the run with
