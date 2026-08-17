@@ -4,282 +4,204 @@ Guidance for AI agents (and humans) working in this project.
 
 ## Project
 
-PoC of a chatbot with a memory system, built on PostgreSQL and hand-pi.
+PoC of a chatbot with a memory system: Kotlin/JVM (Gradle) brain + Svelte
+frontend + Node/TS "hand-pi" service.
 
-The project is a Kotlin/JVM application (Gradle) plus a small Svelte frontend
-and a small TypeScript service (hand-pi). The pieces:
-
-- **PostgreSQL with pgvector** — accessed through Exposed, schema managed by
-  Flyway migrations in `src/main/resources/db/migration/`.
-- **hand-pi** (`hand-pi/`) — a stateless Node/TS service on
-  `@earendil-works/pi-ai` (pinned 0.84.1) that owns LLM *execution*:
-  streaming, dialects, tool-call accumulation, retries, usage. It has no
-  catalog, no sessions, no prompt opinions — everything arrives per request.
-  Kotlin owns everything *content*: history, prompts, injection, compaction
-  policy, extraction, tools, memory, persistence. The Kotlin side talks to
-  the hand through `hand/HandService.kt` — the agent layer's hand seam,
-  which wraps the pure HTTP transport (`hand/HandClient.kt`, the `/v1/run`
-  SSE round loop) and owns the run/callback plumbing:
-  a fresh `runId` is generated per `/v1/run` call (internal to the run
-  plumbing, never seen by the chat loop), the in-flight run is registered
-  under it before the request goes out and evicted when the stream ends
-  (success, error, or cancellation; a duplicate runId registration fails
-  fast), and the tool callback URL is attached on every request (the hand
-  only POSTs it when a tool call needs executing, so it is harmless without
-  tools). Tool advertisements do NOT travel in the run request anymore: the
-  hand GETs `{toolListUrl}?runId=...` (`GET /api/hand/tools`,
-  `hand/HandCallbackRoute.kt`, the URL attached on every request like the
-  callback URL) BEFORE EVERY LLM request and uses the returned list for
-  that round — the model always sees the provider's latest tool set, so
-  MCP servers can add/remove tools mid-session; a failed/unsuccessful
-  listing ends the run with `tool_transport` (the same semantics as a
-  callback `fatal`). The same per-round list feeds the callback budget map,
-  so the echoed `timeoutSeconds` always matches the tools the model saw.
-  Every LLM call in the system — the chat loop, the one-shots, the
-  memory merger — is a `/v1/run`: `run` streams [HandEvent]s to the chat
-  loop, `runCollect` (the one-shots) consumes the same flow to a terminal
-  `List<ChatMessage>` (per-round assistant message + its tool results;
-  callers keep what they need, the text one-shots only take the last
-  message), so there is ONE loop implementation, retry policy, and
-  classification in the whole system. The hand calls back into the brain
-  for tool execution via `hand/HandCallbackRoute.kt` (`POST /api/hand/tool`,
-  in-flight runs registered by `runId` in `hand/HandCallbackService.kt`).
-- **ktor HTTP API** (`server/`) — the input loop: `Main.kt` loads the
-  configuration from `config.jsonc` (models in `config/Config.kt`, loaded by
-  `loadConfig`), starts the database and the API server. One chat run per
-  request: `ChatRunService.prepareRun`
-  validates the request (the model is required per message — there is no
-  server-side default), `runChat` runs the
-  turn loop (`agent/persist/PersistChatService.kt`); the model catalog
-  (`agent/ModelCatalog.kt`), the chat
-  store, and the system prompt are built once and shared (the system prompt
-  travels out of band on the hand requests — there is no `system` role in
-  the neutral format, and stored chats never contain the system prompt).
-  Stream progress
-  reaches the client via a `StreamingExecutionCallback` implementation that
-  writes SSE events (`server/WebServer.kt`), including `tool_call` /
-  `tool_result` echoes relayed from the hand. The SSE stream is flushed
-  immediately with a `comment` event before the run starts: ktor Netty's
-  `responseWriteTimeoutSeconds` (10s default) starts a timer on the first
-  (headers) write and kills the connection if it isn't flushed within 10s,
-  which a run that stays silent for minutes during compaction/SSTM
-  extraction would otherwise trip (502 at the proxy). Memory CRUD lives in a
-  separate `SstmService` (`memory/sstm/SstmService.kt`): an interface with a
-  Postgres implementation (`memory/sstm/PostgresSstmService.kt`), shared by
-  the memory CRUD routes and the turn loop's context injection. The loop
-  consumes a versioned snapshot (`listMemories` → `MemoriesWithVersion`):
-  `chats.sstm_version` stores a SHA-256 fingerprint of the `sstms` table
-  (order-sensitive digest shared by all implementations via
-  `AbstractSstmService.digestVersion`) captured at the last successful run,
-  and the per-turn XML injection's `<sstm-updated>` flag is `true` whenever
-  the current fingerprint differs (a fresh chat stores `""`, so the first
-  run always flags). Failed runs never reach the store, so the stored
-  version stays at the last good state and a change missed by a failed run
-  flags on the next success. `updateMemory` skips the write when the content
-  is identical, so no-op edits don't churn the fingerprint. Per-chat `Mutex`
-  guards concurrent runs (409), and deleting a chat takes the same lock:
-  `agent/chat/PostgresChatStore.store` is an upsert, so deleting mid-run would let
-  the in-flight run resurrect the row. `deleteChat` runs the SSTM extraction
-  pipeline over the chat's full history BEFORE deleting the row and holds the
-  lock (entry kept in the map) for the whole operation — load, extraction
-  (minutes of LLM calls) and the row delete — so no new run can start while
-  a deletion is in progress; a failed extraction fails the delete (the row
-  survives, a retry re-extracts and the merge agent deduplicates). Lock
-  entries are created atomically
-  with the `tryLock` (`ConcurrentHashMap.compute`) and evicted on run
-  completion/delete, so dead chat ids don't accumulate. All `chats`-table
-  access — list/create/rename/delete plus the message load/store — lives
-  behind the `ChatStore` interface (`agent/chat/ChatStore.kt`):
-  `ChatRunService` holds no raw DB calls, it delegates to the store
-  (injectable for tests like the `SstmService` seam). `load` returns the
-  full row as a `ChatEntry` (id + title + history + sstm version, or null
-  for a missing row); the small `ChatInfo` (id + title) is the wire shape
-  only — routes never return a full history. `renameChat`/`generateTitle`
-  deliberately take no per-chat lock (the upsert never touches the title).
-  History is mutated by message INDEX (the chat array is the wire format and
-  the frontend renders the stored order, so no message ids exist): `DELETE
-  /api/chats/{id}/messages/{index}` (`truncateChat`) drops the user message
-  at `index` and everything after it — WITHOUT SSTM extraction (a typo'd
-  turn must not leak into memories) — resetting the stored `sstm_version`
-  to `""` (the `sstms` table is untouched, but the kept history may no
-  longer cover the memories merged from the dropped tail, so the next run
-  must re-flag `sstm-updated`) and taking the per-chat lock (the same
-  upsert-resurrection argument as `deleteChat`), 400 on a non-user/out-of-
-  bounds index or an index whose truncation would leave the chat ending
-  mid-turn (consecutive user turns occur after a compaction, whose summary
-  user message sits directly before the preserved tail); `POST
-  /api/chats/{id}/fork/{index}` (`forkChat`) copies the history up to and
-  including the assistant message at `index`
-  (`finishReason` must be `"stop"` so the fork is a complete, valid chat)
-  into a NEW row — no lock needed (pure read + insert; a racing run only
-  makes the fork miss the in-flight turn), and the fork's `sstm_version`
-  starts as `""` so its first run flags `sstm-updated` (the fork has never
-  seen a memory list). Both validate their result via `ChatCodec.validateChat`
-  before storing. The frontend reveals the two actions on message hover
-  (trash on user messages, fork on assistant stop messages), hides them
-  while streaming (the optimistic/uncommitted messages would shift the
-  indices) and confirms truncation in a dialog.
-- **MCP tool servers** (`mcp/`, config under `mcp.*` in `config.jsonc`) —
-  the official MCP Kotlin SDK (`io.modelcontextprotocol:kotlin-sdk-client`
-  0.15.0, streamable-HTTP + stdio transports). `McpToolProvider` implements
-  the neutral tool seam (`agent/tool/ToolProvider.kt`) and namespaces every
-  advertised tool as `{namespace}__{tool}`; the hand queries the provider's
-  current advertisements through `GET /api/hand/tools` BEFORE EVERY LLM
-  request (the in-flight run's provider resolved by `runId`, same registry
-  as the callback route) and executes tool calls back through the callback
-  route, which looks up the in-flight run's
-  provider and model. `toolExecutionTimeoutSeconds` is REQUIRED per server
-  config (0 = no timeout) and every advertised tool carries it as its
-  `timeoutSeconds`: the callback route enforces the budget with
-  `withTimeout` (an overrun answers an `isError` tool result, the run
-  survives) and the hand waits `budget + 30s` (a hand-side-only slack)
-  for the callback, so a timed-out tool always gets an answer; a
-  0-timeout tool's callback waits indefinitely (until the brain answers
-  or the client disconnects), matching the no-timeout config. Transport
-  failures drop the connection and retry the
-  call once; reconnect exhaustion throws `McpTransportException`, which the
-  callback route maps to `fatal` (ending the hand run with
-  `tool_transport`). Result attachments are capability-checked against the
-  run's model before being returned.
-- **History compaction and SSTM extraction** (`agent/oneshot/compaction/` and
-  `agent/oneshot/sstm/`, wired in `agent/persist/PersistChatService.kt`;
-  config under `memory.*` in `config.jsonc` — see `config/Config.kt`):
+- **PostgreSQL + pgvector** — Exposed access, Flyway schema in
+  `src/main/resources/db/migration/`.
+- **hand-pi** (`hand-pi/`, `@earendil-works/pi-ai` pinned 0.84.1) — stateless,
+  opinionless LLM *execution*: streaming, dialects, tool-call accumulation,
+  retries, usage. No catalog/sessions/prompts; everything arrives per request.
+  Kotlin owns all *content* (history, prompts, injection, compaction,
+  extraction, tools, memory, persistence). Kotlin talks to it via
+  `hand/HandService.kt` (the agent seam over `hand/HandClient.kt`'s `/v1/run`
+  SSE round loop). Every LLM call — chat loop, one-shots, memory merger — is
+  a `/v1/run`: `run` streams `[HandEvent]` to the chat loop, `runCollect`
+  (one-shots) consumes the same flow to a terminal `List<ChatMessage>`
+  (text one-shots take the last message) — ONE loop implementation, retry
+  policy, and classification system-wide.
+  - Per `/v1/run`: a fresh internal `runId` (never seen by the chat loop);
+    the in-flight run registers under it before the request and is evicted
+    when the stream ends (success/error/cancellation; duplicate registration
+    fails fast); the tool callback URL is attached on every request (the
+    hand only POSTs when a tool call executes).
+  - Tool advertisements travel per-round, not in the run request: the hand
+    GETs `{toolListUrl}?runId=...` (`GET /api/hand/tools`,
+    `hand/HandCallbackRoute.kt`) BEFORE EVERY LLM request, so MCP servers can
+    add/remove tools mid-session; a failed list ends the run with
+    `tool_transport` (same as a callback `fatal`). The per-round list feeds
+    the callback budget map so echoed `timeoutSeconds` always matches the
+    tools the model saw. Tool execution calls back via
+    `POST /api/hand/tool` (`hand/HandCallbackRoute.kt`), resolving the
+    in-flight run by `runId` in `hand/HandCallbackService.kt`.
+- **ktor HTTP API** (`server/`) — `Main.kt` loads `config.jsonc`
+  (`config/Config.kt`, `loadConfig`), starts DB + API. One chat run per
+  request: `ChatRunService.prepareRun` validates (model REQUIRED per
+  message, no server default), `runChat` runs the turn loop
+  (`agent/persist/PersistChatService.kt`). Model catalog
+  (`agent/ModelCatalog.kt`), chat store, and system prompt are built once and
+  shared; the system prompt travels out of band (no `system` role in the
+  neutral format; stored chats never contain it). Progress streams as SSE
+  from `server/WebServer.kt` (incl. `tool_call`/`tool_result` echoes). The
+  SSE stream is flushed with a `comment` event before the run starts: ktor
+  Netty's `responseWriteTimeoutSeconds` (10s default) would otherwise kill
+  a run silent during compaction/SSTM extraction (502 at the proxy).
+  - **Memory** (`memory/sstm/SstmService.kt` + `PostgresSstmService.kt`,
+    shared by memory CRUD routes and turn-loop injection): the loop consumes
+    a versioned snapshot (`listMemories` → `MemoriesWithVersion`).
+    `chats.sstm_version` is an order-sensitive SHA-256 of the `sstms` table
+    (`AbstractSstmService.digestVersion`) from the last successful run; the
+    injection's `<sstm-updated>` flag is `true` when the fingerprint differs
+    (fresh chats store `""`, so the first run always flags). Failed runs
+    never reach the store; `updateMemory` skips identical writes (no
+    fingerprint churn).
+  - **Locks**: per-chat `Mutex` guards concurrent runs (409) and deletes —
+    `agent/chat/PostgresChatStore.store` is an upsert, so deleting mid-run
+    would resurrect the row. `deleteChat` runs the SSTM extraction pipeline
+    over the full history BEFORE deleting, holding the lock (entry kept in
+    the map) for the whole operation; a failed extraction fails the delete
+    (row survives; retry re-extracts, merger deduplicates). Lock entries are
+    created atomically via `ConcurrentHashMap.compute` (`tryLock`) and
+    evicted on completion/delete, so dead ids don't accumulate.
+  - **ChatStore** (`agent/chat/ChatStore.kt`): all `chats`-table access
+    (list/create/rename/delete + load/store) lives behind it —
+    `ChatRunService` holds no raw DB calls. `load` → full `ChatEntry`
+    (id/title/history/sstm version or null); `ChatInfo` (id+title) is the
+    wire shape only. `renameChat`/`generateTitle` take no lock (upsert never
+    touches the title).
+  - **History mutation is by message INDEX** (chat array is the wire format;
+    frontend renders stored order — no message ids):
+    - `DELETE /api/chats/{id}/messages/{index}` (`truncateChat`): drops the
+      user message at `index` and everything after it — WITHOUT SSTM
+      extraction (a typo'd turn must not leak into memories) — resets
+      `sstm_version` to `""` (kept history may no longer cover merged
+      memories, so next run must re-flag), takes the per-chat lock (same
+      upsert-resurrection argument), 400 on non-user/out-of-bounds index or
+      an index leaving the chat ending mid-turn (consecutive user turns
+      occur after compaction, whose summary user message sits before the
+      preserved tail).
+    - `POST /api/chats/{id}/fork/{index}` (`forkChat`): copies history up
+      to and including the assistant message at `index` (`finishReason`
+      must be `"stop"`) into a NEW row — no lock (pure read+insert; a
+      racing run only makes the fork miss the in-flight turn); the fork's
+      `sstm_version` starts `""` so its first run flags `sstm-updated`.
+    - Both validate via `ChatCodec.validateChat`. The frontend reveals the
+      actions on message hover (trash on user, fork on assistant stop),
+      hides them while streaming (optimistic/uncommitted messages would
+      shift indices), and confirms truncation in a dialog.
+- **MCP tool servers** (`mcp/`, config under `mcp.*`; official
+  `io.modelcontextprotocol:kotlin-sdk-client` 0.15.0, streamable-HTTP +
+  stdio). `McpToolProvider` implements the neutral tool seam
+  (`agent/tool/ToolProvider.kt`), namespacing tools as `{namespace}__{tool}`.
+  `toolExecutionTimeoutSeconds` is REQUIRED per server (0 = none) and every
+  advertised tool carries it as `timeoutSeconds`: the callback route
+  enforces it with `withTimeout` (overrun → `isError` result, run survives);
+  the hand waits `budget + 30s` for the callback, so a timed-out tool always
+  gets an answer (0-timeout waits indefinitely until the brain answers or
+  the client disconnects). Transport failures retry once; exhaustion throws
+  `McpTransportException` → `fatal` → `tool_transport`. Result attachments
+  are capability-checked against the run's model.
+- **Compaction & SSTM extraction** (`agent/oneshot/compaction/`,
+  `agent/oneshot/sstm/`, wired in `agent/persist/PersistChatService.kt`,
+  config under `memory.*`):
   - Proactive trigger: before the round, when `currentPromptTokens(chat)`
-    (the last assistant message's provider-reported `meta.inputTokens` —
-    usage is REQUIRED on every hand response, the hand fails a round when
-    the provider reports none, and `ChatMessageMeta`'s token fields are
-    non-null) exceeds the run model's
-    `compactionTriggerFraction × model.contextLength` (per-model values on
-    the catalog entries in `agent/model/LLM.kt`, 0.75–0.8 for the current
-    ones; `0` disables the proactive path). The not-yet-appended input is not
-    counted; the trigger headroom absorbs the difference. Reactive
-    fallback: EVERY hand
-    `context_exhausted` round compacts and retries — there is no attempt
-    cap, the loop keeps compacting as long as rounds keep exhausting, and a
-    compaction that fails or returns a non-clean summary throws and fails
-    the run.
-  - `ChatCompactionService.compactChat(fullChat, excludeLastNRound)` splits at a
-    user-turn boundary (never splitting tool_call/tool_result pairs; the
-    current run's trailing tool chain always lands in the preserved part),
-    feeds the WHOLE chat — drop region, a marker user message ("above are
-    the messages to summarize, below are messages for context"), the
-    preserved tail, and a final instruction — to a hand `/v1/run` one-shot
-    (via `HandService.runCollect`, no tools) with a dedicated compaction
-    system prompt (~500 words target),
-    and replaces the drop region with one `CONTEXT COMPACTION: `-marked
-    user message. When the chat has fewer rounds than `excludeLastNRound`,
-    the keep count shrinks — down to zero, which compacts the entire body —
-    so an over-threshold chat is always compacted, even a single overflowing
-    round. The function either compacts or throws, leaving the history
-    untouched — a chat without user messages throws
-    `IllegalArgumentException` (nothing to summarize), a
-    failed/truncated/blank summary throws `IllegalStateException`. A prior
-    summary is merged via the prompt ("The first message might be a
-    summarized message starts with marker ..."). A compactor model that
-    cannot see the chat's content (e.g. images with a text-only model) fails
-    fast with `ModelCapabilityException` (reusing
-    `LLM.checkPromptContentCapabilities`) — it is a `memory.compactModel`
-    configuration error.
-  - `SstmExtractionService.processDiscardedMessages(droppedMessages)` runs on the
-    raw dropped messages BEFORE they are discarded: the **extractor**
-    one-shot `/v1/run` call (no tools; raw history, attachments included —
-    capability-checked via `LLM.checkPromptContentCapabilities`, failing fast on
-    a mismatch, a `memory.extractModel` configuration error) returns a
-    free-text fact list or the `Nothing worth remember.` sentinel (the only
-    skip path: a blank extraction is a hand `empty_response` error); a
-    failed extraction (a hand error such
-    as a truncated `length` finish) or one producing tool calls/no text
+    (last assistant message's provider-reported `meta.inputTokens` — usage
+    REQUIRED on every hand response, the hand fails a round when the
+    provider reports none) exceeds the run model's
+    `compactionTriggerFraction × model.contextLength` (0.75–0.8 for current
+    catalog entries in `agent/model/LLM.kt`; `0` disables). The not-yet-
+    appended input isn't counted; the headroom absorbs it. Reactive
+    fallback: EVERY hand `context_exhausted` round compacts and retries —
+    no attempt cap; a compaction that fails or returns a non-clean summary
     throws and fails the run.
-    The **merger** is one `/v1/run` tool loop (default ≤150 rounds, the hand
-    executes the `add/update/delete/list` memory tools back through the
-    callback route against the `sstms` table, ADD/UPDATE/DELETE/NONE
-    semantics). The merge runs without a lock: a
-    concurrent run's injection read may observe a half-merged SSTM, which is
-    healed by the `sstm-updated` flag comparison on the next round. Transient
-    `upstream` failures retry with the hand's backoff (the same `hand.*`
-    knobs as the chat loop); ANY terminal merge failure — a classified hand
-    error, an exhausted retry budget, the `round_limit` cap (the model is
-    stuck in a loop or failed to merge everything in time) or an
-    `empty_response` (no text, no tool calls) — throws and fails the run:
-    a failed merger fails a compaction-triggered run (nothing is stored, the
-    retry re-runs the whole pipeline) and fails a deletion (the row
-    survives, a retry re-extracts and the merge agent deduplicates), so
-    unmerged memories are never lost. The SSTM keeps whatever was already
-    applied when a run fails.
-    The `sstm-updated` injection flag needs no plumbing: the version digest
-    changes when the merge writes, and the loop compares it against
-    `chats.sstm_version` (a mid-run reactive compaction regenerates the
-    latest user message's injection with the fresh flag + memories — and,
-    when the compaction's keep count collapses to zero and replaces the
-    whole chat (injected message included), re-appends the injection
-    together with the run's user parts so the retried round still carries
-    the user input).
-  - Model resolution: `memory.compactModel/extractModel/mergeModel` and the
-    `title.model` (session titles, `agent/oneshot/TitleGenerator.kt`, used by
-    `POST /api/chats/{id}/title`, which takes no per-chat lock — like rename,
-    the store upsert never touches the title — and titles from the last
-    stored history, so a stale title is fixed by re-generating; an empty chat
-    short-circuits to a no-op, leaving its title untouched; a
-    `ModelCapabilityException` (a title model that cannot see the stored
-    history) surfaces as a 400) are
-    REQUIRED config (a missing id fails at config load) and catalog ids
-    resolved once at ChatRunService construction (unknown ids and a merge
-    model without tool-call support fail fast) — the one-shot services
-    (`ChatCompactionService`, `SstmExtractionService`, `TitleGenerator`,
-    `PersistChatService`)
-    are constructed once and shared by every run; a chat run's own model is
-    never used for the pipeline. `title.lastNRound` (default `0`) caps the
-    history fed to the title model to the last N user rounds — the title
-    generator reads the chat row exactly once, never the injection (stripped
-    before every store). Compactions emit no dedicated SSE event:
-    the frontend resyncs the chat after the run (done/error), which presents
-    the compacted history.
-- **frontend/** — Svelte 5 + Vite + TypeScript dev server (no build step wired
-  into Gradle), styled after llama.cpp's webui: Tailwind v4 (CSS-first, tokens
-  in `src/app.css`, dark-only oklch "neutral" palette), bits-ui primitives,
-  lucide icons, highlight.js code blocks. It proxies `/api` to the ktor
-  server; ktor serves the API only.
-  - Layout: collapsible glass sidebar (chat list + search filter + rename/
-    delete dropdowns via dialogs, generate-title action, + Memories nav), centered `max-w-3xl`
-    message column, floating rounded composer with circular send button
-    (disabled while a run is streaming).
-  - State lives in `src/lib/chat-store.svelte.ts` (module-scope singleton —
-    `$effect` runes are NOT usable there; the model-picker persistence lives
-    in `App.svelte`). An in-flight delete locks the chat read-only via the
-    store's `deletingIds` set (the backend extracts SSTM from the history
-    before deleting, which can take minutes): the delete dialog closes as
-    soon as Delete is clicked (fire-and-forget), and the sidebar's rename/
-    title/delete actions and the composer's send stay disabled for that
-    chat until the backend confirms the row is gone or the request fails
-    (the chat view shows a "deleting chat" banner meanwhile). Transient action
-    errors (sidebar CRUD, chat load, send
-    failures) surface as global toasts (`lib/toast-store.svelte.ts`, a
-    fixed top-right stack rendered in `App.svelte`); contextual errors stay
-    tied to their view — the chat view's run-error banner (`streamError`)
-    and the memories view's inline error. The SSE event semantics are
-    preserved verbatim:
-    tool-round commits, retry wipes, DB resync on done/error/abnormal close,
-    optimistic user message; a send that never stores (error/connection
-    closed) restores the composer draft. There is no client-side stop: the
-    server only notices a disconnect on its next event write, so aborting
-    the stream does not reliably stop the run. The chat list and model
-    catalog are re-fetched every 30s and on window focus (titles
-    created/renamed in another session only appear via refetch; a failed
-    initial catalog load retries instead of leaving a blank picker), and the
-    memories list resyncs on the same cadence (SSTM merges mutate it
-    server-side). All three replace their list only when the payload
-    actually changed.
-  - User messages render as plain-text pill bubbles (`whitespace-pre-wrap`),
-    assistant messages as full-width markdown (marked + DOMPurify +
-    highlight.js code chrome from `lib/markdown.ts` — language label/copy
-    button/max-height scroll). Reasoning/tool-call/tool-result parts render
-    in collapsible blocks (shimmer title while streaming; a block the user
-    collapses stays collapsed until the next round re-opens it). Auto-scroll
-    pins to the bottom while the user hasn't scrolled up (scroll-down button
-    appears otherwise; switching chats re-pins).
-  - Dialogs replace `window.prompt`/`confirm`; the model picker is a
-    searchable chip dropdown; image attachment via file picker/paste.
-  - Verification: `cd frontend && npm run check && npm run build`.
+  - `ChatCompactionService.compactChat(fullChat, excludeLastNRound)`:
+    splits at a user-turn boundary (never splitting tool_call/tool_result
+    pairs; the current run's trailing tool chain stays preserved), feeds the
+    WHOLE chat (drop region + marker user message "above are the messages
+    to summarize, below are messages for context" + preserved tail + final
+    instruction) to a `runCollect` one-shot (no tools, dedicated compaction
+    prompt, ~500-word target), and replaces the drop region with one
+    `CONTEXT COMPACTION: `-marked user message. A prior summary is merged
+    via the prompt ("The first message might be a summarized message starts
+    with marker ..."). With fewer rounds than
+    `excludeLastNRound`, the keep count shrinks — down to zero (compacts
+    everything), so an over-threshold chat is always compacted. Compacts or
+    throws, history untouched: no user messages →
+    `IllegalArgumentException`; failed/truncated/blank summary →
+    `IllegalStateException`; a compactor that can't see the content
+    (e.g. images + text-only model) → `ModelCapabilityException`
+    (via `LLM.checkPromptContentCapabilities`) — a `memory.compactModel`
+    config error.
+  - `SstmExtractionService.processDiscardedMessages(droppedMessages)` runs
+    on raw dropped messages BEFORE they're discarded: the **extractor**
+    one-shot (no tools; raw history + attachments, capability-checked —
+    a `memory.extractModel` config error) returns a fact list or the
+    `Nothing worth remember.` sentinel (only skip path; blank extraction is
+    a hand `empty_response` error). A failed extraction (e.g. truncated
+    `length`) or one producing tool calls/no text throws and fails the run.
+    The **merger** is a `/v1/run` tool loop (default ≤150 rounds; the hand
+    executes `add/update/delete/list` memory tools back through the
+    callback route against the `sstms` table). It runs without a lock — a
+    concurrent run's injection read may observe a half-merged SSTM, healed
+    by the `sstm-updated` comparison next round. Transient `upstream`
+    failures retry with hand backoff; ANY terminal failure (classified hand
+    error, exhausted retries, `round_limit` cap, `empty_response`) throws
+    and fails the run (compaction-triggered run: nothing stored, retry
+    re-runs the pipeline; deletion: row survives, retry re-extracts) — so
+    unmerged memories are never lost; already-applied merges stick. The
+    `sstm-updated` flag needs no plumbing: the digest changes on merge
+    write and the loop compares against `chats.sstm_version` (a mid-run
+    reactive compaction regenerates the latest user message's injection
+    with the fresh flag + memories — and, when the keep count collapses to
+    zero and replaces the whole chat, re-appends the injection with the
+    run's user parts so the retried round still carries the user input).
+  - Model resolution: `memory.compactModel/extractModel/mergeModel` and
+    `title.model` (`agent/oneshot/TitleGenerator.kt`, used by
+    `POST /api/chats/{id}/title` — no per-chat lock, like rename; titles
+    from the last stored history; empty chat short-circuits; a title model
+    that can't see the history → 400) are REQUIRED config (missing id fails
+    at config load), resolved once at `ChatRunService` construction
+    (unknown ids and a merge model without tool-call support fail fast);
+    the one-shot services are constructed once and shared. A chat run's own
+    model is never used for the pipeline. `title.lastNRound` (default `0`)
+    caps history fed to the title model; the title generator reads the chat
+    row exactly once, never the injection (stripped before every store).
+    Compactions emit no dedicated SSE event — the frontend resyncs the chat
+    after the run (done/error).
+- **frontend/** — Svelte 5 + Vite + TS (no Gradle build step), styled after
+  llama.cpp's webui: Tailwind v4 (CSS-first, tokens in `src/app.css`,
+  dark-only oklch "neutral" palette), bits-ui primitives, lucide icons,
+  highlight.js. Proxies `/api` to ktor; ktor serves the API only.
+  - Layout: collapsible glass sidebar (chat list + search filter +
+    rename/delete dialogs, generate-title, + Memories nav), centered
+    `max-w-3xl` message column, floating rounded composer with circular
+    send button (disabled while streaming).
+  - State in `src/lib/chat-store.svelte.ts` (module-scope singleton —
+    `$effect` runes NOT usable there; model-picker persistence in
+    `App.svelte`). An in-flight delete locks the chat read-only via the
+    store's `deletingIds` set (backend SSTM extraction can take minutes):
+    the dialog closes on click (fire-and-forget), sidebar actions and send
+    stay disabled until the backend confirms ("deleting chat" banner).
+    Transient action errors → global toasts (`lib/toast-store.svelte.ts`,
+    rendered in `App.svelte`); contextual errors stay tied to their view
+    (run-error banner `streamError`, memories view inline error). SSE
+    semantics preserved verbatim: tool-round commits, retry wipes, DB
+    resync on done/error/abnormal close, optimistic user message; a send
+    that never stores restores the composer draft. No client-side stop —
+    the server only notices a disconnect on its next event write. Chat
+    list, model catalog, and memories list re-fetch every 30s and on
+    window focus (titles created/renamed in another session only appear via
+    refetch; a failed initial catalog load retries instead of leaving a
+    blank picker; SSTM merges mutate memories server-side); each replaces
+    its list only when the payload changed.
+  - User messages: plain-text pill bubbles (`whitespace-pre-wrap`);
+    assistant: full-width markdown (marked + DOMPurify + highlight.js
+    chrome from `lib/markdown.ts`). Reasoning/tool-call/tool-result parts
+    in collapsible blocks (shimmer title while streaming). Auto-scroll pins
+    while the user hasn't scrolled up (scroll-down button otherwise;
+    switching chats re-pins). Dialogs replace `window.prompt`/`confirm`;
+    model picker is a searchable chip dropdown; images via file
+    picker/paste.
 
 ## Verification commands
 
