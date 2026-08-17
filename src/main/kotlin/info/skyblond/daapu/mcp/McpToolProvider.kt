@@ -25,19 +25,21 @@ import kotlinx.coroutines.runBlocking
  *   (~0.5–11s) is paid once per server, never per run. `listTools` is cached
  *   client-side (default), so per-round advertisement is a local lookup.
  * - A transport failure mid-execution (connect refused, stdio process died)
- *   drops the cached client and retries the call once (the reconnect itself
- *   retries [McpServerConfig.reconnectAttempts] times).
- *   If the reconnect cannot restore the connection, [McpTransportException]
- *   fails the run (surfaces as a clear SSE `error` event); if the call fails
- *   twice but the server stays up, a generic *error tool-result* is returned
- *   so the model sees the failure and can react in the next round.
+ *   drops the cached client and answers an *error tool-result* — no in-turn
+ *   retry or reconnect: the hand re-queries `specifications()` (`GET
+ *   /api/hand/tools`) before EVERY LLM request, so the next round's
+ *   advertisement is the sole reconnection point. It reconnects (the connect
+ *   itself retries [McpServerConfig.reconnectAttempts] times); if the server
+ *   stays down, [McpTransportException] fails the run (surfaces as a clear
+ *   SSE `error` event).
  *   An execution timeout (the advertised budget) never retries: the callback
  *   route ([HandCallbackService]) has already answered an *error tool-result*
  *   and cancelled the execution. The connection is KEPT: a timeout is a
  *   tool-level failure, not a transport failure — the server is usually fine
  *   and just slow, and a fresh connection would only pay a full reconnect on
  *   the next call. A genuinely broken connection surfaces a transport failure
- *   on the next call, which drops and reconnects then.
+ *   on the next call, which drops it and lets the next tool-list refresh
+ *   reconnect.
  *   Tool-level failures (server-side `isError`, bad arguments) return an
  *   *error tool-result* without touching the connection.
  * - [close] closes every client (called on JVM shutdown).
@@ -126,66 +128,75 @@ class McpToolProvider(
             request.id, advertisedName,
             "tool '$advertisedName' is not advertised by any configured MCP server."
         )
-        // one retry: a transport failure drops the connection (the reconnection
-        // itself retries up to `reconnectAttempts` times) and re-executes the
-        // call once on the fresh connection. If the server stays down, the
-        // reconnection throws McpTransportException, failing the run. A timeout
-        // never retries: the callback route's `withTimeout` (HandCallbackService)
-        // has already answered the isError result and cancelled this coroutine,
-        // so its catch below only logs — the connection is kept (a slow tool is
-        // not a broken transport).
-        repeat(2) {
-            return try {
-                entry.executeRequestOnce(request.id, request.args, advertisedName)
-            } catch (e: TimeoutCancellationException) {
-                // the execution budget (enforced by the callback route's
-                // `withTimeout`, see HandCallbackService) expired: the run
-                // already got its isError timeout answer and this coroutine is
-                // cancelled, so a retry could never complete. The connection is
-                // kept: the server is usually fine and just slow, and a
-                // genuinely broken one surfaces a transport failure on the next
-                // call, which drops and reconnects then.
-                logger.warn { "MCP server ${entry.namespace} timed out" }
-                throw e
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Error) {
-                throw e
-            } catch (e: McpException) {
-                // the SDK wraps transport failures as McpExceptions too:
-                // "Error while sending message: ..." carries the real cause,
-                // and CONNECTION_CLOSED / REQUEST_TIMEOUT mark a dead or
-                // unready transport. Anything else is a server-answered
-                // protocol/tool-level error (bad arguments, server-side
-                // failure): model-visible, the connection survives.
-                if (e.cause != null ||
-                    e.code == RPCError.ErrorCode.CONNECTION_CLOSED ||
-                    e.code == RPCError.ErrorCode.REQUEST_TIMEOUT
-                ) {
-                    logger.warn(e) { "MCP server ${entry.namespace} has transport failure, retry..." }
-                    entry.dropConnection()
-                    return@repeat // retry
-                }
+        // No in-turn retry or reconnect: a transport failure drops the cached
+        // client and answers an error tool-result — the hand re-queries the
+        // tool list (specifications) before EVERY LLM request, so the next
+        // round's advertisement reconnects (the connect itself retries up to
+        // `reconnectAttempts` times) or throws McpTransportException, which
+        // fails the run. A timeout never reports as a transport failure: the
+        // callback route's `withTimeout` (HandCallbackService) has already
+        // answered the isError result and cancelled this coroutine, so its
+        // catch below only logs — the connection is kept (a slow tool is not
+        // a broken transport).
+        return try {
+            entry.executeRequestOnce(request.id, request.args, advertisedName)
+        } catch (e: TimeoutCancellationException) {
+            // the execution budget (enforced by the callback route's
+            // `withTimeout`, see HandCallbackService) expired: the run
+            // already got its isError timeout answer and this coroutine is
+            // cancelled. The connection is kept: the server is usually fine
+            // and just slow, and a genuinely broken one surfaces a transport
+            // failure on the next call, which drops it and lets the next
+            // tool-list refresh reconnect.
+            logger.warn { "MCP server ${entry.namespace} timed out" }
+            throw e
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Error) {
+            throw e
+        } catch (e: McpException) {
+            // the SDK wraps transport failures as McpExceptions too:
+            // "Error while sending message: ..." carries the real cause,
+            // and CONNECTION_CLOSED / REQUEST_TIMEOUT mark a dead or
+            // unready transport. Anything else is a server-answered
+            // protocol/tool-level error (bad arguments, server-side
+            // failure): model-visible, the connection survives.
+            if (e.cause != null ||
+                e.code == RPCError.ErrorCode.CONNECTION_CLOSED ||
+                e.code == RPCError.ErrorCode.REQUEST_TIMEOUT
+            ) {
+                reportTransportFailure(entry, request, e)
+            } else {
                 errorResult(
                     request.id, advertisedName,
                     e.message ?: "the tool call failed"
                 )
-            } catch (e: McpTransportException) {
-                // the reconnect itself failed: the server stays down, fail
-                // the run instead of answering an error result forever
-                throw e
-            } catch (e: Exception) {
-                // anything else escaping the client (connect refused, stdio
-                // process death, malformed response): transport failure —
-                // drop the connection and retry the call once
-                logger.warn(e) { "MCP server ${entry.namespace} has transport failure, retry..." }
-                entry.dropConnection()
-                return@repeat // retry
             }
+        } catch (e: Exception) {
+            // anything else escaping the client (connect refused, stdio
+            // process death, malformed response): transport failure — drop
+            // the connection and report it to the model; the next tool-list
+            // refresh (specifications) reconnects or fails the run
+            reportTransportFailure(entry, request, e)
         }
+    }
+
+    /**
+     * A transport failure mid-execution: drop the cached client (no in-turn
+     * retry or reconnect — the next tool-list refresh, `specifications`, is
+     * the sole reconnection point) and answer an error tool-result the model
+     * can react to.
+     */
+    private suspend fun reportTransportFailure(
+        entry: ClientEntry,
+        request: ToolCallRequest,
+        cause: Throwable,
+    ): ChatMessagePart.ToolResult {
+        logger.warn(cause) { "MCP server ${entry.namespace} has transport failure, dropping connection" }
+        entry.dropConnection()
         return errorResult(
-            request.id, advertisedName,
-            "tool call failed with transport failure, will reconnect on next call"
+            request.id, request.name,
+            TRANSPORT_FAILURE_MESSAGE
         )
     }
 

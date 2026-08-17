@@ -264,7 +264,8 @@ data class McpServerConfig(
     // (seconds, 0 = no timeout), enforced on the hand tool callback path
     val toolExecutionTimeoutSeconds: Long,
     // total connect attempts including the first one (the provider connects
-    // eagerly at startup and reconnects in-turn on demand, see
+    // eagerly at startup and reconnects on demand — at the per-round
+    // tool-list refresh, the sole reconnection point, see
     // mcp/McpToolProvider.kt); 1 means no retry. 0 is rejected by validate()
     val reconnectAttempts: Int = 3,
     // delay between two connect attempts

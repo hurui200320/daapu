@@ -18,7 +18,7 @@ import kotlin.test.*
  * at construction (a server that cannot be reached aborts startup) + client
  * caching (per-request turn construction must not reconnect per run),
  * `{namespace}__{tool}` name namespacing, the error-result vs
- * transport-failure split, the in-turn drop-reconnect-retry, and the
+ * transport-failure split, the no-in-turn-retry drop-report policy, and the
  * reconnect-on-next-run behavior.
  */
 class McpToolProviderTest {
@@ -326,7 +326,7 @@ class McpToolProviderTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `transport failure mid-execution fails the run and the next run reconnects`() {
+    fun `transport failure mid-execution answers an error result and the next run reconnects`() {
         val server = MockMcpServer(listOf(echoTool()))
         val provider = McpToolProvider(
             listOf(httpConfig("calc", server, reconnectAttempts = 2, reconnectDelayMs = 50))
@@ -336,19 +336,44 @@ class McpToolProviderTest {
             runBlocking { provider.specifications() }
             assertEquals(1, server.initializeCount.get())
 
-            // kill the server mid-session: executing must fail the run
+            // kill the server mid-session: executing drops the connection
+            // (no in-turn retry) and reports an error tool-result — the next
+            // tool-list refresh (specifications) is the reconnection point
             server.close()
-            val e = assertFailsWith<McpTransportException> {
-                runBlocking {
-                    provider.execute(
-                        request(
-                            "call-1",
-                            "calc__echo",
-                            buildJsonObject { put("text", "hi") })
-                    )
-                }
+            val result = runBlocking {
+                provider.execute(
+                    request(
+                        "call-1",
+                        "calc__echo",
+                        buildJsonObject { put("text", "hi") })
+                )
             }
-            assertTrue(e.cause != null, "the transport failure must be preserved as the cause")
+            assertTrue(result.isError, "a transport failure must be model-visible")
+            assertTrue(result.text().contains("transport failure"))
+            assertEquals(
+                1,
+                server.initializeCount.get(),
+                "a transport failure must not reconnect in-turn"
+            )
+
+            // the client is already dropped: another execute (a later tool
+            // in the same round) must answer an error result too, without
+            // any reconnect attempt — the tool-list refresh reconnects
+            val second = runBlocking {
+                provider.execute(
+                    request(
+                        "call-2",
+                        "calc__echo",
+                        buildJsonObject { put("text", "hi") })
+                )
+            }
+            assertTrue(second.isError, "a dropped client must answer an error result")
+            assertTrue(second.text().contains("transport failure"))
+            assertEquals(
+                1,
+                server.initializeCount.get(),
+                "execute must never reconnect, not even on a dropped client"
+            )
 
             // the client was dropped: the next run reconnects to a fresh server
             // bound to the same port (a restart from the client's perspective)
@@ -360,7 +385,7 @@ class McpToolProviderTest {
                 val result = runBlocking {
                     provider.execute(
                         request(
-                            "call-2",
+                            "call-3",
                             "calc__echo",
                             buildJsonObject { put("text", "hi") })
                     )
@@ -427,7 +452,7 @@ class McpToolProviderTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `stdio server executes tools and a dead process gets one in-turn retry then an error result`() {
+    fun `stdio server executes tools and a dead process answers an error result without a retry`() {
         val countFile = File.createTempFile("mcp-stdio-count", ".txt").apply { deleteOnExit() }
         val provider = McpToolProvider(
             listOf(
@@ -450,11 +475,9 @@ class McpToolProviderTest {
                 listOf("local__echo", "local__die"),
                 runBlocking { provider.specifications() }.map { it.name })
 
-            // the die tool kills the subprocess: the first attempt fails with
-            // a transport failure, the provider drops the connection,
-            // reconnects (a fresh subprocess), and re-executes the call once —
-            // which kills the second subprocess too. The retry is exhausted,
-            // so the model gets a generic error tool-result instead of a run failure.
+            // the die tool kills the subprocess: the provider drops the
+            // connection and reports an error tool-result — no in-turn retry
+            // (the next tool-list refresh spawns a fresh subprocess)
             val result = runBlocking {
                 provider.execute(
                     request(
@@ -466,13 +489,32 @@ class McpToolProviderTest {
             }
             assertTrue(
                 result.isError,
-                "the exhausted in-turn retry must surface as an error result"
+                "a transport failure must surface as an error result"
             )
             assertTrue(result.text().contains("transport failure"))
             assertEquals(
-                2,
+                1,
                 countFile.readLines().count { it == "initialize" },
-                "the in-turn retry reconnects once"
+                "a transport failure must not reconnect in-turn"
+            )
+
+            // the dead client was dropped: another execute (a later tool in
+            // the same round) answers an error result too, without spawning
+            // a fresh subprocess — the tool-list refresh respawns it
+            val second = runBlocking {
+                provider.execute(
+                    request(
+                        "call-2",
+                        "local__echo",
+                        buildJsonObject { put("text", "hello") })
+                )
+            }
+            assertTrue(second.isError, "a dropped client must answer an error result")
+            assertTrue(second.text().contains("transport failure"))
+            assertEquals(
+                1,
+                countFile.readLines().count { it == "initialize" },
+                "execute must not spawn a fresh subprocess"
             )
 
             // the dead client was dropped: the next run spawns a fresh subprocess
@@ -480,14 +522,14 @@ class McpToolProviderTest {
                 listOf("local__echo", "local__die"),
                 runBlocking { provider.specifications() }.map { it.name })
             assertEquals(
-                3,
+                2,
                 countFile.readLines().count { it == "initialize" },
                 "a fresh subprocess must be spawned"
             )
             val echo = runBlocking {
                 provider.execute(
                     request(
-                        "call-2",
+                        "call-3",
                         "local__echo",
                         buildJsonObject { put("text", "hello") })
                 )

@@ -221,7 +221,13 @@ class ClientEntry(
             "Tool name $advertisedName not found in MCP server '${namespace}'"
         )
 
-        val client = getConnectedClient().client
+        // no in-turn reconnect: a dropped connection is reported to the model
+        // and rebuilt by the next tool-list refresh (listTools), which is the
+        // sole reconnection point
+        val client = clientRef.get()?.client ?: return errorResult(
+            id, advertisedName,
+            TRANSPORT_FAILURE_MESSAGE
+        )
         val request = CallToolRequest(CallToolRequestParams(name = rawName, arguments = arguments))
         val seconds = config.toolExecutionTimeoutSeconds
         val result = if (seconds > 0) {

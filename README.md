@@ -182,12 +182,12 @@ brain answers or the connection drops). It may also set
 `reconnectAttempts` (total connect attempts including the first, default 3)
 and `reconnectDelayMs` (delay between attempts, default 1000). The provider
 connects eagerly at startup, so a server that cannot be reached aborts
-startup. Mid-session transport failures drop the connection, reconnect, and
-re-execute the tool call once; if the reconnect fails the chat run fails with
-a clear `error` event, and a call that fails twice while the server stays up
-returns an error tool-result the model can react to. A tool that overruns its
-budget answers an error tool-result too (the execution is cancelled, the
-model can react in the next round).
+startup. A transport failure mid-execution drops the connection and answers
+an error tool-result the model can react to (no in-turn retry or reconnect);
+the next tool-list refresh before an LLM request reconnects, or fails the
+chat run with a clear `error` event when the server stays down. A tool that
+overruns its budget answers an error tool-result too (the execution is
+cancelled, the model can react in the next round).
 
 The system prompt and the model catalog are hardcoded in code:
 `agent/persist/SystemPrompt.kt` and `agent/ModelCatalog.kt` (each model

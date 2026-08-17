@@ -103,9 +103,13 @@ frontend + Node/TS "hand-pi" service.
   `withTimeout` (overrun → `isError` result, run survives). The hand
   applies no deadline of its own — the callback POST waits until the brain
   answers, the client disconnects, or the brain crashes (connection drop →
-  `tool_transport`). Transport failures retry once; exhaustion throws
-  `McpTransportException` → `fatal` → `tool_transport`. Result attachments
-  are capability-checked against the run's model.
+  `tool_transport`). A transport failure mid-execution (no retry or
+  reconnect) drops the cached client and answers an error tool-result; the
+  next round's tool-list refresh (`GET /api/hand/tools` →
+  `specifications`) is the SOLE reconnection point — it reconnects, or
+  throws `McpTransportException` → `fatal` → `tool_transport` when the
+  server stays down. Result attachments are capability-checked against the
+  run's model.
 - **Compaction & SSTM extraction** (`agent/oneshot/compaction/`,
   `agent/oneshot/sstm/`, wired in `agent/persist/PersistChatService.kt`,
   config under `memory.*`):
