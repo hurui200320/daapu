@@ -245,7 +245,7 @@
         "toolExecutionTimeoutSeconds": {
           "type": "integer",
           "minimum": 0,
-          "description": "Execution budget of one tool call in seconds, required on every advertised tool (0 = no timeout). Enforced by the brain on the tool callback; the hand waits budget + 30s for the callback answer."
+          "description": "Execution budget of one tool call in seconds, REQUIRED per server (0 = no timeout). Enforced by the brain on the tool callback via withTimeout (overrun answers an isError result); the hand applies no deadline of its own and waits until the brain answers or the connection drops."
         },
         "reconnectAttempts": {
           "type": "integer",

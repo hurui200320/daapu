@@ -76,17 +76,20 @@ class HandCallbackService(
     suspend fun executeToolCall(request: HandToolCallbackRequest): HandToolCallbackResponse {
         val run = activeRuns[request.runId]
             ?: return HandToolCallbackResponse(fatal = HandToolCallbackFatal("Unknown runId '${request.runId}'"))
+        val budgetSeconds = run.toolProvider.executionTimeoutSeconds(request.name)
         val result = try {
-            // The hand waits `timeoutSeconds + 30s` for this callback before
-            // it aborts the POST and fails the run with tool_transport, so
-            // the execution must answer within the advertised budget:
-            // `withTimeout` cancels an overrunning tool instead of letting it
-            // keep running past the run's death (its result would be
-            // discarded), and the timeout answers an isError result the model
-            // can react to in the next round. 0 = no timeout.
+            // The hand applies no deadline of its own — it waits for this
+            // callback until the brain answers (or the client disconnects,
+            // or the brain crashes and the connection drops), so the
+            // execution MUST answer: `withTimeout` cancels an overrunning
+            // tool instead of letting it keep running past the run's death
+            // (its result would be discarded), and the timeout answers an
+            // isError result the model can react to in the next round.
+            // 0 = no timeout. The budget comes from the in-flight run's
+            // provider (its REQUIRED config), never from the hand.
             withContext(Dispatchers.IO) {
-                if (request.timeoutSeconds > 0) {
-                    withTimeout(request.timeoutSeconds * 1_000L) {
+                if (budgetSeconds > 0) {
+                    withTimeout(budgetSeconds * 1_000L) {
                         run.toolProvider.execute(
                             ToolCallRequest(request.id, request.name, request.args)
                         )
@@ -103,7 +106,7 @@ class HandCallbackService(
             return HandToolCallbackResponse(
                 parts = listOf(
                     ChatMessagePart.Text(
-                        "Error: tool '${request.name}' timed out after ${request.timeoutSeconds}s"
+                        "Error: tool '${request.name}' timed out after ${budgetSeconds}s"
                     )
                 ),
                 isError = true,

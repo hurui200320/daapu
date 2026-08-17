@@ -64,7 +64,7 @@ fun Route.handToolList(service: HandCallbackService) {
             }
         call.respond(
             HandToolListResponse(
-                specs.map { HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds) }
+                specs.map { HandToolSpec(it.name, it.description, it.schema) }
             )
         )
     }

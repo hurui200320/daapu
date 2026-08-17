@@ -32,13 +32,6 @@ data class HandToolSpec(
     val name: String,
     val description: String,
     val schema: JsonObject,
-    /**
-     * The tool's execution budget in seconds (0 = no timeout). REQUIRED on
-     * every advertised tool: the hand waits `timeoutSeconds + 30s` for the
-     * callback POST, and the callback route enforces the budget itself
-     * ([HandCallbackService]), so a timed-out tool always answers the hand.
-     */
-    val timeoutSeconds: Long,
 )
 
 @Serializable
@@ -60,8 +53,9 @@ data class HandRunRequest(
      * `hand/HandCallbackRoute.kt`): the tool set is no longer passed
      * statically, so a run always works with the provider's latest
      * advertisements (MCP servers can change theirs at runtime). The
-     * response feeds both the LLM request's `tools` and the callback
-     * budget map of that round. Omitted = no tools at all.
+     * response feeds the LLM request's `tools` only — execution budgets
+     * are a brain-side concern and never leave it. Omitted = no tools at
+     * all.
      */
     val toolListUrl: String? = null,
     val toolCallbackUrl: String? = null,
@@ -139,12 +133,6 @@ data class HandToolCallbackRequest(
     val id: String,
     val name: String,
     val args: JsonObject,
-    /**
-     * The advertised tool's execution budget, echoed back by the hand: the
-     * callback route enforces it with `withTimeout` (0 = no timeout), so the
-     * hand — which waits `timeoutSeconds + 30s` — always receives an answer.
-     */
-    val timeoutSeconds: Long,
 )
 
 @Serializable

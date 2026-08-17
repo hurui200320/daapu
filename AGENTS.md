@@ -30,10 +30,14 @@ frontend + Node/TS "hand-pi" service.
     `hand/HandCallbackRoute.kt`) BEFORE EVERY LLM request, so MCP servers can
     add/remove tools mid-session; a failed list ends the run with
     `tool_transport` (same as a callback `fatal`). The per-round list feeds
-    the callback budget map so echoed `timeoutSeconds` always matches the
-    tools the model saw. Tool execution calls back via
+    the LLM request's `tools` only — execution budgets never leave the
+    brain. Tool execution calls back via
     `POST /api/hand/tool` (`hand/HandCallbackRoute.kt`), resolving the
-    in-flight run by `runId` in `hand/HandCallbackService.kt`.
+    in-flight run by `runId` in `hand/HandCallbackService.kt`. The callback
+    POST applies no hand-side deadline: the brain always answers (it
+    enforces each tool's budget itself), a client disconnect aborts it, and
+    a brain crash drops the connection — which fails the run with
+    `tool_transport`.
 - **ktor HTTP API** (`server/`) — `Main.kt` loads `config.jsonc`
   (`config/Config.kt`, `loadConfig`), starts DB + API. One chat run per
   request: `ChatRunService.prepareRun` validates (model REQUIRED per
@@ -93,12 +97,13 @@ frontend + Node/TS "hand-pi" service.
   `io.modelcontextprotocol:kotlin-sdk-client` 0.15.0, streamable-HTTP +
   stdio). `McpToolProvider` implements the neutral tool seam
   (`agent/tool/ToolProvider.kt`), namespacing tools as `{namespace}__{tool}`.
-  `toolExecutionTimeoutSeconds` is REQUIRED per server (0 = none) and every
-  advertised tool carries it as `timeoutSeconds`: the callback route
-  enforces it with `withTimeout` (overrun → `isError` result, run survives);
-  the hand waits `budget + 30s` for the callback, so a timed-out tool always
-  gets an answer (0-timeout waits indefinitely until the brain answers or
-  the client disconnects). Transport failures retry once; exhaustion throws
+  `toolExecutionTimeoutSeconds` is REQUIRED per server (0 = none) and
+  resolved by the callback route from the run's provider
+  (`ToolProvider.executionTimeoutSeconds`): it enforces the budget with
+  `withTimeout` (overrun → `isError` result, run survives). The hand
+  applies no deadline of its own — the callback POST waits until the brain
+  answers, the client disconnects, or the brain crashes (connection drop →
+  `tool_transport`). Transport failures retry once; exhaustion throws
   `McpTransportException` → `fatal` → `tool_transport`. Result attachments
   are capability-checked against the run's model.
 - **Compaction & SSTM extraction** (`agent/oneshot/compaction/`,

@@ -101,6 +101,18 @@ class McpToolProvider(
         return advertised
     }
 
+    override fun executionTimeoutSeconds(toolName: String): Long {
+        // the advertised name is `namespace__toolName`: neither part can
+        // contain `__` (namespaces are validated, tool names are sanitized
+        // in specifications), so the split is unambiguous
+        val parts = toolName.split("__")
+        return if (parts.size == 2) {
+            entries[parts[0]]?.timeout ?: 0
+        } else {
+            0
+        }
+    }
+
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val advertisedName = request.name
         // the advertised name is `namespace__toolName`: neither part can

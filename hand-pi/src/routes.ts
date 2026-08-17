@@ -131,9 +131,7 @@ export function validateTools(value: unknown): ToolSpec[] {
     if (!isRecord(rawTool.schema)) {
       failInvalid(`tools[${index}].schema must be an object`);
     }
-    // required: every tool advertises its execution budget (0 = no timeout)
-    const timeoutSeconds = validateNonNegativeInt(rawTool.timeoutSeconds, `tools[${index}].timeoutSeconds`);
-    return { name, description, schema: rawTool.schema, timeoutSeconds };
+    return { name, description, schema: rawTool.schema };
   });
 }
 

@@ -36,15 +36,6 @@ type FinishClassification =
 const CONTENT_FILTER_MARKER = "Provider finish_reason: content_filter";
 
 /**
- * The brain enforces each tool's advertised `timeoutSeconds` itself and
- * always answers the callback within the budget, so the callback POST waits
- * `budget + slack` — a timed-out tool still receives the brain's error
- * result instead of a dropped connection. Hand-side only: the brain never
- * sees this value.
- */
-const CALLBACK_TIMEOUT_SLACK_MS = 30_000;
-
-/**
  * Classifies a pi-ai terminal message. `outcome` is `done`/`error` matching
  * the terminal event that carried the message.
  */
@@ -330,7 +321,6 @@ export async function executeRun(
             token,
             signal,
             emit,
-            roundTools,
           );
           if (callbackOutcome === "abort") {
             return;
@@ -466,10 +456,11 @@ type ToolCallsOutcome = "done" | "abort" | "transport_failure";
 /**
  * Executes the round's tool calls sequentially, in source order — the hand
  * never fires callbacks concurrently, and never retries a callback POST (a
- * retry could duplicate a side-effecting tool). The callback carries the
- * tool's advertised `timeoutSeconds` back to the brain, which enforces it.
- * The budget map comes from the tools fetched for THIS round (the same set
- * the model saw), so it always matches the callbacks the model can emit.
+ * retry could duplicate a side-effecting tool). The callback applies no
+ * deadline of its own: the brain enforces each tool's execution budget and
+ * always answers (a result, an `isError` timeout, or a `fatal`); if the
+ * brain crashes mid-call, the connection drop fails the fetch and the run
+ * ends with `tool_transport`.
  */
 async function executeToolCalls(
   assistantMessage: ChatMessage,
@@ -478,19 +469,12 @@ async function executeToolCalls(
   token: string,
   signal: AbortSignal,
   emit: Emit,
-  roundTools: ToolSpec[] | undefined,
 ): Promise<ToolCallsOutcome> {
   const callbackUrl = request.toolCallbackUrl;
   if (callbackUrl === undefined) {
     emit("error", { type: "internal", message: "tool calls received but no toolCallbackUrl" });
     return "transport_failure";
   }
-  // per-tool execution budget from the round's advertised specs (required
-  // field): the brain enforces the same budget and answers within it, so the
-  // POST waits budget + a fixed slack (hand-side only); a 0-timeout tool's
-  // callback waits indefinitely (until the brain answers or the client
-  // disconnects)
-  const timeoutByTool = new Map((roundTools ?? []).map((tool) => [tool.name, tool.timeoutSeconds]));
   for (const part of assistantMessage.parts) {
     if (part.type !== "tool_call") {
       continue;
@@ -498,10 +482,6 @@ async function executeToolCalls(
     if (!emit("tool_call", { id: part.id, name: part.tool, args: part.args })) {
       return "abort";
     }
-    const budgetSeconds = timeoutByTool.get(part.tool) ?? 0;
-    const timeoutMs = budgetSeconds > 0
-      ? budgetSeconds * 1000 + CALLBACK_TIMEOUT_SLACK_MS
-      : undefined;
     const result = await postToolCallback(
       callbackUrl,
       token,
@@ -510,10 +490,8 @@ async function executeToolCalls(
         id: part.id,
         name: part.tool,
         args: part.args,
-        timeoutSeconds: budgetSeconds,
       },
       signal,
-      timeoutMs,
     );
     if (result.kind === "abort") {
       return "abort";
@@ -554,12 +532,13 @@ type ToolsOutcome =
 /**
  * Queries the brain for the run's current tool set before an LLM request
  * (`GET {toolListUrl}?runId=...`, the brain resolves the in-flight run's
- * provider by runId). The fetched list is used for that round's LLM request
- * AND the callback budget map. Any failure is terminal (the caller maps it
- * onto `error{tool_transport}`): the brain enforces the budgets and the
- * provider's reachability itself, so a query failure means the run's tools
- * are unavailable — matching the callback `fatal` semantics. An empty list
- * answers "no tools" (the request may omit `toolCallbackUrl` then).
+ * provider by runId). The fetched list feeds that round's LLM request
+ * (`tools`). Any failure is terminal (the caller maps it onto
+ * `error{tool_transport}`): the brain enforces the execution budgets and
+ * the provider's reachability itself, so a query failure means the run's
+ * tools are unavailable — matching the callback `fatal` semantics. An
+ * empty list answers "no tools" (the request may omit `toolCallbackUrl`
+ * then).
  */
 async function fetchTools(
   toolListUrl: string,
@@ -612,7 +591,6 @@ async function postToolCallback(
   token: string,
   payload: unknown,
   signal: AbortSignal,
-  timeoutMs: number | undefined,
 ): Promise<CallbackResult> {
   let response: Response;
   try {
@@ -620,11 +598,10 @@ async function postToolCallback(
       method: "POST",
       headers: { "content-type": "application/json", "x-daapu-token": token },
       body: JSON.stringify(payload),
-      // no timeout for a 0-budget tool: the client disconnect is the only
-      // abort
-      signal: timeoutMs === undefined
-        ? signal
-        : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+      // the brain always answers (it enforces the budgets itself), so the
+      // client disconnect is the only abort; a brain crash drops the
+      // connection and fails the fetch below
+      signal,
     });
   } catch (error) {
     if (signal.aborted) {

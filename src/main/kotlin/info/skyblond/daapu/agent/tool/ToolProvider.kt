@@ -6,18 +6,15 @@ import kotlinx.serialization.json.JsonObject
 /**
  * One tool advertisement in the neutral (framework-free) format: the name
  * the model sees on the wire, a human-readable description, and the raw
- * JSON schema (JSON Schema object) sent to the gateway.
- *
- * [timeoutSeconds] is the tool's execution budget (0 = no timeout),
- * REQUIRED on every advertised tool: the callback route enforces it with
- * `withTimeout` ([HandCallbackService]) and the hand waits a little longer
- * than it for the callback answer, so a timed-out tool always gets a result.
+ * JSON schema (JSON Schema object) sent to the gateway. A pure
+ * advertisement — the execution budget is not part of it (the provider
+ * declares it via [ToolProvider.executionTimeoutSeconds], and the hand
+ * never sees it at all).
  */
 data class ToolSpec(
     val name: String,
     val description: String,
     val schema: JsonObject,
-    val timeoutSeconds: Long,
 )
 
 /**
@@ -53,6 +50,16 @@ interface ToolProvider {
     suspend fun specifications(): List<ToolSpec>
 
     suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult
+
+    /**
+     * The execution budget in seconds for an advertised [toolName]
+     * (0 = no timeout). The hand callback route enforces it with
+     * `withTimeout` ([HandCallbackService]) and answers an `isError`
+     * timeout result; unknown tool names answer 0 (execution itself will
+     * produce an error result for them). The default is "no budget": a
+     * provider that advertises a budget must override this.
+     */
+    fun executionTimeoutSeconds(toolName: String): Long = 0
 }
 
 /**

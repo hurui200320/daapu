@@ -46,7 +46,6 @@ class HandServiceTest {
         id = "call_1",
         name = "flag",
         args = JsonObject(emptyMap()),
-        timeoutSeconds = 0,
     )
 
     @Test

@@ -5,8 +5,6 @@ export interface ToolCallbackRequest {
   id: string;
   name: string;
   args: unknown;
-  /** The advertised tool budget, echoed back to the brain. */
-  timeoutSeconds: number;
 }
 
 export type ToolCallbackResponse =
@@ -100,7 +98,7 @@ export function startFakeCallback(): Promise<FakeCallback> {
       try {
         requests.push(JSON.parse(raw) as ToolCallbackRequest);
       } catch {
-        requests.push({ runId: "", id: "", name: "", args: raw, timeoutSeconds: 0 });
+        requests.push({ runId: "", id: "", name: "", args: raw });
       }
       if (hangNext) {
         // never answer; the client's abort closes the connection (note:

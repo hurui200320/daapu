@@ -79,10 +79,8 @@ class HandCallbackTest {
         runId: String = "run-1",
         name: String = "flag",
         args: JsonObject = JsonObject(emptyMap()),
-        timeoutSeconds: Long = 0,
     ) = HandToolCallbackRequest(
         runId = runId, id = "call_1", name = name, args = args,
-        timeoutSeconds = timeoutSeconds,
     )
 
     @Test
@@ -146,7 +144,10 @@ class HandCallbackTest {
             val tool = tools[0].jsonObject
             assertEquals("flag", tool["name"]?.jsonPrimitive?.content)
             assertEquals("a flag tool", tool["description"]?.jsonPrimitive?.content)
-            assertEquals("30", tool["timeoutSeconds"]?.jsonPrimitive?.content)
+            assertNull(
+                tool["timeoutSeconds"],
+                "the execution budget is brain-side and never advertised to the hand"
+            )
             assertNotNull(tool["schema"])
         }
     }
@@ -297,10 +298,10 @@ class HandCallbackTest {
     fun `an overrunning tool is cancelled and answers an isError timeout result`() =
         testApplication {
             runApplicationWithService { service ->
-                val provider = SlowProvider()
+                val provider = SlowProvider(timeoutSeconds = 1)
                 service.handCallback.register("run-1", provider, textModel())
                 val start = System.currentTimeMillis()
-                val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 1))
+                val (status, body) = client.callback(body = callbackRequest())
                 val elapsed = System.currentTimeMillis() - start
                 assertEquals(HttpStatusCode.OK, status)
                 val response = json().parseToJsonElement(body)
@@ -328,7 +329,7 @@ class HandCallbackTest {
             runApplicationWithService { service ->
                 val provider = SlowProvider(delayMs = 1_500)
                 service.handCallback.register("run-1", provider, textModel())
-                val (status, body) = client.callback(body = callbackRequest(timeoutSeconds = 0))
+                val (status, body) = client.callback(body = callbackRequest())
                 assertEquals(HttpStatusCode.OK, status)
                 val response = json().parseToJsonElement(body)
                     .let { it as JsonObject }
@@ -342,7 +343,8 @@ class HandCallbackTest {
         testApplication {
             runApplicationWithService { service ->
                 // the real MCP stack: the provider's in-flight call hangs until
-                // the budget expires (enforced by the callback route's withTimeout)
+                // the budget expires (enforced by the callback route's
+                // withTimeout, sourced from the server's REQUIRED config)
                 val server = MockMcpServer(
                     listOf(
                         MockTool(name = "hang", description = "hangs", handler = {
@@ -371,10 +373,7 @@ class HandCallbackTest {
                     service.handCallback.register("run-1", provider, textModel())
                     val start = System.currentTimeMillis()
                     val (status, body) = client.callback(
-                        body = callbackRequest(
-                            name = "calc__hang",
-                            timeoutSeconds = 1
-                        )
+                        body = callbackRequest(name = "calc__hang")
                     )
                     val elapsed = System.currentTimeMillis() - start
                     assertEquals(HttpStatusCode.OK, status)
@@ -401,7 +400,6 @@ class HandCallbackTest {
                         body = callbackRequest(
                             name = "calc__echo",
                             args = buildJsonObject { put("text", "hi") },
-                            timeoutSeconds = 1,
                         )
                     )
                     assertEquals(HttpStatusCode.OK, status2)
@@ -457,7 +455,6 @@ class HandCallbackTest {
                 name = "flag",
                 description = "a flag tool",
                 schema = buildJsonObject {},
-                timeoutSeconds = 30,
             )
         )
 
@@ -498,10 +495,13 @@ class HandCallbackTest {
 
     private class SlowProvider(
         private val delayMs: Long = 5_000,
+        private val timeoutSeconds: Long = 0,
     ) : ToolProvider {
         /** true when the execution ended through cancellation. */
         @Volatile
         var cancelled = false
+
+        override fun executionTimeoutSeconds(toolName: String): Long = timeoutSeconds
 
         override suspend fun specifications(): List<ToolSpec> = emptyList()
 

@@ -102,10 +102,29 @@ class McpToolProviderTest {
             val specs = runBlocking { provider.specifications() }
             assertEquals(listOf("calc__add", "calc__echo"), specs.map { it.name })
             assertTrue(specs.all { it.description.isNotBlank() })
-            assertTrue(
-                specs.all { it.timeoutSeconds == 60L },
-                "the server's execution timeout must reach every advertised tool"
+        } finally {
+            provider.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun `execution budgets are resolved from the server config by namespace`() {
+        val server = MockMcpServer(listOf(addTool()))
+        val provider =
+            McpToolProvider(listOf(httpConfig("calc", server, toolExecutionTimeoutSeconds = 60)))
+        try {
+            assertEquals(
+                60L,
+                provider.executionTimeoutSeconds("calc__add"),
+                "the server's REQUIRED execution budget must reach its tools"
             )
+            // the budget is per server/namespace, not per tool: an unknown
+            // tool in a known namespace still carries the namespace budget
+            // (its execution errors quickly anyway)
+            assertEquals(60L, provider.executionTimeoutSeconds("calc__unknown"))
+            assertEquals(0L, provider.executionTimeoutSeconds("no_such_namespace__add"))
+            assertEquals(0L, provider.executionTimeoutSeconds("malformed"))
         } finally {
             provider.close()
             server.close()

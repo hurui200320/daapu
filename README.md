@@ -174,9 +174,10 @@ e.g. `exa__search` — the separator is `__`, so it must not contain it; only
 `system`/`inner`/`internal`/`gsg` are rejected because internal tools will
 use them), a `type` (`http` needs `url` + optional `headers`; `stdio` needs
 `command` + optional `environment`), and `toolExecutionTimeoutSeconds` (the
-execution budget of every advertised tool in seconds, 0 = no timeout — each
-tool must carry one, and the brain enforces it on the tool callback while
-the hand waits budget + 30s for the answer). It may also set
+execution budget of every advertised tool in seconds, 0 = no timeout —
+REQUIRED per server, enforced by the brain on the tool callback with
+`withTimeout`; the hand applies no deadline of its own and waits until the
+brain answers or the connection drops). It may also set
 `initializationTimeoutSeconds`, plus
 `reconnectAttempts` (total connect attempts including the first, default 3)
 and `reconnectDelayMs` (delay between attempts, default 1000). The provider

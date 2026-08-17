@@ -69,18 +69,16 @@ export interface ModelSpec {
 
 export type JsonSchema = Record<string, unknown>;
 
+/**
+ * One tool advertisement in the neutral format: pure advertisement —
+ * the name/description/schema the model sees. The execution budget is a
+ * brain-side concern (the brain enforces it on the callback route); the
+ * hand never sees or enforces it.
+ */
 export interface ToolSpec {
   name: string;
   description: string;
   schema: JsonSchema;
-  /**
-   * The tool's execution budget in seconds, 0 = no timeout. Required on
-   * every advertised tool: the callback POST waits `timeoutSeconds + 30s`
-   * (the brain enforces the budget itself and always answers in time); a
-   * 0-timeout tool's callback waits indefinitely (until the brain answers
-   * or the client disconnects).
-   */
-  timeoutSeconds: number;
 }
 
 export type HandErrorType =

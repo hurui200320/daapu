@@ -223,12 +223,12 @@ const OVERFLOW_BODY = {
 };
 
 const WEATHER_TOOLS = [
-  { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
-  { name: "fetch", description: "fetch", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+  { name: "search", description: "search", schema: { type: "object", properties: {} } },
+  { name: "fetch", description: "fetch", schema: { type: "object", properties: {} } },
 ];
 
-/** One tool that advertises a 1s execution budget (for the timeout tests). */
-const SLOW_TOOL = { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 1 };
+/** One tool for the slow-callback tests (execution budgets are brain-side). */
+const SLOW_TOOL = { name: "get_image", description: "image", schema: { type: "object", properties: {} } };
 
 async function withCallback(
   upstream: Awaited<ReturnType<typeof startFakeUpstream>>,
@@ -337,8 +337,6 @@ describe("POST /v1/run", () => {
         args: { query: "hello" },
       });
       expect(requests[1]).toMatchObject({ name: "fetch", args: { url: "x" } });
-      // the advertised execution budget is echoed back for the brain to enforce
-      expect(requests.map((request) => request.timeoutSeconds)).toEqual([0, 0]);
 
       // the tools were re-fetched before every LLM request (two rounds)
       expect(callback.toolListRequests()).toEqual(["run-test", "run-test"]);
@@ -535,7 +533,7 @@ describe("POST /v1/run", () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
     callback.scriptedToolList({
-      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
     });
     callback.scripted({
       parts: [
@@ -585,7 +583,7 @@ describe("POST /v1/run", () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
     callback.scriptedToolList({
-      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
     });
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
@@ -605,7 +603,7 @@ describe("POST /v1/run", () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
     callback.scriptedToolList({
-      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
     });
     callback.scripted({ fatal: { message: "tool exploded" } });
     await withCallback(upstream, callback, async (callbackUrl) => {
@@ -624,7 +622,7 @@ describe("POST /v1/run", () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
     callback.scriptedToolList({
-      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }],
     });
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
@@ -642,13 +640,11 @@ describe("POST /v1/run", () => {
   });
 
   it(
-    "waits budget + slack for a callback, not just the budget",
+    "waits for a slow callback answer without applying its own deadline",
     async () => {
-      // the tool advertises a 1s budget, so the callback POST waits 1s +
-      // the fixed 30s slack. The callback answers after 2s — past the
-      // budget, well inside the slack — and the run must accept it and
-      // continue to done: a wait of just `budget` would have aborted the
-      // POST and failed the run with tool_transport.
+      // the hand applies no deadline of its own: the brain enforces the
+      // execution budgets and always answers. A 2s-delayed callback answer
+      // must be accepted and the run must continue to done.
       const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
       const callback = await startFakeCallback();
       callback.scriptedToolList({ tools: [SLOW_TOOL] });
@@ -669,24 +665,22 @@ describe("POST /v1/run", () => {
           name: "get_image",
           parts: [{ type: "text", text: "late answer" }],
         });
-        // the advertised budget was echoed back to the brain
-        expect(callback.requests()[0]?.timeoutSeconds).toBe(1);
       });
     },
     10_000,
   );
 
   it(
-    "does not time out a 0-budget tool's hanging callback",
+    "does not time out a hanging callback",
     async () => {
-      // `timeoutSeconds: 0` = no timeout: the callback POST waits for the
-      // brain indefinitely, so a hanging callback must not fail the run
-      // early. Waiting for the real abort would take forever, so the test
-      // only proves no error arrived within the observation window, then
-      // aborts via the client.
+      // the callback POST has no hand-side deadline (the brain enforces the
+      // budgets itself): a hanging callback must not fail the run early.
+      // Waiting for the real abort would take forever, so the test only
+      // proves no error arrived within the observation window, then aborts
+      // via the client.
       const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
       const callback = await startFakeCallback();
-      callback.scriptedToolList({ tools: [{ ...SLOW_TOOL, timeoutSeconds: 0 }] });
+      callback.scriptedToolList({ tools: [SLOW_TOOL] });
       callback.scriptedHang();
       try {
         const controller = new AbortController();
@@ -893,17 +887,17 @@ describe("POST /v1/run", () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
     callback.scriptedToolList(
-      { tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }] },
+      { tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }] },
       {
         tools: [
-          { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
-          { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+          { name: "get_image", description: "image", schema: { type: "object", properties: {} } },
+          { name: "search", description: "search", schema: { type: "object", properties: {} } },
         ],
       },
       {
         tools: [
-          { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
-          { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+          { name: "get_image", description: "image", schema: { type: "object", properties: {} } },
+          { name: "search", description: "search", schema: { type: "object", properties: {} } },
         ],
       },
     );
@@ -934,11 +928,11 @@ describe("POST /v1/run", () => {
     const callback = await startFakeCallback();
     // one fetch per attempt: the failed attempt's round, then the retried one
     callback.scriptedToolList(
-      { tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }] },
+      { tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} } }] },
       {
         tools: [
-          { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
-          { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+          { name: "get_image", description: "image", schema: { type: "object", properties: {} } },
+          { name: "search", description: "search", schema: { type: "object", properties: {} } },
         ],
       },
     );
@@ -984,9 +978,9 @@ describe("POST /v1/run", () => {
   it("fails the run with tool_transport on a malformed tool list", async () => {
     const upstream = await startFakeUpstream(NORMAL);
     const callback = await startFakeCallback();
-    // a tool without the required timeoutSeconds must be rejected
+    // a tool without the required schema must be rejected
     callback.scriptedToolList({
-      tools: [{ name: "search", description: "search", schema: { type: "object", properties: {} } }],
+      tools: [{ name: "search", description: "search" }],
     });
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(

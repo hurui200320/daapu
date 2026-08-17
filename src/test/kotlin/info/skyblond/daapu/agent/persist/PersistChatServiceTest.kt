@@ -575,8 +575,8 @@ class PersistChatServiceTest {
             assertTrue(advertised.schema.isNotEmpty(), "the tool schema must be advertised")
             assertEquals(
                 30L,
-                advertised.timeoutSeconds,
-                "the server's execution budget must be advertised"
+                mcpProvider.executionTimeoutSeconds("calc__add"),
+                "the server's execution budget is enforced brain-side from config"
             )
             assertEquals(
                 "http://127.0.0.1:9/api/hand/tool",

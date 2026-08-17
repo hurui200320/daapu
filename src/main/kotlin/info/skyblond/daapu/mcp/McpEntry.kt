@@ -65,6 +65,7 @@ class ClientEntry(
     private val httpClient = HttpClient(CIO)
 
     val namespace: String = config.namespace
+    val timeout: Long = config.toolExecutionTimeoutSeconds
 
     init {
         config.validate()
@@ -206,7 +207,6 @@ class ClientEntry(
                 name = name,
                 description = tool.description.orEmpty(),
                 schema = tool.toSchemaJson(),
-                timeoutSeconds = config.toolExecutionTimeoutSeconds,
             )
         }
     }
