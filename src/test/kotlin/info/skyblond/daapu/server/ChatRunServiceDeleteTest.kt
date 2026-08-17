@@ -61,8 +61,12 @@ class ChatRunServiceDeleteTest {
         // the extractor call carried the raw stored history verbatim (the
         // trailing message is the extraction instruction)
         assertEquals(history, hand.requests[0].messages.dropLast(1))
-        // the merge run advertised the memory tools
-        assertTrue(hand.requests[1].tools!!.map { it.name }.contains("add_memory"))
+        // no static tool list travels in the request anymore: the merge
+        // run's tools are served through the per-round GET /api/hand/tools
+        // listing (pinned by HandCallbackTest), from the same provider
+        assertTrue(
+            MergeMemoryToolProvider(sstm).specifications().map { it.name }.contains("add_memory")
+        )
     }
 
     @Test

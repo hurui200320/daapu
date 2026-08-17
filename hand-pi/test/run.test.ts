@@ -289,13 +289,14 @@ describe("POST /v1/run", () => {
   it("runs a tool round trip with split args and a synthesized id for the id-less call", async () => {
     const upstream = await startFakeUpstream([TOOL_CALLS, STOP]);
     const callback = await startFakeCallback();
+    callback.scriptedToolList({ tools: WEATHER_TOOLS });
     callback.scripted(
       { parts: [{ type: "text", text: "Berlin: 22C" }], isError: false },
       { parts: [{ type: "text", text: "fetched" }], isError: false },
     );
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { status, events } = await run(
-        runRequest(upstream.port, { tools: WEATHER_TOOLS, toolCallbackUrl: callbackUrl }),
+        runRequest(upstream.port, { toolListUrl: callback.toolsUrl, toolCallbackUrl: callbackUrl }),
       );
       expect(status).toBe(200);
       expect(eventNames(events)).toEqual([
@@ -338,6 +339,9 @@ describe("POST /v1/run", () => {
       expect(requests[1]).toMatchObject({ name: "fetch", args: { url: "x" } });
       // the advertised execution budget is echoed back for the brain to enforce
       expect(requests.map((request) => request.timeoutSeconds)).toEqual([0, 0]);
+
+      // the tools were re-fetched before every LLM request (two rounds)
+      expect(callback.toolListRequests()).toEqual(["run-test", "run-test"]);
 
       const secondBody = upstream.capturedAll()[1] as { messages: { role: string; tool_call_id?: string; content: unknown }[] };
       const toolMessages = secondBody.messages.filter((message) => message.role === "tool");
@@ -530,6 +534,9 @@ describe("POST /v1/run", () => {
   it("round-trips an image tool result into the next round", async () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
+    callback.scriptedToolList({
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+    });
     callback.scripted({
       parts: [
         {
@@ -544,7 +551,7 @@ describe("POST /v1/run", () => {
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+          toolListUrl: callback.toolsUrl,
           toolCallbackUrl: callbackUrl,
           model: modelSpec(upstream.port, { input: ["text", "image"] }),
         }),
@@ -577,10 +584,13 @@ describe("POST /v1/run", () => {
   it("ends the run with round_limit without executing tools past the cap", async () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
+    callback.scriptedToolList({
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+    });
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+          toolListUrl: callback.toolsUrl,
           toolCallbackUrl: callbackUrl,
           maxRounds: 1,
         }),
@@ -594,11 +604,14 @@ describe("POST /v1/run", () => {
   it("fails the run with tool_transport on a fatal callback response", async () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
+    callback.scriptedToolList({
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+    });
     callback.scripted({ fatal: { message: "tool exploded" } });
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+          toolListUrl: callback.toolsUrl,
           toolCallbackUrl: callbackUrl,
         }),
       );
@@ -610,10 +623,13 @@ describe("POST /v1/run", () => {
   it("fails the run with tool_transport on a non-200 callback response", async () => {
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
+    callback.scriptedToolList({
+      tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+    });
     await withCallback(upstream, callback, async (callbackUrl) => {
       const { events } = await run(
         runRequest(upstream.port, {
-          tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }],
+          toolListUrl: callback.toolsUrl,
           toolCallbackUrl: callbackUrl,
         }),
       );
@@ -635,6 +651,7 @@ describe("POST /v1/run", () => {
       // POST and failed the run with tool_transport.
       const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
       const callback = await startFakeCallback();
+      callback.scriptedToolList({ tools: [SLOW_TOOL] });
       callback.scriptedDelayed(2_000, {
         parts: [{ type: "text", text: "late answer" }],
         isError: false,
@@ -642,7 +659,7 @@ describe("POST /v1/run", () => {
       await withCallback(upstream, callback, async (callbackUrl) => {
         const { events } = await run(
           runRequest(upstream.port, {
-            tools: [SLOW_TOOL],
+            toolListUrl: callback.toolsUrl,
             toolCallbackUrl: callbackUrl,
           }),
         );
@@ -669,6 +686,7 @@ describe("POST /v1/run", () => {
       // aborts via the client.
       const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
       const callback = await startFakeCallback();
+      callback.scriptedToolList({ tools: [{ ...SLOW_TOOL, timeoutSeconds: 0 }] });
       callback.scriptedHang();
       try {
         const controller = new AbortController();
@@ -677,7 +695,7 @@ describe("POST /v1/run", () => {
           headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
           body: JSON.stringify(
             runRequest(upstream.port, {
-              tools: [{ ...SLOW_TOOL, timeoutSeconds: 0 }],
+              toolListUrl: callback.toolsUrl,
               toolCallbackUrl: callback.url,
             }),
           ),
@@ -757,6 +775,60 @@ describe("POST /v1/run", () => {
     20_000,
   );
 
+  it(
+    "aborts silently when the client disconnects during the tool-list fetch",
+    async () => {
+      // a listing that never answers is NOT a tool_transport failure: the
+      // hand aborts on the disconnect and the run closes without a terminal
+      // event (the same silent exit as a mid-stream client disconnect)
+      const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
+      const callback = await startFakeCallback();
+      callback.scriptedToolListHang();
+      try {
+        const controller = new AbortController();
+        const response = await fetch(`http://127.0.0.1:${port}/v1/run`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
+          body: JSON.stringify(
+            runRequest(upstream.port, {
+              toolListUrl: callback.toolsUrl,
+              toolCallbackUrl: callback.url,
+            }),
+          ),
+          signal: controller.signal,
+        });
+        expect(response.status).toBe(200);
+        const reader = response.body?.getReader();
+        expect(reader).toBeDefined();
+        // deterministic: abort only once the GET is in flight (and hanging)
+        await callback.waitForToolListRequests(1);
+        controller.abort();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        try {
+          while (reader) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+          }
+        } catch {
+          // the client-side abort may surface as a read error; either way
+          // the run had no chance to emit anything after the disconnect
+        }
+        expect(buffer).not.toContain("event: error");
+        expect(buffer).not.toContain("event: done");
+        // the listing never answered, so the LLM request never happened
+        expect(upstream.connectionCount()).toBe(0);
+      } finally {
+        await upstream.close();
+        await callback.close();
+      }
+    },
+    10_000,
+  );
+
   it("rejects a run missing a run-policy knob", async () => {
     const upstream = await startFakeUpstream(NORMAL);
     try {
@@ -777,13 +849,13 @@ describe("POST /v1/run", () => {
     }
   });
 
-  it("rejects a run with tools but no toolCallbackUrl", async () => {
+  it("rejects a run with toolListUrl but no toolCallbackUrl", async () => {
     const upstream = await startFakeUpstream(NORMAL);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/v1/run`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
-        body: JSON.stringify(runRequest(upstream.port, { tools: WEATHER_TOOLS })),
+        body: JSON.stringify(runRequest(upstream.port, { toolListUrl: "http://127.0.0.1:9/tools" })),
       });
       expect(response.status).toBe(400);
       expect(await response.json()).toMatchObject({ ok: false, error: { type: "invalid_request" } });
@@ -793,7 +865,7 @@ describe("POST /v1/run", () => {
     }
   });
 
-  it("rejects a tool without an explicit timeoutSeconds", async () => {
+  it("rejects a run with a non-http(s) toolListUrl", async () => {
     const upstream = await startFakeUpstream(NORMAL);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/v1/run`, {
@@ -801,7 +873,7 @@ describe("POST /v1/run", () => {
         headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
         body: JSON.stringify(
           runRequest(upstream.port, {
-            tools: [{ name: "search", description: "search", schema: { type: "object", properties: {} } }],
+            toolListUrl: "ftp://127.0.0.1/tools",
             toolCallbackUrl: "http://127.0.0.1:9/api/hand/tool",
           }),
         ),
@@ -809,11 +881,126 @@ describe("POST /v1/run", () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toMatchObject({
         ok: false,
-        error: { type: "invalid_request", message: "tools[0].timeoutSeconds must be a non-negative integer" },
+        error: { type: "invalid_request", message: "toolListUrl must be an http(s) URL" },
       });
       expect(upstream.connectionCount()).toBe(0);
     } finally {
       await upstream.close();
     }
+  });
+
+  it("fetches the tool list before every LLM request and picks up a changed set between rounds", async () => {
+    const upstream = await startFakeUpstream([TOOL_CALL_ONE, TOOL_CALL_ONE, STOP]);
+    const callback = await startFakeCallback();
+    callback.scriptedToolList(
+      { tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }] },
+      {
+        tools: [
+          { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+          { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+        ],
+      },
+      {
+        tools: [
+          { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+          { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+        ],
+      },
+    );
+    callback.scripted(
+      { parts: [{ type: "text", text: "img" }], isError: false },
+      { parts: [{ type: "text", text: "img" }], isError: false },
+    );
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { events } = await run(
+        runRequest(upstream.port, {
+          toolListUrl: callback.toolsUrl,
+          toolCallbackUrl: callbackUrl,
+        }),
+      );
+      expect(eventNames(events).at(-1)).toBe("done");
+      // three rounds -> three per-LLM-request fetches, always with the runId
+      expect(callback.toolListRequests()).toEqual(["run-test", "run-test", "run-test"]);
+      // each round's LLM request was built with that round's fetched list
+      const captured = upstream.capturedAll() as { tools?: { function: { name: string } }[] }[];
+      expect(captured[0]?.tools?.map((tool) => tool.function.name)).toEqual(["get_image"]);
+      expect(captured[1]?.tools?.map((tool) => tool.function.name)).toEqual(["get_image", "search"]);
+      expect(captured[2]?.tools?.map((tool) => tool.function.name)).toEqual(["get_image", "search"]);
+    });
+  });
+
+  it("re-fetches the tool list when a round retries after a transient error", async () => {
+    const upstream = await startFakeUpstream([MIDSTREAM_ERROR, NORMAL]);
+    const callback = await startFakeCallback();
+    // one fetch per attempt: the failed attempt's round, then the retried one
+    callback.scriptedToolList(
+      { tools: [{ name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 }] },
+      {
+        tools: [
+          { name: "get_image", description: "image", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+          { name: "search", description: "search", schema: { type: "object", properties: {} }, timeoutSeconds: 0 },
+        ],
+      },
+    );
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { status, events } = await run(
+        runRequest(upstream.port, {
+          toolListUrl: callback.toolsUrl,
+          toolCallbackUrl: callbackUrl,
+        }),
+      );
+      expect(status).toBe(200);
+      expect(eventNames(events).slice(0, 3)).toEqual(["text_delta", "retry", "reasoning_delta"]);
+      expect(eventNames(events).at(-1)).toBe("done");
+      // fetched per attempt (two attempts of one round), always with the runId
+      expect(callback.toolListRequests()).toEqual(["run-test", "run-test"]);
+      // the retried attempt was built with the freshly fetched list
+      const captured = upstream.capturedAll() as { tools?: { function: { name: string } }[] }[];
+      expect(captured[0]?.tools?.map((tool) => tool.function.name)).toEqual(["get_image"]);
+      expect(captured[1]?.tools?.map((tool) => tool.function.name)).toEqual(["get_image", "search"]);
+    });
+  });
+
+  it("fails the run with tool_transport when the tool listing fails", async () => {
+    const upstream = await startFakeUpstream(NORMAL);
+    const callback = await startFakeCallback();
+    callback.scriptedToolList({ status: 500 });
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { events } = await run(
+        runRequest(upstream.port, {
+          toolListUrl: callback.toolsUrl,
+          toolCallbackUrl: callbackUrl,
+        }),
+      );
+      expect(eventNames(events)).toEqual(["error"]);
+      expect(events[0]?.data).toEqual({
+        type: "tool_transport",
+        message: "tool listing returned HTTP 500",
+      });
+      expect(upstream.connectionCount()).toBe(0);
+    });
+  });
+
+  it("fails the run with tool_transport on a malformed tool list", async () => {
+    const upstream = await startFakeUpstream(NORMAL);
+    const callback = await startFakeCallback();
+    // a tool without the required timeoutSeconds must be rejected
+    callback.scriptedToolList({
+      tools: [{ name: "search", description: "search", schema: { type: "object", properties: {} } }],
+    });
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { events } = await run(
+        runRequest(upstream.port, {
+          toolListUrl: callback.toolsUrl,
+          toolCallbackUrl: callbackUrl,
+        }),
+      );
+      expect(eventNames(events)).toEqual(["error"]);
+      expect(events[0]?.data).toMatchObject({
+        type: "tool_transport",
+        message: expect.stringContaining("tool listing returned invalid tools"),
+      });
+      expect(upstream.connectionCount()).toBe(0);
+    });
   });
 });

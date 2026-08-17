@@ -33,14 +33,17 @@ data class ToolCallRequest(
 /**
  * The tool loop seam: which tools the model may call in one chat run.
  *
- * The brain advertises [specifications] in the hand run request and the
- * hand executes accepted tool calls back through the tool callback route
- * (`hand/HandCallbackService.kt`), which looks up the in-flight run's provider
- * by `runId` and calls [execute] — so this interface is what the callback
- * route executes against. [specifications] is suspend because a real
- * provider may need to reconnect to tool servers after a transport failure
- * (the MCP provider `mcp/McpToolProvider.kt` connects eagerly at
- * construction and reconnects in-turn on demand).
+ * [specifications] is served to the hand through the brain's
+ * `GET /api/hand/tools` endpoint (the in-flight run registry resolves the
+ * provider by runId, `hand/HandCallbackService.kt`): the hand queries it
+ * before EVERY LLM request and uses the returned list for that round, so
+ * the model always sees the provider's latest advertisements. The hand
+ * executes accepted tool calls back through the tool callback route
+ * (`hand/HandCallbackRoute.kt`), which looks up the in-flight run's
+ * provider by `runId` and calls [execute]. [specifications] is suspend
+ * because a real provider may need to reconnect to tool servers after a
+ * transport failure (the MCP provider `mcp/McpToolProvider.kt` connects
+ * eagerly at construction and reconnects in-turn on demand).
  *
  * [EmptyToolProvider] is the no-tools fallback: a model that emits tool
  * calls anyway gets an explicit error result back and can recover in the

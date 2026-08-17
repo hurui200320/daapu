@@ -181,11 +181,14 @@ class PersistChatService(
     }
 
     /**
-     * One hand `/v1/run` call: advertises the provider's tools, streams the
-     * events into the callback and the history, and returns the new history
-     * with the terminal event. The tool callback wiring — runId
-     * generation, the in-flight registry, the callback URL — is handled by
-     * [HandService.run].
+     * One hand `/v1/run` call: streams the events into the callback and the
+     * history, and returns the new history with the terminal event. No tool
+     * list travels in the request: the hand queries the brain's
+     * `GET /api/hand/tools` endpoint before EVERY LLM request and gets the
+     * provider's latest advertisements (`HandService` attaches the URL, the
+     * in-flight run registry resolves the provider). The tool callback
+     * wiring — runId generation, the in-flight registry, the callback
+     * URL — is handled by [HandService.run].
      */
     private suspend fun runHandRun(
         model: LLM,
@@ -194,16 +197,10 @@ class PersistChatService(
         toolProvider: ToolProvider,
         callback: StreamingExecutionCallback,
     ): Pair<List<ChatMessage>, HandTerminal> {
-        val specs = toolProvider.specifications()
         val request = HandRunRequest(
             model = model.toHandModelSpec(),
             messages = chat,
             systemPrompt = systemPrompt,
-            // tools are attached only when non-empty (some gateways reject
-            // `tools: []`); HandService attaches the callback URL on every
-            // request, so no callback plumbing lives here
-            tools = specs.takeIf { it.isNotEmpty() }
-                ?.map { HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds) },
             maxTokens = model.maxOutputTokens,
             maxRounds = maxRounds,
             maxRetries = maxRetries,

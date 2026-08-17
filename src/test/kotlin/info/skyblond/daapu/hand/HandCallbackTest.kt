@@ -54,6 +54,17 @@ class HandCallbackTest {
         return response.status to response.bodyAsText()
     }
 
+    private suspend fun io.ktor.client.HttpClient.toolList(
+        runId: String,
+        token: String? = "dev-token",
+    ): Pair<HttpStatusCode, String> {
+        val response = get("/api/hand/tools") {
+            token?.let { header("x-daapu-token", it) }
+            url.parameters.append("runId", runId)
+        }
+        return response.status to response.bodyAsText()
+    }
+
     private fun textModel() = ModelCatalog(
         mapOf(
             "bifrost" to ModelProvider(
@@ -114,6 +125,82 @@ class HandCallbackTest {
             val response =
                 json().parseToJsonElement(body).let { it as JsonObject }
             assertNotNull(response["fatal"])
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // the tool-listing route (GET /api/hand/tools): the hand queries it
+    // before every LLM request, so the run always sees the provider's
+    // latest advertisements
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `the tool list serves the registered run's provider specifications`() = testApplication {
+        runApplicationWithService { service ->
+            service.handCallback.register("run-1", FlagProvider(), textModel())
+            val (status, body) = client.toolList(runId = "run-1")
+            assertEquals(HttpStatusCode.OK, status)
+            val response = json().parseToJsonElement(body).let { it as JsonObject }
+            val tools = response["tools"]!!.jsonArray
+            assertEquals(1, tools.size)
+            val tool = tools[0].jsonObject
+            assertEquals("flag", tool["name"]?.jsonPrimitive?.content)
+            assertEquals("a flag tool", tool["description"]?.jsonPrimitive?.content)
+            assertEquals("30", tool["timeoutSeconds"]?.jsonPrimitive?.content)
+            assertNotNull(tool["schema"])
+        }
+    }
+
+    @Test
+    fun `an empty tool provider answers an empty list`() = testApplication {
+        runApplicationWithService { service ->
+            service.handCallback.register("run-1", EmptyProvider(), textModel())
+            val (status, body) = client.toolList(runId = "run-1")
+            assertEquals(HttpStatusCode.OK, status)
+            val response = json().parseToJsonElement(body).let { it as JsonObject }
+            assertEquals(0, response["tools"]!!.jsonArray.size)
+        }
+    }
+
+    @Test
+    fun `the tool list rejects a missing or wrong token`() = testApplication {
+        runApplicationWithService { service ->
+            service.handCallback.register("run-1", EmptyProvider(), textModel())
+            val (noToken, _) = client.toolList(runId = "run-1", token = null)
+            assertEquals(HttpStatusCode.Unauthorized, noToken)
+            val (wrongToken, _) = client.toolList(runId = "run-1", token = "wrong")
+            assertEquals(HttpStatusCode.Unauthorized, wrongToken)
+        }
+    }
+
+    @Test
+    fun `the tool list answers 404 for an unknown runId and 400 for a blank one`() = testApplication {
+        runApplicationWithService { service ->
+            val (unknown, _) = client.toolList(runId = "nope")
+            assertEquals(HttpStatusCode.NotFound, unknown)
+            val (blank, _) = client.toolList(runId = "")
+            assertEquals(HttpStatusCode.BadRequest, blank)
+        }
+    }
+
+    @Test
+    fun `a provider that cannot list its tools answers 500`() = testApplication {
+        runApplicationWithService { service ->
+            service.handCallback.register("run-1", TransportFailingSpecProvider(), textModel())
+            val (status, _) = client.toolList(runId = "run-1")
+            assertEquals(HttpStatusCode.InternalServerError, status)
+        }
+    }
+
+    @Test
+    fun `the tool list answers the registered provider even while the run is in flight`() = testApplication {
+        runApplicationWithService { service ->
+            service.handCallback.register("run-1", FlagProvider(), textModel())
+            val (before, _) = client.toolList(runId = "run-1")
+            assertEquals(HttpStatusCode.OK, before)
+            service.handCallback.unregister("run-1")
+            val (after, _) = client.toolList(runId = "run-1")
+            assertEquals(HttpStatusCode.NotFound, after, "an evicted run must no longer resolve")
         }
     }
 
@@ -363,6 +450,25 @@ class HandCallbackTest {
         }
     }
 
+    /** Advertises one tool (`flag`), for the tool-listing route tests. */
+    private class FlagProvider : ToolProvider {
+        override suspend fun specifications(): List<ToolSpec> = listOf(
+            ToolSpec(
+                name = "flag",
+                description = "a flag tool",
+                schema = buildJsonObject {},
+                timeoutSeconds = 30,
+            )
+        )
+
+        override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult =
+            ChatMessagePart.ToolResult(
+                id = request.id,
+                tool = request.name,
+                parts = listOf(ChatMessagePart.Text("flag")),
+            )
+    }
+
     private class FailingProvider : ToolProvider {
         override suspend fun specifications(): List<ToolSpec> = emptyList()
 
@@ -377,6 +483,14 @@ class HandCallbackTest {
 
     private class TransportFailingProvider : ToolProvider {
         override suspend fun specifications(): List<ToolSpec> = emptyList()
+
+        override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult =
+            throw McpTransportException("MCP transport failure", RuntimeException("boom"))
+    }
+
+    private class TransportFailingSpecProvider : ToolProvider {
+        override suspend fun specifications(): List<ToolSpec> =
+            throw McpTransportException("MCP transport failure", RuntimeException("boom"))
 
         override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult =
             throw McpTransportException("MCP transport failure", RuntimeException("boom"))

@@ -10,7 +10,6 @@ import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService.Companion.NO
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.HandToolSpec
 import info.skyblond.daapu.hand.toHandModelSpec
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -159,9 +158,6 @@ class SstmExtractionService(
                 model = mergeModel.toHandModelSpec(),
                 messages = chat,
                 systemPrompt = renderMergerSystemPrompt(),
-                tools = toolProvider.specifications().map {
-                    HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds)
-                },
                 maxTokens = mergeModel.maxOutputTokens,
                 maxRounds = maxMergeRounds,
                 maxRetries = maxRetries,

@@ -31,3 +31,41 @@ fun Route.handToolCallback(service: HandCallbackService) {
         call.respond(service.executeToolCall(request))
     }
 }
+
+/**
+ * The hand-pi tool-listing route: the hand GETs the in-flight run's
+ * current tool advertisements here BEFORE every LLM request, so the model
+ * always sees the provider's latest tool set (the run request carries no
+ * static tools anymore). Responses:
+ *
+ * - `200 {tools: [...]}` — the provider's current advertisements
+ *   (`hand/HandDtos.kt` `HandToolListResponse`);
+ * - `400` — missing `runId`;
+ * - `401` — wrong/missing shared token;
+ * - `404` — the runId is not (or no longer) registered;
+ * - `500` — the provider failed to list its tools (e.g. an unreachable
+ *   MCP server): the hand ends the run with `error{tool_transport}`.
+ */
+fun Route.handToolList(service: HandCallbackService) {
+    get("/hand/tools") {
+        if (!service.verifyToken(call.request.headers["x-daapu-token"])) {
+            call.respond(HttpStatusCode.Unauthorized)
+            return@get
+        }
+        val runId = call.request.queryParameters["runId"]?.trim().orEmpty()
+        if (runId.isEmpty()) {
+            call.respond(HttpStatusCode.BadRequest)
+            return@get
+        }
+        val specs = service.listTools(runId)
+            ?: run {
+                call.respond(HttpStatusCode.NotFound)
+                return@get
+            }
+        call.respond(
+            HandToolListResponse(
+                specs.map { HandToolSpec(it.name, it.description, it.schema, it.timeoutSeconds) }
+            )
+        )
+    }
+}

@@ -13,6 +13,11 @@ export type ToolCallbackResponse =
   | { parts: unknown[]; isError: boolean }
   | { fatal: { message: string } };
 
+/** A scripted `GET /tools` answer: a tool list, or a custom HTTP status. */
+export type ToolListResponse =
+  | { tools: unknown[] }
+  | { status: number };
+
 interface QueueEntry {
   delayMs: number;
   response: ToolCallbackResponse;
@@ -20,28 +25,74 @@ interface QueueEntry {
 
 export interface FakeCallback {
   url: string;
+  /** The tool-listing endpoint the hand queries before each LLM request. */
+  toolsUrl: string;
   /** Respond to each callback with the next queued response. */
   scripted: (...responses: ToolCallbackResponse[]) => void;
   /** The next callback answers after `delayMs`, with the queued response. */
   scriptedDelayed: (delayMs: number, response: ToolCallbackResponse) => void;
   /** The next callback never answers (the caller must abort it). */
   scriptedHang: () => void;
+  /**
+   * Answer the next `GET /tools` calls with the queued responses; an empty
+   * queue answers `{tools: []}` (no tools advertised).
+   */
+  scriptedToolList: (...responses: ToolListResponse[]) => void;
+  /** The next `GET /tools` never answers (the caller must abort it). */
+  scriptedToolListHang: () => void;
+  /**
+   * Resolves once at least `count` `GET /tools` requests have arrived.
+   */
+  waitForToolListRequests: (count: number) => Promise<void>;
+  /** The runIds the hand queried via `GET /tools`, in order. */
+  toolListRequests: () => string[];
   /** All callback requests received, in order. */
   requests: () => ToolCallbackRequest[];
   close: () => Promise<void>;
 }
 
 /**
- * Scripted tool-callback server: the hand POSTs tool executions here.
- * Responses are popped from a queue; an empty queue returns a 500, and a
- * `scriptedHang` leaves the next request unanswered until the client gives
- * up.
+ * Scripted tool-callback server: the hand POSTs tool executions here and
+ * GETs the per-round tool list from `{url}/tools`. Callback responses are
+ * popped from a queue; an empty queue returns a 500, and a `scriptedHang`
+ * leaves the next request unanswered until the client gives up. Tool-list
+ * responses are popped from their own queue; an empty queue returns an
+ * empty list, and a `scriptedToolListHang` leaves the next listing
+ * unanswered.
  */
 export function startFakeCallback(): Promise<FakeCallback> {
   const requests: ToolCallbackRequest[] = [];
   let queue: QueueEntry[] = [];
   let hangNext = false;
+  let toolQueue: ToolListResponse[] = [];
+  let hangNextToolList = false;
+  let toolListWaitTarget = 0;
+  let resolveToolListWait: (() => void) | undefined;
+  const toolListRequests: string[] = [];
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (req.method === "GET") {
+      const runId = url.searchParams.get("runId") ?? "";
+      toolListRequests.push(runId);
+      if (toolListRequests.length >= toolListWaitTarget) {
+        resolveToolListWait?.();
+        resolveToolListWait = undefined;
+      }
+      if (hangNextToolList) {
+        // never answer; the client's abort closes the connection
+        hangNextToolList = false;
+        return;
+      }
+      const entry = toolQueue.shift();
+      if (entry !== undefined && "status" in entry) {
+        res.writeHead(entry.status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: false }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(entry ?? { tools: [] }));
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -81,6 +132,7 @@ export function startFakeCallback(): Promise<FakeCallback> {
       }
       resolve({
         url: `http://127.0.0.1:${address.port}`,
+        toolsUrl: `http://127.0.0.1:${address.port}/tools`,
         scripted: (...responses) => {
           queue = [...queue, ...responses.map((response) => ({ delayMs: 0, response }))];
         },
@@ -90,6 +142,22 @@ export function startFakeCallback(): Promise<FakeCallback> {
         scriptedHang: () => {
           hangNext = true;
         },
+        scriptedToolList: (...responses) => {
+          toolQueue = [...toolQueue, ...responses];
+        },
+        scriptedToolListHang: () => {
+          hangNextToolList = true;
+        },
+        waitForToolListRequests: (count) =>
+          new Promise<void>((resolve) => {
+            if (toolListRequests.length >= count) {
+              resolve();
+              return;
+            }
+            toolListWaitTarget = count;
+            resolveToolListWait = resolve;
+          }),
+        toolListRequests: () => [...toolListRequests],
         requests: () => [...requests],
         close: () =>
           new Promise<void>((resolveClose, rejectClose) => {

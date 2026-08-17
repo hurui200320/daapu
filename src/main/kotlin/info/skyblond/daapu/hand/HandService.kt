@@ -25,6 +25,10 @@ import java.util.*
  *   only POSTs it when a tool call actually needs executing, so it is
  *   harmless without tools), keeping the callback wiring out of the agent
  *   layer.
+ * - the tool-listing URL (`GET {toolListUrl}?runId=...`) is attached on
+ *   every request as well: the hand re-queries the run's tool set before
+ *   EVERY LLM request, so the model always sees the provider's latest
+ *   advertisements instead of a static list captured at request time.
  *
  * The runId carries no meaning to the chat loop: a fresh id is generated
  * per `/v1/run` call (reactive-compaction retries each get their own), and
@@ -37,6 +41,8 @@ class HandService(
     private val handCallback: HandCallbackService,
     /** This brain's tool callback endpoint the hand POSTs to. */
     private val toolCallbackUrl: String,
+    /** This brain's tool-listing endpoint the hand queries per LLM request. */
+    private val toolListUrl: String,
 ) : AutoCloseable {
     /**
      * The chat round loop as a stream of [HandEvent]s (see
@@ -53,6 +59,7 @@ class HandService(
         val runId = request.runId ?: UUID.randomUUID().toString()
         val prepared = request.copy(
             runId = runId,
+            toolListUrl = request.toolListUrl ?: toolListUrl,
             toolCallbackUrl = request.toolCallbackUrl ?: toolCallbackUrl,
         )
         handCallback.register(runId, toolProvider, model)

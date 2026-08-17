@@ -18,6 +18,7 @@ import {
   toPiContext,
 } from "./convert.js";
 import { buildModel, openStream, type TerminalOutcome } from "./piCall.js";
+import { validateTools } from "./routes.js";
 import { writeSseComment, writeSseEvent, writeSseHead, type SseEventName } from "./sse.js";
 import {
   HandFailure,
@@ -163,7 +164,6 @@ export async function executeRun(
 
   const model = buildModel(request.model);
   const history: ChatMessage[] = [...request.messages];
-  const tools = request.tools;
   const maxRounds = request.maxRounds;
   const maxRetries = request.maxRetries;
   const idleTimeoutMs = request.streamIdleTimeoutMs;
@@ -194,8 +194,25 @@ export async function executeRun(
       let attempt = 0;
       while (true) {
         attempt++;
+        // the tool set is resolved fresh before EVERY LLM request (each
+        // attempt, retries included): the brain's `GET {toolListUrl}` answers
+        // with the in-flight run's provider advertisements, so a run always
+        // sees the latest tools (MCP servers can change theirs at runtime)
+        let roundTools: ToolSpec[] | undefined;
+        if (request.toolListUrl !== undefined) {
+          const toolsOutcome = await fetchTools(request.toolListUrl, request.runId, token, signal);
+          if (toolsOutcome.kind === "abort") {
+            return;
+          }
+          if (toolsOutcome.kind === "failure") {
+            emit("error", { type: "tool_transport", message: toolsOutcome.message });
+            outcome = "error:tool_transport";
+            return;
+          }
+          roundTools = toolsOutcome.tools;
+        }
         const roundOutcome = await streamOneRound(
-          model, history, tools, request, emit, signal, idleTimeoutMs,
+          model, history, roundTools, request, emit, signal, idleTimeoutMs,
         );
         if (roundOutcome.outcome === "error") {
           if (roundOutcome.aborted) {
@@ -313,6 +330,7 @@ export async function executeRun(
             token,
             signal,
             emit,
+            roundTools,
           );
           if (callbackOutcome === "abort") {
             return;
@@ -450,6 +468,8 @@ type ToolCallsOutcome = "done" | "abort" | "transport_failure";
  * never fires callbacks concurrently, and never retries a callback POST (a
  * retry could duplicate a side-effecting tool). The callback carries the
  * tool's advertised `timeoutSeconds` back to the brain, which enforces it.
+ * The budget map comes from the tools fetched for THIS round (the same set
+ * the model saw), so it always matches the callbacks the model can emit.
  */
 async function executeToolCalls(
   assistantMessage: ChatMessage,
@@ -458,18 +478,19 @@ async function executeToolCalls(
   token: string,
   signal: AbortSignal,
   emit: Emit,
+  roundTools: ToolSpec[] | undefined,
 ): Promise<ToolCallsOutcome> {
   const callbackUrl = request.toolCallbackUrl;
   if (callbackUrl === undefined) {
     emit("error", { type: "internal", message: "tool calls received but no toolCallbackUrl" });
     return "transport_failure";
   }
-  // per-tool execution budget from the advertised specs (required field):
-  // the brain enforces the same budget and answers within it, so the POST
-  // waits budget + a fixed slack (hand-side only); a 0-timeout tool's
+  // per-tool execution budget from the round's advertised specs (required
+  // field): the brain enforces the same budget and answers within it, so the
+  // POST waits budget + a fixed slack (hand-side only); a 0-timeout tool's
   // callback waits indefinitely (until the brain answers or the client
   // disconnects)
-  const timeoutByTool = new Map((request.tools ?? []).map((tool) => [tool.name, tool.timeoutSeconds]));
+  const timeoutByTool = new Map((roundTools ?? []).map((tool) => [tool.name, tool.timeoutSeconds]));
   for (const part of assistantMessage.parts) {
     if (part.type !== "tool_call") {
       continue;
@@ -524,6 +545,67 @@ type CallbackResult =
   | { kind: "ok"; parts: ContentPart[]; isError: boolean }
   | { kind: "transport_failure"; message: string }
   | { kind: "abort" };
+
+type ToolsOutcome =
+  | { kind: "ok"; tools: ToolSpec[] | undefined }
+  | { kind: "failure"; message: string }
+  | { kind: "abort" };
+
+/**
+ * Queries the brain for the run's current tool set before an LLM request
+ * (`GET {toolListUrl}?runId=...`, the brain resolves the in-flight run's
+ * provider by runId). The fetched list is used for that round's LLM request
+ * AND the callback budget map. Any failure is terminal (the caller maps it
+ * onto `error{tool_transport}`): the brain enforces the budgets and the
+ * provider's reachability itself, so a query failure means the run's tools
+ * are unavailable — matching the callback `fatal` semantics. An empty list
+ * answers "no tools" (the request may omit `toolCallbackUrl` then).
+ */
+async function fetchTools(
+  toolListUrl: string,
+  runId: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<ToolsOutcome> {
+  const url = new URL(toolListUrl);
+  url.searchParams.set("runId", runId);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: { "x-daapu-token": token },
+      signal,
+    });
+  } catch (error) {
+    if (signal.aborted) {
+      return { kind: "abort" };
+    }
+    return {
+      kind: "failure",
+      message: `tool listing failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (response.status !== 200) {
+    return { kind: "failure", message: `tool listing returned HTTP ${response.status}` };
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { kind: "failure", message: "tool listing returned a non-JSON body" };
+  }
+  if (!isRecord(body) || !Array.isArray(body.tools)) {
+    return { kind: "failure", message: "tool listing returned an invalid body" };
+  }
+  try {
+    return { kind: "ok", tools: validateTools(body.tools) };
+  } catch (error) {
+    return {
+      kind: "failure",
+      message: `tool listing returned invalid tools: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
 
 async function postToolCallback(
   url: string,

@@ -46,7 +46,6 @@ function validateRunRequest(body: string): RunRequest {
   if (!Array.isArray(messages)) {
     failInvalid("messages must be an array");
   }
-  const tools = raw.tools === undefined ? undefined : validateTools(raw.tools);
   const maxTokens = validatePositiveInt(raw.maxTokens, "maxTokens");
   const systemPrompt = raw.systemPrompt === undefined ? undefined : validateString(raw.systemPrompt, "systemPrompt");
   const runId = validateString(raw.runId, "runId");
@@ -54,14 +53,23 @@ function validateRunRequest(body: string): RunRequest {
   const maxRetries = validateNonNegativeInt(raw.maxRetries, "maxRetries");
   const streamIdleTimeoutMs =
     validateNonNegativeInt(raw.streamIdleTimeoutMs, "streamIdleTimeoutMs");
+  // the tool set is not passed statically: the hand queries
+  // `GET {toolListUrl}?runId=...` before every LLM request instead
+  let toolListUrl: string | undefined;
+  if (raw.toolListUrl !== undefined) {
+    toolListUrl = validateString(raw.toolListUrl, "toolListUrl");
+    if (!/^https?:\/\//.test(toolListUrl)) {
+      failInvalid("toolListUrl must be an http(s) URL");
+    }
+  }
   let toolCallbackUrl: string | undefined;
-  if (tools !== undefined && tools.length > 0) {
+  if (toolListUrl !== undefined) {
     toolCallbackUrl = validateString(raw.toolCallbackUrl, "toolCallbackUrl");
     if (!/^https?:\/\//.test(toolCallbackUrl)) {
       failInvalid("toolCallbackUrl must be an http(s) URL");
     }
   }
-  return { model, messages, systemPrompt, tools, maxTokens, runId, toolCallbackUrl, maxRounds, maxRetries, streamIdleTimeoutMs };
+  return { model, messages, systemPrompt, maxTokens, runId, toolListUrl, toolCallbackUrl, maxRounds, maxRetries, streamIdleTimeoutMs };
 }
 
 function validateModelSpec(value: unknown): ModelSpec {
@@ -105,7 +113,12 @@ function validateInputModalities(value: unknown): ("text" | "image")[] {
   return modalities;
 }
 
-function validateTools(value: unknown): ToolSpec[] {
+/**
+ * Validates a `ToolSpec` array — the shape of both a request tool list
+ * (gone from `/v1/run`) and the brain's `GET {toolListUrl}` response, which
+ * the hand validates before every round.
+ */
+export function validateTools(value: unknown): ToolSpec[] {
   if (!Array.isArray(value)) {
     failInvalid("tools must be an array");
   }

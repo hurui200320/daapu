@@ -182,7 +182,13 @@ class PersistChatServiceTest {
             request.toolCallbackUrl,
             "the callback URL is attached even without tools (the hand only POSTs it on a tool call)",
         )
-        assertTrue(request.tools.isNullOrEmpty(), "no tools advertised with the empty registry")
+        assertEquals(
+            "http://127.0.0.1:9/api/hand/tools",
+            request.toolListUrl,
+            "the tool-list URL is attached on every run: the hand re-queries " +
+                    "GET /api/hand/tools before every LLM request, so no static " +
+                    "tool list travels in the request",
+        )
         assertEquals(systemPrompt, request.systemPrompt, "the system prompt travels out of band")
         assertTrue(injectionOf(request).contains("<sstm-updated>true</sstm-updated>"))
 
@@ -504,11 +510,13 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `tool call round executes through the MCP provider with paired history and advertised specs`() {
-        // end-to-end through the neutral tool seam: the loop advertises the
-        // MCP server's tools (namespaced) in the hand request, and the
-        // hand-side execution (simulated by calling the provider) stores the
-        // result as a tool message whose id pairs with the call
+    fun `tool call round executes through the MCP provider with paired history`() {
+        // end-to-end through the neutral tool seam: the loop no longer
+        // carries a static tool list (the hand re-queries the brain's
+        // GET /api/hand/tools before every LLM request — pinned by
+        // HandCallbackTest), and the hand-side execution (simulated by
+        // calling the provider) stores the result as a tool message whose
+        // id pairs with the call
         val mcpServer = MockMcpServer(listOf(mcpAddTool()))
         val mcpProvider = McpToolProvider(
             listOf(
@@ -525,7 +533,11 @@ class PersistChatServiceTest {
                 toolProvider = mcpProvider,
                 chatScript = {
                     // the fake hand plays the model AND the hand's callback
-                    // POST (the HTTP contract is pinned by HandCallbackTest)
+                    // POST (the HTTP contract is pinned by HandCallbackTest);
+                    // like the real hand it lists the tools first (the
+                    // brain's GET /api/hand/tools) before executing calls,
+                    // which populates the provider's name mapping
+                    mcpProvider.specifications()
                     val call = ChatMessagePart.ToolCall(
                         id = "call_1",
                         tool = "calc__add",
@@ -549,10 +561,18 @@ class PersistChatServiceTest {
             )
             assertNull(outcome.error)
 
-            // the request advertised the namespaced tool with its schema
-            val advertised = outcome.hand.requests.last().tools?.single()
-            assertEquals("calc__add", advertised?.name)
-            assertTrue(advertised!!.schema.isNotEmpty(), "the tool schema must be advertised")
+            // no static tools in the request; the provider serves the
+            // namespaced tool with its schema through the per-round listing
+            // path instead (pinned by HandCallbackTest)
+            val request = outcome.hand.requests.last()
+            assertEquals(
+                "http://127.0.0.1:9/api/hand/tools",
+                request.toolListUrl,
+                "the tool-list URL is attached on every run",
+            )
+            val advertised = runBlocking { mcpProvider.specifications().single() }
+            assertEquals("calc__add", advertised.name)
+            assertTrue(advertised.schema.isNotEmpty(), "the tool schema must be advertised")
             assertEquals(
                 30L,
                 advertised.timeoutSeconds,
@@ -560,8 +580,8 @@ class PersistChatServiceTest {
             )
             assertEquals(
                 "http://127.0.0.1:9/api/hand/tool",
-                outcome.hand.requests.last().toolCallbackUrl,
-                "the callback URL is sent when tools are advertised",
+                request.toolCallbackUrl,
+                "the callback URL is sent on every run",
             )
 
             // the call streamed with the advertised name, the server executed

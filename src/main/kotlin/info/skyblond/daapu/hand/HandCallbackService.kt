@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.agent.tool.ToolTransportException
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
@@ -48,6 +49,20 @@ class HandCallbackService(
     fun unregister(runId: String) {
         activeRuns.remove(runId)
     }
+
+    /**
+     * The in-flight run's current tool advertisements (the hand queries
+     * this before EVERY LLM request, so a run always sees the provider's
+     * latest tool set — MCP servers can change theirs at runtime). Returns
+     * null for an unknown [runId] (the run already ended, or never
+     * existed).
+     *
+     * A provider failure (e.g. an unreachable MCP server) propagates: the
+     * route answers 500, which the hand maps onto `error{tool_transport}`
+     * — the same semantics as a pre-request `specifications()` failure.
+     */
+    suspend fun listTools(runId: String): List<ToolSpec>? =
+        activeRuns[runId]?.toolProvider?.specifications()
 
     /**
      * Execute one tool call for an in-flight run (the hand's callback

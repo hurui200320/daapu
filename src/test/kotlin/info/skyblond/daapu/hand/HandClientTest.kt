@@ -8,8 +8,6 @@ import info.skyblond.daapu.testutil.MockSseResponse
 import info.skyblond.daapu.testutil.MockSseServer
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -17,7 +15,7 @@ import kotlin.test.assertTrue
 
 /**
  * Pins the HTTP hand client against a scripted raw hand server: request
- * shape (model spec, messages, tools), SSE event parsing, the terminal
+ * shape (model spec, messages, tool URLs), SSE event parsing, the terminal
  * event contract, and the connection-failure paths (a dropped stream is
  * terminal; a non-200 response surfaces the hand's error taxonomy).
  */
@@ -45,15 +43,8 @@ class HandClientTest {
         streamIdleTimeoutMs = 300_000,
     )
 
-    private fun toolSpec() = HandToolSpec(
-        name = "get_weather",
-        description = "weather",
-        schema = buildJsonObject { put("type", "object") },
-        timeoutSeconds = 30,
-    )
-
     @Test
-    fun `run parses the hand events and the request carries the model spec and tools`() {
+    fun `run parses the hand events and the request carries the model spec and the tool URLs`() {
         val server = MockSseServer { attempt ->
             if (attempt == 1) {
                 MockSseResponse(
@@ -82,7 +73,7 @@ class HandClientTest {
             val events = runBlocking {
                 client.run(
                     runRequest(server.port).copy(
-                        tools = listOf(toolSpec()),
+                        toolListUrl = "http://tl",
                         toolCallbackUrl = "http://cb"
                     )
                 )
@@ -111,7 +102,9 @@ class HandClientTest {
                 events,
             )
 
-            // the request carried the model spec and the tools
+            // the request carried the model spec and the tool URLs (the tool
+            // set itself travels per-round via GET {toolListUrl}, not in the
+            // request)
             val request = server.lastRequest()!!
             assertTrue(
                 request.contains(""""modelId":"cerebras/gpt-oss-120b""""),
@@ -120,7 +113,7 @@ class HandClientTest {
             assertTrue(request.contains(""""maxOutputTokens":40000"""), "request: $request")
             assertTrue(request.contains(""""reasoning":true"""), "request: $request")
             assertTrue(request.contains(""""input":["text"]"""), "request: $request")
-            assertTrue(request.contains(""""name":"get_weather""""), "request: $request")
+            assertTrue(request.contains(""""toolListUrl":"http://tl""""), "request: $request")
             assertTrue(request.contains(""""toolCallbackUrl":"http://cb""""), "request: $request")
             assertTrue(
                 request.contains("x-daapu-token: test-token", ignoreCase = true),

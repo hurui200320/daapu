@@ -27,25 +27,18 @@ class HandServiceTest {
 
     private fun runRequest(
         runId: String? = null,
-        tools: List<HandToolSpec>? = null,
+        toolListUrl: String? = null,
         toolCallbackUrl: String? = null,
     ) = HandRunRequest(
         model = model().toHandModelSpec(),
         messages = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("hi")))),
         runId = runId,
-        tools = tools,
+        toolListUrl = toolListUrl,
         toolCallbackUrl = toolCallbackUrl,
         maxTokens = 100,
         maxRounds = 4,
         maxRetries = 0,
         streamIdleTimeoutMs = 0,
-    )
-
-    private fun toolSpec() = HandToolSpec(
-        name = "flag",
-        description = "a flag tool",
-        schema = buildJsonObject { },
-        timeoutSeconds = 30,
     )
 
     private fun callback(runId: String) = HandToolCallbackRequest(
@@ -67,7 +60,7 @@ class HandServiceTest {
                 assertNull(inFlight.fatal, "the in-flight run must resolve its provider")
                 listOf(HandEvent.Done("stop"))
             })
-            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
+            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
             service.run(runRequest(), EmptyToolProvider, model()).toList()
 
@@ -82,7 +75,7 @@ class HandServiceTest {
         runBlocking {
             val callbackService = HandCallbackService("test-token")
             val hand = FakeHand(runScript = { listOf(HandEvent.RunError("upstream", "boom")) })
-            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
+            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
             service.run(runRequest(), EmptyToolProvider, model()).toList()
 
@@ -96,7 +89,7 @@ class HandServiceTest {
         runBlocking {
             val callbackService = HandCallbackService("test-token")
             val hand = FakeHand(runScript = { awaitCancellation() })
-            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
+            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
             val job = launch {
                 service.run(runRequest(), EmptyToolProvider, model()).toList()
@@ -117,7 +110,7 @@ class HandServiceTest {
     fun `generates a fresh runId per run and preserves an explicit one`() = runBlocking {
         val callbackService = HandCallbackService("test-token")
         val hand = FakeHand()
-        val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
+        val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
         service.run(runRequest(), EmptyToolProvider, model()).toList()
         service.run(runRequest(), EmptyToolProvider, model()).toList()
@@ -130,29 +123,44 @@ class HandServiceTest {
     }
 
     @Test
-    fun `attaches the callback URL on every run and preserves an explicit one`() = runBlocking {
+    fun `attaches the callback and tool-list URLs on every run and preserves explicit ones`() = runBlocking {
         val callbackService = HandCallbackService("test-token")
         val hand = FakeHand()
-        val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
+        val service = HandService(
+            hand, callbackService,
+            "http://127.0.0.1:9/api/hand/tool",
+            "http://127.0.0.1:9/api/hand/tools",
+        )
 
-        service.run(runRequest(tools = listOf(toolSpec())), EmptyToolProvider, model()).toList()
         service.run(runRequest(), EmptyToolProvider, model()).toList()
+        service.run(runRequest(toolCallbackUrl = "http://custom-callback"), EmptyToolProvider, model()).toList()
         service.run(
-            runRequest(tools = listOf(toolSpec()), toolCallbackUrl = "http://custom"),
+            runRequest(
+                toolListUrl = "http://custom-tools",
+                toolCallbackUrl = "http://custom-callback",
+            ),
             EmptyToolProvider,
             model(),
         ).toList()
 
         assertEquals("http://127.0.0.1:9/api/hand/tool", hand.requests[0].toolCallbackUrl)
         assertEquals(
-            "http://127.0.0.1:9/api/hand/tool",
-            hand.requests[1].toolCallbackUrl,
-            "the callback URL is attached even without tools (the hand only POSTs it on a tool call)",
+            "http://127.0.0.1:9/api/hand/tools",
+            hand.requests[0].toolListUrl,
+            "the tool-list URL is attached on every run (the hand re-queries " +
+                    "the tool set before each LLM request)",
         )
+        assertEquals("http://custom-callback", hand.requests[1].toolCallbackUrl)
         assertEquals(
-            "http://custom",
-            hand.requests[2].toolCallbackUrl,
-            "an explicit URL is preserved"
+            "http://127.0.0.1:9/api/hand/tools",
+            hand.requests[1].toolListUrl,
+            "the tool-list URL is attached even when the callback URL is explicit",
+        )
+        assertEquals("http://custom-callback", hand.requests[2].toolCallbackUrl)
+        assertEquals(
+            "http://custom-tools",
+            hand.requests[2].toolListUrl,
+            "an explicit tool-list URL is preserved"
         )
     }
 
@@ -161,7 +169,7 @@ class HandServiceTest {
         runBlocking {
             val callbackService = HandCallbackService("test-token")
             val hand = FakeHand(runScript = { awaitCancellation() })
-            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool")
+            val service = HandService(hand, callbackService, "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
             val first = launch {
                 runCatching {
@@ -214,10 +222,10 @@ class HandServiceTest {
             }
         )
         val service =
-            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
         val messages =
-            service.runCollect(runRequest(tools = listOf(toolSpec())), EmptyToolProvider, model())
+            service.runCollect(runRequest(), EmptyToolProvider, model())
 
         assertEquals(3, messages.size, "assistant + tool result + final assistant")
         assertTrue(messages[0].parts.single() is ChatMessagePart.ToolCall)
@@ -232,7 +240,7 @@ class HandServiceTest {
     fun `runCollect throws the hand error taxonomy on a terminal error`() = runBlocking {
         val hand = FakeHand(runScript = { errorRunFlow("round_limit", "maxRounds reached") })
         val service =
-            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
         val e = assertFailsWith<HandRunException> {
             service.runCollect(runRequest(), EmptyToolProvider, model())
@@ -245,7 +253,7 @@ class HandServiceTest {
         val hand =
             FakeHand(runScript = { listOf(HandEvent.AssistantMessage(assistantMessage("partial"))) })
         val service =
-            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool")
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
         val e = assertFailsWith<IllegalStateException> {
             service.runCollect(runRequest(), EmptyToolProvider, model())

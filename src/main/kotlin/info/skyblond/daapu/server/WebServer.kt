@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.handToolCallback
+import info.skyblond.daapu.hand.handToolList
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -111,6 +112,7 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                 call.respond(service.models())
             }
             handToolCallback(service.handCallback)
+            handToolList(service.handCallback)
             route("/chats") {
                 get {
                     call.respond(service.listChats())

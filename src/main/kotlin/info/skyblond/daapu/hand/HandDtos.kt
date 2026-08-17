@@ -46,7 +46,6 @@ data class HandRunRequest(
     val model: HandModelSpec,
     val messages: List<ChatMessage>,
     val systemPrompt: String? = null,
-    val tools: List<HandToolSpec>? = null,
     val maxTokens: Long,
     /**
      * The in-flight run's id, echoed back by the hand's tool callbacks.
@@ -55,6 +54,16 @@ data class HandRunRequest(
      * the wire (the hand requires it).
      */
     val runId: String? = null,
+    /**
+     * The brain's tool-listing endpoint the hand queries BEFORE every LLM
+     * request of the run (`GET {toolListUrl}?runId=...`, see
+     * `hand/HandCallbackRoute.kt`): the tool set is no longer passed
+     * statically, so a run always works with the provider's latest
+     * advertisements (MCP servers can change theirs at runtime). The
+     * response feeds both the LLM request's `tools` and the callback
+     * budget map of that round. Omitted = no tools at all.
+     */
+    val toolListUrl: String? = null,
     val toolCallbackUrl: String? = null,
     /** Round cap; 0 = unlimited. */
     val maxRounds: Int,
@@ -153,6 +162,16 @@ data class HandToolCallbackResponse(
     @kotlinx.serialization.EncodeDefault
     val isError: Boolean = false,
     @SerialName("fatal") val fatal: HandToolCallbackFatal? = null,
+)
+
+/**
+ * The tool-listing response body (hand → `GET /api/hand/tools`, see
+ * `hand/HandCallbackRoute.kt`): the in-flight run's provider
+ * advertisements, resolved per LLM request by the hand.
+ */
+@Serializable
+data class HandToolListResponse(
+    val tools: List<HandToolSpec>,
 )
 
 /**

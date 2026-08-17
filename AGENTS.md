@@ -26,7 +26,16 @@ and a small TypeScript service (hand-pi). The pieces:
   (success, error, or cancellation; a duplicate runId registration fails
   fast), and the tool callback URL is attached on every request (the hand
   only POSTs it when a tool call needs executing, so it is harmless without
-  tools). Every LLM call in the system — the chat loop, the one-shots, the
+  tools). Tool advertisements do NOT travel in the run request anymore: the
+  hand GETs `{toolListUrl}?runId=...` (`GET /api/hand/tools`,
+  `hand/HandCallbackRoute.kt`, the URL attached on every request like the
+  callback URL) BEFORE EVERY LLM request and uses the returned list for
+  that round — the model always sees the provider's latest tool set, so
+  MCP servers can add/remove tools mid-session; a failed/unsuccessful
+  listing ends the run with `tool_transport` (the same semantics as a
+  callback `fatal`). The same per-round list feeds the callback budget map,
+  so the echoed `timeoutSeconds` always matches the tools the model saw.
+  Every LLM call in the system — the chat loop, the one-shots, the
   memory merger — is a `/v1/run`: `run` streams [HandEvent]s to the chat
   loop, `runCollect` (the one-shots) consumes the same flow to a terminal
   `List<ChatMessage>` (per-round assistant message + its tool results;
@@ -114,8 +123,11 @@ and a small TypeScript service (hand-pi). The pieces:
   the official MCP Kotlin SDK (`io.modelcontextprotocol:kotlin-sdk-client`
   0.15.0, streamable-HTTP + stdio transports). `McpToolProvider` implements
   the neutral tool seam (`agent/tool/ToolProvider.kt`) and namespaces every
-  advertised tool as `{namespace}__{tool}`; the hand executes tool calls
-  back through the callback route, which looks up the in-flight run's
+  advertised tool as `{namespace}__{tool}`; the hand queries the provider's
+  current advertisements through `GET /api/hand/tools` BEFORE EVERY LLM
+  request (the in-flight run's provider resolved by `runId`, same registry
+  as the callback route) and executes tool calls back through the callback
+  route, which looks up the in-flight run's
   provider and model. `toolExecutionTimeoutSeconds` is REQUIRED per server
   config (0 = no timeout) and every advertised tool carries it as its
   `timeoutSeconds`: the callback route enforces the budget with

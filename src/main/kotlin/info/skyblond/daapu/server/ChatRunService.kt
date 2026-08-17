@@ -91,12 +91,20 @@ class ChatRunService(
     private val handCallbackUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tool"
 
     /**
+     * This brain's tool-listing endpoint the hand queries before EVERY LLM
+     * request (`GET {url}?runId=...`): the run's tool set is resolved per
+     * round from the registered provider, not captured statically in the
+     * run request.
+     */
+    private val handToolListUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tools"
+
+    /**
      * The agent layer's hand seam: the HTTP client plus the tool-callback
      * wiring (the in-flight run registry behind the hand's tool callbacks,
      * `hand/HandService.kt`). The runId and the register/unregister
      * lifecycle live here — the chat loop never sees them.
      */
-    private val handService = HandService(hand, handCallback, handCallbackUrl)
+    private val handService = HandService(hand, handCallback, handCallbackUrl, handToolListUrl)
 
     // the one-shot pipeline models: all REQUIRED config, resolved once at
     // construction (a chat run's own model is never used for these)

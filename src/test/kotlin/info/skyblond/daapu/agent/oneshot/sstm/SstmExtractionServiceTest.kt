@@ -138,8 +138,13 @@ class SstmExtractionServiceTest {
         extractor.processDiscardedMessages(listOf(userMessage("u1"), userMessage("u2")))
         assertEquals(listOf("likes coffee"), sstm.created)
         assertEquals(2, hand.requests.size, "extractor run + one merge run")
-        // the merge run advertised the memory tools
-        assertTrue(hand.requests[1].tools!!.map { it.name }.contains("add_memory"))
+        // no static tool list travels in the request anymore: the merge
+        // run's tools are served through the per-round GET /api/hand/tools
+        // listing (pinned by HandCallbackTest), from the same provider
+        assertEquals(
+            listOf("list_memories", "add_memory", "update_memory", "delete_memory"),
+            mergeProvider.specifications().map { it.name },
+        )
         // the merge run carries the round cap
         assertEquals(150, hand.requests[1].maxRounds)
     }

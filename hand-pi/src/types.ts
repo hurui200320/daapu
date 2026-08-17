@@ -105,11 +105,18 @@ export interface RunRequest {
   messages: ChatMessage[];
   /** The system prompt; never a message in the chat. */
   systemPrompt?: string;
-  tools?: ToolSpec[];
+  /**
+   * The brain's tool-listing endpoint (`GET {toolListUrl}?runId=...`):
+   * the hand queries it BEFORE every LLM request and uses the returned
+   * set for that round — the tool set is never captured statically in the
+   * request, so the run always sees the provider's latest advertisements.
+   * Omitted = no tools at all.
+   */
+  toolListUrl?: string;
   /** The output budget for this call; always explicit. */
   maxTokens: number;
   runId: string;
-  /** Required iff `tools` is non-empty. */
+  /** Required iff `toolListUrl` is present (tools may be advertised). */
   toolCallbackUrl?: string;
   /** Round cap; 0 = unlimited. */
   maxRounds: number;
