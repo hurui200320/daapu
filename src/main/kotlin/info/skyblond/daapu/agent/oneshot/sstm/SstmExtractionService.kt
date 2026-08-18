@@ -14,6 +14,7 @@ import info.skyblond.daapu.hand.toHandModelSpec
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
+import java.time.LocalDate
 
 /**
  * The two-LLM memory extraction pipeline (see `agent/persist/SystemPrompt.kt`:
@@ -26,7 +27,7 @@ import kotlinx.coroutines.CancellationException
  *    list of candidate memories (or the [NOTHING_TO_REMEMBER_TEXT]
  *    sentinel).
  * 2. **Merger** — one hand `/v1/run` call (tool loop, the hand executes the
- *    add/update/delete/list tools back through the callback route) against
+ *    add/update/list tools back through the callback route) against
  *    the existing SSTM ([SstmService]). No lock is held: a concurrent run's
  *    injection read may observe a half-merged SSTM, which is healed by the
  *    `sstm-updated` flag comparison on the next round.
@@ -105,7 +106,7 @@ class SstmExtractionService(
                 HandRunRequest(
                     model = extractModel.toHandModelSpec(),
                     messages = chat,
-                    systemPrompt = renderExtractorSystemPrompt(),
+                    systemPrompt = renderExtractorSystemPrompt(LocalDate.now()),
                     maxTokens = extractModel.maxOutputTokens,
                     // 0 = no round cap, safe here: no tools are declared
                     // (and [EmptyToolProvider] answers stray calls with an
@@ -147,7 +148,8 @@ class SstmExtractionService(
                     ChatMessagePart.Text(
                         buildMergeInput(
                             sstmService.listMemories().memories,
-                            extraction
+                            extraction,
+                            LocalDate.now(),
                         )
                     )
                 )
@@ -171,24 +173,33 @@ class SstmExtractionService(
 
     companion object {
         private val logger = KotlinLogging.logger {}
+
         private const val NOTHING_TO_REMEMBER_TEXT = "Nothing worth remember."
 
-        private fun renderExtractorSystemPrompt(): String = """
+        private fun renderExtractorSystemPrompt(date: LocalDate): String = """
 You're extracting memories from a discarded conversation.
 Extract **all** important information from the conversation history into a list of self-contained facts suitable for long-term memory.
+
+Today's date is ${formatDate(date)}. Resolve every relative date or time ("today", "last week", "in two months") against it
+and write absolute dates in the facts: "User went to Paris last week" is useless 6 months later; "User went to Paris the week of May 15, 2026" is meaningful forever.
 
 Focus on:
 - The user's preferences, likes, dislikes, and personal details
 - Plans, goals, pending tasks, and unresolved questions
 - Decisions and constraints
 - Facts about people, projects, and entities: keep names, numbers, ids, and values verbatim
+- Transitions: "switched from X to Y because Z" is more valuable than "uses Y"
 - Anything a future conversation would need to know
 
 Rules:
 - Each fact must be self-contained: replace pronouns with the entity name or "the user"
+- Rich, not atomic: one fact may span 1-3 sentences when the context matters, but keep it under ~80 words
 - Write facts in the same language as the conversation
 - Do not invent details that are not present in the history
 - Merge overlapping information into one fact
+- Cover the whole conversation, not just the first topic
+- Do not extract the assistant restating what the user said as a new fact (echo extraction)
+- Extract the content of documents or code the user shared, not "the user shared a document" (meta extraction)
 - When nothing is worth remembering, output sentence "$NOTHING_TO_REMEMBER_TEXT"
 """.trimIndent().trim()
 
@@ -197,23 +208,24 @@ Rules:
 You're merging summarized memories into the memory system (SSTM).
 You have access to tools that manipulating the SSTM.
 The SSTM is a numbered list of memories.
-The current state and the candidate facts extracted from a recent conversation are given in the user message.
+The current state, the candidate facts extracted from a recent conversation, and the current date are given in the user message.
 
 Update the SSTM with the memory tools:
 - list_memories: view the current SSTM (also listed in the user message)
 - add_memory(content): add a new memory
 - update_memory(id, content): replace an existing memory's content in place
-- delete_memory(id): remove an existing memory
 
 For each candidate decide exactly one action:
 - ADD: the candidate is new information -> add_memory
-- UPDATE: the candidate refines an existing memory (the same fact with more detail or a correction) -> update_memory with the existing id
-- DELETE: the candidate contradicts an existing memory and the new fact is authoritative -> delete_memory, then add_memory for the new fact
+- UPDATE: the candidate refines an existing memory (the same fact with more detail or a correction) -> update_memory with the existing id.
+  Also use UPDATE when the candidate supersedes an existing memory: merge what stays true with the new fact and update in place.
 - NONE: the candidate is already covered by an existing memory -> do nothing
 
 Rules:
 - Never modify memories unrelated to the candidates
 - Keep memories concise and self-contained
+- Similar facts about different things coexist: "likes pizza" and "likes burger" are not contradictions.
+  Supersede only when the new fact genuinely replaces the old one (a correction or a change over time); when judging, prefer the more recent fact (see the current date in the user message).
 - When all candidates are handled, reply with a short confirmation and make no further tool calls
 """.trimIndent().trim()
     }

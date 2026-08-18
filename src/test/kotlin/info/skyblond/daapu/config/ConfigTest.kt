@@ -472,6 +472,7 @@ class ConfigTest {
         assertEquals("bifrost/x", decoded.compactModel)
         assertEquals("bifrost/y", decoded.extractModel)
         assertEquals("bifrost/z", decoded.mergeModel)
+        assertEquals(150, decoded.maxMergeRounds)
     }
 
     @Test
@@ -519,6 +520,16 @@ class ConfigTest {
             ).validate()
         }
         assertTrue(blank.message!!.contains("mergeModel"))
+
+        val negativeRounds = assertFailsWith<IllegalArgumentException> {
+            MemoryConfig(
+                compactModel = "bifrost/x",
+                extractModel = "bifrost/y",
+                mergeModel = "bifrost/z",
+                maxMergeRounds = -1,
+            ).validate()
+        }
+        assertTrue(negativeRounds.message!!.contains("maxMergeRounds"))
     }
 
     @Test

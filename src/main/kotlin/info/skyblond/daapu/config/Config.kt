@@ -130,6 +130,8 @@ data class MemoryConfig(
     val extractModel: String,
     /** Catalog model id for the memory merger (a tool loop). */
     val mergeModel: String,
+    /** Round cap for the merge tool loop; `0` = unlimited. */
+    val maxMergeRounds: Int = 150,
 ) {
     fun validate() {
         listOf(
@@ -139,6 +141,7 @@ data class MemoryConfig(
         ).forEach { (name, id) ->
             require(id.isNotBlank()) { "$name must not be blank" }
         }
+        require(maxMergeRounds >= 0) { "memory.maxMergeRounds must be >= 0, got $maxMergeRounds" }
     }
 }
 

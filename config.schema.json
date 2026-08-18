@@ -99,6 +99,12 @@
           "type": "string",
           "minLength": 1,
           "description": "Required catalog model id for the memory merger tool loop (must support tool calls)."
+        },
+        "maxMergeRounds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 150,
+          "description": "Round cap for the memory merge tool loop; 0 = unlimited."
         }
       }
     },

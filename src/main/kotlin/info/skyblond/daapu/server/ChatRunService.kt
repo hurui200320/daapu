@@ -152,6 +152,7 @@ class ChatRunService(
         mergeModel = mergeModel,
         hand = handService,
         sstmService = sstmService,
+        maxMergeRounds = config.memory.maxMergeRounds,
         maxRetries = config.hand.maxRetries,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )

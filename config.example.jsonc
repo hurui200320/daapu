@@ -57,7 +57,9 @@
   "memory": {
     "compactModel": "bifrost/cerebras/gemma-4-31b",
     "extractModel": "bifrost/cerebras/gemma-4-31b",
-    "mergeModel": "bifrost/cerebras/gemma-4-31b"
+    "mergeModel": "bifrost/cerebras/gemma-4-31b",
+    // Round cap for the memory merge tool loop; 0 = unlimited.
+    "maxMergeRounds": 150
   },
   // Session-title generation (agent/oneshot/TitleGenerator.kt): the model id
   // is REQUIRED and resolved once at startup, like the memory pipeline

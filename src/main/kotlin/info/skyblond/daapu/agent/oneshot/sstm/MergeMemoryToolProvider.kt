@@ -36,15 +36,8 @@ class MergeMemoryToolProvider(
             name = "update_memory",
             description = "Replace the content of an existing memory, keeping the same id.",
             schema = objectSchema(
-                "id" to stringSchema("The memory id"),
+                "id" to integerSchema("The memory id"),
                 "content" to stringSchema("The new memory content"),
-            ),
-        ),
-        ToolSpec(
-            name = "delete_memory",
-            description = "Delete an existing memory.",
-            schema = objectSchema(
-                "id" to stringSchema("The memory id"),
             ),
         ),
     )
@@ -84,18 +77,6 @@ class MergeMemoryToolProvider(
                 textResult(request, "updated")
             }
 
-            "delete_memory" -> {
-                val id = args.requiredLong("id") ?: return errorResult(
-                    request,
-                    "id is required and must be a number"
-                )
-                if (!sstmService.deleteMemory(id)) return errorResult(
-                    request,
-                    "memory $id does not exist"
-                )
-                textResult(request, "deleted")
-            }
-
             else -> errorResult(request, "Unknown memory tool '${request.name}'")
         }
     }
@@ -132,6 +113,11 @@ class MergeMemoryToolProvider(
 
         private fun stringSchema(description: String) = buildJsonObject {
             put("type", "string")
+            put("description", description)
+        }
+
+        private fun integerSchema(description: String) = buildJsonObject {
+            put("type", "integer")
             put("description", description)
         }
 

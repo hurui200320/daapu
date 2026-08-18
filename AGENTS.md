@@ -151,9 +151,10 @@ frontend + Node/TS "hand-pi" service.
     `Nothing worth remember.` sentinel (only skip path; blank extraction is
     a hand `empty_response` error). A failed extraction (e.g. truncated
     `length`) or one producing tool calls/no text throws and fails the run.
-    The **merger** is a `/v1/run` tool loop (default ≤150 rounds; the hand
-    executes `add/update/delete/list` memory tools back through the
-    callback route against the `sstms` table). It runs without a lock — a
+    The **merger** is a `/v1/run` tool loop (≤ `memory.maxMergeRounds`
+    rounds, default 150; the hand executes `add/update/list` memory tools
+    back through the callback route against the `sstms` table). It runs
+    without a lock — a
     concurrent run's injection read may observe a half-merged SSTM, healed
     by the `sstm-updated` comparison next round. Transient `upstream`
     failures retry with hand backoff; ANY terminal failure (classified hand

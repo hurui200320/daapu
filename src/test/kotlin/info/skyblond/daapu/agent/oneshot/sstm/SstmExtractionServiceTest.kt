@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Instant
+import java.time.LocalDate
 import kotlin.test.*
 
 class SstmExtractionServiceTest {
@@ -80,15 +81,10 @@ class SstmExtractionServiceTest {
             toolCall(
                 "c3",
                 "update_memory",
-                buildJsonObject { put("id", "1"); put("content", "loves coffee") })
+                buildJsonObject { put("id", 1); put("content", "loves coffee") })
         )
         assertFalse(updateResult.isError)
         assertEquals(listOf(1L to "loves coffee"), sstm.updated)
-
-        val deleteResult =
-            provider.execute(toolCall("c4", "delete_memory", buildJsonObject { put("id", "1") }))
-        assertFalse(deleteResult.isError)
-        assertEquals(listOf(1L), sstm.deleted)
     }
 
     @Test
@@ -142,11 +138,30 @@ class SstmExtractionServiceTest {
         // run's tools are served through the per-round GET /api/hand/tools
         // listing (pinned by HandCallbackTest), from the same provider
         assertEquals(
-            listOf("list_memories", "add_memory", "update_memory", "delete_memory"),
+            listOf("list_memories", "add_memory", "update_memory"),
             mergeProvider.specifications().map { it.name },
         )
         // the merge run carries the round cap
         assertEquals(150, hand.requests[1].maxRounds)
+        // the extractor run resolves relative dates against the current
+        // date (bare ISO date, the system zone applied at the call site)
+        val extractorPrompt = hand.requests[0].systemPrompt!!
+        assertTrue(extractorPrompt.startsWith("You're extracting"))
+        assertTrue(
+            Regex("Today's date is \\d{4}-\\d{2}-\\d{2}\\.").containsMatchIn(
+                extractorPrompt
+            ),
+            "the extractor prompt must carry an absolute dated today: $extractorPrompt"
+        )
+        // the merge run's user message carries the current date header
+        val mergeInput = (hand.requests[1].messages.single().parts.single()
+            as ChatMessagePart.Text).text
+        assertTrue(
+            Regex("^Current date: \\d{4}-\\d{2}-\\d{2}\n\n").containsMatchIn(
+                mergeInput
+            ),
+            "the merge input must carry a current date header: $mergeInput"
+        )
     }
 
     @Test
@@ -277,16 +292,30 @@ class SstmExtractionServiceTest {
     }
 
     @Test
-    fun `buildMergeInput lists the current sstm and the candidates`() {
+    fun `buildMergeInput lists the current sstm and the candidates with the date header`() {
         val input = buildMergeInput(
             existing = listOf(
                 ShortTermMemory(1, Instant.EPOCH, "old"),
                 ShortTermMemory(2, Instant.EPOCH, "newer")
             ),
             candidates = "fact a\nfact b",
+            date = LocalDate.parse("2026-08-18"),
         )
-        assertTrue(input.contains("## Memory 1\nold"))
-        assertTrue(input.contains("## Memory 2\nnewer"))
+        assertTrue(input.startsWith("Current date: 2026-08-18\n\n"))
+        // each memory block carries its last-modification date (the merger
+        // judges recency), then the content
+        assertTrue(
+            Regex("## Memory 1\n> Last modified: \\d{4}-\\d{2}-\\d{2}\nold").containsMatchIn(
+                input
+            ),
+            "memory 1 must carry its last modified date and content: $input"
+        )
+        assertTrue(
+            Regex("## Memory 2\n> Last modified: \\d{4}-\\d{2}-\\d{2}\nnewer").containsMatchIn(
+                input
+            ),
+            "memory 2 must carry its last modified date and content: $input"
+        )
         assertTrue(input.contains("fact a"))
         assertTrue(input.contains("fact b"))
     }
