@@ -2,14 +2,40 @@
   import { onMount } from 'svelte'
   import { MODEL_STORAGE_KEY, chatStore } from './lib/chat-store.svelte'
   import ChatView from './lib/components/ChatView.svelte'
-  import MemoriesView from './lib/components/MemoriesView.svelte'
   import Sidebar from './lib/components/Sidebar.svelte'
+  import SstmView from './lib/components/SstmView.svelte'
+  import { chatHomePath, replaceRoute, router } from './lib/router.svelte'
   import { toastStore } from './lib/toast-store.svelte'
 
-  let view = $state<'chat' | 'memories'>('chat')
-
   onMount(() => {
+    router.init()
     void chatStore.init()
+  })
+
+  // The URL owns the active view and the open chat: translate the route into
+  // store state. Guarded against redundant picks, so store actions that
+  // update state AND navigate (create/fork/delete) don't trigger a reload.
+  // While a run streams, chat-route changes (back/forward, URL edit) are
+  // ignored — the sidebar locks chat switches the same way, and the stream
+  // renders into store.messages; reading `streaming` makes this effect
+  // re-run when the run ends, so the pending route applies then.
+  $effect(() => {
+    const route = router.current
+    if (route.name !== 'chat') return
+    if (chatStore.streaming) return
+    if (route.chatId === null) {
+      if (chatStore.chatId !== '') chatStore.closeChat()
+    } else if (chatStore.deletedChatIds.has(route.chatId)) {
+      // the route points at a chat deleted this session — e.g. the history
+      // entry left behind when the open chat was deleted from the SSTM view,
+      // now reached via back/forward or a URL edit: the load would 404, so
+      // neutralize the route instead of picking it (close whatever is open
+      // and replace the dead entry with home)
+      if (chatStore.chatId !== '') chatStore.closeChat()
+      replaceRoute(chatHomePath())
+    } else if (route.chatId !== chatStore.chatId) {
+      chatStore.pickChat(route.chatId)
+    }
   })
 
   // model picker persistence: restore the stored id once the catalog is
@@ -29,15 +55,16 @@
 </script>
 
 <div class="flex h-dvh gap-2 p-2">
-  <Sidebar {view} onNavigate={(v: 'chat' | 'memories') => (view = v)} />
+  <Sidebar />
   <main class="flex min-w-0 flex-1 flex-col">
-    <!-- both views stay mounted so the chat view (messages, live stream)
-         survives tab switches; visibility is CSS-only -->
-    <div class="flex min-h-0 flex-1 flex-col" class:hidden={view !== 'chat'}>
+    <!-- both views stay mounted so the chat view (messages, live stream,
+         composer draft) survives tab switches; visibility is CSS-only,
+         driven by the route -->
+    <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'chat'}>
       <ChatView />
     </div>
-    <div class="flex min-h-0 flex-1 flex-col" class:hidden={view !== 'memories'}>
-      <MemoriesView />
+    <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'sstm'}>
+      <SstmView />
     </div>
   </main>
 </div>

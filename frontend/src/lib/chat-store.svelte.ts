@@ -11,6 +11,7 @@ import {
   truncateMessages as apiTruncateMessages,
 } from './api'
 import type { ChatInfo, ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
+import { chatHomePath, chatPath, navigate, replaceRoute, router } from './router.svelte'
 import { toastStore } from './toast-store.svelte'
 
 // mirrors the backend's data-URL handling (ChatRunService.parseImagePart:
@@ -32,6 +33,10 @@ const STORAGE_KEY = 'daapu.model'
  * The model picker's localStorage persistence lives in App.svelte: the store
  * is a module-scope singleton, and `$effect` runes are only valid inside a
  * component.
+ *
+ * Which chat is open is owned by the URL (router.svelte.ts): the App.svelte
+ * route effect translates hash changes into pickChat/closeChat, and actions
+ * that change the open chat (create/fork/delete) navigate the hash.
  */
 class ChatStore {
   chatId = $state('')
@@ -59,6 +64,12 @@ class ChatStore {
   // the chat is read-only — no rename/title/delete/send — until the backend
   // confirms the row is gone or reports an error
   deletingIds = $state<Set<string>>(new Set())
+
+  // chats deleted this session, per id: a route pointing at one (e.g. the
+  // history entry left behind when the open chat was deleted from the SSTM
+  // view) must not be picked — the load would 404; the App route effect
+  // redirects such landings to home instead
+  deletedChatIds = $state<Set<string>>(new Set())
 
   // fork requests in flight per chat id: forks have no confirmation dialog
   // (unlike truncation) — the click starts the request immediately, and the
@@ -160,23 +171,44 @@ class ChatStore {
   private async loadMessages(id: string) {
     this.streamError = null
     try {
-      this.messages = await loadChat(id)
+      const messages = await loadChat(id)
+      // discard the response if the open chat changed mid-flight (a close or
+      // switch in the meantime must not render this chat's content under
+      // another id — or under none at all)
+      if (this.chatId === id) this.messages = messages
     } catch (e) {
-      toastStore.push(String(e))
+      if (this.chatId === id) toastStore.push(String(e))
     }
   }
 
+  /**
+   * Open a chat (called by the App route effect when the URL changes).
+   * Re-picking the open chat is a no-op; on a switch the previous chat's
+   * messages are cleared so they never render under the new id while the
+   * load is in flight.
+   */
   pickChat(id: string) {
+    if (id === this.chatId) return
     this.chatId = id
+    this.messages = []
     void this.loadMessages(id)
+  }
+
+  /** Close the open chat (the '#/chat' home route): nothing selected. */
+  closeChat() {
+    this.chatId = ''
+    this.messages = []
+    this.streamError = null
   }
 
   async createNewChat(): Promise<void> {
     try {
-      this.chatId = await newChat()
+      const id = await newChat()
+      this.chatId = id
       // prepend to match the server's newest-first order
-      this.knownChats = [{ id: this.chatId, title: DEFAULT_CHAT_TITLE }, ...this.knownChats]
+      this.knownChats = [{ id, title: DEFAULT_CHAT_TITLE }, ...this.knownChats]
       this.messages = []
+      navigate(chatPath(id))
     } catch (e) {
       toastStore.push(String(e))
     }
@@ -221,9 +253,15 @@ class ChatStore {
     try {
       await deleteChat(id)
       this.knownChats = this.knownChats.filter((c) => c.id !== id)
+      this.deletedChatIds.add(id)
       if (this.chatId === id) {
-        this.chatId = ''
-        this.messages = []
+        this.closeChat()
+        // leave the deleted chat's route, but don't yank the user back to
+        // the chat view when they deleted it from the SSTM view; replace the
+        // history entry so the deleted chat doesn't survive as a back target
+        // (from another view its stale entry stays in history, but the App
+        // route effect redirects a later back/forward landing on it to home)
+        if (router.current.name === 'chat') replaceRoute(chatHomePath())
       }
     } catch (e) {
       toastStore.push(String(e))
@@ -275,6 +313,7 @@ class ChatStore {
         this.chatId = chat.id
         this.messages = this.messages.slice(0, index + 1)
         this.streamError = null
+        navigate(chatPath(chat.id))
       }
     } catch (e) {
       toastStore.push(String(e))
@@ -410,12 +449,26 @@ class ChatStore {
       }
     } catch (e) {
       failed = true
-      toastStore.push(String(e))
       // a fetch/parse failure may still have stored the run server-side (or
-      // not): sync with the DB so a phantom optimistic message never sticks
+      // not): sync with the DB so a phantom optimistic message never sticks.
+      // If the stream already surfaced a run error (streamError), that is
+      // the more specific message — the banner or the finally fallback toast
+      // carries it, so don't stack a second toast on top
+      if (!this.streamError) toastStore.push(String(e))
       await this.reloadFromDb(id)
     } finally {
       this.streaming = false
+      // the pending route may close or switch the chat the moment the stream
+      // ends (back/forward or URL edit mid-run): the error banner would be
+      // wiped with the view (closeChat / loadMessages clear streamError), so
+      // surface the failure as a toast instead of losing it. Same-route and
+      // SSTM-view runs keep the banner (the chat stays open).
+      if (failed && this.streamError && this.chatId === id) {
+        const route = router.current
+        if (route.name === 'chat' && route.chatId !== id) {
+          toastStore.push('run failed: ' + this.streamError)
+        }
+      }
     }
     return !failed
   }

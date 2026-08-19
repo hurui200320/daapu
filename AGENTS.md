@@ -333,9 +333,27 @@ frontend + Node/TS "hand-pi" service.
   dark-only oklch "neutral" palette), bits-ui primitives, lucide icons,
   highlight.js. Proxies `/api` to ktor; ktor serves the API only.
   - Layout: collapsible glass sidebar (chat list + search filter +
-    rename/delete dialogs, generate-title, + Memories nav), centered
+    rename/delete dialogs, generate-title, + SSTM nav), centered
     `max-w-3xl` message column, floating rounded composer with circular
     send button (disabled while streaming).
+  - Routing: hash-based (`src/lib/router.svelte.ts`, zero deps — the hash
+    never reaches the server, so any static host works without SPA fallback
+    config; the same reason llama.cpp's webui uses `router: hash`). Routes:
+    `#/chat` (home),     `#/chat/<id>`, `#/sstm` (`#/eltm/...` planned). The URL
+    owns the active view and the open chat: an `App.svelte` `$effect`
+    translates the route into `chatStore.pickChat`/`closeChat`, and store
+    actions that change the open chat (create/fork/delete) navigate the hash
+    (`navigate` updates the route state synchronously — the `hashchange`
+    event alone would land after the effect, transiently re-picking the stale
+    route; delete uses `replaceRoute` on the chat view, and the route effect
+    redirects a later back/forward landing on a session-deleted chat's route
+    to home — the load would 404 — so the deleted chat never survives as a
+    back target). Chat-route changes are ignored while a run streams
+    (back/forward, URL edits), mirroring the sidebar's streaming lock; the
+    pending chat route applies when the run ends — and a run that failed
+    while the route had left the chat surfaces its error as a toast, since
+    the banner would be wiped with the view. Views stay mounted, CSS-hidden
+    by route, so a live stream and the composer draft survive tab switches.
   - State in `src/lib/chat-store.svelte.ts` (module-scope singleton —
     `$effect` runes NOT usable there; model-picker persistence in
     `App.svelte`). An in-flight delete locks the chat read-only via the
@@ -344,7 +362,7 @@ frontend + Node/TS "hand-pi" service.
     stay disabled until the backend confirms ("deleting chat" banner).
     Transient action errors → global toasts (`lib/toast-store.svelte.ts`,
     rendered in `App.svelte`); contextual errors stay tied to their view
-    (run-error banner `streamError`, memories view inline error). SSE
+    (run-error banner `streamError`, SSTM view inline error). SSE
     semantics preserved verbatim: tool-round commits, retry wipes, DB
     resync on done/error/abnormal close, optimistic user message; a send
     that never stores restores the composer draft. No client-side stop —

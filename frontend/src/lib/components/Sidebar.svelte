@@ -3,12 +3,11 @@
   import { DropdownMenu } from 'bits-ui'
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
+  import { chatHref, router } from '../router.svelte'
   import type { ChatInfo } from '../types'
   import DeleteChatDialog from './DeleteChatDialog.svelte'
   import RenameChatDialog from './RenameChatDialog.svelte'
   import { buttonVariants } from './ui/button.svelte'
-
-  let { view, onNavigate }: { view: 'chat' | 'memories'; onNavigate: (v: 'chat' | 'memories') => void } = $props()
 
   let collapsed = $state(localStorage.getItem('daapu.sidebar-collapsed') === 'true')
   let query = $state('')
@@ -22,6 +21,15 @@
     localStorage.setItem('daapu.sidebar-collapsed', String(collapsed))
   })
 
+  // the URL owns navigation (router.svelte.ts): the active chat highlight
+  // and the SSTM tab highlight both derive from the route. While a run
+  // streams, the route may be stale (mid-run back/forward is ignored until
+  // the run ends), so the streamed chat stays highlighted via the store
+  const route = $derived(router.current)
+  const activeChatId = $derived(
+    store.streaming ? store.chatId : route.name === 'chat' ? route.chatId : null
+  )
+
   const filtered = $derived(
     query.trim()
       ? store.knownChats.filter((c) => c.title.toLowerCase().includes(query.trim().toLowerCase()))
@@ -30,16 +38,6 @@
 
   const iconBtn =
     'inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40'
-
-  function pickChat(id: string) {
-    store.pickChat(id)
-    onNavigate('chat')
-  }
-
-  async function newChat() {
-    await store.createNewChat()
-    onNavigate('chat')
-  }
 
   async function generateTitleFor(chat: ChatInfo) {
     titleGeneratingIds.add(chat.id)
@@ -59,17 +57,17 @@
       <button title="expand sidebar" class={iconBtn} onclick={() => (collapsed = false)}>
         <PanelLeftOpen class="size-5" />
       </button>
-      <button title="new chat" class={iconBtn} disabled={store.streaming} onclick={() => void newChat()}>
+      <button title="new chat" class={iconBtn} disabled={store.streaming} onclick={() => void store.createNewChat()}>
         <SquarePen class="size-5" />
       </button>
       <div class="flex-1"></div>
-      <button
-        title="memories"
-        class={cn(iconBtn, view === 'memories' && 'bg-accent text-accent-foreground')}
-        onclick={() => onNavigate('memories')}
+      <a
+        title="sstm"
+        href="#/sstm"
+        class={cn(iconBtn, route.name === 'sstm' && 'bg-accent text-accent-foreground')}
       >
         <Brain class="size-5" />
-      </button>
+      </a>
     </div>
   {:else}
     <div class="flex items-center gap-2 px-3 py-3">
@@ -83,7 +81,7 @@
       <button
         class={buttonVariants({ size: 'sm', class: 'w-full justify-start' })}
         disabled={store.streaming}
-        onclick={() => void newChat()}
+        onclick={() => void store.createNewChat()}
       >
         <SquarePen class="size-4" />
         New chat
@@ -108,17 +106,26 @@
         <div
           class={cn(
             'group flex items-center rounded-lg transition-colors',
-            chat.id === store.chatId ? 'bg-foreground/5' : 'hover:bg-foreground/10'
+            chat.id === activeChatId ? 'bg-foreground/5' : 'hover:bg-foreground/10'
           )}
         >
-          <button
-            class="min-w-0 flex-1 rounded-lg py-1.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
-            disabled={store.streaming}
-            onclick={() => pickChat(chat.id)}
+          <!-- a real link: middle-click / open-in-new-tab work. While a run
+               streams, the chat switch stays locked (pointer + keyboard):
+               the stream's committed rounds render into store.messages.
+               aria-hidden keeps the dead link out of the accessibility tree
+               (aria-disabled is not valid on links) -->
+          <a
+            href={chatHref(chat.id)}
+            class={cn(
+              'min-w-0 flex-1 rounded-lg py-1.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+              store.streaming && 'pointer-events-none opacity-40'
+            )}
+            aria-hidden={store.streaming}
+            tabindex={store.streaming ? -1 : undefined}
             title={chat.title}
           >
             <span class="block truncate text-sm font-medium">{chat.title}</span>
-          </button>
+          </a>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger
               disabled={store.streaming}
@@ -173,15 +180,16 @@
       {/each}
     </div>
     <div class="border-t border-sidebar-border p-2">
-      <button
-        class={buttonVariants({ variant: 'ghost', class: 'w-full justify-start' })}
-        class:bg-accent={view === 'memories'}
-        class:text-accent-foreground={view === 'memories'}
-        onclick={() => onNavigate('memories')}
+      <a
+        href="#/sstm"
+        class={cn(
+          buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
+          route.name === 'sstm' && 'bg-accent text-accent-foreground'
+        )}
       >
         <Brain class="size-4" />
-        Memories
-      </button>
+        SSTM
+      </a>
     </div>
   {/if}
 </aside>

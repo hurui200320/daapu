@@ -128,8 +128,8 @@
 <div class="h-full overflow-y-auto">
   <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-8">
     <div>
-      <h1 class="text-2xl font-semibold tracking-tight">Memories</h1>
-      <p class="text-sm text-muted-foreground">Shared short-term memory (SSTM) injected into every chat run</p>
+      <h1 class="text-2xl font-semibold tracking-tight">SSTM</h1>
+      <p class="text-sm text-muted-foreground">Shared short-term memories injected into every chat run</p>
     </div>
 
     {#if error}
