@@ -3,9 +3,11 @@ package info.skyblond.daapu.hand
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.tool.ToolProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.util.*
@@ -126,6 +128,54 @@ class HandService(
         // without a terminal event, so this should not be reachable
         check(terminal != null) { "one-shot run ended without a terminal event" }
         return messages
+    }
+
+    /**
+     * One `/v1/embed` call through the hand, with the caller's run-policy
+     * knobs supplied per call (the hand holds no defaults; the ELTM service
+     * passes the `HandConfig` values). Cancellation is rethrown untouched;
+     * every transport-level failure (connection, missing error envelope,
+     * unexpected protocol errors) is wrapped into
+     * [EmbeddingException]("upstream") so callers see ONE exception family.
+     * Fail-fast on a hand-reported [HandEmbedResult.dimensions] that
+     * disagrees with the catalog entry's: a catalog/gateway drift (the ELTM
+     * startup check on `memory_meta.embedding_dim` catches the same class
+     * of bug at boot).
+     */
+    suspend fun embed(
+        model: EmbeddingModel,
+        input: List<String>,
+        maxRetries: Int,
+        timeoutMs: Long,
+    ): HandEmbedResult {
+        // the checks live OUTSIDE the wrap: a drift is a catalog/gateway
+        // bug (fail fast), not an upstream failure
+        val result = try {
+            hand.embed(
+                HandEmbedRequest(
+                    model = HandEmbedModelSpec(model.provider.baseUrl, model.provider.apiKey, model.modelId),
+                    dimensions = model.dimensions,
+                    input = input,
+                    maxRetries = maxRetries,
+                    timeoutMs = timeoutMs,
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: EmbeddingException) {
+            throw e
+        } catch (e: Exception) {
+            throw EmbeddingException("upstream", e.message ?: "embedding call failed", e)
+        }
+        check(result.vectors.size == input.size) {
+            "Hand reported ${result.vectors.size} vectors for ${input.size} inputs " +
+                    "(one vector per input is required)"
+        }
+        check(result.dimensions == model.dimensions) {
+            "Hand-reported embedding dimensions ${result.dimensions} do not match " +
+                    "catalog entry '${model.id}' (${model.dimensions})"
+        }
+        return result
     }
 
     /** Close the underlying hand HTTP client (see [HandClient.close]). */

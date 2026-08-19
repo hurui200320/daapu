@@ -41,6 +41,29 @@ frontend + Node/TS "hand-pi" service.
     enforces each tool's budget itself), a client disconnect aborts it, and
     a brain crash drops the connection — which fails the run with
     `tool_transport`.
+  - **Embeddings** (`/v1/embed`, `hand-pi/src/embed.ts`): the plain-JSON
+    sibling of `/v1/run` — one OpenAI-compatible `{baseUrl}/embeddings`
+    call, fully described per request (`model.baseUrl/apiKey/modelId`,
+    `dimensions`, `input`, `maxRetries`, `timeoutMs`; the hand holds no
+    defaults). It maps its OWN HTTP statuses (the run endpoint's mapper
+    defaults to 200 because run errors ride the SSE stream):
+    `invalid_request` → 400, `auth` → 401, `upstream` → 502 (5xx/429/
+    network/timeout/404/405 are `upstream` — the 404/405 case is an
+    endpoint-level baseUrl misconfiguration, so it is retried with the
+    shared backoff rather than misrouted to the `invalid_request`
+    "split your input" channel — with `maxRetries` 0 = unlimited,
+    and the response MUST carry one vector per input, realigned by the
+    provider's `index` field — a gateway collapsing the batch or
+    returning duplicate/gapped/missing indexes fails as `upstream`, never
+    a silent short circuit). Kotlin
+    side: `agent/model/EmbeddingModel.kt` (catalog entry
+    `bifrost/zenmux sub/google/gemini-embedding-2`, 1536 dims — the gateway
+    honors a `dimensions` request field, so the hand requests the exact
+    output size; `agent/ModelCatalog.findEmbeddingModel`),
+    `hand/HandClient.embed` (wire transport; parses the error envelope into
+    `EmbeddingException`), `hand/HandService.embed` (seam: per-call knobs,
+    wraps transport failures as `EmbeddingException("upstream")`,
+    fail-fast on hand-reported dimensions ≠ catalog entry).
 - **ktor HTTP API** (`server/`) — `Main.kt` loads `config.jsonc`
   (`config/Config.kt`, `loadConfig`), starts DB + API. One chat run per
   request: `ChatRunService.prepareRun` validates (model REQUIRED per

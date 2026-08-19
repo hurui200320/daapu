@@ -73,6 +73,49 @@ data class HandError(
     val message: String,
 )
 
+/** The hand's per-request embedding model description (the hand has no catalog). */
+@Serializable
+data class HandEmbedModelSpec(
+    val baseUrl: String,
+    val apiKey: String,
+    val modelId: String,
+)
+
+/**
+ * The `/v1/embed` request (see `hand-pi/`): one OpenAI-compatible embedding
+ * call, fully described per request — the hand holds no defaults, mirroring
+ * [HandRunRequest]. [maxRetries] (0 = unlimited) and [timeoutMs] (0 =
+ * disabled) are the caller's per-call budget, passed through as-is.
+ * [dimensions] is the output size the catalog entry pins; the hand sends it
+ * to the gateway and the caller verifies the response against it.
+ */
+@Serializable
+data class HandEmbedRequest(
+    val model: HandEmbedModelSpec,
+    val dimensions: Int,
+    val input: List<String>,
+    /** Transient retries (5xx/429/network/timeout); 0 = unlimited. */
+    val maxRetries: Int,
+    /** Per-attempt timeout in ms; 0 = disabled. */
+    val timeoutMs: Long,
+)
+
+@Serializable
+data class HandEmbedUsage(
+    val promptTokens: Int,
+    val totalTokens: Int,
+)
+
+@Serializable
+data class HandEmbedResult(
+    /** One vector per input item, in order. */
+    val vectors: List<List<Float>>,
+    /** `vectors[0].size`. */
+    val dimensions: Int,
+    /** Passed through when the provider reports it; omitted otherwise. */
+    val usage: HandEmbedUsage? = null,
+)
+
 /** SSE events the hand emits during a `/v1/run` stream. */
 sealed interface HandEvent {
     data class TextDelta(val text: String) : HandEvent
@@ -176,3 +219,14 @@ class HandRunException(val type: String, message: String) : Exception(message)
  * connection drop is terminal: the stateless hand cannot resume a dead run.
  */
 class HandUpstreamException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/**
+ * A `/v1/embed` call failed (the hand's `{ok:false,error:{...}}` envelope
+ * parsed by the transport, or a transport-level failure wrapped by
+ * [HandService.embed]). The [type] is the hand's taxonomy restricted to the
+ * embed endpoint: `auth` (bad api key), `invalid_request` (the gateway
+ * rejected the input — the too-large channel the ELTM tool layer maps to
+ * "split it into smaller entries"), `upstream` (transient provider
+ * failures, already retried by the hand against its budget).
+ */
+class EmbeddingException(val type: String, message: String, cause: Throwable? = null) : Exception(message, cause)

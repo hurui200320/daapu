@@ -17,7 +17,7 @@ export interface SseStep {
   delay?: number;
 }
 
-export type FakeScenario = SseStep[] | { status: number; body: unknown };
+export type FakeScenario = SseStep[] | { status: number; body: unknown; delay?: number; bodyDelay?: number };
 
 function isStepList(value: unknown[]): value is SseStep[] {
   if (value.length === 0) {
@@ -28,7 +28,12 @@ function isStepList(value: unknown[]): value is SseStep[] {
     typeof first === "object" &&
     first !== null &&
     !Array.isArray(first) &&
-    ("chunk" in first || "error" in first || "end" in first || "delay" in first)
+    // a plain scenario carries `status`/`body` even when it also has a
+    // `delay`; an SSE step never does
+    ("chunk" in first ||
+      "error" in first ||
+      "end" in first ||
+      ("delay" in first && !("status" in first) && !("body" in first)))
   );
 }
 
@@ -38,6 +43,8 @@ export interface FakeUpstream {
   captured: () => unknown;
   /** The bodies of every request received, in order. */
   capturedAll: () => unknown[];
+  /** The headers of every request received, in order. */
+  capturedHeaders: () => Record<string, string>[];
   /** The number of connections served so far. */
   connectionCount: () => number;
   /** Resolves when a client closes a response socket before the stream finished. */
@@ -59,6 +66,7 @@ export function startFakeUpstream(
       : scenarios
     : [scenarios];
   const capturedBodies: unknown[] = [];
+  const capturedHeaders: Record<string, string>[] = [];
   let connectionCount = 0;
   let resolveClientClose: (() => void) | undefined;
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -79,6 +87,15 @@ export function startFakeUpstream(
         body = raw;
       }
       capturedBodies.push(body);
+      const headers: Record<string, string> = {};
+      for (const [name, value] of Object.entries(req.headers)) {
+        if (typeof value === "string") {
+          headers[name] = value;
+        } else if (Array.isArray(value)) {
+          headers[name] = value.join(", ");
+        }
+      }
+      capturedHeaders.push(headers);
       const scenario = queue.length > 1 ? queue.shift() : queue[0];
       if (scenario === undefined) {
         res.destroy();
@@ -99,6 +116,7 @@ export function startFakeUpstream(
         port: address.port,
         captured: () => capturedBodies.at(-1) ?? null,
         capturedAll: () => [...capturedBodies],
+        capturedHeaders: () => [...capturedHeaders],
         connectionCount: () => connectionCount,
         waitForClientClose: () =>
           new Promise<void>((resolveClose) => {
@@ -113,7 +131,7 @@ export function startFakeUpstream(
   });
 }
 
-async function respond(res: ServerResponse, scenario: SseStep[] | { status: number; body: unknown }): Promise<void> {
+async function respond(res: ServerResponse, scenario: SseStep[] | { status: number; body: unknown; delay?: number; bodyDelay?: number }): Promise<void> {
   if (Array.isArray(scenario)) {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     for (const step of scenario) {
@@ -130,7 +148,13 @@ async function respond(res: ServerResponse, scenario: SseStep[] | { status: numb
     }
     res.end();
   } else {
+    if (scenario.delay !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, scenario.delay));
+    }
     res.writeHead(scenario.status, { "content-type": "application/json" });
+    if (scenario.bodyDelay !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, scenario.bodyDelay));
+    }
     res.end(JSON.stringify(scenario.body));
   }
 }

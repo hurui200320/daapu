@@ -12,6 +12,7 @@
 import { isContextOverflow, uuidv7 } from "@earendil-works/pi-ai";
 import type { AssistantMessage as PiAssistantMessage, Model as PiModel } from "@earendil-works/pi-ai";
 import type { ServerResponse } from "node:http";
+import { backoffDelayMs, sleepOrAbort } from "./backoff.js";
 import {
   assembleAssistantMessage,
   isRecord,
@@ -131,11 +132,6 @@ function isTransientError(message: PiAssistantMessage, contextWindow: number): b
     return false;
   }
   return true;
-}
-
-/** Exponential backoff: `100ms << attempt`, capped at 6.4s. */
-function backoffDelayMs(attempt: number): number {
-  return Math.min(100 * 2 ** (attempt - 1), 6400);
 }
 
 type Emit = (event: SseEventName, payload: unknown) => boolean;
@@ -685,24 +681,3 @@ async function postToolCallback(
   };
 }
 
-/** Sleeps until the delay elapses (false) or the signal aborts (true). */
-function sleepOrAbort(ms: number, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) {
-    return Promise.resolve(true);
-  }
-  return new Promise((resolve) => {
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-    };
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve(false);
-    }, ms);
-    const onAbort = () => {
-      cleanup();
-      resolve(true);
-    };
-    signal.addEventListener("abort", onAbort);
-  });
-}

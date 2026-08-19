@@ -24,7 +24,7 @@ export async function handleRun(
   await executeRun(res, request, token, signal);
 }
 
-function parseBody(body: string): Record<string, unknown> {
+export function parseBody(body: string): Record<string, unknown> {
   let raw: unknown;
   try {
     raw = JSON.parse(body);
@@ -135,21 +135,21 @@ export function validateTools(value: unknown): ToolSpec[] {
   });
 }
 
-function validateString(value: unknown, field: string): string {
+export function validateString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     failInvalid(`${field} must be a non-blank string`);
   }
   return value;
 }
 
-function validatePositiveInt(value: unknown, field: string): number {
+export function validatePositiveInt(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     failInvalid(`${field} must be a positive integer`);
   }
   return value;
 }
 
-function validateNonNegativeInt(value: unknown, field: string): number {
+export function validateNonNegativeInt(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     failInvalid(`${field} must be a non-negative integer`);
   }

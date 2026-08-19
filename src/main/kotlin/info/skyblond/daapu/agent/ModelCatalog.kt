@@ -1,5 +1,6 @@
 package info.skyblond.daapu.agent
 
+import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.model.ModelProvider
@@ -72,12 +73,30 @@ class ModelCatalog(
         ),
     )
 
+    val embeddingModels: List<EmbeddingModel> = listOf(
+        // PoC: pinned to the bifrost gateway like the LLM entries. The
+        // dimensions MUST match the `vector(N)` column of the ELTM
+        // migration: the gateway honors a `dimensions` request field, so
+        // the hand requests this exact output size and the response is
+        // verified against it (hand/HandService.kt + the startup
+        // `memory_meta.embedding_dim` check).
+        EmbeddingModel(
+            provider = bifrostProvider,
+            modelId = "zenmux sub/google/gemini-embedding-2",
+            dimensions = 1536,
+        ),
+    )
+
     init {
-        require(models.map { it.id }.distinct().size == models.size) {
+        val allIds = models.map { it.id } + embeddingModels.map { it.id }
+        require(allIds.distinct().size == allIds.size) {
             "Duplicate model id in catalog: " +
-                    models.groupBy { it.id }.filterValues { it.size > 1 }.keys
+                    allIds.groupBy { it }.filterValues { it.size > 1 }.keys
         }
     }
 
     fun findModel(id: String): LLM? = models.firstOrNull { it.id == id }
+
+    fun findEmbeddingModel(id: String): EmbeddingModel? =
+        embeddingModels.firstOrNull { it.id == id }
 }

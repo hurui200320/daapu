@@ -23,11 +23,25 @@ import kotlinx.serialization.json.Json
 interface HandClient : AutoCloseable {
     /**
      * The chat round loop as a stream of [HandEvent]s, terminated by
-     * exactly one of [HandEvent.Done]/[HandEvent.RunError]. A connection
-     * failure before a terminal event throws [HandUpstreamException]: the
-     * stateless hand cannot resume a dead run.
+     * exactly one of [HandEvent.Done]/[HandEvent.RunError]. A dropped or
+     * failed connection before a terminal event is terminal — the stateless
+     * hand cannot resume a dead run: an HTTP-level failure surfaces as
+     * [HandRunException] (when the hand's error envelope is present) or
+     * [HandUpstreamException]; a transport failure may propagate the raw
+     * exception.
      */
     suspend fun run(request: HandRunRequest): Flow<HandEvent>
+
+    /**
+     * One `/v1/embed` call: a single OpenAI-compatible embedding request
+     * (retries and the timeout are the hand's job, budgeted per request).
+     * A non-2xx response carrying the hand's error envelope throws
+     * [EmbeddingException] with the hand's type; a missing envelope throws
+     * [HandUpstreamException]; a connection failure propagates the raw
+     * transport exception ([HandService.embed] normalizes both to
+     * `EmbeddingException("upstream")`).
+     */
+    suspend fun embed(request: HandEmbedRequest): HandEmbedResult
 }
 
 /**
@@ -161,6 +175,24 @@ class HttpHandClient(
                 throw HandUpstreamException("hand run stream closed without a terminal event")
             }
         }
+    }
+
+    override suspend fun embed(request: HandEmbedRequest): HandEmbedResult {
+        val response = client.post("$baseUrl/v1/embed") {
+            header("x-daapu-token", token)
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(HandEmbedRequest.serializer(), request))
+        }
+        if (response.status.isSuccess()) {
+            return json.decodeFromString(HandEmbedResult.serializer(), response.bodyAsText())
+        }
+        val error = runCatching {
+            json.decodeFromString(HandErrorResponse.serializer(), response.bodyAsText()).error
+        }.getOrNull()
+        if (error != null) {
+            throw EmbeddingException(error.type, error.message)
+        }
+        throw HandUpstreamException("hand embed request failed with HTTP ${response.status.value}")
     }
 
     override fun close() {

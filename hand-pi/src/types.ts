@@ -134,3 +134,38 @@ export class HandFailure extends Error {
     this.handError = handError;
   }
 }
+
+/**
+ * The `/v1/embed` request: one OpenAI-compatible embedding call, fully
+ * described per request (the hand holds no catalog and no defaults). The
+ * run-policy knobs mirror `/v1/run`'s: `maxRetries` (0 = unlimited) and
+ * `timeoutMs` (0 = disabled) are the brain's per-call budget.
+ */
+export interface EmbedRequest {
+  model: { baseUrl: string; apiKey: string; modelId: string };
+  /**
+   * The output dimensionality the brain's catalog entry pins; the hand
+   * sends it to the gateway and the brain verifies the response against
+   * it (never silently truncated — a gateway that cannot honor it answers
+   * an error).
+   */
+  dimensions: number;
+  /** Non-empty, non-blank strings. */
+  input: string[];
+  maxRetries: number;
+  timeoutMs: number;
+}
+
+export interface EmbedUsage {
+  promptTokens: number;
+  totalTokens: number;
+}
+
+export interface EmbedResult {
+  /** One vector per input item, in order. */
+  vectors: number[][];
+  /** `vectors[0].length`. */
+  dimensions: number;
+  /** Passed through when the provider reports it; omitted otherwise. */
+  usage?: EmbedUsage;
+}

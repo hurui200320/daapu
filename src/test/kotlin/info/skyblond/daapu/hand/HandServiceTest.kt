@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import kotlinx.coroutines.*
@@ -258,5 +259,127 @@ class HandServiceTest {
             service.runCollect(runRequest(), EmptyToolProvider, model())
         }
         assertTrue(e.message!!.contains("terminal event"), "message: ${e.message}")
+    }
+
+    private fun embeddingModel(dimensions: Int = 1536) = EmbeddingModel(
+        provider = ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
+        modelId = "zenmux sub/google/gemini-embedding-2",
+        dimensions = dimensions,
+    )
+
+    @Test
+    fun `embed relays the happy path and passes the caller's knobs through`() = runBlocking {
+        val hand = FakeHand()
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
+
+        val result = service.embed(embeddingModel(), listOf("hello", "world"), maxRetries = 2, timeoutMs = 30_000)
+
+        assertEquals(2, result.vectors.size, "one vector per input item")
+        assertEquals(1536, result.dimensions)
+        assertEquals(HandEmbedUsage(10, 10), result.usage)
+        val request = hand.embedRequests.single()
+        assertEquals("zenmux sub/google/gemini-embedding-2", request.model.modelId)
+        assertEquals("http://127.0.0.1:9/v1", request.model.baseUrl)
+        assertEquals(1536, request.dimensions)
+        assertEquals(listOf("hello", "world"), request.input)
+        assertEquals(2, request.maxRetries)
+        assertEquals(30_000, request.timeoutMs)
+    }
+
+    @Test
+    fun `embed maps each hand error type to EmbeddingException with the right type`() = runBlocking {
+        for ((type, thrown) in mapOf(
+            "auth" to EmbeddingException("auth", "bad key"),
+            "invalid_request" to EmbeddingException("invalid_request", "input too large"),
+            "upstream" to EmbeddingException("upstream", "boom"),
+        )) {
+            val hand = FakeHand(embedScript = { throw thrown })
+            val service = HandService(
+                hand, HandCallbackService("test-token"),
+                "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+            )
+            val e = assertFailsWith<EmbeddingException> {
+                service.embed(embeddingModel(), listOf("x"), maxRetries = 0, timeoutMs = 0)
+            }
+            assertEquals(type, e.type)
+        }
+    }
+
+    @Test
+    fun `embed wraps transport failures as upstream`() = runBlocking {
+        val transport = HandUpstreamException("connection refused")
+        val hand = FakeHand(embedScript = { throw transport })
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
+
+        val e = assertFailsWith<EmbeddingException> {
+            service.embed(embeddingModel(), listOf("x"), maxRetries = 0, timeoutMs = 0)
+        }
+        assertEquals("upstream", e.type)
+        assertEquals(transport, e.cause, "the wrapped transport failure must be preserved as the cause")
+    }
+
+    @Test
+    fun `embed fails fast on a dimensions drift between the hand and the catalog`() = runBlocking {
+        // the hand answers with 2 dims but the catalog pins 1536
+        val model = embeddingModel(dimensions = 1536)
+        val drifted = FakeHand(
+            embedScript = {
+                HandEmbedResult(
+                    vectors = listOf(listOf(1f, 2f)),
+                    dimensions = 2,
+                    usage = null,
+                )
+            }
+        )
+        val driftedService = HandService(
+            drifted, HandCallbackService("test-token"),
+            "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+        )
+        val e = assertFailsWith<IllegalStateException> {
+            driftedService.embed(model, listOf("x"), maxRetries = 0, timeoutMs = 0)
+        }
+        assertTrue(e.message!!.contains("1536"), "the error must name the expected dimensions: ${e.message}")
+    }
+
+    @Test
+    fun `embed fails fast on a vector count mismatch between the hand and the inputs`() = runBlocking {
+        // the hand must return exactly one vector per input item; a count
+        // mismatch would silently misalign the caller's per-item associations
+        val truncated = FakeHand(
+            embedScript = {
+                HandEmbedResult(
+                    vectors = listOf(listOf(1f)),
+                    dimensions = 1,
+                    usage = null,
+                )
+            }
+        )
+        val truncatedService = HandService(
+            truncated, HandCallbackService("test-token"),
+            "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+        )
+        val e = assertFailsWith<IllegalStateException> {
+            truncatedService.embed(
+                embeddingModel(dimensions = 1), listOf("x", "y"),
+                maxRetries = 0, timeoutMs = 0,
+            )
+        }
+        assertTrue(
+            e.message!!.contains("1 vectors for 2 inputs"),
+            "the error must name both counts: ${e.message}",
+        )
+    }
+
+    @Test
+    fun `embed rethrows cancellation`() = runBlocking {
+        val hand = FakeHand(embedScript = { throw CancellationException("cancelled") })
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
+
+        val e = runCatching { service.embed(embeddingModel(), listOf("x"), maxRetries = 0, timeoutMs = 0) }
+            .exceptionOrNull()
+        assertIs<CancellationException>(e)
     }
 }

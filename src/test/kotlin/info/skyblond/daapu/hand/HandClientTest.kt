@@ -180,9 +180,90 @@ class HandClientTest {
             server.close()
         }
     }
+
+    @Test
+    fun `embed posts the request and parses the JSON result`() {
+        val server = MockSseServer {
+            MockSseResponse(
+                200,
+                listOf(
+                    """{"vectors":[[1.5,-2.0]],"dimensions":2,"usage":{"promptTokens":3,"totalTokens":3}}"""
+                )
+            )
+        }
+        try {
+            val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
+            val result = runBlocking { client.embed(embedRequest(server.port)) }
+            assertEquals(listOf(listOf(1.5f, -2.0f)), result.vectors)
+            assertEquals(2, result.dimensions)
+            assertEquals(HandEmbedUsage(3, 3), result.usage)
+
+            val request = server.lastRequest()!!
+            assertTrue(request.contains(""""modelId":"zenmux sub/google/gemini-embedding-2""""), "request: $request")
+            assertTrue(request.contains(""""dimensions":1536"""), "request: $request")
+            assertTrue(request.contains(""""input":["hello","world"]"""), "request: $request")
+            assertTrue(request.contains(""""maxRetries":2"""), "request: $request")
+            assertTrue(request.contains(""""timeoutMs":30000"""), "request: $request")
+            assertTrue(
+                request.contains("x-daapu-token: test-token", ignoreCase = true),
+                "request: $request"
+            )
+            client.close()
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `embed surfaces the hand error taxonomy`() {
+        val server = MockSseServer {
+            MockSseResponse(
+                400,
+                listOf("""{"ok":false,"error":{"type":"invalid_request","message":"bad input"}}""")
+            )
+        }
+        try {
+            val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
+            val e = runBlocking {
+                runCatching { client.embed(embedRequest(server.port)) }.exceptionOrNull()
+            }
+            val typed = assertIs<EmbeddingException>(e)
+            assertEquals("invalid_request", typed.type)
+            client.close()
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `embed without the error shape is an upstream failure`() {
+        val server = MockSseServer { MockSseResponse(500, emptyList()) }
+        try {
+            val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
+            val e = runBlocking {
+                runCatching { client.embed(embedRequest(server.port)) }.exceptionOrNull()
+            }
+            assertIs<HandUpstreamException>(e)
+            client.close()
+        } finally {
+            server.close()
+        }
+    }
 }
 
 private fun handSse(data: String, event: String? = null): String {
     val eventLine = event?.let { "event: $it\ndata: $data" } ?: "data: $data"
     return eventLine
 }
+
+private fun embedRequest(port: Int) = HandEmbedRequest(
+    model = HandEmbedModelSpec(
+        baseUrl = "http://127.0.0.1:$port/v1",
+        apiKey = "test-key",
+        modelId = "zenmux sub/google/gemini-embedding-2",
+    ),
+    dimensions = 1536,
+    input = listOf("hello", "world"),
+    maxRetries = 2,
+    timeoutMs = 30_000,
+)

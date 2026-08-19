@@ -5,6 +5,7 @@
  */
 
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
+import {handleEmbed} from "./embed.js";
 import {readBody, requestAbortSignal, respondFailure, respondJson} from "./http.js";
 import {handleHealth, handleRun} from "./routes.js";
 
@@ -39,6 +40,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
   if (req.method === "POST" && url.pathname === "/v1/run") {
     const body = await readBody(req);
     await handleRun(res, body, token, requestAbortSignal(res));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/v1/embed") {
+    const body = await readBody(req);
+    await handleEmbed(res, body, requestAbortSignal(res));
     return;
   }
   respondJson(res, 404, {

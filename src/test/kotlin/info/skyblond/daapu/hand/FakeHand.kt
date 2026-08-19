@@ -19,14 +19,30 @@ import kotlinx.coroutines.flow.flow
  */
 class FakeHand(
     private val runScript: suspend (HandRunRequest) -> List<HandEvent> = { listOf(HandEvent.Done("stop")) },
+    private val embedScript: suspend (HandEmbedRequest) -> HandEmbedResult = { request ->
+        HandEmbedResult(
+            vectors = request.input.map { List(request.dimensions) { 1f } },
+            dimensions = request.dimensions,
+            usage = HandEmbedUsage(
+                promptTokens = request.input.sumOf { it.length },
+                totalTokens = request.input.sumOf { it.length },
+            ),
+        )
+    },
 ) : HandClient {
     // thread-safe: the shared-service concurrency test runs several chats
     // against one FakeHand at the same time
     val requests = java.util.concurrent.CopyOnWriteArrayList<HandRunRequest>()
+    val embedRequests = java.util.concurrent.CopyOnWriteArrayList<HandEmbedRequest>()
 
     override suspend fun run(request: HandRunRequest): Flow<HandEvent> = flow {
         requests += request
         runScript(request).forEach { emit(it) }
+    }
+
+    override suspend fun embed(request: HandEmbedRequest): HandEmbedResult {
+        embedRequests += request
+        return embedScript(request)
     }
 
     override fun close() {}
