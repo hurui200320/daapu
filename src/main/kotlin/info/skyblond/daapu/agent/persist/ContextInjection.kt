@@ -1,8 +1,13 @@
 package info.skyblond.daapu.agent.persist
 
+import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatMessageRole
+import org.w3c.dom.Document
 import java.io.StringReader
 import java.io.StringWriter
+import java.time.Instant
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter.ISO_LOCAL_DATE
 import java.time.format.DateTimeFormatterBuilder
@@ -16,27 +21,86 @@ import javax.xml.transform.stream.StreamResult
 import javax.xml.transform.stream.StreamSource
 import javax.xml.validation.Schema
 import javax.xml.validation.SchemaFactory
+import javax.xml.validation.Validator
 
 
+/**
+ * The context injection payload for the latest user message (see
+ * [ContextInjection.generateInjection]).
+ */
+data class InjectionSpec(
+    val time: ZonedDateTime,
+    val sstmUpdated: Boolean,
+    val eltmUpdated: Boolean,
+    val memoryList: List<String>,
+)
+
+/**
+ * Builds the harness-injected context parts and applies/removes them on a
+ * chat:
+ *
+ * - [injectContext] prepends a small `<meta><sent-at>...</sent-at></meta>`
+ *   time anchor to every historical user message carrying a `createdAt`
+ *   (rendered in the server's CURRENT zone, so a server zone change
+ *   re-renders every anchor consistently instead of freezing the old
+ *   offset), and — when an [InjectionSpec] is given (the chat loop only) —
+ *   prepends the full `<injection>` (real-time info + memories) to the
+ *   latest user message, stamping its `createdAt` if missing. With a null
+ *   spec (the one-shot services) it only anchors, adding no injection and
+ *   never stamping.
+ *
+ * - [removeInjection] strips the harness parts again (idempotent, safe on
+ *   clean input), so a consumer can treat any incoming chat as potentially
+ *   injected, sanitize it, and re-inject without double injection.
+ *
+ * The equality-based anchor recognition is zone-sensitive (the render uses
+ * the server's CURRENT zone), so it is only sound because harness parts
+ * never outlive the request: anchors are regenerated per request and
+ * stripped before every store, so a stored chat can never carry a stale
+ * anchor and a zone change can never strand one in storage.
+ *
+ * Both are careful about user text that merely resembles the harness XML:
+ * a part is only recognized as a time anchor when it matches the exact
+ * deterministic rendering of the message's own `createdAt`
+ * ([hasMetaPart]); a user message that happens to contain a valid
+ * `<meta>` with different content is kept as user content. The full
+ * injection is only recognized structurally (XSD) — a user message whose
+ * FIRST part is a valid `<injection>` is indistinguishable, and is treated
+ * as harness (the same accepted behavior as before this class existed).
+ */
 class ContextInjection {
     companion object {
-        private const val XSD_RESOURCE_PATH = "/agent/injectionSchema.xsd"
+        private const val INJECTION_XSD_RESOURCE_PATH = "/agent/injectionSchema.xsd"
+        private const val META_XSD_RESOURCE_PATH = "/agent/metaSchema.xsd"
 
         // Compiled once per JVM: a Schema is thread-safe for newValidator()
         // (only the Validator instances are single-threaded), so the
         // per-request ContextInjection instances don't each pay an XSD parse.
-        private val schema: Schema = run {
-            ContextInjection::class.java.getResourceAsStream(XSD_RESOURCE_PATH)?.use { ins ->
+        private val injectionSchema: Schema = loadSchema(INJECTION_XSD_RESOURCE_PATH)
+        private val metaSchema: Schema = loadSchema(META_XSD_RESOURCE_PATH)
+
+        private fun loadSchema(resourcePath: String): Schema {
+            return ContextInjection::class.java.getResourceAsStream(resourcePath)?.use { ins ->
                 val schemaSource = StreamSource(ins)
                 val schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI)
-                // isInjection() validates untrusted-looking text (e.g. the first
-                // part of a user message), so forbid external DTD/entity and
-                // schema access to avoid XXE-style resolution.
+                // isInjection()/hasMetaPart() validate untrusted-looking text
+                // (e.g. the first part of a user message), so forbid external
+                // DTD/entity and schema access to avoid XXE-style resolution.
                 schemaFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
                 schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "")
                 schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
                 schemaFactory.newSchema(schemaSource)
-            } ?: error("Failed to load XML schema from $XSD_RESOURCE_PATH")
+            } ?: error("Failed to load XML schema from $resourcePath")
+        }
+
+        private fun validateAgainst(schema: Schema, text: String): Boolean {
+            try {
+                val validator: Validator = schema.newValidator()
+                validator.validate(StreamSource(StringReader(text)))
+                return true
+            } catch (_: Exception) {
+                return false
+            }
         }
     }
 
@@ -66,6 +130,15 @@ class ContextInjection {
                     cp in 0x20..0xD7FF || cp in 0xE000..0xFFFD || cp in 0x10000..0x10FFFF
         }.toArray()
         return String(cps, 0, cps.size)
+    }
+
+    fun Document.convertToText(): ChatMessagePart.Text {
+        val transformerFactory = TransformerFactory.newInstance()
+        val transformer = transformerFactory.newTransformer()
+        transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes")
+        val stringWriter = StringWriter()
+        transformer.transform(DOMSource(this), StreamResult(stringWriter))
+        return ChatMessagePart.Text(stringWriter.toString())
     }
 
     // Note we're not reusing the factories and builders,
@@ -114,23 +187,124 @@ class ContextInjection {
             )
         }
 
-        // convert to string
-        val transformerFactory = TransformerFactory.newInstance()
-        val transformer = transformerFactory.newTransformer()
-        transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes")
-        val stringWriter = StringWriter()
-        transformer.transform(DOMSource(document), StreamResult(stringWriter))
-        return ChatMessagePart.Text(stringWriter.toString())
+        return document.convertToText()
     }
 
-    fun isInjection(part: ChatMessagePart.Text): Boolean {
-        try {
-            val validator = schema.newValidator()
-            val xmlSource = StreamSource(StringReader(part.text))
-            validator.validate(xmlSource)
-            return true
-        } catch (_: Exception) {
-            return false
+    fun isInjection(part: ChatMessagePart.Text): Boolean =
+        validateAgainst(injectionSchema, part.text)
+
+    /**
+     * The per-message time anchor: `<meta><sent-at>...</sent-at></meta>`,
+     * rendered from the message's [createdAt] instant in the server's
+     * CURRENT zone (never frozen into the stored data — a server zone change
+     * re-renders every anchor consistently, and the model never sees mixed
+     * offsets).
+     */
+    fun generateMeta(createdAt: Instant): ChatMessagePart.Text {
+        val documentBuilderFactory = DocumentBuilderFactory.newInstance()
+        val documentBuilder = documentBuilderFactory.newDocumentBuilder()
+        val document = documentBuilder.newDocument()
+        // meta
+        val meta = document.createElement("meta")
+        document.appendChild(meta)
+
+        meta.appendChild(
+            document.createElement("sent-at").apply {
+                textContent = timeFormatter.format(ZonedDateTime.ofInstant(createdAt, ZoneId.systemDefault()))
+            }
+        )
+
+        return document.convertToText()
+    }
+
+
+    /**
+     * True when the message leads with a time anchor we actually generated:
+     * the part XSD-validates as `<meta>` AND equals the deterministic
+     * rendering of the message's own `createdAt`. A user message that
+     * merely contains valid `<meta>` XML with other content is never
+     * mistaken for one of ours.
+     */
+    fun hasMetaPart(message: ChatMessage): Boolean {
+        // no first part or first part not text, return false
+        val first = message.parts.firstOrNull() as? ChatMessagePart.Text ?: return false
+        // first part is not valid meta schema, return false
+        if (!validateAgainst(metaSchema, first.text)) return false
+        // message has no createdAt, return false
+        val createdAt = message.createdAt ?: return false
+        // check if message meta matches part
+        return first.text == generateMeta(createdAt).text
+    }
+
+    /**
+     * Apply the harness context to a copy of [chat]:
+     *
+     * - every user message with a [ChatMessage.createdAt] that doesn't
+     *   already lead with one of our `<meta>` anchors gets a fresh anchor
+     *   prepended (assistant and tool_result messages are never touched —
+     *   the stored chat ends with an assistant reply, so their timing is
+     *   implied by the surrounding user messages);
+     * - with a non-null [spec] (the chat loop), the latest user message
+     *   additionally gets any stale leading harness part replaced by a
+     *   fresh `<injection>`, and its `createdAt` is stamped with
+     *   `spec.time` when missing (so one-shot/challenge messages never need
+     *   manual stamping). With a null spec (the one-shot services), only
+     *   the anchors are added — no injection, no stamping, no "latest"
+     *   special-casing.
+     */
+    fun injectContext(chat: List<ChatMessage>, spec: InjectionSpec?): List<ChatMessage> {
+        val lastUserIndex = chat.indexOfLast { it.role == ChatMessageRole.User }
+        return chat.mapIndexed { index, message ->
+            if (message.role != ChatMessageRole.User || message.parts.isEmpty()) {
+                message
+            } else if (index == lastUserIndex && spec != null) {
+                // first remove any injection or meta (if any)
+                val parts = when {
+                    message.parts.firstOrNull() !is ChatMessagePart.Text -> message.parts
+                    hasMetaPart(message) || isInjection(message.parts.first() as ChatMessagePart.Text) ->
+                        message.parts.drop(1)
+                    else -> message.parts
+                }
+                // ensure user message has a createdAt time
+                val stamped = message.copy(createdAt = message.createdAt ?: spec.time.toInstant())
+                // inject context
+                stamped.copy(
+                    parts = listOf(
+                        generateInjection(
+                            time = spec.time,
+                            sstmUpdated = spec.sstmUpdated,
+                            eltmUpdated = spec.eltmUpdated,
+                            memoryList = spec.memoryList,
+                        )
+                    ) + parts
+                )
+            } else if (message.createdAt != null && !hasMetaPart(message)) {
+                message.copy(parts = listOf(generateMeta(message.createdAt)) + message.parts)
+            } else {
+                message
+            }
+        }
+    }
+
+    /**
+     * Remove every harness part from a copy of [chat]: our `<meta>` anchors
+     * (equality-checked against each message's own [ChatMessage.createdAt],
+     * so forged lookalikes are kept) and every XSD-valid `<injection>`
+     * first part (the same structural recognition [isInjection] always
+     * used). Never empties a message. Idempotent and safe on clean input,
+     * so a consumer can sanitize any incoming chat before re-injecting.
+     */
+    // TODO: maybe add a transient field in Part so we can just mark the injection?
+    fun removeInjection(chat: List<ChatMessage>): List<ChatMessage> = chat.map { message ->
+        if (message.role != ChatMessageRole.User || message.parts.size <= 1) {
+            message
+        } else {
+            val first = message.parts.first() as? ChatMessagePart.Text
+            when {
+                first != null && hasMetaPart(message) -> message.copy(parts = message.parts.drop(1))
+                first != null && isInjection(first) -> message.copy(parts = message.parts.drop(1))
+                else -> message
+            }
         }
     }
 }

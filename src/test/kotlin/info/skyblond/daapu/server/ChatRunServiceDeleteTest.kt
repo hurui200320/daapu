@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.oneshot.sstm.MergeMemoryToolProvider
+import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -11,6 +12,7 @@ import info.skyblond.daapu.testutil.RecordingSstmService
 import info.skyblond.daapu.testutil.addMemoryRound
 import info.skyblond.daapu.testutil.mergeRunFlow
 import kotlinx.coroutines.runBlocking
+import java.time.Instant
 import kotlin.test.*
 
 /**
@@ -22,7 +24,11 @@ import kotlin.test.*
 class ChatRunServiceDeleteTest {
 
     private fun user(text: String) =
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(text)),
+            createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+        )
 
     /**
      * A fake hand dispatching on the one-shot system prompts: the extractor
@@ -58,9 +64,24 @@ class ChatRunServiceDeleteTest {
         assertNull(store.load("chat-1"), "the row is deleted only after extraction")
         assertEquals(listOf("likes coffee"), sstm.created)
         assertEquals(2, hand.requests.size, "extractor run + merge run")
-        // the extractor call carried the raw stored history verbatim (the
-        // trailing message is the extraction instruction)
-        assertEquals(history, hand.requests[0].messages.dropLast(1))
+        // the extractor call carried the stored history with every user
+        // message carrying its send-time <meta> anchor (the trailing message
+        // is the extraction instruction); stripping the anchors must give the
+        // raw stored history back
+        val contextInjection = ContextInjection()
+        val extractorInput = hand.requests[0].messages.dropLast(1)
+        assertEquals(
+            history,
+            extractorInput.mapIndexed { index, message ->
+                if (message.role == ChatMessageRole.User) {
+                    assertTrue(contextInjection.hasMetaPart(message))
+                    message.copy(parts = message.parts.drop(1))
+                } else {
+                    assertEquals(history[index], message)
+                    message
+                }
+            }
+        )
         // no static tool list travels in the request anymore: the merge
         // run's tools are served through the per-round GET /api/hand/tools
         // listing (pinned by HandCallbackTest), from the same provider

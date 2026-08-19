@@ -17,6 +17,11 @@ interface ChatMessageMeta {
 export interface ChatMessage {
   role: Role
   parts: ChatMessagePart[]
+  /**
+   * User messages only: when the message was sent (UTC ISO instant), the
+   * source of the per-request `<meta>` time anchors. Not rendered.
+   */
+  createdAt?: string
   meta?: ChatMessageMeta
   finishReason?: string
 }

@@ -3,6 +3,7 @@ package info.skyblond.daapu.agent.chat
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
+import java.time.Instant
 import kotlin.test.*
 
 /**
@@ -18,9 +19,13 @@ class ChatCodecTest {
     /** Minimal assistant meta fragment for JSON fixtures (meta is required on assistant messages). */
     private val assistantMetaJson = ""","meta":{"inputTokens":1,"outputTokens":1,"totalTokens":2}"""
 
+    /** The fixed send time every user message in this test carries. */
+    private val createdAt = Instant.parse("2026-08-18T12:34:56Z")
+
     private val representativeHistory: List<ChatMessage> = listOf(
         ChatMessage(
             role = ChatMessageRole.User,
+            createdAt = createdAt,
             parts = listOf(
                 ChatMessagePart.Text("<injection><real-time-info/></injection>"),
                 ChatMessagePart.Text("Hello!"),
@@ -56,6 +61,7 @@ class ChatCodecTest {
         ),
         ChatMessage(
             role = ChatMessageRole.User,
+            createdAt = createdAt,
             parts = listOf(
                 ChatMessagePart.Attachment(
                     kind = AttachmentKind.Image,
@@ -85,12 +91,12 @@ class ChatCodecTest {
      */
     private val goldenJson =
         """[{"role":"user","parts":[{"type":"text","text":"<injection><real-time-info/></injection>"},{""" +
-                """"type":"text","text":"Hello!"}]},{"role":"assistant","parts":[{"type":"reasoning","content":""" +
+                """"type":"text","text":"Hello!"}],"createdAt":"2026-08-18T12:34:56Z"},{"role":"assistant","parts":[{"type":"reasoning","content":""" +
                 """"thinking..."},{"type":"text","text":"Hi there"},{"type":"tool_call","id":"call_1","tool":"flag",""" +
                 """"args":{"flag":true}}],"meta":{"inputTokens":700,"outputTokens":112,"totalTokens":812},""" +
                 """"finishReason":"tool_calls"},{"role":"tool_result","parts":[{"type":"tool_result","id":"call_1",""" +
                 """"tool":"flag","parts":[{"type":"text","text":"ok"}],"isError":false}]},{"role":"user","parts":[{""" +
-                """"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"image/png"}]},""" +
+                """"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"image/png"}],"createdAt":"2026-08-18T12:34:56Z"},""" +
                 """{"role":"assistant","parts":[{"type":"text","text":"I see the image."}],""" +
                 """"meta":{"inputTokens":10,"outputTokens":2,"totalTokens":12},"finishReason":"stop"}]"""
 
@@ -144,13 +150,14 @@ class ChatCodecTest {
     fun `unknown keys in messages and parts are tolerated`() {
         // forward-compatible: a newer format may add fields
         val json =
-            """[{"role":"user","parts":[{"type":"text","text":"hi","extra":"x"}],"future":1},""" +
+            """[{"role":"user","createdAt":"2026-08-18T12:34:56Z","parts":[{"type":"text","text":"hi","extra":"x"}],"future":1},""" +
                     """{"role":"assistant","parts":[{"type":"text","text":"ok"}]""" + assistantMetaJson +
                     ""","finishReason":"stop"}]"""
         assertEquals(
             listOf(
                 ChatMessage(
                     role = ChatMessageRole.User,
+                    createdAt = createdAt,
                     parts = listOf(ChatMessagePart.Text("hi"))
                 ),
                 ChatMessage(
@@ -327,12 +334,75 @@ class ChatCodecTest {
         val e = assertFailsWith<IllegalStateException> {
             ChatCodec.decodeChat(
                 "chat-1",
-                """[{"role":"user","parts":[{"type":"text","text":"hi"}]}]""",
+                """[{"role":"user","createdAt":"2026-08-18T12:34:56Z","parts":[{"type":"text","text":"hi"}]}]""",
             )
         }
         assertTrue(
             e.message!!.contains("Last message is not assistant") && e.message!!.contains("chat-1"),
             "Error should name the invariant and chat, got: ${e.message}",
+        )
+    }
+
+    @Test
+    fun `user message without createdAt fails fast`() {
+        // createdAt is required on stored user messages: the per-request
+        // <meta> time anchors are regenerated from it, so a row missing it
+        // can never be time-anchored (old pre-feature rows fail here)
+        val e = assertFailsWith<IllegalStateException> {
+            ChatCodec.decodeChat(
+                "chat-1",
+                """[{"role":"user","parts":[{"type":"text","text":"hi"}]},""" +
+                        """{"role":"assistant","parts":[{"type":"text","text":"ok"}]""" + assistantMetaJson + ""","finishReason":"stop"}]""",
+            )
+        }
+        assertTrue(
+            e.message!!.contains("createdAt") && e.message!!.contains("chat-1"),
+            "Error should name the field and chat, got: ${e.message}",
+        )
+    }
+
+    @Test
+    fun `createdAt round-trips with fractional seconds`() {
+        // InstantIsoSerializer: the value is stored as Instant.toString()
+        // (fractional seconds included) and parsed back losslessly
+        val fractional = Instant.parse("2026-08-18T12:34:56.123456789Z")
+        val encoded = ChatCodec.encodeChat(
+            listOf(
+                ChatMessage(
+                    role = ChatMessageRole.User,
+                    createdAt = fractional,
+                    parts = listOf(ChatMessagePart.Text("hi")),
+                ),
+                ChatMessage(
+                    role = ChatMessageRole.Assistant,
+                    parts = listOf(ChatMessagePart.Text("ok")),
+                    meta = ChatMessageMeta(inputTokens = 1, outputTokens = 1, totalTokens = 2),
+                    finishReason = "stop",
+                ),
+            )
+        )
+        assertTrue(encoded.contains("""createdAt":"2026-08-18T12:34:56.123456789Z"""))
+        assertEquals(
+            fractional,
+            ChatCodec.decodeChat("chat-1", encoded).first().createdAt,
+        )
+    }
+
+    @Test
+    fun `non-user message with createdAt fails fast`() {
+        // createdAt is user-only (the same pattern as meta/finishReason):
+        // assistant timing is implied by the surrounding user messages
+        val e = assertFailsWith<IllegalStateException> {
+            ChatCodec.decodeChat(
+                "chat-1",
+                """[{"role":"user","createdAt":"2026-08-18T12:34:56Z","parts":[{"type":"text","text":"hi"}]},""" +
+                        """{"role":"assistant","createdAt":"2026-08-18T12:34:56Z","parts":[{"type":"text","text":"ok"}]""" +
+                        assistantMetaJson + ""","finishReason":"stop"}]""",
+            )
+        }
+        assertTrue(
+            e.message!!.contains("createdAt") && e.message!!.contains("chat-1"),
+            "Error should name the field and chat, got: ${e.message}",
         )
     }
 

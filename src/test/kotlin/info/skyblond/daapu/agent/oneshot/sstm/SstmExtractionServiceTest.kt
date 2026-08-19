@@ -25,8 +25,11 @@ class SstmExtractionServiceTest {
         mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"))
     ).findModel(id)!!
 
-    private fun userMessage(text: String) =
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
+    private fun userMessage(text: String) = ChatMessage(
+        ChatMessageRole.User,
+        listOf(ChatMessagePart.Text(text)),
+        createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+    )
 
     private fun imageMessage() = ChatMessage(
         ChatMessageRole.User,
@@ -143,15 +146,47 @@ class SstmExtractionServiceTest {
         )
         // the merge run carries the round cap
         assertEquals(150, hand.requests[1].maxRounds)
-        // the extractor run resolves relative dates against the current
-        // date (bare ISO date, the system zone applied at the call site)
+        // the extractor is stateless: no "today" anywhere in the prompt, and
+        // the dropped user messages carry their own send-time <meta> anchors
+        // (anchors only — a one-shot never gets a full context injection),
+        // so relative dates resolve per message instead of against the
+        // extraction time
+        val contextInjection = info.skyblond.daapu.agent.persist.ContextInjection()
         val extractorPrompt = hand.requests[0].systemPrompt!!
         assertTrue(extractorPrompt.startsWith("You're extracting"))
+        assertFalse(
+            extractorPrompt.contains("Today's date"),
+            "the extractor must resolve dates from the message anchors, not the extraction time: $extractorPrompt",
+        )
+        val extractorMessages = hand.requests[0].messages
+        assertEquals(
+            listOf(ChatMessageRole.User, ChatMessageRole.User, ChatMessageRole.User),
+            extractorMessages.map { it.role },
+            "dropped messages + the extraction instruction",
+        )
+        val anchor = extractorMessages[0].parts.first() as ChatMessagePart.Text
+        assertTrue(contextInjection.hasMetaPart(extractorMessages[0]))
+        // the anchor renders the message's own instant in the system zone,
+        // so the expected date is computed from it (never hard-coded)
+        val anchorDate = java.time.ZonedDateTime.ofInstant(
+            Instant.parse("2026-08-17T09:00:00Z"),
+            java.time.ZoneId.systemDefault(),
+        ).toLocalDate().toString()
         assertTrue(
-            Regex("Today's date is \\d{4}-\\d{2}-\\d{2}\\.").containsMatchIn(
-                extractorPrompt
-            ),
-            "the extractor prompt must carry an absolute dated today: $extractorPrompt"
+            anchor.text.contains(anchorDate),
+            "the anchor must render the message's own send time, got: ${anchor.text}",
+        )
+        assertEquals(
+            listOf(ChatMessagePart.Text("u1")),
+            extractorMessages[0].parts.drop(1),
+            "the anchor is prepended, the original content untouched",
+        )
+        assertFalse(
+            extractorMessages.any { message ->
+                message.parts.firstOrNull() is ChatMessagePart.Text &&
+                        contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text)
+            },
+            "the extractor must not receive a full context injection",
         )
         // the merge run's user message carries the current date header
         val mergeInput = (hand.requests[1].messages.single().parts.single()

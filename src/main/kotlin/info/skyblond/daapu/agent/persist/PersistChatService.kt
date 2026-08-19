@@ -36,9 +36,14 @@ import java.time.ZonedDateTime
  * attempt cap, exactly like the old in-process loop (a second exhaustion
  * compacts again).
  *
- * The injection is identified by XSD validation ([ContextInjection.isInjection])
- * and stripped only from the latest user message after the round (user input
- * may legitimately contain injection-shaped XML).
+ * The harness context ([ContextInjection.injectContext]) is applied to the
+ * in-loop chat once before the round — `<meta>` time anchors on the
+ * historical user messages, the full `<injection>` on the run's user
+ * message — and removed again before storing
+ * ([ContextInjection.removeInjection]): the stored chat carries no harness
+ * XML, only the per-message `createdAt` stamps the anchors are regenerated
+ * from. Harness parts are identified by XSD validation plus an exact-match
+ * guard (a user message whose text merely resembles the injection is kept).
  */
 class PersistChatService(
     private val chatStore: ChatStore,
@@ -70,8 +75,10 @@ class PersistChatService(
     ) {
         val contextInjection = ContextInjection()
 
-        // the injection is prepended and stripped after the round, so an empty
-        // user input would leave a lone injection message in chat
+        // empty user input would leave a part-less user message: injectContext
+        // skips empty-parts messages (no injection, no createdAt stamp), so
+        // the stored chat would fail the user-message-must-carry-createdAt
+        // validation
         require(userParts.isNotEmpty()) { "Empty user message is not allowed" }
 
         val loaded = chatStore.load(chatId) ?: ChatEntry(
@@ -102,16 +109,20 @@ class PersistChatService(
         }
 
         var sstm = sstmService.listMemories()
-        val injection = contextInjection.generateInjection(
-            time = ZonedDateTime.now(),
-            sstmUpdated = chatSstmVersion != sstm.version,
-            // TODO: hook these up (ELTM update tracking)
-            eltmUpdated = false,
-            memoryList = sstm.memories.map { it.content },
-        )
+        // the run's user message: stamped and injected by injectContext below
         chat = chat + ChatMessage(
             role = ChatMessageRole.User,
-            parts = listOf(injection) + userParts,
+            parts = userParts,
+        )
+        chat = contextInjection.injectContext(
+            chat,
+            InjectionSpec(
+                time = ZonedDateTime.now(),
+                sstmUpdated = chatSstmVersion != sstm.version,
+                // TODO: hook these up (ELTM update tracking)
+                eltmUpdated = false,
+                memoryList = sstm.memories.map { it.content },
+            )
         )
 
         while (true) {
@@ -143,22 +154,36 @@ class PersistChatService(
                         logger.info { "Hand reports context exhaustion, compacting chat $chatId" }
                         val result = compactionService.compactChat(chat, model.compactionKeepRounds)
                         sstmExtractionService.processDiscardedMessages(result.droppedMessages)
-                        // the compacted history reaches the client via the post-run
-                        // resync; no dedicated event is emitted
+                        // the compacted chat history does not contain injection
                         chat = result.newChat
-                        // the injection was generated before the compaction; the
-                        // extraction may have changed the SSTM, so refresh the
-                        // latest user message's injection with the fresh memory list
-                        // and the updated flag. A full-body compaction (keep=0)
-                        // replaces the whole chat — injected message included — so
-                        // the injection is re-appended with the user's parts.
+                        // The compaction replaces the whole chat with the
+                        // summary when the keep count collapses to zero, so the
+                        // run's own user message may be gone. The latest user
+                        // message after a compaction is either that run message
+                        // (preserved verbatim, parts equal to the input) or the
+                        // summary message; anything else means the input must
+                        // be re-appended so the retried round still carries it.
+                        val runMessageSurvived = chat.lastOrNull { it.role == ChatMessageRole.User }
+                            ?.let { it.parts == userParts } ?: false
+                        if (!runMessageSurvived) {
+                            chat = chat + ChatMessage(
+                                role = ChatMessageRole.User,
+                                parts = userParts,
+                            )
+                        }
+                        // the extraction may have changed the SSTM, so refresh
+                        // the injection with the fresh memory list and the
+                        // updated flag (injectContext replaces the stale
+                        // injection on the run's message in place)
                         sstm = sstmService.listMemories()
-                        chat = chat.refreshLatestUserInjection(
-                            contextInjection = contextInjection,
-                            time = ZonedDateTime.now(),
-                            sstmUpdated = chatSstmVersion != sstm.version,
-                            memories = sstm.memories.map { it.content },
-                            userParts = userParts,
+                        chat = contextInjection.injectContext(
+                            chat,
+                            InjectionSpec(
+                                time = ZonedDateTime.now(),
+                                sstmUpdated = chatSstmVersion != sstm.version,
+                                eltmUpdated = false,
+                                memoryList = sstm.memories.map { it.content },
+                            )
                         )
                         // fall through: the next loop iteration starts a fresh
                         // hand run with the compacted prompt
@@ -170,7 +195,7 @@ class PersistChatService(
         }
 
         // only the success path stores: a failed run never reaches here
-        chat = chat.stripInjection(contextInjection)
+        chat = contextInjection.removeInjection(chat)
         chatStore.store(chatId, ChatContent(chat, sstm.version))
     }
 
@@ -273,69 +298,6 @@ class PersistChatService(
         "tool_transport" -> throw HandRunException(type, "Tool transport failure: $message")
         "round_limit" -> throw HandRunException(type, "Round limit reached: $message")
         else -> throw HandRunException(type, "Hand run failed ($type): $message")
-    }
-
-    /**
-     * Remove the latest user message's injection part. Only the latest matching
-     * message is touched: previous messages were already stripped, and a user
-     * message may legitimately contain injection-shaped XML (validated against
-     * the XSD, so user text that merely resembles the injection is kept).
-     */
-    private fun List<ChatMessage>.stripInjection(contextInjection: ContextInjection): List<ChatMessage> {
-        val matchedIndex = indexOfLast { message ->
-            message.role == ChatMessageRole.User
-                    && message.parts.size > 1
-                    && message.parts.first() is ChatMessagePart.Text
-                    && contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text)
-        }
-        if (matchedIndex < 0) return this
-        return mapIndexed { index, message ->
-            if (matchedIndex != index) message
-            else message.copy(parts = message.parts.drop(1))
-        }
-    }
-
-    /**
-     * Regenerate the latest user message's injection part in place: after a
-     * mid-run compaction the SSTM may have changed (extraction) and the flag
-     * must be set, so the injection is rebuilt with the fresh memory list
-     * instead of leaving the stale pre-run one.
-     *
-     * When the compaction dropped the injected message entirely (a full-body
-     * compaction: the keep count collapses to zero, which replaces the whole
-     * chat — the injected user message included — with the summary), a fresh
-     * injection is appended together with the run's [userParts], so the
-     * retried round still carries the user input.
-     */
-    private fun List<ChatMessage>.refreshLatestUserInjection(
-        contextInjection: ContextInjection,
-        time: ZonedDateTime,
-        sstmUpdated: Boolean,
-        memories: List<String>,
-        userParts: List<ChatMessagePart>,
-    ): List<ChatMessage> {
-        val matchedIndex = indexOfLast { message ->
-            message.role == ChatMessageRole.User
-                    && message.parts.size > 1
-                    && message.parts.first() is ChatMessagePart.Text
-                    && contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text)
-        }
-        val fresh = contextInjection.generateInjection(
-            time = time,
-            sstmUpdated = sstmUpdated,
-            eltmUpdated = false,
-            memoryList = memories,
-        )
-        if (matchedIndex < 0) {
-            return this + ChatMessage(
-                role = ChatMessageRole.User,
-                parts = listOf(fresh) + userParts,
-            )
-        }
-        return mapIndexed { index, message ->
-            if (matchedIndex != index) message
-            else message.copy(parts = listOf(fresh) + message.parts.drop(1))
-        }
     }
 
     companion object {

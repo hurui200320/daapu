@@ -12,6 +12,7 @@ import io.ktor.server.plugins.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Instant
 import kotlin.test.*
 
 /**
@@ -23,8 +24,11 @@ import kotlin.test.*
  */
 class ChatRunServiceHistoryEditTest {
 
-    private fun user(text: String) =
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
+    private fun user(text: String) = ChatMessage(
+        ChatMessageRole.User,
+        listOf(ChatMessagePart.Text(text)),
+        createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+    )
 
     private fun assistant(text: String, finish: String = "stop") =
         assistantMessage(text = text, finishReason = finish)

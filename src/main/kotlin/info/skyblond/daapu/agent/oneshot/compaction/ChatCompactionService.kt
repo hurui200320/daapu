@@ -5,11 +5,13 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.oneshot.lastMessageText
+import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.toHandModelSpec
 import kotlinx.coroutines.CancellationException
+import java.time.Instant
 
 class ChatCompactionService(
     private val model: LLM,
@@ -18,6 +20,10 @@ class ChatCompactionService(
     // transient failures retry with the same budget/backoff as the chat loop
     private val maxRetries: Int,
     private val streamIdleTimeoutMs: Long,
+    // the harness context: sanitize the input (it may be the chat loop's
+    // injected in-loop chat) and re-anchor the history user messages so the
+    // summarizer sees each message's send time
+    private val contextInjection: ContextInjection = ContextInjection(),
 ) {
     /**
      * Compact the given chat history, returning the compacted chat plus the
@@ -49,12 +55,19 @@ class ChatCompactionService(
      *   skipping the compaction;
      * - [IllegalStateException] when the summarization call failed, was
      *   truncated, or produced no text.
+     *
+     * The returned chat does NOT contain any injection or meta.
      */
     suspend fun compactChat(
         fullChat: List<ChatMessage>,
         excludeLastNRound: Int
     ): ChatCompactionResult {
-        val (chatToCompact, chatToPreserve) = splitMessage(fullChat, excludeLastNRound)
+        // Treat the input as potentially injected (a reactive compaction runs
+        // on the chat loop's injected in-loop chat): sanitize first so no
+        // harness part is ever fed twice, then split the clean chat — the
+        // dropped region the SSTM extraction sees is clean too.
+        val clean = contextInjection.removeInjection(fullChat)
+        val (chatToCompact, chatToPreserve) = splitMessage(clean, excludeLastNRound)
         // fail fast on a capability mismatch before the LLM call: the same
         // prompt would fail identically forever (see the loop's per-round
         // check, which this reuses)
@@ -64,21 +77,26 @@ class ChatCompactionService(
         // Then add a user message to tell model the line between summary and context.
         // Finally, add a user message to request the summary.
         // Also replace the system prompt with our own.
-        val chat = chatToCompact + ChatMessage(
-            role = ChatMessageRole.User,
-            parts = listOf(
-                ChatMessagePart.Text(
-                    "<system>Above are the messages to summarize, below are messages for context. " +
-                            "**DO NOT** summarize messages for context.</system>"
-                )
+        // The historical user messages get their <meta> send-time anchors here
+        // (no full injection — this is a one-shot, the anchors-only spec).
+        val chat = contextInjection.injectContext(
+            chatToCompact + ChatMessage(
+                role = ChatMessageRole.User,
+                parts = listOf(
+                    ChatMessagePart.Text(
+                        "<system>Above are the messages to summarize, below are messages for context. " +
+                                "**DO NOT** summarize messages for context.</system>"
+                    )
+                ),
+            ) + chatToPreserve + ChatMessage(
+                role = ChatMessageRole.User,
+                parts = listOf(
+                    ChatMessagePart.Text(
+                        "Summarize this chat according to system prompt."
+                    )
+                ),
             ),
-        ) + chatToPreserve + ChatMessage(
-            role = ChatMessageRole.User,
-            parts = listOf(
-                ChatMessagePart.Text(
-                    "Summarize this chat according to system prompt."
-                )
-            ),
+            spec = null,
         )
 
         val summary = try {
@@ -106,8 +124,14 @@ class ChatCompactionService(
         val summaryMessage = ChatMessage(
             role = ChatMessageRole.User,
             parts = listOf(ChatMessagePart.Text(COMPACTION_HEADER + summary)),
+            // the summary is authored now and becomes the first message of
+            // the stored chat, so it carries a createdAt like any other
+            createdAt = Instant.now(),
         )
         // TODO: check summary shorter than input?
+
+        // chatToCompact and chatToPreserve derived from chat without injection
+        // safe to use here
         return ChatCompactionResult(
             droppedMessages = chatToCompact,
             newChat = listOf(summaryMessage) + chatToPreserve,

@@ -6,6 +6,7 @@ import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
 import kotlinx.coroutines.runBlocking
+import java.time.Instant
 import kotlin.test.*
 
 /**
@@ -23,7 +24,11 @@ class ChatRunServiceStoreTest {
     private fun service() = ChatRunService(testAppConfig(), hand = hand, chatStore = store)
 
     private fun user(text: String) =
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(text)),
+            createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+        )
 
     @Test
     fun `generateTitle returns null for a missing chat without calling the LLM`() {

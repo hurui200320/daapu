@@ -47,6 +47,10 @@ class PostgresChatStore : ChatStore {
     }
 
     override suspend fun store(chatId: String, chat: ChatContent) {
+        // fail fast before anything is written: the same validation the
+        // decode path applies (user messages must carry createdAt, the chat
+        // must be re-sendable), so a bad row can never be stored
+        ChatCodec.validateChat(chat.messages)
         val chatJson = ChatCodec.encodeChat(chat.messages)
         withTransaction {
             Chats.upsert {

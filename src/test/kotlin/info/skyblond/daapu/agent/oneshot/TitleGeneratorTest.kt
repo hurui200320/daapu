@@ -9,6 +9,7 @@ import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
+import java.time.Instant
 import kotlin.test.*
 
 class TitleGeneratorTest {
@@ -30,7 +31,18 @@ class TitleGeneratorTest {
     )
 
     private fun user(text: String) =
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(text)),
+            createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+        )
+
+    // the generation instruction is one-shot furniture: never stored, so it
+    // carries no createdAt (unlike history user messages)
+    private fun instruction() = ChatMessage(
+        ChatMessageRole.User,
+        listOf(ChatMessagePart.Text("Generate a title according to the system prompt.")),
+    )
 
     private fun assistant(text: String) =
         ChatMessage(
@@ -66,7 +78,7 @@ class TitleGeneratorTest {
         assertEquals("cerebras/gemma-4-31b", request.model.modelId)
         // the history plus the appended generation instruction
         assertEquals(
-            history + user("Generate a title according to the system prompt."),
+            history + instruction(),
             request.messages
         )
         assertTrue(request.systemPrompt!!.contains("ONE LINE"))
@@ -151,7 +163,7 @@ class TitleGeneratorTest {
             listOf(
                 user("u3"),
                 assistant("a3"),
-                user("Generate a title according to the system prompt.")
+                instruction(),
             ),
             hand.requests[0].messages
         )
@@ -168,7 +180,7 @@ class TitleGeneratorTest {
         runBlocking { generator.generateTitle(history) }
 
         assertEquals(
-            history + user("Generate a title according to the system prompt."),
+            history + instruction(),
             hand.requests[0].messages
         )
     }

@@ -1,10 +1,36 @@
 package info.skyblond.daapu.agent.chat
 
 import info.skyblond.daapu.agent.model.LLMCapability
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonObject
+import java.time.Instant
+
+/**
+ * Serializer for [Instant] as a plain ISO-8601 string
+ * (`Instant.toString()` / `Instant.parse`, e.g. `2026-08-19T02:43:51Z`).
+ * Zone-agnostic on purpose: the instant is stored in UTC and rendered in the
+ * server's current zone at usage time, so a server zone change re-renders
+ * every anchor consistently instead of freezing the old offset into the data.
+ */
+object InstantIsoSerializer : KSerializer<Instant> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("Instant", PrimitiveKind.STRING)
+
+    override fun serialize(encoder: Encoder, value: Instant) {
+        encoder.encodeString(value.toString())
+    }
+
+    override fun deserialize(decoder: Decoder): Instant =
+        Instant.parse(decoder.decodeString())
+}
 
 /**
  * Framework-neutral chat DTOs, owned by this project. The shape mirrors the
@@ -22,6 +48,18 @@ import kotlinx.serialization.json.JsonObject
 data class ChatMessage(
     val role: ChatMessageRole,
     val parts: List<ChatMessagePart>,
+    /**
+     * User messages only: when the message was sent, as a UTC instant
+     * (the hand is unaware of it; the brain stamps it). Every stored user
+     * message must carry it ([ChatCodec] fails fast otherwise), so the
+     * per-request `<meta>` time anchors can be regenerated from it; it is
+     * rendered in the server's CURRENT zone at injection time, never frozen.
+     * Assistant messages need no stamp: a stored chat always ends with an
+     * assistant reply, so their timing is implied by the surrounding user
+     * messages. Tool results likewise.
+     */
+    @Serializable(with = InstantIsoSerializer::class)
+    val createdAt: Instant? = null,
     /**
      * Per-message metadata (token usage). Required on assistant messages
      * (the hand refuses to serve responses without provider-reported usage,
@@ -56,6 +94,11 @@ data class ChatMessage(
         if (role != ChatMessageRole.Assistant && meta != null) {
             throw IllegalArgumentException(
                 "A $role message must not carry any meta."
+            )
+        }
+        if (role != ChatMessageRole.User && createdAt != null) {
+            throw IllegalArgumentException(
+                "A $role message must not carry any createdAt."
             )
         }
 

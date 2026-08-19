@@ -32,6 +32,13 @@ export interface ChatMessageMeta {
 export interface ChatMessage {
   role: ChatMessageRole;
   parts: ChatMessagePart[];
+  /**
+   * User messages only: when the message was sent (UTC ISO instant). The
+   * brain stamps it and regenerates the per-request `<meta>` time anchors
+   * from it; the hand is unaware of it and ignores it (converters only
+   * read known fields).
+   */
+  createdAt?: string;
   meta?: ChatMessageMeta;
   /** Assistant messages only; required non-blank there. */
   finishReason?: string;

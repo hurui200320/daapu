@@ -1,6 +1,7 @@
 [
   {
     "role": "user",
+    "createdAt": "2026-08-18T12:34:56Z",
     "parts": [
       { "type": "text", "text": "Look at this image and search for the weather in Berlin." },
       {

@@ -51,6 +51,17 @@ object ChatCodec {
      * check their result before storing.
      */
     internal fun validateChat(chat: List<ChatMessage>) {
+        // every user message must carry its send time: the per-request
+        // <meta> time anchors are regenerated from it, so a stored chat
+        // without one can never be time-anchored (old pre-feature rows fail
+        // fast here on load)
+        chat.forEach { message ->
+            if (message.role == ChatMessageRole.User && message.createdAt == null) {
+                throw IllegalArgumentException(
+                    "A user message must carry a non-null createdAt"
+                )
+            }
+        }
         // last message (if has one) must be assistant message with reason stop
         chat.lastOrNull()?.let {
             require(it.role == ChatMessageRole.Assistant) {

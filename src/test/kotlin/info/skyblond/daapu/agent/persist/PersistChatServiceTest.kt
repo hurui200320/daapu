@@ -197,13 +197,15 @@ class PersistChatServiceTest {
         assertTrue(request.model.reasoning, "the catalog model supports reasoning")
         assertEquals("high", request.model.reasoningEffort)
 
-        // history stored: user (injection stripped), assistant
+        // history stored: user (injection stripped, createdAt stamped),
+        // assistant
         val stored = assertNotNull(outcome.store.stored, "history must be stored on success")
         assertEquals(
             listOf(ChatMessageRole.User, ChatMessageRole.Assistant),
             stored.map { it.role },
         )
         assertEquals(listOf(ChatMessagePart.Text("hello")), stored[0].parts)
+        assertNotNull(stored[0].createdAt, "the stored user message must carry its send time")
         assertEquals(listOf(ChatMessagePart.Text("ok")), stored[1].parts)
         assertEquals("stop", stored[1].finishReason)
     }
@@ -309,7 +311,14 @@ class PersistChatServiceTest {
     @Test
     fun `a terminal hand error fails the run without storing`() {
         // a chat with existing history: a failed run must leave it untouched
-        val seed = listOf(ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("old"))))
+        // (stored user messages carry their send time, like the decode path requires)
+        val seed = listOf(
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text("old")),
+                createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+            )
+        )
         val store = InMemoryChatStore(seed)
         val outcome = run(
             store = store,
@@ -618,7 +627,11 @@ class PersistChatServiceTest {
     @Test
     fun `existing history is loaded and extended`() {
         val seed = listOf(
-            ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text("earlier"))),
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text("earlier")),
+                createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+            ),
             ChatMessage(
                 ChatMessageRole.Assistant,
                 listOf(ChatMessagePart.Text("earlier reply")),
@@ -632,9 +645,73 @@ class PersistChatServiceTest {
         val stored = assertNotNull(outcome.store.stored)
         assertEquals(4, stored.size, "seed + new user + new assistant")
         assertEquals(listOf(ChatMessagePart.Text("earlier")), stored[0].parts)
+        assertEquals(seed[0].createdAt, stored[0].createdAt, "historical send times survive storage")
         assertEquals(listOf(ChatMessagePart.Text("earlier reply")), stored[1].parts)
         assertEquals(listOf(ChatMessagePart.Text("hello")), stored[2].parts)
+        assertNotNull(stored[2].createdAt, "the run's user message must be stamped")
         assertEquals(listOf(ChatMessagePart.Text("ok")), stored[3].parts)
+    }
+
+    @Test
+    fun `historical user messages are time-anchored in the hand request and clean in storage`() {
+        val contextInjection = ContextInjection()
+        val seed = listOf(
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text("earlier")),
+                createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+            ),
+            ChatMessage(
+                ChatMessageRole.Assistant,
+                listOf(ChatMessagePart.Text("earlier reply")),
+                meta = ChatMessageMeta(inputTokens = 10, outputTokens = 5, totalTokens = 15),
+                finishReason = "stop",
+            ),
+        )
+        val outcome = run(store = InMemoryChatStore(seed))
+        assertNull(outcome.error)
+
+        // the hand request: the historical user message carries its send-time
+        // <meta> anchor, the latest carries the full injection, assistant
+        // messages are never touched
+        val sent = outcome.hand.requests.single().messages
+        assertEquals(
+            listOf(ChatMessageRole.User, ChatMessageRole.Assistant, ChatMessageRole.User),
+            sent.map { it.role },
+        )
+        val historicalMeta = sent[0].parts.first() as ChatMessagePart.Text
+        assertTrue(contextInjection.hasMetaPart(sent[0]))
+        // the anchor renders the message's own instant in the system zone,
+        // so the expected date is computed from it (never hard-coded)
+        val anchorDate = java.time.ZonedDateTime.ofInstant(
+            Instant.parse("2026-08-17T09:00:00Z"),
+            java.time.ZoneId.systemDefault(),
+        ).toLocalDate().toString()
+        assertTrue(
+            historicalMeta.text.contains(anchorDate),
+            "the anchor must render the message's own send time, got: ${historicalMeta.text}",
+        )
+        assertEquals(
+            listOf(ChatMessagePart.Text("earlier")),
+            sent[0].parts.drop(1),
+            "the anchor is prepended, the original content untouched",
+        )
+        assertTrue(contextInjection.isInjection(sent[2].parts.first() as ChatMessagePart.Text))
+        assertEquals(listOf(ChatMessagePart.Text("hello")), sent[2].parts.drop(1))
+        assertEquals(sent[1], seed[1], "assistant messages are not touched")
+
+        // storage: anchors and injection stripped, createdAt preserved
+        val stored = assertNotNull(outcome.store.stored)
+        assertTrue(
+            stored.none { message ->
+                contextInjection.hasMetaPart(message) ||
+                        (message.parts.firstOrNull() is ChatMessagePart.Text &&
+                                contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text))
+            },
+            "stored chat must contain no harness parts",
+        )
+        assertEquals(seed[0].createdAt, stored[0].createdAt)
+        assertNotNull(stored[2].createdAt)
     }
 
     // ------------------------------------------------------------------
@@ -665,13 +742,29 @@ class PersistChatServiceTest {
         answerPrefix: String = "answer",
         lastInputTokens: Int = 200_000,
     ): List<ChatMessage> = listOf(
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 1)))),
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(turnText(userPrefix, 1))),
+            createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+        ),
         answer(turnText(answerPrefix, 1)),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 2)))),
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(turnText(userPrefix, 2))),
+            createdAt = Instant.parse("2026-08-17T10:00:00Z"),
+        ),
         answer(turnText(answerPrefix, 2)),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 3)))),
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(turnText(userPrefix, 3))),
+            createdAt = Instant.parse("2026-08-17T11:00:00Z"),
+        ),
         answer(turnText(answerPrefix, 3)),
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(turnText(userPrefix, 4)))),
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(turnText(userPrefix, 4))),
+            createdAt = Instant.parse("2026-08-17T12:00:00Z"),
+        ),
         answer(turnText(answerPrefix, 4), lastInputTokens),
     )
 
@@ -700,7 +793,13 @@ class PersistChatServiceTest {
             ),
             sent.map { it.role },
         )
-        val summaryText = (sent[0].parts.single() as ChatMessagePart.Text).text
+        // the summary user message leads with its send-time anchor in the
+        // request (the compactor stamped it); the text follows
+        assertTrue(
+            ContextInjection().hasMetaPart(sent[0]),
+            "the summary must carry a send-time anchor in the request",
+        )
+        val summaryText = (sent[0].parts[1] as ChatMessagePart.Text).text
         assertTrue(
             summaryText.startsWith("CONTEXT COMPACTION: "),
             "the summary carries the compaction marker"
@@ -863,17 +962,29 @@ class PersistChatServiceTest {
 
         // the raw dropped messages (not the summary) fed the extraction:
         // the extractor's run starts with the dropped complete turn,
-        // followed by the extraction instruction
+        // followed by the extraction instruction. The dropped user message
+        // carries its send-time <meta> anchor (anchors-only: a one-shot
+        // must not get a full context injection), so the extractor resolves
+        // relative dates per message instead of against extraction time.
+        val contextInjection = ContextInjection()
         val extractorMessages = hand.requests[1].messages
         assertEquals(
             listOf(ChatMessageRole.User, ChatMessageRole.Assistant, ChatMessageRole.User),
             extractorMessages.map { it.role },
         )
+        assertTrue(contextInjection.hasMetaPart(extractorMessages[0]))
         assertTrue(
-            (extractorMessages[0].parts.single() as ChatMessagePart.Text).text.startsWith("topic 1")
+            (extractorMessages[0].parts[1] as ChatMessagePart.Text).text.startsWith("topic 1")
         )
         assertTrue(
             (extractorMessages[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1")
+        )
+        assertFalse(
+            extractorMessages.any { message ->
+                message.parts.firstOrNull() is ChatMessagePart.Text &&
+                        contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text)
+            },
+            "the extractor must not receive a full context injection",
         )
 
         // the merge agent's add_memory call hit the SSTM

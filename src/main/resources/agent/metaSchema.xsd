@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <!-- root node: meta, the per-message time anchor injected on historical user messages -->
+    <xs:element name="meta">
+        <xs:complexType>
+            <xs:sequence>
+                <!-- sent-at, string: the message's send time, ISO offset date-time -->
+                <xs:element name="sent-at" type="xs:string"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+</xs:schema>

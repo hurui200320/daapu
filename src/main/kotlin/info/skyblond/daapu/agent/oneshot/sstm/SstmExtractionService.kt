@@ -7,6 +7,7 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.oneshot.lastMessageText
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService.Companion.NOTHING_TO_REMEMBER_TEXT
+import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
@@ -58,6 +59,11 @@ class SstmExtractionService(
     // the chat loop, the merge rounds are capped by [maxMergeRounds]
     private val maxRetries: Int,
     private val streamIdleTimeoutMs: Long,
+    // the harness context: sanitize the dropped history (it may be the chat
+    // loop's injected in-loop chat) and anchor every user message with its
+    // send time, so the extractor resolves relative dates per message and
+    // never against the extraction time
+    private val contextInjection: ContextInjection = ContextInjection(),
 ) {
     /**
      * Extract memories from [droppedMessages] (the raw messages compaction is
@@ -87,17 +93,26 @@ class SstmExtractionService(
 
     /**
      * The extraction call: the raw dropped history plus the extraction
-     * instruction. Fails on anything but a clean `stop` with text (the
-     * fail-fast semantics depend on distinguishing `length` from `stop`).
+     * instruction. The history is treated as potentially injected (it may
+     * come from the chat loop's injected in-loop chat): sanitize first, then
+     * anchor every user message with its send time. The extractor is
+     * stateless — the input carries no "now" anywhere (no current date in
+     * the prompt), every relative date resolves against the message's own
+     * anchor, so extraction time never matters. Fails on anything but a
+     * clean `stop` with text (the fail-fast semantics depend on
+     * distinguishing `length` from `stop`).
      */
     private suspend fun extract(droppedMessages: List<ChatMessage>): String {
-        val chat = droppedMessages + ChatMessage(
-            role = ChatMessageRole.User,
-            parts = listOf(
-                ChatMessagePart.Text(
-                    "Extract memories item according to the system prompt."
-                )
+        val chat = contextInjection.injectContext(
+            contextInjection.removeInjection(droppedMessages) + ChatMessage(
+                role = ChatMessageRole.User,
+                parts = listOf(
+                    ChatMessagePart.Text(
+                        "Extract memories item according to the system prompt."
+                    )
+                ),
             ),
+            spec = null,
         )
 
         // TODO: when ELTM is ready, detect SSTM length and trigger ELTM
@@ -106,7 +121,7 @@ class SstmExtractionService(
                 HandRunRequest(
                     model = extractModel.toHandModelSpec(),
                     messages = chat,
-                    systemPrompt = renderExtractorSystemPrompt(LocalDate.now()),
+                    systemPrompt = renderExtractorSystemPrompt(),
                     maxTokens = extractModel.maxOutputTokens,
                     // 0 = no round cap, safe here: no tools are declared
                     // (and [EmptyToolProvider] answers stray calls with an
@@ -176,12 +191,15 @@ class SstmExtractionService(
 
         private const val NOTHING_TO_REMEMBER_TEXT = "Nothing worth remember."
 
-        private fun renderExtractorSystemPrompt(date: LocalDate): String = """
+        private fun renderExtractorSystemPrompt(): String = """
 You're extracting memories from a discarded conversation.
 Extract **all** important information from the conversation history into a list of self-contained facts suitable for long-term memory.
 
-Today's date is ${formatDate(date)}. Resolve every relative date or time ("today", "last week", "in two months") against it
-and write absolute dates in the facts: "User went to Paris last week" is useless 6 months later; "User went to Paris the week of May 15, 2026" is meaningful forever.
+Every user message opens with a <meta><sent-at>...</sent-at></meta> marker carrying that message's send time.
+Resolve every relative date or time ("today", "last week", "in two months") against the send time of the message that contains it.
+The messages can be much older than the moment of extraction, so never resolve against "now".
+Assistant messages carry no marker: they reply immediately after the preceding user message.
+Write absolute dates in the facts: "User went to Paris last week" is useless 6 months later; "User went to Paris the week of May 15, 2026" is meaningful forever.
 
 Focus on:
 - The user's preferences, likes, dislikes, and personal details

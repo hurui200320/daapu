@@ -18,6 +18,7 @@ import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -46,8 +47,11 @@ class WebServerTest {
         SendMessageRequest(text = text, model = model, images = images.map { ImagePart(it) })
     )
 
-    private fun user(text: String) =
-        ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
+    private fun user(text: String) = ChatMessage(
+        ChatMessageRole.User,
+        listOf(ChatMessagePart.Text(text)),
+        createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+    )
 
     @Test
     fun `blank message is rejected with 400`() {
@@ -424,6 +428,7 @@ class WebServerTest {
                             mimeType = "image/png",
                         )
                     ),
+                    createdAt = Instant.parse("2026-08-17T09:00:00Z"),
                 ),
             ),
         )

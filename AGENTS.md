@@ -85,6 +85,29 @@ frontend + Node/TS "hand-pi" service.
     (fresh chats store `""`, so the first run always flags). Failed runs
     never reach the store; `updateMemory` skips identical writes (no
     fingerprint churn).
+  - **Context injection & time anchors** (`agent/persist/ContextInjection.kt`):
+    user messages carry a stored `createdAt` (UTC `Instant`, user-only —
+    assistant timing is implied by the surrounding user messages; required on
+    stored user messages by `ChatCodec.validateChat` + `PostgresChatStore.store`,
+    fail fast otherwise). At prompt-build time `injectContext(chat, spec)`
+    prepends a `<meta><sent-at>…</sent-at></meta>` anchor to every historical
+    user message (rendered from `createdAt` in the server's CURRENT zone, so a
+    server zone change re-renders every anchor consistently — the model never
+    sees mixed offsets) and, when a spec is given (the chat loop only), the
+    full `<injection>` on the latest user message (stamping its `createdAt`
+    when missing). One-shot services pass a null spec: anchors only, no
+    injection. `removeInjection` strips both before every store — stored chats
+    never carry harness XML. Both are idempotent and guarded: a `<meta>` is
+    only recognized when it byte-matches the deterministic render of the
+    message's own `createdAt` (forged lookalikes stay as user content), the
+    `<injection>` structurally via the XSD. Harness parts never outlive the
+    request — anchors are regenerated per request and stripped before every
+    store, so a stored chat can never carry a stale anchor and a zone change
+    can never strand one in storage. Compaction and SSTM extraction — the
+    one-shots that may receive the loop's injected in-loop chat — sanitize
+    their input first (`removeInjection`) then re-anchor, so the loop's
+    injected in-loop chat never double-injects; `TitleGenerator` needs
+    neither: it reads the stored row, which is always clean.
   - **Locks**: per-chat `Mutex` guards concurrent runs (409) and deletes —
     `agent/chat/PostgresChatStore.store` is an upsert, so deleting mid-run
     would resurrect the row. `deleteChat` runs the SSTM extraction pipeline
@@ -150,13 +173,18 @@ frontend + Node/TS "hand-pi" service.
     no attempt cap; a compaction that fails or returns a non-clean summary
     throws and fails the run.
   - `ChatCompactionService.compactChat(fullChat, excludeLastNRound)`:
-    splits at a user-turn boundary (never splitting tool_call/tool_result
+    treats its input as potentially injected (a reactive compaction receives
+    the chat loop's injected in-loop chat): sanitize (`removeInjection`) first,
+    then anchor the stamped user messages (`injectContext` with a null spec —
+    anchors only, the summarizer never sees a full injection), splits at a
+    user-turn boundary (never splitting tool_call/tool_result
     pairs; the current run's trailing tool chain stays preserved), feeds the
     WHOLE chat (drop region + marker user message "above are the messages
     to summarize, below are messages for context" + preserved tail + final
     instruction) to a `runCollect` one-shot (no tools, dedicated compaction
     prompt, ~500-word target), and replaces the drop region with one
-    `CONTEXT COMPACTION: `-marked user message. A prior summary is merged
+    `CONTEXT COMPACTION: `-marked user message stamped with its own
+    `createdAt` (it is stored). A prior summary is merged
     via the prompt ("The first message might be a summarized message starts
     with marker ..."). With fewer rounds than
     `excludeLastNRound`, the keep count shrinks — down to zero (compacts
@@ -168,7 +196,12 @@ frontend + Node/TS "hand-pi" service.
     (via `LLM.checkPromptContentCapabilities`) — a `memory.compactModel`
     config error.
   - `SstmExtractionService.processDiscardedMessages(droppedMessages)` runs
-    on raw dropped messages BEFORE they're discarded: the **extractor**
+    on raw dropped messages BEFORE they're discarded: it sanitizes them
+    (`removeInjection`) and re-anchors every user message with its own
+    `<meta>` send time (`injectContext`, null spec — the extractor is
+    STATELESS: no current date anywhere in its input or prompt, so the
+    extraction time never matters; every relative date resolves against the
+    message's own anchor). The **extractor**
     one-shot (no tools; raw history + attachments, capability-checked —
     a `memory.extractModel` config error) returns a fact list or the
     `Nothing worth remember.` sentinel (only skip path; blank extraction is
@@ -187,10 +220,11 @@ frontend + Node/TS "hand-pi" service.
     unmerged memories are never lost; already-applied merges stick. The
     `sstm-updated` flag needs no plumbing: the digest changes on merge
     write and the loop compares against `chats.sstm_version` (a mid-run
-    reactive compaction regenerates the latest user message's injection
-    with the fresh flag + memories — and, when the keep count collapses to
-    zero and replaces the whole chat, re-appends the injection with the
-    run's user parts so the retried round still carries the user input).
+    reactive compaction re-injects the latest user message's `<injection>`
+    with the fresh flag + memories via a fresh `injectContext` — and, when
+    the keep count collapses to zero and replaces the whole chat, the loop
+    re-appends the run's user parts first so the retried round still
+    carries the user input).
   - Model resolution: `memory.compactModel/extractModel/mergeModel` and
     `title.model` (`agent/oneshot/TitleGenerator.kt`, used by
     `POST /api/chats/{id}/title` — no per-chat lock, like rename; titles
@@ -201,7 +235,8 @@ frontend + Node/TS "hand-pi" service.
     the one-shot services are constructed once and shared. A chat run's own
     model is never used for the pipeline. `title.lastNRound` (default `0`)
     caps history fed to the title model; the title generator reads the chat
-    row exactly once, never the injection (stripped before every store).
+    row exactly once, never the injection (harness parts are removed before
+    every store).
     Compactions emit no dedicated SSE event — the frontend resyncs the chat
     after the run (done/error).
 - **frontend/** — Svelte 5 + Vite + TS (no Gradle build step), styled after

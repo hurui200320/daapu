@@ -6,6 +6,7 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
+import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
@@ -30,6 +31,13 @@ class ChatCompactionServiceTest {
 
     private fun user(text: String) =
         ChatMessage(ChatMessageRole.User, listOf(ChatMessagePart.Text(text)))
+
+    private fun stampedUser(text: String, at: String = "2026-08-17T09:00:00Z") =
+        ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(text)),
+            createdAt = java.time.Instant.parse(at),
+        )
 
     private fun assistant(text: String, meta: ChatMessageMeta? = null) =
         ChatMessage(
@@ -168,6 +176,7 @@ class ChatCompactionServiceTest {
         val newChat = result.newChat
         // summary user message + last 3 turns verbatim
         assertEquals(ChatMessageRole.User, newChat[0].role)
+        assertNotNull(newChat[0].createdAt, "the summary is a stored user message, so it must be stamped")
         val summaryText = (newChat[0].parts.single() as ChatMessagePart.Text).text
         assertTrue(
             summaryText.startsWith("CONTEXT COMPACTION: "),
@@ -196,6 +205,62 @@ class ChatCompactionServiceTest {
         assertTrue(request.contains("DO NOT"), "the marker message is part of the input")
         assertTrue(request.contains("u5 "), "the preserved tail is context for the summarizer")
         assertTrue(request.contains("Summarize this chat according to system prompt."))
+    }
+
+    @Test
+    fun `compactChat sanitizes injected input and anchors stamped user messages`() = runBlocking {
+        // the compactor treats its input as potentially injected (a reactive
+        // compaction receives the chat loop's injected in-loop chat): the
+        // full <injection> parts are stripped first, then the stamped user
+        // messages get their <meta> send-time anchors — exactly one anchor
+        // set, never double-injected, and the preserved output stays clean.
+        val contextInjection = ContextInjection()
+        val injection = contextInjection.generateInjection(
+            java.time.ZonedDateTime.now(), false, false, emptyList()
+        )
+        val chat = listOf(
+            stampedUser("u1 " + "x".repeat(200), "2026-08-16T09:00:00Z")
+                .let { it.copy(parts = listOf(injection) + it.parts) },
+            assistant("a1 " + "y".repeat(200)),
+            stampedUser("u2 " + "x".repeat(200), "2026-08-17T09:00:00Z"),
+            assistant("a2 " + "y".repeat(200)),
+        )
+        val hand = FakeHand(
+            runScript = { textRunFlow("concise summary") },
+        )
+        val result = assertNotNull(compactor(hand).compactChat(chat, excludeLastNRound = 3))
+
+        // the preserved tail (the stamped user message) comes back clean
+        assertEquals(listOf(ChatMessagePart.Text("u2 " + "x".repeat(200))), result.newChat[1].parts)
+        // the dropped region is clean too (the extraction consumer sanitizes
+        // anyway, but the compactor's own output must not leak harness parts)
+        assertEquals(listOf(ChatMessagePart.Text("u1 " + "x".repeat(200))), result.droppedMessages[0].parts)
+
+        val sent = hand.requests.single().messages
+        val sentText = ChatCodec.encodeChat(sent)
+        assertFalse(
+            sentText.contains("<injection>"),
+            "the summarizer must not see any full injection",
+        )
+        // every stamped user message leads with its own send-time anchor
+        sent.filter { it.role == ChatMessageRole.User }
+            .filterNot { it.parts.singleOrNull()?.let { p -> p is ChatMessagePart.Text && (p.text.contains("Above are the messages") || p.text.contains("Summarize this chat")) } == true }
+            .forEach { message ->
+                assertTrue(
+                    contextInjection.hasMetaPart(message),
+                    "expected a meta anchor, got: ${message.parts.firstOrNull()}",
+                )
+            }
+        // the anchor renders the message's own instant in the system zone,
+        // so the expected date is computed from it (never hard-coded)
+        val oldestDate = java.time.ZonedDateTime.ofInstant(
+            java.time.Instant.parse("2026-08-16T09:00:00Z"),
+            java.time.ZoneId.systemDefault(),
+        ).toLocalDate().toString()
+        assertTrue(
+            sentText.contains("<sent-at>$oldestDate"),
+            "the oldest message's anchor must render its own send time",
+        )
     }
 
     @Test
