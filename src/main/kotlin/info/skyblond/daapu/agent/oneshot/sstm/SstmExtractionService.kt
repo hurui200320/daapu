@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
+import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.lastMessageText
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService.Companion.NOTHING_TO_REMEMBER_TEXT
 import info.skyblond.daapu.agent.persist.ContextInjection
@@ -32,11 +33,16 @@ import java.time.LocalDate
  *    the existing SSTM ([SstmService]). No lock is held: a concurrent run's
  *    injection read may observe a half-merged SSTM, which is healed by the
  *    `sstm-updated` flag comparison on the next round.
+ * 3. **ELTM purge** — after the extraction/merge (or its skip), the SSTM is
+ *    purged back under `memory.sstm.maxCapacity` (the total content char
+ *    length) by moving the oldest entries into the ELTM (see
+ *    [purgeSstmToEltm]); a failed purge fails the run, already-purged
+ *    batches stay purged, surviving rows are retried.
  *
  * A failure throws and fails the run:
  * - [info.skyblond.daapu.agent.model.ModelCapabilityException] when the
  *   extraction model cannot process the dropped content (e.g. images with a
- *   text-only model), which is a configuration error (`memory.extractModel`)
+ *   text-only model), which is a configuration error (`memory.sstm.extractModel`)
  *   and fails fast;
  * - a failed extraction (a classified hand error such as a truncated
  *   `length` finish) or one producing tool calls or no text;
@@ -59,6 +65,19 @@ class SstmExtractionService(
     // the chat loop, the merge rounds are capped by [maxMergeRounds]
     private val maxRetries: Int,
     private val streamIdleTimeoutMs: Long,
+    // the ELTM write path: after the extraction/merge, the SSTM is purged
+    // back under capacity by moving the oldest entries into the ELTM (see
+    // [purgeSstmToEltm]); REQUIRED — `memory.eltm` is mandatory config
+    private val eltmWriterService: EltmWriterService,
+    /**
+     * SSTM capacity: the purge target (`memory.sstm.maxCapacity`) — the
+     * total char length (`String.length`, UTF-16 units) of all memory
+     * contents. A model-agnostic proxy for the injected SSTM size, so the
+     * injection never blows up the context regardless of the model.
+     */
+    private val sstmCapacity: Int,
+    /** How many SSTM entries one purge batch moves into the ELTM. */
+    private val purgeBatchSize: Int,
     // the harness context: sanitize the dropped history (it may be the chat
     // loop's injected in-loop chat) and anchor every user message with its
     // send time, so the extractor resolves relative dates per message and
@@ -69,26 +88,57 @@ class SstmExtractionService(
      * Extract memories from [droppedMessages] (the raw messages compaction is
      * about to discard) and merge them into the SSTM. Throws per the class
      * KDoc (the extraction pipeline fails the run on failure). The
-     * [NOTHING_TO_REMEMBER_TEXT] sentinel is the only skip path: a blank
-     * answer is a hand `empty_response` error and fails the run, it cannot
-     * silently skip the merge.
+     * [NOTHING_TO_REMEMBER_TEXT] sentinel is the only skip path for the
+     * extraction: a blank answer is a hand `empty_response` error and fails
+     * the run, it cannot silently skip the merge.
+     *
+     * Regardless of the extraction outcome, the SSTM purge runs afterwards
+     * (see [purgeSstmToEltm]): an over-capacity SSTM whose dropped content is
+     * unmemorable still purges.
      */
     suspend fun processDiscardedMessages(
         droppedMessages: List<ChatMessage>,
     ) {
-        if (droppedMessages.isEmpty()) {
-            return
-        }
-        // fail fast on a capability mismatch before the LLM call: the same
-        // prompt would fail identically forever (the loop's per-round check
-        // semantics, applied to the configured extraction model)
-        extractModel.checkPromptContentCapabilities(droppedMessages)
-        val extraction = extract(droppedMessages)
-        if (extraction == NOTHING_TO_REMEMBER_TEXT) {
-            return
+        if (droppedMessages.isNotEmpty()) {
+            // fail fast on a capability mismatch before the LLM call: the same
+            // prompt would fail identically forever (the loop's per-round check
+            // semantics, applied to the configured extraction model)
+            extractModel.checkPromptContentCapabilities(droppedMessages)
+            val extraction = extract(droppedMessages)
+            if (extraction != NOTHING_TO_REMEMBER_TEXT) {
+                mergeToSstm(extraction)
+            }
         }
 
-        mergeToSstm(extraction)
+        purgeSstmToEltm()
+    }
+
+    /**
+     * The SSTM purge: while the total content char length exceeds
+     * `sstmCapacity`, the oldest `purgeBatchSize` memories (by
+     * `(last_update, id)`) are handed to the
+     * ELTM writer agent ([EltmWriterService.writeToEltm]) and deleted from
+     * the SSTM ONLY after the writer run succeeds — a failed writer fails
+     * the run, the already-purged batches stay purged (their content is safe
+     * in the ELTM), and the surviving rows are retried on the next run
+     * (the writer's creates/fetches are idempotent and it deduplicates notes
+     * against a subject's recent entries).
+     */
+    private suspend fun purgeSstmToEltm() {
+        while (true) {
+            val memories = sstmService.listMemories().memories
+            val totalLength = memories.sumOf { it.content.length }
+            if (totalLength <= sstmCapacity) {
+                logger.info { "SSTM is below capacity (${totalLength}/${sstmCapacity}), no purge needed" }
+                return
+            }
+            val victims = memories.take(purgeBatchSize)
+            logger.info { "Purging ${victims.size} SSTM memories into the ELTM (${totalLength} > $sstmCapacity chars)" }
+            eltmWriterService.writeToEltm(victims, LocalDate.now())
+            victims.forEach { victim ->
+                sstmService.deleteMemory(victim.id)
+            }
+        }
     }
 
     /**
@@ -115,7 +165,6 @@ class SstmExtractionService(
             spec = null,
         )
 
-        // TODO: when ELTM is ready, detect SSTM length and trigger ELTM
         return try {
             hand.runCollect(
                 HandRunRequest(

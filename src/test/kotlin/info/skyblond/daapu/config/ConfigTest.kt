@@ -73,8 +73,17 @@ class ConfigTest {
                 },
                 "memory": {
                     "compactModel": "bifrost/x",
-                    "extractModel": "bifrost/y",
-                    "mergeModel": "bifrost/z",
+                    "sstm": {
+                        "extractModel": "bifrost/y",
+                        "mergeModel": "bifrost/z",
+                        "maxCapacity": 100,
+                        "purgeBatchSize": 10
+                    },
+                    "eltm": {
+                        "embeddingModel": "bifrost/embed",
+                        "writerModel": "bifrost/w",
+                        "recallModel": "bifrost/r"
+                    }
                 },
                 "title": {
                     "model": "bifrost/t",
@@ -124,7 +133,7 @@ class ConfigTest {
                         "baseUrl": "http://host/x//y",
                     },
                 },
-                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -141,7 +150,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -160,7 +169,7 @@ class ConfigTest {
                     "bifrost": { "apiKey": "k1", "baseUrl": "http://h1" },
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
-                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -182,7 +191,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -232,7 +241,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
-                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -256,7 +265,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -306,7 +315,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "server": { "port": 0 },
-                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -380,7 +389,7 @@ class ConfigTest {
     fun `reserved namespaces are rejected`() {
         // namespaces the harness reserves for internal/harness tools: an
         // MCP server using one would collide with those tools' names
-        for (reserved in MCP_RESERVED_NAMESPACES) {
+        for (reserved in TOOL_RESERVED_NAMESPACES) {
             val e =
                 assertFailsWith<IllegalArgumentException> { server(namespace = reserved).validate() }
             assertTrue(
@@ -432,7 +441,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                     "title": { "model": "t" },
                     "mcp": {
                         "servers": [
@@ -462,17 +471,39 @@ class ConfigTest {
                 "providers": {},
                 "memory": {
                     "compactModel": "bifrost/x",
-                    "extractModel": "bifrost/y",
-                    "mergeModel": "bifrost/z"
+                    "sstm": {
+                        "extractModel": "bifrost/y",
+                        "mergeModel": "bifrost/z",
+                        "maxCapacity": 200,
+                        "purgeBatchSize": 20
+                    },
+                    "eltm": {
+                        "embeddingModel": "bifrost/embed",
+                        "writerModel": "bifrost/w",
+                        "recallModel": "bifrost/r",
+                        "entityMatchThreshold": 0.3,
+                        "noteSearchThreshold": 0.2,
+                        "recallTimeoutSeconds": 60,
+                        "maxWriterRounds": 10
+                    }
                 },
                 "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
         ).memory
         assertEquals("bifrost/x", decoded.compactModel)
-        assertEquals("bifrost/y", decoded.extractModel)
-        assertEquals("bifrost/z", decoded.mergeModel)
-        assertEquals(150, decoded.maxMergeRounds)
+        assertEquals("bifrost/y", decoded.sstm.extractModel)
+        assertEquals("bifrost/z", decoded.sstm.mergeModel)
+        assertEquals(150, decoded.sstm.maxMergeRounds)
+        assertEquals(200, decoded.sstm.maxCapacity)
+        assertEquals(20, decoded.sstm.purgeBatchSize)
+        assertEquals("bifrost/embed", decoded.eltm.embeddingModel)
+        assertEquals("bifrost/w", decoded.eltm.writerModel)
+        assertEquals("bifrost/r", decoded.eltm.recallModel)
+        assertEquals(0.3, decoded.eltm.entityMatchThreshold)
+        assertEquals(0.2, decoded.eltm.noteSearchThreshold)
+        assertEquals(60L, decoded.eltm.recallTimeoutSeconds)
+        assertEquals(10, decoded.eltm.maxWriterRounds)
     }
 
     @Test
@@ -501,7 +532,8 @@ class ConfigTest {
                     "providers": {},
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "extractModel": "bifrost/y"
+                        "extractModel": "bifrost/y",
+                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -511,25 +543,141 @@ class ConfigTest {
     }
 
     @Test
+    fun `memory config requires the sstm section`() {
+        // the SSTM is REQUIRED (the injection is an unconditional
+        // system-prompt promise): a config missing it must fail at decode
+        val e = assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": {
+                        "compactModel": "bifrost/x",
+                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" }
+                    },
+                    "title": { "model": "bifrost/t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("sstm"),
+            "the error should name the missing field: ${e.message}"
+        )
+    }
+
+    @Test
+    fun `memory config requires the eltm section`() {
+        // the ELTM is REQUIRED for every deployment (the SSTM purge and the
+        // recall tool are unconditional system-prompt promises): a config
+        // missing it must fail at decode
+        val e = assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": {
+                        "compactModel": "bifrost/x",
+                        "sstm": { "extractModel": "bifrost/y", "mergeModel": "bifrost/z", "maxCapacity": 100, "purgeBatchSize": 10 }
+                    },
+                    "title": { "model": "bifrost/t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("eltm"),
+            "the error should name the missing field: ${e.message}"
+        )
+    }
+
+    @Test
     fun `memory config validation`() {
+        val validEltm = EltmConfig(
+            embeddingModel = "bifrost/embed",
+            writerModel = "w",
+            recallModel = "r",
+        )
+        val validSstm = SstmConfig(
+            extractModel = "bifrost/x",
+            mergeModel = "bifrost/z",
+            maxCapacity = 100,
+            purgeBatchSize = 10,
+        )
         val blank = assertFailsWith<IllegalArgumentException> {
             MemoryConfig(
                 compactModel = "bifrost/x",
-                extractModel = "bifrost/y",
-                mergeModel = "  ",
+                sstm = validSstm.copy(mergeModel = "  "),
+                eltm = validEltm,
             ).validate()
         }
         assertTrue(blank.message!!.contains("mergeModel"))
 
-        val negativeRounds = assertFailsWith<IllegalArgumentException> {
+        val blankCompact = assertFailsWith<IllegalArgumentException> {
             MemoryConfig(
-                compactModel = "bifrost/x",
-                extractModel = "bifrost/y",
-                mergeModel = "bifrost/z",
-                maxMergeRounds = -1,
+                compactModel = "  ",
+                sstm = validSstm,
+                eltm = validEltm,
             ).validate()
         }
+        assertTrue(blankCompact.message!!.contains("compactModel"))
+    }
+
+    @Test
+    fun `sstm config validation`() {
+        val valid = SstmConfig(
+            extractModel = "bifrost/x",
+            mergeModel = "bifrost/z",
+            maxCapacity = 100,
+            purgeBatchSize = 10,
+        )
+        valid.validate()
+
+        val negativeRounds = assertFailsWith<IllegalArgumentException> {
+            valid.copy(maxMergeRounds = -1).validate()
+        }
         assertTrue(negativeRounds.message!!.contains("maxMergeRounds"))
+        valid.copy(maxMergeRounds = 0).validate()
+
+        val badCapacity = assertFailsWith<IllegalArgumentException> {
+            valid.copy(maxCapacity = 0).validate()
+        }
+        assertTrue(badCapacity.message!!.contains("maxCapacity"))
+
+        val badBatch = assertFailsWith<IllegalArgumentException> {
+            valid.copy(purgeBatchSize = 0).validate()
+        }
+        assertTrue(badBatch.message!!.contains("purgeBatchSize"))
+    }
+
+    @Test
+    fun `eltm config validation`() {
+        val valid = EltmConfig(
+            embeddingModel = "bifrost/embed",
+            writerModel = "w",
+            recallModel = "r",
+        )
+        valid.validate()
+
+        val blankId = assertFailsWith<IllegalArgumentException> {
+            valid.copy(writerModel = "  ").validate()
+        }
+        assertTrue(blankId.message!!.contains("writerModel"))
+
+        // thresholds must stay in [0, 1]
+        assertFailsWith<IllegalArgumentException> { valid.copy(entityMatchThreshold = 1.1).validate() }
+        assertFailsWith<IllegalArgumentException> { valid.copy(entityMatchThreshold = -0.1).validate() }
+        assertFailsWith<IllegalArgumentException> { valid.copy(noteSearchThreshold = 2.0).validate() }
+        valid.copy(entityMatchThreshold = 0.0, noteSearchThreshold = 1.0).validate()
+
+        // the recall timeout is an execution budget: 0 = none
+        assertFailsWith<IllegalArgumentException> { valid.copy(recallTimeoutSeconds = -1).validate() }
+        valid.copy(recallTimeoutSeconds = 0).validate()
+
+        assertFailsWith<IllegalArgumentException> { valid.copy(maxWriterRounds = -1).validate() }
+        valid.copy(maxWriterRounds = 0).validate()
     }
 
     @Test
@@ -539,7 +687,7 @@ class ConfigTest {
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                 "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
@@ -555,7 +703,7 @@ class ConfigTest {
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                 "title": { "model": "bifrost/t", "lastNRound": 3 }
             }
             """.trimIndent()
@@ -573,7 +721,7 @@ class ConfigTest {
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" }
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } }
                 }
                 """.trimIndent()
             )
@@ -584,7 +732,7 @@ class ConfigTest {
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "extractModel": "y", "mergeModel": "z" },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r" } },
                     "title": {}
                 }
                 """.trimIndent()

@@ -3,7 +3,9 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.config.EltmConfig
 import info.skyblond.daapu.config.MemoryConfig
+import info.skyblond.daapu.config.SstmConfig
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
 import io.ktor.server.plugins.*
@@ -159,8 +161,17 @@ class ChatRunServiceTest {
         // must fail here, not silently skip every compaction/extraction
         val valid = MemoryConfig(
             compactModel = "bifrost/cerebras/gemma-4-31b",
-            extractModel = "bifrost/cerebras/gemma-4-31b",
-            mergeModel = "bifrost/cerebras/gemma-4-31b",
+            sstm = SstmConfig(
+                extractModel = "bifrost/cerebras/gemma-4-31b",
+                mergeModel = "bifrost/cerebras/gemma-4-31b",
+                maxCapacity = 100,
+                purgeBatchSize = 10,
+            ),
+            eltm = EltmConfig(
+                embeddingModel = "bifrost/zenmux sub/google/gemini-embedding-2",
+                writerModel = "bifrost/cerebras/gemma-4-31b",
+                recallModel = "bifrost/cerebras/gemma-4-31b",
+            ),
         )
         val e = assertFailsWith<IllegalArgumentException> {
             ChatRunService(testAppConfig().copy(memory = valid.copy(compactModel = "bifrost/nope")))
@@ -170,10 +181,48 @@ class ChatRunServiceTest {
             "the error should name the config key: ${e.message}"
         )
         assertFailsWith<IllegalArgumentException> {
-            ChatRunService(testAppConfig().copy(memory = valid.copy(extractModel = "bifrost/nope")))
+            ChatRunService(
+                testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(extractModel = "bifrost/nope")))
+            )
         }
         assertFailsWith<IllegalArgumentException> {
-            ChatRunService(testAppConfig().copy(memory = valid.copy(mergeModel = "bifrost/nope")))
+            ChatRunService(
+                testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(mergeModel = "bifrost/nope")))
+            )
+        }
+    }
+
+    @Test
+    fun `an unknown eltm model id fails fast at construction`() {
+        // same as the memory pipeline models: the ELTM models (REQUIRED
+        // config) are resolved once at startup
+        val base = testAppConfig().memory.eltm
+        val e = assertFailsWith<IllegalArgumentException> {
+            ChatRunService(
+                testAppConfig().copy(
+                    memory = testAppConfig().memory.copy(
+                        eltm = base.copy(embeddingModel = "bifrost/nope")
+                    )
+                )
+            )
+        }
+        assertTrue(
+            e.message!!.contains("memory.eltm.embeddingModel"),
+            "the error should name the config key: ${e.message}"
+        )
+        assertFailsWith<IllegalArgumentException> {
+            ChatRunService(
+                testAppConfig().copy(
+                    memory = testAppConfig().memory.copy(eltm = base.copy(writerModel = "bifrost/nope"))
+                )
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            ChatRunService(
+                testAppConfig().copy(
+                    memory = testAppConfig().memory.copy(eltm = base.copy(recallModel = "bifrost/nope"))
+                )
+            )
         }
     }
 

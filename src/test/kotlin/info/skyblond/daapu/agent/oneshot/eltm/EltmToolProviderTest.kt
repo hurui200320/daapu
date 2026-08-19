@@ -1,0 +1,738 @@
+package info.skyblond.daapu.agent.oneshot.eltm
+
+import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.hand.EmbeddingException
+import info.skyblond.daapu.hand.FakeHand
+import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.testEltmWriterService
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import java.time.LocalDate
+import kotlin.test.*
+
+class EltmToolProviderTest {
+
+    private fun toolCall(id: String, name: String, arguments: JsonObject) =
+        ToolCallRequest(id = id, name = name, args = arguments)
+
+    private fun textOf(result: ChatMessagePart.ToolResult) =
+        (result.parts.single() as ChatMessagePart.Text).text
+
+    @Test
+    fun `the writer advertises the ten eltm tools in order with integer ids`() {
+        val provider = EltmToolProvider(FakeEltmService())
+        val specs = runBlocking { provider.specifications() }
+        assertEquals(
+            listOf(
+                "search_entities",
+                "get_relationships",
+                "get_entity_notes",
+                "get_relationship_notes",
+                "search_notes",
+                "create_entity",
+                "create_relationship",
+                "merge_entities",
+                "add_entity_note",
+                "add_relationship_note",
+            ),
+            specs.map { it.name },
+        )
+        specs.forEach { spec ->
+            val properties = spec.schema["properties"]?.jsonObject ?: JsonObject(emptyMap())
+            properties.forEach { (name, schema) ->
+                if (name.contains("_id") || name == "id" || name == "limit" || name == "offset") {
+                    assertEquals(
+                        "integer", schema.jsonObject["type"]?.jsonPrimitive?.content,
+                        "numeric argument '$name' of '${spec.name}' must use an integer schema"
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the read-only provider advertises exactly the five read tools`() {
+        val provider = EltmToolProvider(FakeEltmService(), readOnly = true)
+        val specs = runBlocking { provider.specifications() }
+        assertEquals(
+            listOf(
+                "search_entities",
+                "get_relationships",
+                "get_entity_notes",
+                "get_relationship_notes",
+                "search_notes",
+            ),
+            specs.map { it.name },
+        )
+    }
+
+    @Test
+    fun `the read-only provider rejects write tools`() = runBlocking {
+        val provider = EltmToolProvider(FakeEltmService(), readOnly = true)
+        val result = provider.execute(
+            toolCall("c1", "create_entity", buildJsonObject { put("name", "Alice") }),
+        )
+        assertTrue(result.isError)
+        assertTrue(textOf(result).contains("not available in read-only mode"), textOf(result))
+    }
+
+    @Test
+    fun `search_entities returns the hits with their similarity`() = runBlocking {
+        val eltm = FakeEltmService()
+        eltm.createEntity("Alice", "person")
+        eltm.createEntity("Bob", "person")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "search_entities", buildJsonObject { put("query", "ali") })
+        )
+        assertFalse(result.isError)
+        val text = textOf(result)
+        assertTrue(text.contains("alice"), text)
+        assertFalse(text.contains("bob"), "substring match on the canonical name only")
+        assertTrue(text.contains("similarity"), text)
+    }
+
+    @Test
+    fun `get_relationships returns both directions with endpoint names and the latest note`() =
+        runBlocking {
+            val eltm = FakeEltmService()
+            val alice = eltm.createEntity("Alice", "person").entity
+            val bob = eltm.createEntity("Bob", "person").entity
+            val rel = eltm.createRelationship(alice.id, bob.id, "colleague of")
+            eltm.attachNoteToRelationship(rel.id, LocalDate.parse("2026-08-18"), "met at the conference")
+            val provider = EltmToolProvider(eltm)
+
+            val result = provider.execute(
+                toolCall("c1", "get_relationships", buildJsonObject { put("entity_id", alice.id) }),
+            )
+            assertFalse(result.isError)
+            val text = textOf(result)
+            assertTrue(text.contains("alice") && text.contains("bob"), text)
+            assertTrue(text.contains("colleague_of"), "the normalized verb renders: $text")
+            assertTrue(text.contains("met at the conference"), "the latest note is inline: $text")
+        }
+
+    @Test
+    fun `get_relationships errors on a missing entity`() = runBlocking {
+        val provider = EltmToolProvider(FakeEltmService())
+        val result = provider.execute(
+            toolCall("c1", "get_relationships", buildJsonObject { put("entity_id", 999) }),
+        )
+        assertTrue(result.isError)
+        assertTrue(textOf(result).contains("999"), textOf(result))
+    }
+
+    @Test
+    fun `get_entity_notes pages latest-first`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-01"), "early")
+        eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-10"), "late")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall(
+                "c1",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("limit", 1)
+                },
+            ),
+        )
+        val text = textOf(result)
+        assertTrue(text.contains("late"), "newest event first: $text")
+        assertFalse(text.contains("early"))
+
+        val missingId = provider.execute(
+            toolCall("c2", "get_entity_notes", buildJsonObject { put("entity_id", 999) }),
+        )
+        assertTrue(missingId.isError)
+        assertTrue(textOf(missingId).contains("999"), textOf(missingId))
+    }
+
+    @Test
+    fun `get_relationship_notes pages latest-first`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val bob = eltm.createEntity("Bob", "person").entity
+        val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+        eltm.attachNoteToRelationship(rel.id, LocalDate.parse("2026-08-01"), "early")
+        eltm.attachNoteToRelationship(rel.id, LocalDate.parse("2026-08-10"), "late")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall(
+                "c1",
+                "get_relationship_notes",
+                buildJsonObject {
+                    put("relationship_id", rel.id)
+                    put("limit", 1)
+                },
+            ),
+        )
+        val text = textOf(result)
+        assertTrue(text.contains("late"), "newest event first: $text")
+        assertFalse(text.contains("early"))
+
+        val missingId = provider.execute(
+            toolCall("c2", "get_relationship_notes", buildJsonObject { put("relationship_id", 999) }),
+        )
+        assertTrue(missingId.isError)
+        assertTrue(textOf(missingId).contains("999"), textOf(missingId))
+    }
+
+    @Test
+    fun `note tools narrow by an inclusive date range and page with offset`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-01"), "early")
+        eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-05"), "middle")
+        eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-10"), "late")
+        val provider = EltmToolProvider(eltm)
+
+        val narrowed = provider.execute(
+            toolCall(
+                "c1",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("from", "2026-08-01")
+                    put("to", "2026-08-05")
+                },
+            ),
+        )
+        val text = textOf(narrowed)
+        assertTrue(text.contains("early") && text.contains("middle"), text)
+        assertFalse(text.contains("late"), "the range is inclusive, not open-ended: $text")
+
+        val paged = provider.execute(
+            toolCall(
+                "c2",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("limit", 1)
+                    put("offset", 1)
+                },
+            ),
+        )
+        val pagedText = textOf(paged)
+        assertTrue(pagedText.contains("middle"), "offset skips the newest note: $pagedText")
+        assertFalse(pagedText.contains("late"))
+    }
+
+    @Test
+    fun `note tools error on malformed dates`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val bob = eltm.createEntity("Bob", "person").entity
+        val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+        val provider = EltmToolProvider(eltm)
+
+        val badFrom = provider.execute(
+            toolCall(
+                "c1",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("from", "yesterday")
+                },
+            ),
+        )
+        assertTrue(badFrom.isError, "a malformed from must not be silently ignored")
+        assertTrue(textOf(badFrom).contains("YYYY-MM-DD"), textOf(badFrom))
+
+        val badTo = provider.execute(
+            toolCall(
+                "c2",
+                "get_relationship_notes",
+                buildJsonObject {
+                    put("relationship_id", rel.id)
+                    put("to", "soon")
+                },
+            ),
+        )
+        assertTrue(badTo.isError)
+        assertTrue(textOf(badTo).contains("YYYY-MM-DD"), textOf(badTo))
+    }
+
+    @Test
+    fun `note tools error when from is after to`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall(
+                "c1",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("from", "2026-08-10")
+                    put("to", "2026-08-01")
+                },
+            ),
+        )
+        assertTrue(result.isError)
+        assertTrue(textOf(result).contains("from must not be after to"), textOf(result))
+    }
+
+    @Test
+    fun `search_notes returns matching notes newest-first and validates the subject`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-01"), "likes coffee")
+        eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-10"), "likes tea")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "search_notes", buildJsonObject { put("query", "coffee") }),
+        )
+        assertFalse(result.isError)
+        val text = textOf(result)
+        assertTrue(text.contains("likes coffee"), text)
+        assertFalse(text.contains("likes tea"), "only the matching note renders: $text")
+
+        val none = provider.execute(
+            toolCall("c2", "search_notes", buildJsonObject { put("query", "nonexistent") }),
+        )
+        assertFalse(none.isError)
+        assertEquals("No matching notes.", textOf(none))
+
+        val bothSubjects = provider.execute(
+            toolCall(
+                "c3",
+                "search_notes",
+                buildJsonObject {
+                    put("query", "coffee")
+                    put("entity_id", alice.id)
+                    put("relationship_id", 1)
+                },
+            ),
+        )
+        assertTrue(bothSubjects.isError)
+        assertTrue(textOf(bothSubjects).contains("at most one subject"), textOf(bothSubjects))
+    }
+
+    @Test
+    fun `search_notes errors on a missing subject and malformed dates`() = runBlocking {
+        val provider = EltmToolProvider(FakeEltmService())
+
+        val missingEntity = provider.execute(
+            toolCall(
+                "c1",
+                "search_notes",
+                buildJsonObject {
+                    put("query", "coffee")
+                    put("entity_id", 999)
+                },
+            ),
+        )
+        assertTrue(missingEntity.isError)
+        assertTrue(textOf(missingEntity).contains("999"), textOf(missingEntity))
+
+        val badDate = provider.execute(
+            toolCall(
+                "c2",
+                "search_notes",
+                buildJsonObject {
+                    put("query", "coffee")
+                    put("from", "last week")
+                },
+            ),
+        )
+        assertTrue(badDate.isError)
+        assertTrue(textOf(badDate).contains("YYYY-MM-DD"), textOf(badDate))
+    }
+
+    @Test
+    fun `create_entity creates or fetches the entity and reports near matches`() = runBlocking {
+        val eltm = FakeEltmService()
+        val provider = EltmToolProvider(eltm)
+
+        val created = provider.execute(
+            toolCall("c1", "create_entity", buildJsonObject { put("name", "  Alice  ") }),
+        )
+        assertFalse(created.isError)
+        val text = textOf(created)
+        assertTrue(text.contains("\"alice\" (general)"), "canonicalized name and category: $text")
+
+        // the same name+category again fetches the row instead of inserting
+        val again = provider.execute(
+            toolCall("c2", "create_entity", buildJsonObject { put("name", "Alice") }),
+        )
+        assertFalse(again.isError)
+        assertEquals(1, eltm.entities.size, "an exact match is a fetch, not a new row")
+        assertEquals(1, eltm.writeVersion, "an exact match touches nothing")
+        val againText = textOf(again)
+        assertTrue(againText.contains("notes 0") && againText.contains("relations 0"), againText)
+        // a different category disambiguates: it is a NEW entity
+        val other = provider.execute(
+            toolCall("c3", "create_entity", buildJsonObject {
+                put("name", "Alice")
+                put("category", "person")
+            }),
+        )
+        assertFalse(other.isError)
+        assertEquals(2, eltm.entities.size, "category separates homonyms")
+        assertEquals(2, eltm.writeVersion, "only real inserts bump the version")
+    }
+
+    @Test
+    fun `create_relationship inserts and fetches existing rows`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val bob = eltm.createEntity("Bob", "person").entity
+        val provider = EltmToolProvider(eltm)
+
+        val created = provider.execute(
+            toolCall("c1", "create_relationship", buildJsonObject {
+                put("src_id", alice.id)
+                put("dst_id", bob.id)
+                put("verb", "works at")
+            }),
+        )
+        assertFalse(created.isError)
+        assertTrue(textOf(created).contains("works_at"), textOf(created))
+        assertTrue(textOf(created).contains("alice"), "the endpoint names render: ${textOf(created)}")
+        val versionAfterCreate = eltm.writeVersion
+
+        // re-creating an active triple fetches the row instead of inserting
+        val fetched = provider.execute(
+            toolCall("c2", "create_relationship", buildJsonObject {
+                put("src_id", alice.id)
+                put("dst_id", bob.id)
+                put("verb", "works at")
+            }),
+        )
+        assertFalse(fetched.isError, "a fetch is a success: ${textOf(fetched)}")
+        assertEquals(1, eltm.relationships.size, "an active triple is fetched, not duplicated")
+        assertEquals(versionAfterCreate, eltm.writeVersion, "a fetch touches nothing")
+
+        // an ended triple is ALSO fetched as-is: validity never changes here
+        val relId = eltm.relationships.values.single().id
+        provider.execute(
+            toolCall("c3", "add_relationship_note", buildJsonObject {
+                put("relationship_id", relId)
+                put("event_date", "2026-08-19")
+                put("note", "the collaboration ended")
+                put("valid", false)
+            }),
+        )
+        val versionAfterEnd = eltm.writeVersion
+        val refetched = provider.execute(
+            toolCall("c4", "create_relationship", buildJsonObject {
+                put("src_id", alice.id)
+                put("dst_id", bob.id)
+                put("verb", "works at")
+            }),
+        )
+        assertFalse(refetched.isError, "an ended triple is fetched as-is: ${textOf(refetched)}")
+        assertTrue(
+            textOf(refetched).contains("invalidated"),
+            "the fetched state is visible: ${textOf(refetched)}"
+        )
+        assertFalse(eltm.relationships.values.single().valid, "the fetch never flips validity")
+        assertEquals(versionAfterEnd, eltm.writeVersion, "the fetch touches nothing")
+    }
+
+    @Test
+    fun `create_relationship fails fast on a missing endpoint`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "create_relationship", buildJsonObject {
+                put("src_id", alice.id)
+                put("dst_id", 999)
+                put("verb", "works_at")
+            }),
+        )
+        assertTrue(result.isError)
+        assertTrue(textOf(result).contains("999"), textOf(result))
+    }
+
+    @Test
+    fun `add_relationship_note's valid flag closes and revives the relationship idempotently`() =
+        runBlocking {
+            val eltm = FakeEltmService()
+            val alice = eltm.createEntity("Alice", "person").entity
+            val bob = eltm.createEntity("Bob", "person").entity
+            val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+            val provider = EltmToolProvider(eltm)
+
+            val ok = provider.execute(
+                toolCall("c1", "add_relationship_note", buildJsonObject {
+                    put("relationship_id", rel.id)
+                    put("event_date", "2026-08-19")
+                    put("note", "left the company")
+                    put("valid", false)
+                }),
+            )
+            assertFalse(ok.isError, textOf(ok))
+            assertFalse(eltm.relationships[rel.id]!!.valid, "the ending note closes the relationship")
+            assertEquals(1, eltm.notes.size, "the ending note is recorded")
+
+            // an already-closed relationship still accepts the note (the diary
+            // is content truth): the close is idempotent, NOT an error
+            val again = provider.execute(
+                toolCall("c2", "add_relationship_note", buildJsonObject {
+                    put("relationship_id", rel.id)
+                    put("event_date", "2026-08-20")
+                    put("note", "it stays over")
+                    put("valid", false)
+                }),
+            )
+            assertFalse(again.isError, "a note on an already-closed relationship still attaches: ${textOf(again)}")
+            assertEquals(2, eltm.notes.size)
+            assertFalse(eltm.relationships[rel.id]!!.valid)
+
+            // a revival event re-opens the SAME row
+            val revived = provider.execute(
+                toolCall("c3", "add_relationship_note", buildJsonObject {
+                    put("relationship_id", rel.id)
+                    put("event_date", "2026-08-21")
+                    put("note", "rejoined the company")
+                    put("valid", true)
+                }),
+            )
+            assertFalse(revived.isError, textOf(revived))
+            assertTrue(eltm.relationships[rel.id]!!.valid, "the revival event re-opens the edge")
+            assertEquals(3, eltm.notes.size)
+
+            // setting the current state again is a no-op, not an error
+            val noop = provider.execute(
+                toolCall("c4", "add_relationship_note", buildJsonObject {
+                    put("relationship_id", rel.id)
+                    put("event_date", "2026-08-22")
+                    put("note", "still there")
+                    put("valid", true)
+                }),
+            )
+            assertFalse(noop.isError, textOf(noop))
+            assertTrue(eltm.relationships[rel.id]!!.valid)
+
+            // a missing relationship fails before the embed
+            val missing = provider.execute(
+                toolCall("c5", "add_relationship_note", buildJsonObject {
+                    put("relationship_id", 999)
+                    put("event_date", "2026-08-20")
+                    put("note", "ghost")
+                    put("valid", true)
+                }),
+            )
+            assertTrue(missing.isError)
+            assertTrue(textOf(missing).contains("999"), textOf(missing))
+        }
+
+    @Test
+    fun `add_relationship_note renders the current state label`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val bob = eltm.createEntity("Bob", "person").entity
+        val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+        val provider = EltmToolProvider(eltm)
+
+        val opened = provider.execute(
+            toolCall("c1", "add_relationship_note", buildJsonObject {
+                put("relationship_id", rel.id)
+                put("event_date", "2026-08-19")
+                put("note", "started working together")
+            }),
+        )
+        assertFalse(opened.isError, textOf(opened))
+        assertTrue(textOf(opened).contains("currently active"), textOf(opened))
+
+        val closed = provider.execute(
+            toolCall("c2", "add_relationship_note", buildJsonObject {
+                put("relationship_id", rel.id)
+                put("event_date", "2026-08-20")
+                put("note", "left the company")
+                put("valid", false)
+            }),
+        )
+        assertFalse(closed.isError, textOf(closed))
+        assertTrue(textOf(closed).contains("currently invalidated"), textOf(closed))
+
+        val reopened = provider.execute(
+            toolCall("c3", "add_relationship_note", buildJsonObject {
+                put("relationship_id", rel.id)
+                put("event_date", "2026-08-21")
+                put("note", "rejoined the company")
+                put("valid", true)
+            }),
+        )
+        assertFalse(reopened.isError, textOf(reopened))
+        assertTrue(textOf(reopened).contains("currently active"), textOf(reopened))
+    }
+
+    @Test
+    fun `add_entity_note appends add-only and rejects a stray valid arg`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val provider = EltmToolProvider(eltm)
+
+        val badDate = provider.execute(
+            toolCall("c1", "add_entity_note", buildJsonObject {
+                put("entity_id", alice.id)
+                put("event_date", "yesterday")
+                put("note", "went to Paris")
+            }),
+        )
+        assertTrue(badDate.isError, "a malformed date fails instead of being silently accepted")
+        assertTrue(textOf(badDate).contains("YYYY-MM-DD"), textOf(badDate))
+
+        val added = provider.execute(
+            toolCall("c2", "add_entity_note", buildJsonObject {
+                put("entity_id", alice.id)
+                put("event_date", "2026-08-18")
+                put("note", "went to Paris")
+            }),
+        )
+        assertFalse(added.isError)
+        val note = eltm.notes.values.single()
+        assertTrue(note.entityId == alice.id && note.relationshipId == null)
+        assertEquals(LocalDate.parse("2026-08-18"), note.eventDate)
+
+        // the split tool has no valid flag: a stray arg is an error, not a
+        // silently ignored structural change
+        val strayValid = provider.execute(
+            toolCall("c3", "add_entity_note", buildJsonObject {
+                put("entity_id", alice.id)
+                put("event_date", "2026-08-18")
+                put("note", "still here")
+                put("valid", false)
+            }),
+        )
+        assertTrue(strayValid.isError)
+        assertTrue(textOf(strayValid).contains("valid only applies"), textOf(strayValid))
+        assertEquals(1, eltm.notes.size, "the rejected call appends nothing")
+
+        val missing = provider.execute(
+            toolCall("c4", "add_entity_note", buildJsonObject {
+                put("entity_id", 999)
+                put("event_date", "2026-08-18")
+                put("note", "ghost")
+            }),
+        )
+        assertTrue(missing.isError)
+        assertTrue(textOf(missing).contains("999"), textOf(missing))
+    }
+
+    @Test
+    fun `merge_entities folds a re-pointed triple into the one existing row and folds the validity`() =
+        runBlocking {
+            val eltm = FakeEltmService()
+            val acme = eltm.createEntity("Acme", "company").entity
+            val acmeInc = eltm.createEntity("Acme Inc", "company").entity
+            val bob = eltm.createEntity("Bob", "person").entity
+            val provider = EltmToolProvider(eltm)
+
+            // one row per triple: the canonical entity's edge is CLOSED...
+            val winnerRel = eltm.createRelationship(acme.id, bob.id, "works_at")
+            eltm.attachNoteToRelationship(
+                winnerRel.id, LocalDate.parse("2026-08-01"), "left the company", valid = false,
+            )
+            // ...the duplicate's edge is ACTIVE, with its own diary note
+            val loserRel = eltm.createRelationship(acmeInc.id, bob.id, "works_at")
+            eltm.attachNoteToRelationship(
+                loserRel.id, LocalDate.parse("2026-08-05"), "joined the company",
+            )
+
+            val result = provider.execute(
+                toolCall("c1", "merge_entities", buildJsonObject {
+                    put("winner_id", acme.id)
+                    put("loser_id", acmeInc.id)
+                }),
+            )
+            assertFalse(result.isError, textOf(result))
+            val remaining = eltm.relationships.values.single()
+            assertTrue(
+                remaining.valid,
+                "the survivor holds the edge because either row held it"
+            )
+            assertEquals(2, eltm.notes.size, "both diary notes survive the fold")
+            assertTrue(
+                eltm.notes.values.all { it.relationshipId == remaining.id },
+                "the duplicate's notes re-point to the survivor, never cascade-deleted"
+            )
+        }
+
+    @Test
+    fun `merge_entities folds the loser into the winner`() = runBlocking {
+        val eltm = FakeEltmService()
+        val winner = eltm.createEntity("Apple", "company").entity
+        val loser = eltm.createEntity("Apple Inc", "company").entity
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "merge_entities", buildJsonObject {
+                put("winner_id", winner.id)
+                put("loser_id", loser.id)
+            }),
+        )
+        assertFalse(result.isError)
+        assertTrue(textOf(result).contains("merged"), textOf(result))
+        assertEquals(listOf(winner.id to loser.id), eltm.merged)
+        assertNull(eltm.entities[loser.id], "the loser row is gone")
+        assertNotNull(eltm.entities[winner.id])
+    }
+
+    @Test
+    fun `an embedding too-large error tells the model to split the content`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        eltm.embedFailure = EmbeddingException(
+            "invalid_request", "input too large for the embedding model"
+        )
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "add_entity_note", buildJsonObject {
+                put("entity_id", alice.id)
+                put("event_date", "2026-08-18")
+                put("note", "a very long note")
+            }),
+        )
+        assertTrue(result.isError)
+        val text = textOf(result)
+        assertTrue(text.contains("split it into several smaller notes"), text)
+        assertFalse(text.contains("embedding failed"), "the too-large case has its own message")
+
+        // other embedding failures are generic errors the loop may retry
+        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
+        val retryable = provider.execute(
+            toolCall("c2", "add_entity_note", buildJsonObject {
+                put("entity_id", alice.id)
+                put("event_date", "2026-08-18")
+                put("note", "another note")
+            }),
+        )
+        assertTrue(retryable.isError)
+        assertTrue(textOf(retryable).contains("embedding failed"), textOf(retryable))
+    }
+
+    @Test
+    fun `writer input lists the victims verbatim with a current date header`() {
+        val writer = testEltmWriterService(FakeHand())
+        val input = EltmWriterService.buildWriterInput(
+            victims = listOf(
+                info.skyblond.daapu.memory.sstm.ShortTermMemory(
+                    1, java.time.Instant.parse("2026-08-01T00:00:00Z"), "likes coffee"
+                ),
+            ),
+            date = LocalDate.parse("2026-08-18"),
+        )
+        assertTrue(input.startsWith("Current date: 2026-08-18\n\n"), input)
+        assertTrue(input.contains("## Memory 1"), input)
+        assertTrue(input.contains("likes coffee"), "victim content verbatim: $input")
+    }
+}

@@ -85,6 +85,76 @@ frontend + Node/TS "hand-pi" service.
     (fresh chats store `""`, so the first run always flags). Failed runs
     never reach the store; `updateMemory` skips identical writes (no
     fingerprint churn).
+  - **ELTM** (`memory/eltm/EltmService.kt` + `PostgresEltmService.kt`, the
+    diary model): entities `(id, name, category)` and relationships
+    `(src, verb, dst, valid)` hold NO content — all descriptive content
+    lives in **notes**, add-only dated diary entries `(subject, event_date,
+    note)` strictly single-subject (one entity XOR one relationship, a
+    migration CHECK). `valid=false` is a soft delete;
+    re-establishing an ended triple is a diary event
+    (`add_relationship_note` with `valid=true`). There is NO stored mention counter —
+    prominence is computed on read: `EntityView(noteCount,
+    relationshipCount, …)`, `RelationshipView(noteCount, …)`,
+    `EntityWithScore(noteCount, relationshipCount, score)` (a true
+    historical count is unreconstructable: no event ledger; entities and
+    relationships carry NO timestamps — content lives in the notes).
+    Write path =
+    the SSTM purge only: `SstmExtractionService.purgeSstmToEltm` (after
+    extraction/merge or its skip) moves the oldest `memory.sstm.purgeBatchSize`
+    SSTM rows per batch through the ELTM writer agent
+    (`agent/oneshot/eltm/EltmWriterService.kt` + 10-tool
+    `EltmToolProvider.kt` — RW mode; the same provider's `readOnly`
+    mode = the 5 read tools for the Phase 4 recall sub-session — `runCollect`
+    tool loop, model =
+    `memory.eltm.writerModel`, cap `maxWriterRounds`) and deletes each batch
+    ONLY after its writer run succeeds — a writer failure fails the run,
+    purged batches stay purged (content safe in the ELTM), surviving rows
+    retry idempotently. Writer semantics: create exact-matches are pure
+    reads (create-or-fetch — nothing is ever updated: renaming an entity is
+    create + merge), unique violations (concurrent runs) re-select
+    the winner, `merge_entities` folds colliding triples (the
+    duplicate's notes re-pointed BEFORE its delete, so the
+    cascade never eats diary notes) and invalidates re-pointed self-loops;
+    relationship endings are diary events — `add_relationship_note`'s `valid`
+    flag
+    (`false` = the edge ends, `true` = it holds again, e.g. rejoined the
+    company; omitted = unchanged) applies the structural change with the
+    explanatory note in ONE transaction (one counter bump; idempotent —
+    setting the current state is a no-op). The ELTM tools mirror the
+    service one-to-one (no entity/relationship mixing in one tool:
+    `create_entity`/`create_relationship`, `get_entity_notes`/
+    `get_relationship_notes`, `add_entity_note`/
+    `add_relationship_note`, plus the shared reads `search_entities`,
+    `get_relationships`, `search_notes`); read tools fail fast on
+    nonexistent subjects and malformed date filters. There is exactly ONE
+    `eltm_relationships` row per triple (full unique index): `valid` is a
+    state of the relationship, never a second row — it only changes
+    through diary events (`add_relationship_note`'s `valid` flag),
+    and merge folds a colliding triple
+    into the survivor (validity OR, notes re-pointed);
+    an embedding `invalid_request` answers an `isError` "split it into
+    several smaller notes" tool result (never truncated). **Read path**
+    (recall sub-session, Phase 4): `memory.eltm.recallModel` is resolved
+    already. `chats.eltm_version` mirrors `sstm_version` ("" = first run
+    flags); the version is the global write counter
+    (`EltmService.version()`) — every visible-state write (entity/
+    relationship insert, revive, invalidation, merge, note append) bumps
+    the counter
+    (`memory_meta_number.eltm_version`, an atomic
+    `value = value + 1` UPDATE inside the write's OWN transaction — never
+    on a no-op upsert touch, so a missed bump would silently break the
+    flag), NOT a content hash.
+    **Vector columns are FIXED at `vector(2000)`**
+    (pgvector's HNSW limit, `MAX_VECTOR_DIMENSIONS` in `config/Config.kt`,
+    `db/VectorColumnType.kt`): the embedding model's output dimensions
+    (catalog entry, `memory.eltm.embeddingModel`, must be ≤ 2000 — fail
+    fast at catalog construction) only decide the nonzero prefix — every
+    vector and query is zero-padded to 2000 on write (`padVector`), and
+    cosine similarity is invariant under zero-padding, so switching
+    embedding models never needs a schema change or DB reset. Similarity
+    queries use Exposed's built-in pgvector support (`VectorDistance` with
+    `VectorDistanceMetric.COSINE`, rendered as the `<=>` operator; the query
+    vector travels as a `QueryParameter` typed by `VectorColumnType`).
   - **Context injection & time anchors** (`agent/persist/ContextInjection.kt`):
     user messages carry a stored `createdAt` (UTC `Instant`, user-only —
     assistant timing is implied by the surrounding user messages; required on
@@ -203,11 +273,11 @@ frontend + Node/TS "hand-pi" service.
     extraction time never matters; every relative date resolves against the
     message's own anchor). The **extractor**
     one-shot (no tools; raw history + attachments, capability-checked —
-    a `memory.extractModel` config error) returns a fact list or the
+    a `memory.sstm.extractModel` config error) returns a fact list or the
     `Nothing worth remember.` sentinel (only skip path; blank extraction is
     a hand `empty_response` error). A failed extraction (e.g. truncated
     `length`) or one producing tool calls/no text throws and fails the run.
-    The **merger** is a `/v1/run` tool loop (≤ `memory.maxMergeRounds`
+    The **merger** is a `/v1/run` tool loop (≤ `memory.sstm.maxMergeRounds`
     rounds, default 150; the hand executes `add/update/list` memory tools
     back through the callback route against the `sstms` table). It runs
     without a lock — a
@@ -225,7 +295,18 @@ frontend + Node/TS "hand-pi" service.
     the keep count collapses to zero and replaces the whole chat, the loop
     re-appends the run's user parts first so the retried round still
     carries the user input).
-  - Model resolution: `memory.compactModel/extractModel/mergeModel` and
+  - `SstmExtractionService.purgeSstmToEltm` runs at the END of
+    `processDiscardedMessages` — after the extraction/merge OR its skip (an
+    over-capacity SSTM whose dropped content is unmemorable still purges):
+    while the SSTM's total memory content char length exceeds
+    `memory.sstm.maxCapacity` (a model-agnostic proxy for the injected SSTM
+    size), the oldest `purgeBatchSize` memories (by `(last_update, id)`)
+    are handed to the
+    ELTM writer agent (see the ELTM bullet) and deleted from the SSTM only
+    after the writer run succeeds; a writer failure throws (`ELTM write
+    failed`) and fails the run, already-purged batches stay purged.
+  - Model resolution: `memory.compactModel` + `memory.sstm.extractModel/
+    mergeModel` and
     `title.model` (`agent/oneshot/TitleGenerator.kt`, used by
     `POST /api/chats/{id}/title` — no per-chat lock, like rename; titles
     from the last stored history; empty chat short-circuits; a title model
@@ -233,7 +314,15 @@ frontend + Node/TS "hand-pi" service.
     at config load), resolved once at `ChatRunService` construction
     (unknown ids and a merge model without tool-call support fail fast);
     the one-shot services are constructed once and shared. A chat run's own
-    model is never used for the pipeline. `title.lastNRound` (default `0`)
+    model is never used for the pipeline. The ELTM models
+    (`memory.eltm.embeddingModel/writerModel/recallModel`) are REQUIRED the
+    same way — `memory.eltm` is mandatory config for every deployment (the
+    SSTM purge and the recall tool are unconditional system-prompt
+    promises); writer/recall must support tool calls; the embedding entry's
+    `dimensions` must not exceed `MAX_VECTOR_DIMENSIONS` (checked at
+    catalog construction). The writer/recall/embedding one-shot knobs come
+    from `memory.eltm.*` + `hand.*` (the embed timeout is the hand's
+    `streamIdleTimeoutMs`). `title.lastNRound` (default `0`)
     caps history fed to the title model; the title generator reads the chat
     row exactly once, never the injection (harness parts are removed before
     every store).

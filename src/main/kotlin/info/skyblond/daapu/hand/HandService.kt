@@ -138,9 +138,7 @@ class HandService(
      * unexpected protocol errors) is wrapped into
      * [EmbeddingException]("upstream") so callers see ONE exception family.
      * Fail-fast on a hand-reported [HandEmbedResult.dimensions] that
-     * disagrees with the catalog entry's: a catalog/gateway drift (the ELTM
-     * startup check on `memory_meta.embedding_dim` catches the same class
-     * of bug at boot).
+     * disagrees with the catalog entry's.
      */
     suspend fun embed(
         model: EmbeddingModel,

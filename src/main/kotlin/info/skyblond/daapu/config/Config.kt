@@ -110,19 +110,47 @@ data class HandConfig(
 }
 
 /**
- * The memory pipeline settings (SSTM extraction, see
- * `agent/oneshot/sstm/`). The compaction trigger fraction and keep rounds
- * are per-model (`agent/model/LLM.kt`), since they depend on the model's
- * context size. All three model ids are REQUIRED and reference the catalog
- * (`agent/ModelCatalog.kt`); they are resolved once at `ChatRunService`
- * construction and reused for every run — a chat run's own model is never
- * used for the one-shot pipeline. Catalog membership is validated at
- * startup by `ChatRunService` (the config layer does not know the catalog).
+ * The memory pipeline settings: compaction (`agent/oneshot/compaction/`),
+ * the SSTM (short-term memory, `agent/oneshot/sstm/`), and the ELTM
+ * (external long-term memory, `memory/eltm/`). The compaction trigger
+ * fraction and keep rounds are per-model (`agent/model/LLM.kt`), since they
+ * depend on the model's context size. All model ids are REQUIRED and
+ * reference the catalog (`agent/ModelCatalog.kt`); they are resolved once at
+ * `ChatRunService` construction and reused for every run — a chat run's own
+ * model is never used for the one-shot pipeline. Catalog membership is
+ * validated at startup by `ChatRunService` (the config layer does not know
+ * the catalog).
  */
 @Serializable
 data class MemoryConfig(
     /** Catalog model id for the compaction summarizer. */
     val compactModel: String,
+    /** The short-term memory (SSTM) settings. */
+    val sstm: SstmConfig,
+    /**
+     * The external long-term memory (ELTM) settings.
+     */
+    val eltm: EltmConfig,
+) {
+    fun validate() {
+        require(compactModel.isNotBlank()) { "memory.compactModel must not be blank" }
+        sstm.validate()
+        eltm.validate()
+    }
+}
+
+/**
+ * The SSTM (short-term memory) settings: the extractor/merger one-shots
+ * that write it (`agent/oneshot/sstm/`) and the capacity/purge knobs that
+ * evict it into the ELTM (the only eviction path; the SSTM is always fully
+ * in context, so the capacity is the capacity lever, never retrieval). The
+ * two model ids are REQUIRED and reference the catalog
+ * (`agent/ModelCatalog.kt`); they are resolved once at `ChatRunService`
+ * construction (unknown ids and a merge model without tool-call support
+ * fail fast).
+ */
+@Serializable
+data class SstmConfig(
     /**
      * Catalog model id for the memory extractor (sees the raw dropped
      * history, images included).
@@ -132,16 +160,87 @@ data class MemoryConfig(
     val mergeModel: String,
     /** Round cap for the merge tool loop; `0` = unlimited. */
     val maxMergeRounds: Int = 150,
+    /**
+     * SSTM capacity: the total char length (`String.length`, UTF-16 units)
+     * of all memory contents; when the SSTM exceeds it after an update, the
+     * oldest entries are purged into the ELTM. A model-agnostic proxy for
+     * the injected SSTM size, so the context injection never blows up the
+     * context regardless of the model.
+     */
+    val maxCapacity: Int,
+    /** How many SSTM entries one purge batch moves into the ELTM. */
+    val purgeBatchSize: Int,
 ) {
     fun validate() {
         listOf(
-            "memory.compactModel" to compactModel,
-            "memory.extractModel" to extractModel,
-            "memory.mergeModel" to mergeModel,
+            "memory.sstm.extractModel" to extractModel,
+            "memory.sstm.mergeModel" to mergeModel,
         ).forEach { (name, id) ->
             require(id.isNotBlank()) { "$name must not be blank" }
         }
-        require(maxMergeRounds >= 0) { "memory.maxMergeRounds must be >= 0, got $maxMergeRounds" }
+        require(maxMergeRounds >= 0) { "memory.sstm.maxMergeRounds must be >= 0, got $maxMergeRounds" }
+        require(maxCapacity > 0) { "memory.sstm.maxCapacity must be > 0, got $maxCapacity" }
+        require(purgeBatchSize >= 1) { "memory.sstm.purgeBatchSize must be >= 1, got $purgeBatchSize" }
+    }
+}
+
+/**
+ * The ELTM (external long-term memory) settings: the diary model
+ * (entities/relationships/notes, see `memory/eltm/`), the models behind it,
+ * and the recall tool's knobs. All three model ids are
+ * REQUIRED and reference the catalog (`agent/ModelCatalog.kt`); they are
+ * resolved once at `ChatRunService` construction (unknown ids and a
+ * writer/recall model without tool-call support fail fast). The embedding
+ * model's output dimensions must be at most
+ * [MAX_VECTOR_DIMENSIONS] (pgvector's HNSW indexing limit): the ELTM
+ * columns are fixed at that width and shorter vectors are zero-padded on
+ * write, so switching embedding models never needs a schema change.
+ */
+@Serializable
+data class EltmConfig(
+    /**
+     * Catalog id of the embedding model (`agent/ModelCatalog.kt`), whose
+     * entry carries the output dimensions. REQUIRED.
+     */
+    val embeddingModel: String,
+    /** Catalog LLM id of the ELTM writer (a tool loop); REQUIRED. */
+    val writerModel: String,
+    /** Catalog LLM id of the recall sub-session (a tool loop); REQUIRED. */
+    val recallModel: String,
+    /**
+     * Vector cosine similarity floor for the `create_entity` near-match
+     * candidates (0..1): a candidate above it is offered to the writer LLM
+     * for disambiguation/merge decisions.
+     */
+    val entityMatchThreshold: Double = 0.5,
+    /**
+     * Vector cosine similarity floor for `search_notes` (0..1): the RAG
+     * floor under which a diary entry is not surfaced.
+     */
+    val noteSearchThreshold: Double = 0.1,
+    /** Execution budget of one recall tool call in seconds; `0` = none. */
+    val recallTimeoutSeconds: Long = 600,
+    /** Round cap for the ELTM writer tool loop; `0` = unlimited. */
+    val maxWriterRounds: Int = 150,
+) {
+    fun validate() {
+        listOf(
+            "memory.eltm.embeddingModel" to embeddingModel,
+            "memory.eltm.writerModel" to writerModel,
+            "memory.eltm.recallModel" to recallModel,
+        ).forEach { (name, id) ->
+            require(id.isNotBlank()) { "$name must not be blank" }
+        }
+        require(entityMatchThreshold in 0.0..1.0) {
+            "memory.eltm.entityMatchThreshold must be in [0, 1], got $entityMatchThreshold"
+        }
+        require(noteSearchThreshold in 0.0..1.0) {
+            "memory.eltm.noteSearchThreshold must be in [0, 1], got $noteSearchThreshold"
+        }
+        require(recallTimeoutSeconds >= 0) {
+            "memory.eltm.recallTimeoutSeconds must be >= 0, got $recallTimeoutSeconds"
+        }
+        require(maxWriterRounds >= 0) { "memory.eltm.maxWriterRounds must be >= 0, got $maxWriterRounds" }
     }
 }
 
@@ -252,7 +351,7 @@ enum class McpTransportType {
  * [namespace] namespaces the advertised tool names (`{namespace}__{tool}`),
  * so tools from different servers never collide in the model request.
  * Namespaces the harness reserves for its own internal/harness tools
- * ([MCP_RESERVED_NAMESPACES]) must not be used.
+ * ([TOOL_RESERVED_NAMESPACES]) must not be used.
  */
 @Serializable
 data class McpServerConfig(
@@ -294,7 +393,7 @@ data class McpServerConfig(
                 "MCP server namespace '$namespace' is invalid: it must not contain '__', which separates the parts of advertised tool names"
             )
         }
-        if (namespace in MCP_RESERVED_NAMESPACES) {
+        if (namespace in TOOL_RESERVED_NAMESPACES) {
             throw IllegalArgumentException(
                 "MCP server namespace '$namespace' is reserved for internal/harness tools, " +
                         "so it cannot be used by an MCP server"
@@ -336,7 +435,10 @@ data class McpServerConfig(
  * collide with the internal tools' namespaces. All lowercase, matching
  * [SAFE_ID_REGEX] — the check in [McpServerConfig.validate] is exact.
  */
-val MCP_RESERVED_NAMESPACES: Set<String> = setOf("system", "inner", "internal", "gsg")
+val TOOL_RESERVED_NAMESPACES: Set<String> = setOf(
+    "system", "inner", "internal", "gsg",
+    "sstm", "eltm", "harness"
+)
 
 /**
  * Charset for ids that become part of wire-visible strings: MCP namespaces
@@ -346,3 +448,14 @@ val MCP_RESERVED_NAMESPACES: Set<String> = setOf("system", "inner", "internal", 
  * uppercase is rejected so the reserved-namespace check stays an exact match.
  */
 val SAFE_ID_REGEX: Regex = Regex("[0-9a-z_-]+")
+
+/**
+ * The fixed width of every pgvector column in the ELTM tables
+ * (`db/Tables.kt`, `V1__init.sql`): pgvector's HNSW indexing limit for the
+ * `vector` type. Embedding models may output fewer dimensions. The service
+ * zero-pads every vector (and every query) to this width on writing. Cosine
+ * similarity is invariant under zero-padding, and the fixed width means
+ * switching embedding models never requires a schema change (the model's
+ * output dimensions must only not exceed this limit).
+ */
+const val MAX_VECTOR_DIMENSIONS: Int = 2000

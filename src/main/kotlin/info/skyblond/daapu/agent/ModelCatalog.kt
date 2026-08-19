@@ -74,12 +74,11 @@ class ModelCatalog(
     )
 
     val embeddingModels: List<EmbeddingModel> = listOf(
-        // PoC: pinned to the bifrost gateway like the LLM entries. The
-        // dimensions MUST match the `vector(N)` column of the ELTM
-        // migration: the gateway honors a `dimensions` request field, so
-        // the hand requests this exact output size and the response is
-        // verified against it (hand/HandService.kt + the startup
-        // `memory_meta.embedding_dim` check).
+        // PoC: pinned to the bifrost gateway like the LLM entries.
+        // The gateway honors a `dimensions` request field,
+        // so the hand requests this exact output size
+        // and the response is verified against it.
+        // For other providers, check the dimensions field first.
         EmbeddingModel(
             provider = bifrostProvider,
             modelId = "zenmux sub/google/gemini-embedding-2",

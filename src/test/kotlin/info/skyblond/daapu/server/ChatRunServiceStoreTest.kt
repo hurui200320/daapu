@@ -20,8 +20,17 @@ class ChatRunServiceStoreTest {
     private val hand = FakeHand(
         runScript = { textRunFlow("Generated title") }
     )
+    // the service's default SSTM/ELTM stores are Postgres-backed, so the
+    // store tests inject an empty in-memory SSTM: an empty store never
+    // triggers the ELTM purge (which reads the SSTM)
+    private val sstmService = info.skyblond.daapu.testutil.RecordingSstmService()
 
-    private fun service() = ChatRunService(testAppConfig(), hand = hand, chatStore = store)
+    private fun service() = ChatRunService(
+        testAppConfig(),
+        hand = hand,
+        chatStore = store,
+        sstmService = sstmService,
+    )
 
     private fun user(text: String) =
         ChatMessage(

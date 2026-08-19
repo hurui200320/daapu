@@ -8,8 +8,11 @@ import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.MutableSstmService
 import info.skyblond.daapu.testutil.RecordingSstmService
 import info.skyblond.daapu.testutil.addMemoryRound
+import info.skyblond.daapu.testutil.testEltmWriterService
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -46,6 +49,9 @@ class SstmExtractionServiceTest {
         hand: FakeHand,
         sstm: SstmService,
         maxMergeRounds: Int = 150,
+        sstmCapacity: Int = 1_000,
+        purgeBatchSize: Int = 10,
+        eltmService: FakeEltmService = FakeEltmService(),
     ) = SstmExtractionService(
         extractModel = model("bifrost/cerebras/gemma-4-31b"),
         hand = testHandService(hand),
@@ -53,6 +59,9 @@ class SstmExtractionServiceTest {
         maxMergeRounds = maxMergeRounds,
         maxRetries = 0,
         streamIdleTimeoutMs = 0,
+        eltmWriterService = testEltmWriterService(hand, eltmService),
+        sstmCapacity = sstmCapacity,
+        purgeBatchSize = purgeBatchSize,
     )
 
     // ------------------------------------------------------------------
@@ -222,6 +231,9 @@ class SstmExtractionServiceTest {
             sstmService = sstm,
             maxRetries = 0,
             streamIdleTimeoutMs = 0,
+            eltmWriterService = testEltmWriterService(hand),
+            sstmCapacity = 1_000,
+            purgeBatchSize = 10,
         )
         // a text-only extraction model with an image in the dropped
         // history: the capability mismatch is a configuration error and
@@ -353,5 +365,117 @@ class SstmExtractionServiceTest {
         )
         assertTrue(input.contains("fact a"))
         assertTrue(input.contains("fact b"))
+    }
+
+    // ------------------------------------------------------------------
+    // ELTM purge
+    // ------------------------------------------------------------------
+
+    private fun memories(vararg ids: Long): List<ShortTermMemory> =
+        ids.mapIndexed { index, id ->
+            ShortTermMemory(
+                id = id,
+                lastUpdate = Instant.parse("2026-08-01T00:00:00Z").plusSeconds(index * 60L),
+                content = "memory $id",
+            )
+        }
+
+    @Test
+    fun `the purge moves the oldest batches out until under capacity`() = runBlocking {
+        // 5 memories of 8 chars ("memory N"), capacity 16 chars, batch 2:
+        // writer runs for [1,2] and [3,4], then 1 memory (8 chars) remains
+        // (under capacity) — each batch is deleted only after its writer
+        // run succeeds
+        val hand = FakeHand(runScript = { textRunFlow("done") })
+        val sstm = MutableSstmService(memories(1L, 2L, 3L, 4L, 5L))
+        val eltm = FakeEltmService()
+        val extractor = service(hand, sstm, sstmCapacity = 16, purgeBatchSize = 2, eltmService = eltm)
+
+        extractor.processDiscardedMessages(emptyList())
+
+        assertEquals(2, hand.requests.size, "one writer run per purge batch")
+        assertEquals(listOf(1L, 2L, 3L, 4L), sstm.deleted, "oldest first, delete after success")
+        assertEquals(listOf(5L), sstm.listMemories().memories.map { it.id }, "back under capacity")
+        // each writer input lists the victims verbatim plus the current date
+        hand.requests.forEach { request ->
+            assertTrue(request.systemPrompt!!.startsWith("You're maintaining an external long-term memory"))
+            val input = (request.messages.single().parts.single() as ChatMessagePart.Text).text
+            assertTrue(
+                Regex("^Current date: \\d{4}-\\d{2}-\\d{2}\n\n").containsMatchIn(input),
+                "the writer input must carry a current date header: $input"
+            )
+        }
+        val firstInput = (hand.requests[0].messages.single().parts.single()
+            as ChatMessagePart.Text).text
+        assertTrue(firstInput.contains("## Memory 1") && firstInput.contains("memory 1"))
+        assertTrue(firstInput.contains("## Memory 2") && firstInput.contains("memory 2"))
+        assertFalse(firstInput.contains("memory 3"), "the first batch lists only its victims")
+    }
+
+    @Test
+    fun `the purge still runs when the extraction skips`() = runBlocking {
+        // an over-capacity SSTM whose dropped content is unmemorable still
+        // purges: the empty-input and sentinel paths must not bypass it
+        val hand = FakeHand(runScript = { textRunFlow("Nothing worth remember.") })
+        val sstm = MutableSstmService(memories(1L, 2L, 3L))
+        val extractor = service(hand, sstm, sstmCapacity = 8, purgeBatchSize = 2)
+        extractor.processDiscardedMessages(listOf(userMessage("u1")))
+        // run 1 = extractor (sentinel), run 2 = the purge batch
+        assertEquals(2, hand.requests.size)
+        assertEquals(listOf(1L, 2L), sstm.deleted, "oldest first, one batch under capacity")
+
+        val emptyHand = FakeHand(runScript = { textRunFlow("done") })
+        val emptySstm = MutableSstmService(memories(1L, 2L, 3L))
+        service(emptyHand, emptySstm, sstmCapacity = 8, purgeBatchSize = 2)
+            .processDiscardedMessages(emptyList())
+        assertEquals(listOf(1L, 2L), emptySstm.deleted, "an empty drop still purges")
+        assertEquals(1, emptyHand.requests.size, "only the writer run")
+    }
+
+    @Test
+    fun `a failed purge run fails the pipeline and keeps the victims`() = runBlocking {
+        // the writer fails (run_error): the purge throws and fails the run;
+        // the not-yet-purged rows survive and the batch is NOT deleted, so a
+        // retry re-writes them (the writer deduplicates against recent notes)
+        val hand = FakeHand(
+            runScript = {
+                errorRunFlow("upstream", "upstream failure after retries")
+            },
+        )
+        val sstm = MutableSstmService(memories(1L, 2L, 3L))
+        val extractor = service(hand, sstm, sstmCapacity = 8, purgeBatchSize = 2)
+
+        val e = assertFailsWith<IllegalStateException> {
+            extractor.processDiscardedMessages(emptyList())
+        }
+        assertEquals("ELTM write failed", e.message)
+        assertTrue(sstm.deleted.isEmpty(), "delete only after a successful writer run")
+        assertEquals(3, sstm.listMemories().memories.size)
+    }
+
+    @Test
+    fun `the purge measures capacity in content chars, not entry count`() = runBlocking {
+        // 3 memories of wildly different lengths ("x", "y", "z" x 50 = 52
+        // chars total) under a 10-char budget: an entry count (3) would say
+        // "under", the char length says "over" — the loop purges batch
+        // [1,2] and then the long memory alone, down to zero
+        val hand = FakeHand(runScript = { textRunFlow("done") })
+        val sstm = MutableSstmService(
+            listOf(
+                ShortTermMemory(1, Instant.parse("2026-08-01T00:00:00Z"), "x"),
+                ShortTermMemory(2, Instant.parse("2026-08-01T00:01:00Z"), "y"),
+                ShortTermMemory(3, Instant.parse("2026-08-01T00:02:00Z"), "z".repeat(50)),
+            )
+        )
+        val extractor = service(hand, sstm, sstmCapacity = 10, purgeBatchSize = 2)
+
+        extractor.processDiscardedMessages(emptyList())
+
+        assertEquals(2, hand.requests.size, "one writer run per purge batch")
+        assertEquals(listOf(1L, 2L, 3L), sstm.deleted, "oldest first, the long memory goes last")
+        assertTrue(
+            sstm.listMemories().memories.isEmpty(),
+            "50 chars still exceed the 10-char budget, so the purge drains everything"
+        )
     }
 }

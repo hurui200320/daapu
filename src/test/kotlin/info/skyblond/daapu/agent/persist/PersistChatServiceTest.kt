@@ -6,6 +6,7 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
@@ -21,6 +22,7 @@ import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.testutil.FakeEltmService
 import info.skyblond.daapu.testutil.mergeRunFlow
 import info.skyblond.daapu.testutil.testHandService
 import kotlinx.coroutines.*
@@ -136,6 +138,18 @@ class PersistChatServiceTest {
                             sstmService = sstmService,
                             maxRetries = 0,
                             streamIdleTimeoutMs = 300_000,
+                            // the purge must never fire here: the SSTM stays
+                            // far under an effectively unbounded capacity
+                            eltmWriterService = EltmWriterService(
+                                writerModel = model,
+                                hand = handService,
+                                eltmService = FakeEltmService(),
+                                maxWriterRounds = 150,
+                                maxRetries = 0,
+                                streamIdleTimeoutMs = 300_000,
+                            ),
+                            sstmCapacity = 1_000_000,
+                            purgeBatchSize = 10,
                         ),
                     maxRounds = 64,
                     maxRetries = 0,
@@ -941,6 +955,18 @@ class PersistChatServiceTest {
                         sstmService = sstm,
                         maxRetries = 0,
                         streamIdleTimeoutMs = 300_000,
+                        // the purge must never fire in these tests: the SSTM
+                        // stays far under an effectively unbounded capacity
+                        eltmWriterService = EltmWriterService(
+                            writerModel = model,
+                            hand = handService,
+                            eltmService = FakeEltmService(),
+                            maxWriterRounds = 150,
+                            maxRetries = 0,
+                            streamIdleTimeoutMs = 300_000,
+                        ),
+                        sstmCapacity = 1_000_000,
+                        purgeBatchSize = 10,
                     ),
                     maxRounds = 64,
                     maxRetries = 0,
@@ -1093,6 +1119,18 @@ class PersistChatServiceTest {
             sstmService = sstm,
             maxRetries = 0,
             streamIdleTimeoutMs = 300_000,
+            // the purge must never fire in these tests: the SSTM stays far
+            // under an effectively unbounded capacity
+            eltmWriterService = EltmWriterService(
+                writerModel = model,
+                hand = handService,
+                eltmService = FakeEltmService(),
+                maxWriterRounds = 150,
+                maxRetries = 0,
+                streamIdleTimeoutMs = 300_000,
+            ),
+            sstmCapacity = 1_000_000,
+            purgeBatchSize = 10,
         )
         val chatStore = ConcurrentChatStore()
         val persistService = PersistChatService(

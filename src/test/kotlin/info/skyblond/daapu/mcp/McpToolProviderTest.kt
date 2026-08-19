@@ -2,7 +2,7 @@ package info.skyblond.daapu.mcp
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolCallRequest
-import info.skyblond.daapu.config.MCP_RESERVED_NAMESPACES
+import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import kotlinx.coroutines.runBlocking
@@ -138,7 +138,7 @@ class McpToolProviderTest {
             // namespaces the harness reserves for internal/harness tools must
             // not be claimed by an MCP server (validated in the config too,
             // see ConfigTest; here the provider fails fast at construction)
-            for (reserved in MCP_RESERVED_NAMESPACES) {
+            for (reserved in TOOL_RESERVED_NAMESPACES) {
                 assertFailsWith<IllegalArgumentException> {
                     McpToolProvider(listOf(httpConfig(reserved, server)))
                 }

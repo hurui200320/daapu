@@ -107,7 +107,7 @@ cp config.example.jsonc config.jsonc
 | `providers` | `{<id>: {apiKey, baseUrl}}` (required)             | OpenAI-compatible providers, keyed by id (e.g. `bifrost`); `baseUrl` is used as-is and must carry the full `/v1` root. |
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
-| `memory`    | `compactModel`/`extractModel`/`mergeModel` (required) | SSTM extraction settings, see below.                                  |
+| `memory`    | `compactModel` + `sstm` + `eltm` (required)        | Compaction + SSTM extraction + external long-term memory (ELTM) settings, see below. |
 | `title`     | `model` (required), `lastNRound` (default `0`)          | Session-title generation (`POST /api/chats/{id}/title`).              |
 | `hand`      | `baseUrl` (`http://127.0.0.1:3100`), `token` (`dev-token`), `maxRounds` (64), `maxRetries` (0), `streamIdleTimeoutMs` (300000) | The hand-pi execution service endpoint, the shared static token (`HAND_TOKEN`), and the run-policy knobs sent with every run (the hand holds no defaults). |
 
@@ -137,13 +137,41 @@ History compaction and SSTM extraction (see `AGENTS.md` and
   `CONTEXT COMPACTION: `-marked summary user message. When the chat has
   fewer rounds than this, the keep count shrinks (down to zero) so an
   overflowing chat always compacts.
-- `compactModel`, `extractModel`, `mergeModel` — REQUIRED catalog model ids
-  for the one-shot pipelines (summarizer, memory extractor, memory merger);
+- `compactModel` + `sstm.extractModel`/`mergeModel` — REQUIRED catalog model
+  ids for the one-shot pipelines (summarizer, memory extractor, memory merger);
   they are resolved once at startup and reused for every run — a chat run's
   own model is never used for these. The extractor/compactor see the raw
   history, images included, so the model must support the content — a
   model that cannot fails the run with a clear error (same as the chat
   model's own capability check), and unknown ids fail fast at startup.
+- `sstm.maxCapacity` (required) — the total char length of all memory
+  contents; when the SSTM exceeds it after an update, the oldest entries are
+  purged into the ELTM (the only eviction path; the SSTM is always fully in
+  context, so this is the capacity lever, never retrieval).
+  `sstm.purgeBatchSize` (required) — how many SSTM entries one purge batch
+  moves into the ELTM.
+
+### ELTM (`memory.eltm`)
+
+The external long-term memory (diary model) that the SSTM is purged into
+(see `AGENTS.md` and `memory/eltm/`). It is REQUIRED for every deployment:
+the SSTM purge and the recall tool are unconditional system-prompt promises,
+so the `eltm` section must be present and complete.
+
+- `embeddingModel`, `writerModel`, `recallModel` — REQUIRED catalog model
+  ids for the ELTM embedding, the ELTM writer, and the recall sub-session
+  (Phase 4); the writer and recall models must support tool calls, and all
+  three are resolved once at startup (unknown ids fail fast). The writer's
+  round cap is `maxWriterRounds` (default 150); the recall sub-session's
+  execution budget is `recallTimeoutSeconds` (default 600).
+- `entityMatchThreshold` (0.5) / `noteSearchThreshold` (0.1) — the vector
+  cosine floors for entity near-match candidates and note search.
+- The ELTM vector columns are FIXED at `vector(2000)` (pgvector's HNSW
+  indexing limit for the `vector` type): the embedding model's output
+  dimensions (≤ 2000, enforced at startup) only decide the nonzero prefix,
+  and every vector/query is zero-padded to 2000 on write (cosine similarity
+  is invariant under zero-padding), so switching embedding models never
+  needs a schema change or DB reset.
 
 ### Session titles (`title`)
 

@@ -7,6 +7,7 @@ import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.TitleGenerator
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
@@ -17,6 +18,7 @@ import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
+import info.skyblond.daapu.memory.eltm.PostgresEltmService
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
@@ -49,9 +51,9 @@ class ChatRunSetup(
  * session titles (`TitleGenerator`),
  * and the persist loop itself (`PersistChatService`) — are stateless
  * across runs and are constructed once here as well; their models come
- * from the REQUIRED `memory.compactModel/extractModel/mergeModel` +
- * `title.model` config,
- * resolved once at construction (never the run's model).
+ * from the REQUIRED `memory.compactModel` + `memory.sstm.extractModel/
+ * mergeModel` + `title.model` config, resolved once at construction
+ * (never the run's model).
  */
 class ChatRunService(
     config: AppConfig,
@@ -112,21 +114,45 @@ class ChatRunService(
         modelCatalog.findModel(id)
             ?: throw IllegalArgumentException("memory.compactModel '$id' is not in the model catalog")
     }
-    private val extractModel = memoryConfig.extractModel.let { id ->
+    private val extractModel = memoryConfig.sstm.extractModel.let { id ->
         modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("memory.extractModel '$id' is not in the model catalog")
+            ?: throw IllegalArgumentException("memory.sstm.extractModel '$id' is not in the model catalog")
     }
-    private val mergeModel = memoryConfig.mergeModel.let { id ->
+    private val mergeModel = memoryConfig.sstm.mergeModel.let { id ->
         val model = modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("memory.mergeModel '$id' is not in the model catalog")
+            ?: throw IllegalArgumentException("memory.sstm.mergeModel '$id' is not in the model catalog")
         require(model.supports(LLMCapability.Output.ToolCalls)) {
-            "memory.mergeModel '${model.id}' must support tool calls (the memory merge agent runs a tool loop)"
+            "memory.sstm.mergeModel '${model.id}' must support tool calls (the memory merge agent runs a tool loop)"
         }
         model
     }
     private val titleModel = config.title.model.let { id ->
         modelCatalog.findModel(id)
             ?: throw IllegalArgumentException("title.model '$id' is not in the model catalog")
+    }
+    // the ELTM models: REQUIRED config (`memory.eltm`), resolved once at
+    // construction like the memory pipeline models. The writer/recall agents
+    // run tool loops; the embedding model's output dimensions must not
+    // exceed the fixed ELTM column width (validated at catalog construction).
+    private val embeddingModel = config.memory.eltm.embeddingModel.let { id ->
+        modelCatalog.findEmbeddingModel(id)
+            ?: throw IllegalArgumentException("memory.eltm.embeddingModel '$id' is not in the model catalog")
+    }
+    private val writerModel = config.memory.eltm.writerModel.let { id ->
+        val model = modelCatalog.findModel(id)
+            ?: throw IllegalArgumentException("memory.eltm.writerModel '$id' is not in the model catalog")
+        require(model.supports(LLMCapability.Output.ToolCalls)) {
+            "memory.eltm.writerModel '${model.id}' must support tool calls (the ELTM writer runs a tool loop)"
+        }
+        model
+    }
+    private val recallModel = config.memory.eltm.recallModel.let { id ->
+        val model = modelCatalog.findModel(id)
+            ?: throw IllegalArgumentException("memory.eltm.recallModel '$id' is not in the model catalog")
+        require(model.supports(LLMCapability.Output.ToolCalls)) {
+            "memory.eltm.recallModel '${model.id}' must support tool calls (the recall sub-session runs a tool loop)"
+        }
+        model
     }
 
     // one-shot pipeline services: stateless across runs, so a single
@@ -147,14 +173,37 @@ class ChatRunService(
         maxRetries = config.hand.maxRetries,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
+    private val eltmConfig = config.memory.eltm
+    // the ELTM store: shared by the writer and (Phase 4) the recall
+    // sub-session; embeddings go through the hand with the same retry
+    // budget and the stream idle timeout as the embed timeout
+    private val eltmService = PostgresEltmService(
+        embeddingModel = embeddingModel,
+        hand = handService,
+        entityMatchThreshold = eltmConfig.entityMatchThreshold,
+        noteSearchThreshold = eltmConfig.noteSearchThreshold,
+        maxRetries = config.hand.maxRetries,
+        timeoutMs = config.hand.streamIdleTimeoutMs,
+    )
+    private val eltmWriterService = EltmWriterService(
+        writerModel = writerModel,
+        hand = handService,
+        eltmService = eltmService,
+        maxWriterRounds = eltmConfig.maxWriterRounds,
+        maxRetries = config.hand.maxRetries,
+        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+    )
     private val sstmExtractionService = SstmExtractionService(
         extractModel = extractModel,
         mergeModel = mergeModel,
         hand = handService,
         sstmService = sstmService,
-        maxMergeRounds = config.memory.maxMergeRounds,
+        maxMergeRounds = config.memory.sstm.maxMergeRounds,
         maxRetries = config.hand.maxRetries,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+        eltmWriterService = eltmWriterService,
+        sstmCapacity = config.memory.sstm.maxCapacity,
+        purgeBatchSize = config.memory.sstm.purgeBatchSize,
     )
     private val persistService = PersistChatService(
         chatStore = chatStore,
