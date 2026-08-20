@@ -140,6 +140,9 @@ ${if (isDevelopment) {
 If you're seeing this, it means the GSG is running in developer mode. You may see missing tools, malformed user input message,
 mismatch between input XML and system prompt, or glitches. It's in develop after all.
 When this happens, in addition to fulfill user's request, now the user is developer, you should also report any issues to the user.
+
+The `recall` tool promised in the ELTM section is not wired up yet, so do NOT call it. For now you can access the ELTM directly
+with the read-only `eltm__` tools and search things by yourself. The `eltm-updated` flag is not hooked up yet: it always reports `false`.
 """.trimIndent().trim()
 } else ""}
 """.trimIndent().trim()

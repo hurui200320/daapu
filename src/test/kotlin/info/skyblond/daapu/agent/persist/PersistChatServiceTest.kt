@@ -6,8 +6,10 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
+import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
@@ -637,6 +639,81 @@ class PersistChatServiceTest {
             mcpServer.close()
         }
     }
+
+    @Test
+    fun `tool round executes through the combined provider with the namespaced read-only eltm tools`() =
+        runBlocking {
+            // the chat loop's real shape (ChatRunService composes it): the MCP
+            // servers plus the read-only ELTM tools, one namespaced set; a round
+            // where the model queries the ELTM routes to the local provider and
+            // stores the paired call/result like any other tool round
+            val eltm = FakeEltmService()
+            eltm.createEntity("Alice", "person")
+            val eltmProvider = EltmToolProvider(eltm, readOnly = true, namespace = "eltm")
+            val mcpServer = MockMcpServer(listOf(mcpAddTool()))
+            val mcpProvider = McpToolProvider(
+                listOf(
+                    McpServerConfig(
+                        namespace = "calc",
+                        type = McpTransportType.Http,
+                        url = mcpServer.baseUrl,
+                        toolExecutionTimeoutSeconds = 30,
+                    )
+                )
+            )
+            val combined = CombinedToolProvider(listOf(eltmProvider, mcpProvider))
+            try {
+                val outcome = run(
+                    toolProvider = combined,
+                    chatScript = {
+                        combined.specifications()
+                        val call = ChatMessagePart.ToolCall(
+                            id = "call_1",
+                            tool = "eltm__search_entities",
+                            args = buildJsonObject { put("query", "ali") },
+                        )
+                        val result = combined.execute(ToolCallRequest(call.id, call.tool, call.args))
+                        listOf(
+                            HandEvent.AssistantMessage(
+                                assistantMessage(
+                                    parts = listOf(call),
+                                    finishReason = "tool_calls"
+                                )
+                            ),
+                            HandEvent.ToolCall(call.id, call.tool, call.args),
+                            HandEvent.ToolResult(call.id, call.tool, result.parts, result.isError),
+                            HandEvent.TextDelta("ok"),
+                            HandEvent.AssistantMessage(assistantMessage("ok")),
+                            HandEvent.Done("stop"),
+                        )
+                    },
+                )
+                assertNull(outcome.error)
+
+                val stored = assertNotNull(outcome.store.stored)
+                val call = assertIs<ChatMessagePart.ToolCall>(stored[1].parts.single())
+                assertEquals("call_1", call.id)
+                assertEquals("eltm__search_entities", call.tool)
+                val result = assertIs<ChatMessagePart.ToolResult>(stored[2].parts.single())
+                assertEquals("call_1", result.id, "the stored result must pair with the stored call id")
+                assertTrue(
+                    result.parts.filterIsInstance<ChatMessagePart.Text>()
+                        .joinToString("") { it.text }.contains("alice"),
+                    "the read-only provider answered from the ELTM store"
+                )
+                assertTrue(mcpServer.toolCalls.isEmpty(), "the query never reached the MCP server")
+
+                // the read-only guard holds inside the combined set: a write tool
+                // the model could never see is still rejected if called
+                val write = combined.execute(
+                    ToolCallRequest("call_2", "eltm__create_entity", buildJsonObject { put("name", "Bob") })
+                )
+                assertTrue(write.isError)
+            } finally {
+                mcpProvider.close()
+                mcpServer.close()
+            }
+        }
 
     @Test
     fun `existing history is loaded and extended`() {

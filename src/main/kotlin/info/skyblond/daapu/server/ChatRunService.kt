@@ -7,11 +7,13 @@ import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.TitleGenerator
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
+import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
@@ -63,7 +65,7 @@ class ChatRunService(
     // reconnect per turn. The default builds no clients, so a service
     // constructed without MCP servers (tests) behaves like the old
     // EmptyToolProvider path.
-    private val toolProvider: McpToolProvider = McpToolProvider(emptyList()),
+    private val mcpToolProvider: McpToolProvider = McpToolProvider(emptyList()),
     private val hand: HandClient = HttpHandClient(config.hand.baseUrl, config.hand.token),
     internal val handCallback: HandCallbackService = HandCallbackService(config.hand.token),
     // all chats-table access (list/create/rename/delete/title) goes through
@@ -191,6 +193,23 @@ class ChatRunService(
         noteSearchThreshold = eltmConfig.noteSearchThreshold,
         maxRetries = config.hand.maxRetries,
         timeoutMs = config.hand.streamIdleTimeoutMs,
+    )
+
+    /**
+     * The chat loop's tool set: the MCP servers plus the read-only ELTM
+     * tools (`eltm__*`, see `agent/oneshot/eltm/EltmToolProvider.kt`), so
+     * the main agent can query the external long-term memory directly (the
+     * `recall` sub-session tool that offloads this is deferred). The MCP
+     * child is only included when it serves namespaces: the
+     * `McpToolProvider(emptyList())` default (no servers configured)
+     * advertises nothing, and [CombinedToolProvider] fails fast on a
+     * namespace-less child. Exposed for tests.
+     */
+    internal val chatToolProvider: CombinedToolProvider = CombinedToolProvider(
+        buildList {
+            if (mcpToolProvider.namespaces().isNotEmpty()) add(mcpToolProvider)
+            add(EltmToolProvider(eltmService, readOnly = true, namespace = "eltm"))
+        }
     )
     private val eltmWriterService = EltmWriterService(
         writerModel = writerModel,
@@ -518,7 +537,7 @@ class ChatRunService(
             model = setup.model,
             userParts = setup.parts,
             systemPrompt = systemPrompt,
-            toolProvider = toolProvider,
+            toolProvider = chatToolProvider,
             callback = callback,
         )
     }
@@ -528,7 +547,7 @@ class ChatRunService(
      * the JVM shutdown hook registered in `WebServer.startWebServer`).
      */
     override fun close() {
-        toolProvider.close()
+        chatToolProvider.close()
         handService.close()
     }
 

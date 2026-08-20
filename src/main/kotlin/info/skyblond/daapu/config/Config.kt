@@ -382,17 +382,11 @@ data class McpServerConfig(
      * own fields.
      */
     fun validate() {
+        // MCP servers MUST have a namespace (their advertised names are
+        // always prefixed); blank is only legal for the one-shot providers,
+        // which never share a tool set
         if (namespace.isBlank()) throw IllegalArgumentException("MCP server config is missing a namespace")
-        if (!namespace.matches(SAFE_ID_REGEX)) {
-            throw IllegalArgumentException(
-                "MCP server namespace '$namespace' is invalid: tool names are prefixed with it, so only [0-9a-z_-] is allowed"
-            )
-        }
-        if (namespace.contains("__")) {
-            throw IllegalArgumentException(
-                "MCP server namespace '$namespace' is invalid: it must not contain '__', which separates the parts of advertised tool names"
-            )
-        }
+        validateToolNamespaceSyntax(namespace, "MCP server")
         if (namespace in TOOL_RESERVED_NAMESPACES) {
             throw IllegalArgumentException(
                 "MCP server namespace '$namespace' is reserved for internal/harness tools, " +
@@ -448,6 +442,30 @@ val TOOL_RESERVED_NAMESPACES: Set<String> = setOf(
  * uppercase is rejected so the reserved-namespace check stays an exact match.
  */
 val SAFE_ID_REGEX: Regex = Regex("[0-9a-z_-]+")
+
+/**
+ * Fail fast on a namespace that cannot become part of an advertised tool
+ * name. A blank namespace is allowed (the one-shot providers' default: tools
+ * are advertised unprefixed, e.g. `agent/oneshot/eltm/EltmToolProvider.kt`);
+ * a non-blank one must match [SAFE_ID_REGEX] and must not contain the `__`
+ * separator that joins namespaces to tool names. Shared by
+ * [McpServerConfig.validate] and the namespaced tool providers; reserved
+ * names are a caller-specific concern ([TOOL_RESERVED_NAMESPACES] applies to
+ * MCP servers only — the internal tools own those namespaces).
+ */
+fun validateToolNamespaceSyntax(namespace: String, owner: String) {
+    if (namespace.isBlank()) return
+    if (!namespace.matches(SAFE_ID_REGEX)) {
+        throw IllegalArgumentException(
+            "$owner namespace '$namespace' is invalid: tool names are prefixed with it, so only [0-9a-z_-] is allowed"
+        )
+    }
+    if (namespace.contains("__")) {
+        throw IllegalArgumentException(
+            "$owner namespace '$namespace' is invalid: it must not contain '__', which separates the parts of advertised tool names"
+        )
+    }
+}
 
 /**
  * The fixed width of every pgvector column in the ELTM tables

@@ -60,6 +60,19 @@ interface ToolProvider {
      * provider that advertises a budget must override this.
      */
     fun executionTimeoutSeconds(toolName: String): Long = 0
+
+    /**
+     * The namespaces this provider serves: every advertised tool name of a
+     * namespaced provider is `"{namespace}__{toolName}"` (the namespace must
+     * match `SAFE_ID_REGEX` and must not contain the `__` separator), and
+     * [execute] only accepts those prefixed names. An empty set means the
+     * provider advertises its tools unprefixed — the one-shot services'
+     * shape ([EmptyToolProvider], the merge/ELTM tool providers in their
+     * default form). [CombinedToolProvider] requires every child to serve a
+     * non-blank namespace (fail fast at construction), so its routing on the
+     * `__` separator stays unambiguous.
+     */
+    fun namespaces(): Set<String> = emptySet()
 }
 
 /**
@@ -88,6 +101,3 @@ object EmptyToolProvider : ToolProvider {
             isError = true,
         )
 }
-
-// TODO: multi tool provider? merge multiple tool provider together, adding namespace like <namespace>_<tool_name>
-//       require a type that enforce the namespace adding behaviour.

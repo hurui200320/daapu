@@ -133,8 +133,14 @@ frontend + Node/TS "hand-pi" service.
     and merge folds a colliding triple
     into the survivor (validity OR, notes re-pointed);
     an embedding `invalid_request` answers an `isError` "split it into
-    several smaller notes" tool result (never truncated). **Read path**
-    (recall sub-session, Phase 4): `memory.eltm.recallModel` is resolved
+    several smaller notes" tool result (never truncated). **Read path**:
+    the same provider's `readOnly` mode (the 5 read tools) is currently
+    namespaced as `eltm` and combined with the MCP provider into the chat
+    loop's tool set (`ChatRunService.chatToolProvider` — the main agent
+    queries the ELTM directly, a debugging/interim surface until the
+    Phase 4 `recall` sub-session tool, planned under the `gsg` namespace,
+    offloads the browsing; the system prompt's developer note documents
+    this). `memory.eltm.recallModel` is resolved
     already. `chats.eltm_version` mirrors `sstm_version` ("" = first run
     flags); the version is the global write counter
     (`EltmService.version()`) — every visible-state write (entity/
@@ -216,6 +222,18 @@ frontend + Node/TS "hand-pi" service.
   `io.modelcontextprotocol:kotlin-sdk-client` 0.15.0, streamable-HTTP +
   stdio). `McpToolProvider` implements the neutral tool seam
   (`agent/tool/ToolProvider.kt`), namespacing tools as `{namespace}__{tool}`.
+  Namespaces are a `ToolProvider` contract (`namespaces()`): a namespaced
+  provider advertises every tool as `{namespace}__{toolName}` and only
+  executes those prefixed names; an empty set = the one-shot shape (bare
+  tool names, the `EltmToolProvider`/`MergeMemoryToolProvider` defaults —
+  one-shot services never namespace). `CombinedToolProvider`
+  (`agent/tool/CombinedToolProvider.kt`) merges several children (MCP +
+  namespaced local providers) into one run's tool set: every child MUST
+  serve at least one non-blank namespace, validated (`SAFE_ID_REGEX`, no
+  `__`) and unique across children, fail fast at construction; routing
+  splits the advertised name at the first `__` (unknown prefix/bare name →
+  `isError` result), `executionTimeoutSeconds` delegates to the owning
+  child, and `close()` closes `AutoCloseable` children.
   `toolExecutionTimeoutSeconds` is REQUIRED per server (0 = none) and
   resolved by the callback route from the run's provider
   (`ToolProvider.executionTimeoutSeconds`): it enforces the budget with

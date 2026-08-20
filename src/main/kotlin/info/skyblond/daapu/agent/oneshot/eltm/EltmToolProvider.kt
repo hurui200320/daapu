@@ -2,10 +2,13 @@ package info.skyblond.daapu.agent.oneshot.eltm
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.oneshot.sstm.MergeMemoryToolProvider
+import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.agent.tool.ToolTransportException
+import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
+import info.skyblond.daapu.config.validateToolNamespaceSyntax
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.memory.eltm.EltmService
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -24,6 +27,14 @@ import java.time.format.DateTimeParseException
  * the ELTM directly; the SSTM purge pipeline drives the writer agent); the
  * read-only provider serves the recall sub-session (Phase 4).
  *
+ * The optional [namespace] switches the provider between the two shapes:
+ * blank (the default — one-shot services like the writer/recall agents use
+ * it) advertises the bare tool names; a non-blank namespace (e.g. `eltm`,
+ * one of [TOOL_RESERVED_NAMESPACES]) advertises `"{namespace}__{tool}"` and
+ * [execute] only accepts those prefixed names, so the provider can be
+ * combined with others (MCP servers) into a
+ * [CombinedToolProvider] without name collisions.
+ *
  * Error contract: an [EmbeddingException] of type `invalid_request` (the
  * content is too large for the embedding model) answers an `isError` result
  * telling the model to split the content — never silently truncate; other
@@ -36,7 +47,22 @@ import java.time.format.DateTimeParseException
 class EltmToolProvider(
     private val eltmService: EltmService,
     private val readOnly: Boolean = false,
+    /** Non-blank: every advertised name is prefixed with `{namespace}__`. */
+    private val namespace: String = "",
 ) : ToolProvider {
+    init {
+        validateToolNamespaceSyntax(namespace, "ELTM tool")
+    }
+
+    private fun advertisedName(toolName: String): String =
+        if (namespace.isBlank()) toolName else "${namespace}__$toolName"
+
+    private fun bareName(advertisedName: String): String? {
+        val prefix = "${namespace}__"
+        return if (namespace.isBlank()) advertisedName
+        else advertisedName.takeIf { it.startsWith(prefix) }?.substring(prefix.length)
+    }
+
     private val readSpecs = listOf(
         ToolSpec(
             name = "search_entities",
@@ -147,19 +173,31 @@ class EltmToolProvider(
         ),
     )
 
+    override fun namespaces(): Set<String> =
+        if (namespace.isBlank()) emptySet() else setOf(namespace)
+
     override suspend fun specifications(): List<ToolSpec> =
-        if (readOnly) readSpecs else readSpecs + writeSpecs
+        (if (readOnly) readSpecs else readSpecs + writeSpecs)
+            .map { it.copy(name = advertisedName(it.name)) }
 
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        if (readOnly && request.name in WRITE_TOOLS) {
+        // in namespaced mode only `{namespace}__{tool}` names are accepted:
+        // anything else is not advertised by this provider
+        val name = bareName(request.name)
+        if (name == null) {
+            return errorResult(
+                request, "tool '${request.name}' is not advertised by this ELTM provider"
+            )
+        }
+        if (readOnly && name in WRITE_TOOLS) {
             return errorResult(
                 request, "tool '${request.name}' is not available in read-only mode"
             )
         }
         logger.info { "Executing tool ${request.name} with arguments: ${request.args}" }
         return try {
-            when (request.name) {
+            when (name) {
                 "search_entities" -> {
                     val query = args.requiredText("query") ?: return errorResult(
                         request, "query is required and must not be blank"

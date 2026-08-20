@@ -88,6 +88,8 @@ class McpToolProvider(
         }
     }
 
+    override fun namespaces(): Set<String> = entries.keys
+
     override suspend fun specifications(): List<ToolSpec> {
         val advertised = mutableListOf<ToolSpec>()
         val nameSet = mutableSetOf<String>()

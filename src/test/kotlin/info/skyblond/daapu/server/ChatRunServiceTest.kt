@@ -3,12 +3,23 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.config.EltmConfig
+import info.skyblond.daapu.config.McpServerConfig
+import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.config.MemoryConfig
 import info.skyblond.daapu.config.SstmConfig
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.mcp.McpToolProvider
+import info.skyblond.daapu.mcp.MockMcpServer
+import info.skyblond.daapu.mcp.MockTool
+import info.skyblond.daapu.mcp.MockToolReply
 import io.ktor.server.plugins.*
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import kotlin.test.*
 
 /**
@@ -238,4 +249,81 @@ class ChatRunServiceTest {
             "the error should name the config key: ${e.message}"
         )
     }
+
+    @Test
+    fun `the chat tool set is the read-only eltm tools without MCP servers`() = runBlocking {
+        // the loop's combined set: the namespace-less empty MCP provider (the
+        // default) is skipped — CombinedToolProvider fails fast on a
+        // namespace-less child — so the set is exactly the namespaced
+        // read-only ELTM tools
+        val service = ChatRunService(testAppConfig())
+        assertEquals(setOf("eltm"), service.chatToolProvider.namespaces())
+        assertEquals(
+            listOf(
+                "eltm__search_entities",
+                "eltm__get_relationships",
+                "eltm__get_entity_notes",
+                "eltm__get_relationship_notes",
+                "eltm__search_notes",
+            ),
+            service.chatToolProvider.specifications().map { it.name },
+            "the loop sees only the five read tools, never a write tool"
+        )
+        // a bare (unprefixed) name is unroutable in a combined set
+        val result = service.chatToolProvider.execute(
+            ToolCallRequest("c1", "search_entities", buildJsonObject { put("query", "ali") }),
+        )
+        assertTrue(result.isError)
+        assertTrue(
+            (result.parts.single() as ChatMessagePart.Text).text.contains("not advertised"),
+        )
+    }
+
+    @Test
+    fun `the chat tool set combines MCP tools with the read-only eltm tools`() = runBlocking {
+        val server = MockMcpServer(listOf(addTool()))
+        val mcp = McpToolProvider(
+            listOf(
+                McpServerConfig(
+                    namespace = "calc",
+                    type = McpTransportType.Http,
+                    url = server.baseUrl,
+                    toolExecutionTimeoutSeconds = 30,
+                )
+            )
+        )
+        val service = ChatRunService(testAppConfig(), mcpToolProvider = mcp)
+        try {
+            assertEquals(setOf("calc", "eltm"), service.chatToolProvider.namespaces())
+            val names = service.chatToolProvider.specifications().map { it.name }
+            assertEquals("calc__add", names.first())
+            assertTrue(
+                names.containsAll(
+                    listOf(
+                        "eltm__search_entities",
+                        "eltm__search_notes",
+                    )
+                ),
+                "the combined set carries both children: $names"
+            )
+            // the MCP namespace routes to the server, not the ELTM provider
+            val add = service.chatToolProvider.execute(
+                ToolCallRequest("c1", "calc__add", buildJsonObject { put("a", 1); put("b", 2) }),
+            )
+            assertFalse(add.isError)
+            assertEquals("add", server.toolCalls.single().first)
+        } finally {
+            service.close()
+            server.close()
+        }
+    }
+
+    private fun addTool(): MockTool = MockTool(
+        name = "add",
+        description = "Add two numbers a and b",
+        handler = { args ->
+            fun num(key: String) = args[key]?.jsonPrimitive?.let { it.content.toLongOrNull() } ?: 0L
+            MockToolReply("${num("a")} + ${num("b")} = ${num("a") + num("b")}")
+        },
+    )
 }

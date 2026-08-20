@@ -53,7 +53,6 @@ CREATE TABLE eltm_entities
     id             BIGSERIAL PRIMARY KEY,
     canonical_name TEXT NOT NULL,                 -- trim, collapse whitespace, lowercase
     category       TEXT NOT NULL DEFAULT 'general',
-    -- TODO: figure out fuzzy search to replace this
     embedding      vector(2000),                  -- embed(canonical_name || ' ' || category), zero-padded
     UNIQUE (canonical_name, category)
 );

@@ -735,4 +735,86 @@ class EltmToolProviderTest {
         assertTrue(input.contains("## Memory 1"), input)
         assertTrue(input.contains("likes coffee"), "victim content verbatim: $input")
     }
+
+    @Test
+    fun `a namespaced provider advertises the prefixed tool names and its namespace`() {
+        val provider = EltmToolProvider(FakeEltmService(), namespace = "eltm")
+        assertEquals(setOf("eltm"), provider.namespaces())
+        val specs = runBlocking { provider.specifications() }
+        assertEquals(10, specs.size)
+        assertTrue(
+            specs.all { it.name.startsWith("eltm__") },
+            "every advertised name carries the namespace prefix: ${specs.map { it.name }}"
+        )
+        assertEquals(
+            listOf("eltm__search_entities", "eltm__get_relationships"),
+            specs.take(2).map { it.name },
+        )
+        // the blank provider is the one-shot shape: bare names, no namespace
+        assertEquals(emptySet(), EltmToolProvider(FakeEltmService()).namespaces())
+    }
+
+    @Test
+    fun `a namespaced provider executes its prefixed calls`() = runBlocking {
+        val eltm = FakeEltmService()
+        val provider = EltmToolProvider(eltm, namespace = "eltm")
+
+        val created = provider.execute(
+            toolCall("c1", "eltm__create_entity", buildJsonObject { put("name", "Alice") }),
+        )
+        assertFalse(created.isError, textOf(created))
+        assertTrue(textOf(created).contains("alice"), textOf(created))
+
+        val searched = provider.execute(
+            toolCall("c2", "eltm__search_entities", buildJsonObject { put("query", "ali") }),
+        )
+        assertFalse(searched.isError, textOf(searched))
+        assertTrue(textOf(searched).contains("alice"), textOf(searched))
+    }
+
+    @Test
+    fun `a namespaced provider rejects unprefixed and wrong-prefixed calls`() = runBlocking {
+        val provider = EltmToolProvider(FakeEltmService(), namespace = "eltm")
+
+        val bare = provider.execute(
+            toolCall("c1", "search_entities", buildJsonObject { put("query", "ali") }),
+        )
+        assertTrue(bare.isError)
+        assertTrue(textOf(bare).contains("not advertised"), textOf(bare))
+
+        val foreign = provider.execute(
+            toolCall("c2", "sstm__search_entities", buildJsonObject { put("query", "ali") }),
+        )
+        assertTrue(foreign.isError)
+        assertTrue(textOf(foreign).contains("not advertised"), textOf(foreign))
+    }
+
+    @Test
+    fun `a namespaced read-only provider checks the stripped name`() = runBlocking {
+        val provider = EltmToolProvider(FakeEltmService(), readOnly = true, namespace = "eltm")
+
+        val write = provider.execute(
+            toolCall("c1", "eltm__create_entity", buildJsonObject { put("name", "Alice") }),
+        )
+        assertTrue(write.isError)
+        assertTrue(textOf(write).contains("read-only mode"), textOf(write))
+
+        val read = provider.execute(
+            toolCall("c2", "eltm__search_entities", buildJsonObject { put("query", "ali") }),
+        )
+        assertFalse(read.isError, textOf(read))
+    }
+
+    @Test
+    fun `an invalid namespace fails at construction`() {
+        // uppercase fails the SAFE_ID_REGEX charset; `__` is the separator
+        assertFailsWith<IllegalArgumentException> {
+            EltmToolProvider(FakeEltmService(), namespace = "ElTm")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            EltmToolProvider(FakeEltmService(), namespace = "a__b")
+        }
+        // blank stays legal: the one-shot shape
+        EltmToolProvider(FakeEltmService(), namespace = "")
+    }
 }
