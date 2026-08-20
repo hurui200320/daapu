@@ -18,6 +18,7 @@ import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.PostgresEltmService
 import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.memory.sstm.SstmService
@@ -63,12 +64,14 @@ class ChatRunService(
     // constructed without MCP servers (tests) behaves like the old
     // EmptyToolProvider path.
     private val toolProvider: McpToolProvider = McpToolProvider(emptyList()),
-    private val sstmService: SstmService = PostgresSstmService(),
     private val hand: HandClient = HttpHandClient(config.hand.baseUrl, config.hand.token),
     internal val handCallback: HandCallbackService = HandCallbackService(config.hand.token),
     // all chats-table access (list/create/rename/delete/title) goes through
     // this seam, so the service holds no raw DB calls (tests inject a fake)
     private val chatStore: ChatStore = PostgresChatStore(),
+    // the SSTM store: shared with the memory CRUD routes and the turn-loop
+    // injection. Public: the web server module reads it for `/api/memories`.
+    val sstmService: SstmService = PostgresSstmService(),
 ) : AutoCloseable {
 
     // PoC: the catalog pins its models to the bifrost gateway (see
@@ -130,6 +133,7 @@ class ChatRunService(
         modelCatalog.findModel(id)
             ?: throw IllegalArgumentException("title.model '$id' is not in the model catalog")
     }
+
     // the ELTM models: REQUIRED config (`memory.eltm`), resolved once at
     // construction like the memory pipeline models. The writer/recall agents
     // run tool loops; the embedding model's output dimensions must not
@@ -173,11 +177,14 @@ class ChatRunService(
         maxRetries = config.hand.maxRetries,
         streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
     )
+
     private val eltmConfig = config.memory.eltm
+
     // the ELTM store: shared by the writer and (Phase 4) the recall
     // sub-session; embeddings go through the hand with the same retry
-    // budget and the stream idle timeout as the embed timeout
-    private val eltmService = PostgresEltmService(
+    // budget and the stream idle timeout as the embed timeout. Exposed for
+    // the browse-only `/api/eltm` routes (WebServer.kt).
+    val eltmService: EltmService = PostgresEltmService(
         embeddingModel = embeddingModel,
         hand = handService,
         entityMatchThreshold = eltmConfig.entityMatchThreshold,

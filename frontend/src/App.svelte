@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { MODEL_STORAGE_KEY, chatStore } from './lib/chat-store.svelte'
   import ChatView from './lib/components/ChatView.svelte'
+  import EltmView from './lib/components/EltmView.svelte'
   import Sidebar from './lib/components/Sidebar.svelte'
   import SstmView from './lib/components/SstmView.svelte'
   import { chatHomePath, replaceRoute, router } from './lib/router.svelte'
@@ -65,6 +66,9 @@
     </div>
     <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'sstm'}>
       <SstmView />
+    </div>
+    <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'eltm'}>
+      <EltmView />
     </div>
   </main>
 </div>

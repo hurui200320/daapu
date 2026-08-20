@@ -1,4 +1,13 @@
-import type { ChatInfo, ChatMessage, MemoryDto, ModelInfo, StreamEvent } from './types'
+import type {
+  ChatInfo,
+  ChatMessage,
+  EntityViewDto,
+  EltmNoteDto,
+  MemoryDto,
+  ModelInfo,
+  RelationshipViewDto,
+  StreamEvent,
+} from './types'
 
 async function parseError(res: Response): Promise<string> {
   try {
@@ -160,4 +169,35 @@ export async function updateMemory(id: number, content: string): Promise<MemoryD
 export async function deleteMemory(id: number): Promise<void> {
   const res = await fetch(`/api/memories/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await parseError(res))
+}
+
+// ---- ELTM browse (read-only; writes are LLM-driven) ----
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(path)
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
+export async function listEntities(limit = 100, offset = 0): Promise<EntityViewDto[]> {
+  return getJson(`/api/eltm/entities?limit=${limit}&offset=${offset}`)
+}
+
+export async function getEntityRelationships(
+  id: number,
+  includeInvalid = true,
+): Promise<RelationshipViewDto[]> {
+  return getJson(`/api/eltm/entities/${id}/relationships?includeInvalid=${includeInvalid}`)
+}
+
+export async function getEntityNotes(id: number, limit = 100): Promise<EltmNoteDto[]> {
+  return getJson(`/api/eltm/entities/${id}/notes?limit=${limit}`)
+}
+
+export async function listRelationships(limit = 100, offset = 0): Promise<RelationshipViewDto[]> {
+  return getJson(`/api/eltm/relationships?limit=${limit}&offset=${offset}`)
+}
+
+export async function getRelationshipNotes(id: number, limit = 100): Promise<EltmNoteDto[]> {
+  return getJson(`/api/eltm/relationships/${id}/notes?limit=${limit}`)
 }

@@ -10,15 +10,18 @@ import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
-import info.skyblond.daapu.memory.sstm.PostgresSstmService
+import info.skyblond.daapu.testutil.FakeEltmService
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.time.Instant
+import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -56,7 +59,7 @@ class WebServerTest {
     @Test
     fun `blank message is rejected with 400`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Application.Json)
                 setBody(messageBody(text = "   "))
@@ -68,7 +71,7 @@ class WebServerTest {
     @Test
     fun `missing and unknown models are rejected with 400`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             listOf(
                 """{"text":"hi"}""",
                 """{"text":"hi","model":"no/such-model"}"""
@@ -85,7 +88,7 @@ class WebServerTest {
     @Test
     fun `malformed image data url is rejected with 400`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Application.Json)
                 setBody(messageBody(images = listOf("http://example.com/image.png")))
@@ -97,7 +100,7 @@ class WebServerTest {
     @Test
     fun `wrong content type is rejected`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Text.Plain)
                 setBody("not json")
@@ -117,7 +120,7 @@ class WebServerTest {
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService, PostgresSstmService()) }
+                application { module(chatService) }
                 val response = client.post("/api/chats/$chatId/messages") {
                     contentType(ContentType.Application.Json)
                     setBody(messageBody())
@@ -136,7 +139,7 @@ class WebServerTest {
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService, PostgresSstmService()) }
+                application { module(chatService) }
                 val response = client.delete("/api/chats/$chatId")
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
@@ -157,8 +160,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), chatStore = store),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), chatStore = store)
                 )
             }
             val response = client.delete("/api/chats/chat-1/messages/2")
@@ -175,8 +177,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), chatStore = FakeChatStore()),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), chatStore = FakeChatStore())
                 )
             }
             val response = client.delete("/api/chats/nope/messages/0")
@@ -191,8 +192,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), chatStore = store),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), chatStore = store)
                 )
             }
             // non-numeric, out of bounds, and an index pointing at an assistant
@@ -216,7 +216,7 @@ class WebServerTest {
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService, PostgresSstmService()) }
+                application { module(chatService) }
                 val response = client.delete("/api/chats/$chatId/messages/0")
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
@@ -237,8 +237,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), chatStore = store),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), chatStore = store)
                 )
             }
             val response = client.post("/api/chats/chat-1/fork/1")
@@ -261,8 +260,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), chatStore = FakeChatStore()),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), chatStore = FakeChatStore())
                 )
             }
             val response = client.post("/api/chats/nope/fork/0")
@@ -277,8 +275,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), chatStore = store),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), chatStore = store)
                 )
             }
             // non-numeric, out of bounds, and a user-message index are all
@@ -298,7 +295,7 @@ class WebServerTest {
     @Test
     fun `blank or missing chat title is rejected with 400`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             listOf("""{"title":"   "}""", """{}""").forEach { body ->
                 val response = client.put("/api/chats/chat-1") {
                     contentType(ContentType.Application.Json)
@@ -312,7 +309,7 @@ class WebServerTest {
     @Test
     fun `empty memory content is rejected with 400`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             val response = client.post("/api/memories") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"   "}""")
@@ -324,7 +321,7 @@ class WebServerTest {
     @Test
     fun `non-numeric memory id is rejected with 400`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             val response = client.put("/api/memories/abc") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"memory"}""")
@@ -333,10 +330,265 @@ class WebServerTest {
         }
     }
 
+    // ---- ELTM browse routes (`/api/eltm`, read-only) ----
+
+    @Test
+    fun `eltm non-numeric ids are rejected with 400`() {
+        testApplication {
+            application { module(service()) }
+            listOf(
+                "/api/eltm/entities/abc",
+                "/api/eltm/entities/abc/notes",
+                "/api/eltm/entities/abc/relationships",
+                "/api/eltm/relationships/xyz",
+                "/api/eltm/relationships/xyz/notes",
+            ).forEach { path ->
+                val response = client.get(path)
+                assertEquals(HttpStatusCode.BadRequest, response.status, "path: $path")
+            }
+        }
+    }
+
+    @Test
+    fun `eltm bad list params are rejected with 400`() {
+        testApplication {
+            application { module(service()) }
+            listOf(
+                "/api/eltm/entities?limit=0",
+                "/api/eltm/entities?limit=-1",
+                "/api/eltm/entities?limit=abc",
+                "/api/eltm/entities?limit=501",
+                "/api/eltm/entities?offset=-1",
+                "/api/eltm/entities?offset=abc",
+                "/api/eltm/relationships?limit=0",
+                "/api/eltm/relationships?limit=501",
+                "/api/eltm/entities/1/notes?limit=501",
+            ).forEach { path ->
+                val response = client.get(path)
+                assertEquals(HttpStatusCode.BadRequest, response.status, "path: $path")
+            }
+        }
+    }
+
+    @Test
+    fun `eltm bad note filters are rejected with 400`() {
+        testApplication {
+            application { module(service()) }
+            listOf(
+                "/api/eltm/entities/1/notes?from=not-a-date",
+                "/api/eltm/entities/1/notes?to=2025/01/01",
+                "/api/eltm/entities/1/notes?from=2026-01-01&to=2025-01-01",
+                "/api/eltm/relationships/1/notes?from=not-a-date",
+                "/api/eltm/relationships/1/notes?from=2026-01-01&to=2025-01-01",
+            ).forEach { path ->
+                val response = client.get(path)
+                assertEquals(HttpStatusCode.BadRequest, response.status, "path: $path")
+            }
+        }
+    }
+
+    @Test
+    fun `eltm bad includeInvalid is rejected with 400`() {
+        testApplication {
+            application { module(service()) }
+            val response = client.get("/api/eltm/entities/1/relationships?includeInvalid=maybe")
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+        }
+    }
+
+    @Test
+    fun `eltm missing subjects are 404`() {
+        val eltm = FakeEltmService()
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            listOf(
+                "/api/eltm/entities/1",
+                "/api/eltm/entities/1/notes",
+                "/api/eltm/entities/1/relationships",
+                "/api/eltm/relationships/1",
+                "/api/eltm/relationships/1/notes",
+            ).forEach { path ->
+                val response = client.get(path)
+                assertEquals(HttpStatusCode.NotFound, response.status, "path: $path")
+            }
+        }
+    }
+
+    @Test
+    fun `eltm entities list returns seeded entities with counts and latest notes`() {
+        val eltm = FakeEltmService()
+        runBlocking {
+            eltm.createEntity("Alice", "person")
+            eltm.createEntity("Bob", "person")
+            eltm.attachNoteToEntity(1, LocalDate.of(2026, 1, 1), "first note")
+            eltm.attachNoteToEntity(1, LocalDate.of(2026, 2, 1), "second note")
+        }
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            val response = client.get("/api/eltm/entities")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(2, body.size)
+            val first = body[0].jsonObject
+            assertEquals("alice", first["entity"]?.jsonObject?.get("canonicalName")?.jsonPrimitive?.content)
+            assertEquals("person", first["entity"]?.jsonObject?.get("category")?.jsonPrimitive?.content)
+            assertEquals(2, first["noteCount"]?.jsonPrimitive?.content?.toInt())
+            assertEquals(0, first["relationshipCount"]?.jsonPrimitive?.content?.toInt())
+            assertEquals(
+                "second note",
+                first["latestNote"]?.jsonObject?.get("note")?.jsonPrimitive?.content
+            )
+            assertEquals(
+                "2026-02-01",
+                first["latestNote"]?.jsonObject?.get("eventDate")?.jsonPrimitive?.content
+            )
+        }
+    }
+
+    @Test
+    fun `eltm entities list paginates`() {
+        val eltm = FakeEltmService()
+        runBlocking {
+            eltm.createEntity("Alice", "person")
+            eltm.createEntity("Bob", "person")
+            eltm.createEntity("Carol", "person")
+        }
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            val response = client.get("/api/eltm/entities?limit=1&offset=1")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(1, body.size)
+            assertEquals("bob", body[0].jsonObject["entity"]?.jsonObject?.get("canonicalName")?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `eltm relationships list returns seeded relationships`() {
+        val eltm = FakeEltmService()
+        runBlocking {
+            eltm.createEntity("Alice", "person")
+            eltm.createEntity("Bob", "person")
+            eltm.createRelationship(1, 2, "works with")
+        }
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            val response = client.get("/api/eltm/relationships")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(1, body.size)
+            val rel = body[0].jsonObject
+            assertEquals("alice", rel["srcName"]?.jsonPrimitive?.content)
+            assertEquals("bob", rel["dstName"]?.jsonPrimitive?.content)
+            assertEquals("works_with", rel["relationship"]?.jsonObject?.get("verb")?.jsonPrimitive?.content)
+            assertEquals("true", rel["relationship"]?.jsonObject?.get("valid")?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `eltm entity drill-down serves relationships and notes`() {
+        val eltm = FakeEltmService()
+        runBlocking {
+            eltm.createEntity("Alice", "person")
+            eltm.createEntity("Bob", "person")
+            eltm.createRelationship(1, 2, "works with")
+            eltm.attachNoteToEntity(1, LocalDate.of(2026, 1, 1), "note text")
+            eltm.attachNoteToRelationship(1, LocalDate.of(2026, 1, 2), "collaborate")
+        }
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            val notes = client.get("/api/eltm/entities/1/notes")
+            assertEquals(HttpStatusCode.OK, notes.status)
+            val notesBody = json.parseToJsonElement(notes.bodyAsText()).jsonArray
+            assertEquals(1, notesBody.size)
+            assertEquals("note text", notesBody[0].jsonObject["note"]?.jsonPrimitive?.content)
+
+            val rels = client.get("/api/eltm/entities/1/relationships")
+            assertEquals(HttpStatusCode.OK, rels.status)
+            val relsBody = json.parseToJsonElement(rels.bodyAsText()).jsonArray
+            assertEquals(1, relsBody.size)
+            assertEquals(1, relsBody[0].jsonObject["noteCount"]?.jsonPrimitive?.content?.toInt())
+
+            val relNotes = client.get("/api/eltm/relationships/1/notes")
+            assertEquals(HttpStatusCode.OK, relNotes.status)
+            val relNotesBody = json.parseToJsonElement(relNotes.bodyAsText()).jsonArray
+            assertEquals(1, relNotesBody.size)
+            assertEquals("collaborate", relNotesBody[0].jsonObject["note"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `eltm entity drill-down hides invalidated relationships unless requested`() {
+        val eltm = FakeEltmService()
+        runBlocking {
+            eltm.createEntity("Alice", "person")
+            eltm.createEntity("Bob", "person")
+            eltm.createRelationship(1, 2, "works with")
+            eltm.attachNoteToRelationship(1, LocalDate.of(2026, 3, 1), "left", valid = false)
+        }
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            val hidden = client.get("/api/eltm/entities/1/relationships")
+            assertEquals(HttpStatusCode.OK, hidden.status)
+            val hiddenBody = json.parseToJsonElement(hidden.bodyAsText()).jsonArray
+            assertEquals(0, hiddenBody.size)
+
+            val shown = client.get("/api/eltm/entities/1/relationships?includeInvalid=true")
+            assertEquals(HttpStatusCode.OK, shown.status)
+            val shownBody = json.parseToJsonElement(shown.bodyAsText()).jsonArray
+            assertEquals(1, shownBody.size)
+            assertEquals(
+                "false",
+                shownBody[0].jsonObject["relationship"]?.jsonObject?.get("valid")?.jsonPrimitive?.content
+            )
+        }
+    }
+
+    @Test
+    fun `eltm relationships list includes invalidated relationships`() {
+        val eltm = FakeEltmService()
+        runBlocking {
+            eltm.createEntity("Alice", "person")
+            eltm.createEntity("Bob", "person")
+            eltm.createRelationship(1, 2, "works with")
+            eltm.attachNoteToRelationship(1, LocalDate.of(2026, 3, 1), "left", valid = false)
+        }
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            val response = client.get("/api/eltm/relationships")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(1, body.size)
+            assertEquals(
+                "false",
+                body[0].jsonObject["relationship"]?.jsonObject?.get("valid")?.jsonPrimitive?.content
+            )
+        }
+    }
+
+    @Test
+    fun `eltm notes are filtered by date range`() {
+        val eltm = FakeEltmService()
+        runBlocking {
+            eltm.createEntity("Alice", "person")
+            eltm.attachNoteToEntity(1, LocalDate.of(2026, 1, 1), "jan")
+            eltm.attachNoteToEntity(1, LocalDate.of(2026, 2, 1), "feb")
+            eltm.attachNoteToEntity(1, LocalDate.of(2026, 3, 1), "mar")
+        }
+        testApplication {
+            application { module(service(), eltmService = eltm) }
+            val response = client.get("/api/eltm/entities/1/notes?from=2026-02-01&to=2026-02-28")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(1, body.size)
+            assertEquals("feb", body[0].jsonObject["note"]?.jsonPrimitive?.content)
+        }
+    }
+
     @Test
     fun `model catalog is served`() {
         testApplication {
-            application { module(service(), PostgresSstmService()) }
+            application { module(service()) }
             val response = client.get("/api/models")
             assertEquals(HttpStatusCode.OK, response.status)
         }
@@ -352,8 +604,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), hand = hand, chatStore = store),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), hand = hand, chatStore = store)
                 )
             }
             val response = client.post("/api/chats/chat-1/title")
@@ -376,7 +627,7 @@ class WebServerTest {
                         testAppConfig(),
                         hand = hand,
                         chatStore = FakeChatStore()
-                    ), PostgresSstmService()
+                    )
                 )
             }
             val response = client.post("/api/chats/nope/title")
@@ -393,8 +644,7 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(testAppConfig(), hand = hand, chatStore = store),
-                    PostgresSstmService()
+                    ChatRunService(testAppConfig(), hand = hand, chatStore = store)
                 )
             }
             val response = client.post("/api/chats/chat-1/title")
@@ -440,8 +690,7 @@ class WebServerTest {
                         testAppConfig().copy(title = TitleConfig(model = "bifrost/cerebras/gpt-oss-120b")),
                         hand = hand,
                         chatStore = store,
-                    ),
-                    PostgresSstmService()
+                    )
                 )
             }
             val response = client.post("/api/chats/chat-1/title")

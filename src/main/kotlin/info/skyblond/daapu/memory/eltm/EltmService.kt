@@ -224,6 +224,22 @@ interface EltmService {
     suspend fun searchEntities(query: String, limit: Int): List<EntityWithScore>
 
     /**
+     * All entities (whatever their prominence), ordered by id ascending for
+     * a stable page, each with its note and relationship counts and its
+     * latest diary note inline. Paginated via [limit]/[offset] — the
+     * frontend ELTM view's browse-all surface (the recall sub-session uses
+     * [searchEntities] instead).
+     */
+    suspend fun listEntities(limit: Int, offset: Int): List<EntityView>
+
+    /**
+     * All relationships (active and invalidated), ordered by id ascending,
+     * each with its endpoint names, its note count, and its latest diary
+     * note inline. Paginated via [limit]/[offset].
+     */
+    suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView>
+
+    /**
      * The entity with its latest diary note inline plus its note and
      * relationship counts, or null when missing.
      */

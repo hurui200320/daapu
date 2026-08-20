@@ -1,6 +1,14 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.memory.eltm.EltmEntity
+import info.skyblond.daapu.memory.eltm.EltmNote
+import info.skyblond.daapu.memory.eltm.EltmRelationship
+import info.skyblond.daapu.memory.eltm.EntityView
+import info.skyblond.daapu.memory.eltm.RelationshipView
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
+import info.skyblond.daapu.server.EltmEntityDto.Companion.toDto
+import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
+import info.skyblond.daapu.server.EltmRelationshipDto.Companion.toDto
 import kotlinx.serialization.Serializable
 
 /**
@@ -57,6 +65,102 @@ data class MemoryDto(
 
 @Serializable
 data class MemoryWriteRequest(val content: String)
+
+// ----------------------------------------------------------------------
+// ELTM read views (the `#/eltm` frontend tab: browse-only, writes are
+// LLM-driven via the SSTM purge pipeline)
+// ----------------------------------------------------------------------
+
+@Serializable
+data class EltmEntityDto(
+    val id: Long,
+    val canonicalName: String,
+    val category: String,
+) {
+    companion object {
+        fun EltmEntity.toDto() = EltmEntityDto(
+            id = id,
+            canonicalName = canonicalName,
+            category = category,
+        )
+    }
+}
+
+@Serializable
+data class EltmRelationshipDto(
+    val id: Long,
+    val srcId: Long,
+    val dstId: Long,
+    val verb: String,
+    val valid: Boolean,
+) {
+    companion object {
+        fun EltmRelationship.toDto() = EltmRelationshipDto(
+            id = id,
+            srcId = srcId,
+            dstId = dstId,
+            verb = verb,
+            valid = valid,
+        )
+    }
+}
+
+@Serializable
+data class EltmNoteDto(
+    val id: Long,
+    val entityId: Long?,
+    val relationshipId: Long?,
+    val eventDate: String,
+    val note: String,
+    val createdAt: String,
+) {
+    companion object {
+        fun EltmNote.toDto() = EltmNoteDto(
+            id = id,
+            entityId = entityId,
+            relationshipId = relationshipId,
+            eventDate = eventDate.toString(),
+            note = note,
+            createdAt = createdAt.toString(),
+        )
+    }
+}
+
+@Serializable
+data class EntityViewDto(
+    val entity: EltmEntityDto,
+    val noteCount: Int,
+    val relationshipCount: Int,
+    val latestNote: EltmNoteDto?,
+) {
+    companion object {
+        fun EntityView.toDto() = EntityViewDto(
+            entity = entity.toDto(),
+            noteCount = noteCount,
+            relationshipCount = relationshipCount,
+            latestNote = latestNote?.toDto(),
+        )
+    }
+}
+
+@Serializable
+data class RelationshipViewDto(
+    val relationship: EltmRelationshipDto,
+    val srcName: String,
+    val dstName: String,
+    val noteCount: Int,
+    val latestNote: EltmNoteDto?,
+) {
+    companion object {
+        fun RelationshipView.toDto() = RelationshipViewDto(
+            relationship = relationship.toDto(),
+            srcName = srcName,
+            dstName = dstName,
+            noteCount = noteCount,
+            latestNote = latestNote?.toDto(),
+        )
+    }
+}
 
 /**
  * The chat is locked by a run or a deletion in progress. Mapped to HTTP 409.

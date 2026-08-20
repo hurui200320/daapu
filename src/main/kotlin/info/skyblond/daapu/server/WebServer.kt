@@ -6,9 +6,11 @@ import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.handToolCallback
 import info.skyblond.daapu.hand.handToolList
 import info.skyblond.daapu.mcp.McpToolProvider
-import info.skyblond.daapu.memory.sstm.PostgresSstmService
-import info.skyblond.daapu.memory.sstm.SstmService
+import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
+import info.skyblond.daapu.server.EntityViewDto.Companion.toDto
 import info.skyblond.daapu.server.MemoryDto.Companion.toDto
+import info.skyblond.daapu.server.RelationshipViewDto.Companion.toDto
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
@@ -28,8 +30,21 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 
 private val logger = KotlinLogging.logger("WebServer")
+
+/** Default page size of the browse-only `/api/eltm` list routes. */
+private const val DEFAULT_ELTM_PAGE_LIMIT = 100
+
+/**
+ * Upper bound of a single page. The whole-page count/latest-note batch
+ * queries materialize the page's subjects' notes in memory, so an
+ * unbounded `limit` would be a memory attack surface; the frontend fetches
+ * at most 500 rows per request (its resync walks the window in chunks).
+ */
+private const val MAX_ELTM_PAGE_LIMIT = 500
 
 @Serializable
 data class ErrorResponse(val error: String)
@@ -43,16 +58,20 @@ data class ErrorResponse(val error: String)
  * reached aborts startup instead of silently degrading every chat run.
  */
 fun startWebServer(config: AppConfig) {
-    val sstmService = PostgresSstmService()
-    val service = ChatRunService(config, McpToolProvider(config.mcp.servers), sstmService)
+    val service = ChatRunService(config, McpToolProvider(config.mcp.servers))
     // graceful close of the MCP clients (stdio subprocesses, HTTP sessions)
     Runtime.getRuntime().addShutdownHook(Thread { service.close() })
     embeddedServer(Netty, port = config.server.port, host = "0.0.0.0") {
-        module(service, sstmService)
+        module(service)
     }.start(wait = true)
 }
 
-internal fun Application.module(service: ChatRunService, sstmService: SstmService) {
+internal fun Application.module(
+    service: ChatRunService,
+    // tests inject a fake; production uses the service's own store
+    eltmService: EltmService = service.eltmService,
+) {
+    val sstmService = service.sstmService
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
@@ -202,6 +221,95 @@ internal fun Application.module(service: ChatRunService, sstmService: SstmServic
                     call.respond(HttpStatusCode.NoContent)
                 }
             }
+            // browse-only ELTM views for the `#/eltm` frontend tab; writes
+            // stay LLM-driven via the SSTM purge pipeline, so no POST/PUT/
+            // DELETE routes exist
+            route("/eltm") {
+                get("/entities") {
+                    call.respond(
+                        eltmService.listEntities(
+                            call.pageLimitParam(),
+                            call.pageOffsetParam(),
+                        ).map { it.toDto() }
+                    )
+                }
+                get("/entities/{entityId}") {
+                    val id = call.longParam("entityId")
+                    call.respond(
+                        eltmService.getEntity(id)?.toDto()
+                            ?: throw NotFoundException("Entity $id not found")
+                    )
+                }
+                // TODO: the existence checks below run `getEntity`/
+                // `getRelationship`, which build the FULL view (counts +
+                // latest note, 3-4 queries) just to 404-check; a cheap
+                // id-exists query would do
+                get("/entities/{entityId}/relationships") {
+                    val id = call.longParam("entityId")
+                    // parse the filter before the existence check: a bad
+                    // flag is a 400 even when the subject is gone
+                    val raw = call.request.queryParameters["includeInvalid"]
+                    val includeInvalid = when (raw) {
+                        null -> false
+                        else -> raw.toBooleanStrictOrNull()
+                            ?: throw BadRequestException("includeInvalid must be true or false")
+                    }
+                    if (eltmService.getEntity(id) == null) {
+                        throw NotFoundException("Entity $id not found")
+                    }
+                    call.respond(
+                        eltmService.getRelationships(id, includeInvalid).map { it.toDto() }
+                    )
+                }
+                get("/entities/{entityId}/notes") {
+                    val id = call.longParam("entityId")
+                    // parse the filters before the existence check: a bad
+                    // range is a 400 even when the subject is gone
+                    val from = call.dateParam("from")
+                    val to = call.dateParam("to")
+                    val limit = call.pageLimitParam()
+                    val offset = call.pageOffsetParam()
+                    checkDateRange(from, to)
+                    if (eltmService.getEntity(id) == null) {
+                        throw NotFoundException("Entity $id not found")
+                    }
+                    call.respond(
+                        eltmService.getEntityNotes(id, from, to, limit, offset).map { it.toDto() }
+                    )
+                }
+                get("/relationships") {
+                    call.respond(
+                        eltmService.listRelationships(
+                            call.pageLimitParam(),
+                            call.pageOffsetParam(),
+                        ).map { it.toDto() }
+                    )
+                }
+                get("/relationships/{relationshipId}") {
+                    val id = call.longParam("relationshipId")
+                    call.respond(
+                        eltmService.getRelationship(id)?.toDto()
+                            ?: throw NotFoundException("Relationship $id not found")
+                    )
+                }
+                get("/relationships/{relationshipId}/notes") {
+                    val id = call.longParam("relationshipId")
+                    // parse the filters before the existence check: a bad
+                    // range is a 400 even when the subject is gone
+                    val from = call.dateParam("from")
+                    val to = call.dateParam("to")
+                    val limit = call.pageLimitParam()
+                    val offset = call.pageOffsetParam()
+                    checkDateRange(from, to)
+                    if (eltmService.getRelationship(id) == null) {
+                        throw NotFoundException("Relationship $id not found")
+                    }
+                    call.respond(
+                        eltmService.getRelationshipNotes(id, from, to, limit, offset)
+                            .map { it.toDto() }
+                    )
+                }
+            }
         }
     }
 }
@@ -283,3 +391,44 @@ private fun ApplicationCall.messageIndexParam(): Int =
 private fun ApplicationCall.memoryIdParam(): Long =
     parameters["memoryId"]?.toLongOrNull()
         ?: throw BadRequestException("memoryId must be a number")
+
+// ---- `/api/eltm` query/param helpers: every parse failure is a 400 (and a
+// DB-free test target), so the service-level `require`s stay unreachable
+// from the HTTP layer
+
+private fun ApplicationCall.longParam(name: String): Long =
+    parameters[name]?.toLongOrNull()
+        ?: throw BadRequestException("$name must be a number")
+
+private fun ApplicationCall.pageLimitParam(): Int {
+    val raw = request.queryParameters["limit"] ?: return DEFAULT_ELTM_PAGE_LIMIT
+    val value = raw.toIntOrNull() ?: throw BadRequestException("limit must be a number")
+    if (value < 1) throw BadRequestException("limit must be >= 1")
+    if (value > MAX_ELTM_PAGE_LIMIT) {
+        throw BadRequestException("limit must be <= $MAX_ELTM_PAGE_LIMIT")
+    }
+    return value
+}
+
+private fun ApplicationCall.pageOffsetParam(): Int {
+    val raw = request.queryParameters["offset"] ?: return 0
+    val value = raw.toIntOrNull() ?: throw BadRequestException("offset must be a number")
+    if (value < 0) throw BadRequestException("offset must be >= 0")
+    return value
+}
+
+/** A `YYYY-MM-DD` query param, or null when absent; anything else is a 400. */
+private fun ApplicationCall.dateParam(name: String): LocalDate? {
+    val raw = request.queryParameters[name] ?: return null
+    return try {
+        LocalDate.parse(raw)
+    } catch (e: DateTimeParseException) {
+        throw BadRequestException("$name must be YYYY-MM-DD")
+    }
+}
+
+private fun checkDateRange(from: LocalDate?, to: LocalDate?) {
+    if (from != null && to != null && from.isAfter(to)) {
+        throw BadRequestException("from must not be after to")
+    }
+}

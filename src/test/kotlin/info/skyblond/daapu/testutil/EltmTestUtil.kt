@@ -266,6 +266,27 @@ class FakeEltmService : EltmService {
             )
         }
 
+    override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> =
+        entities.values.sortedBy { it.id }.drop(offset).take(limit).map {
+            EntityView(
+                entity = it,
+                noteCount = noteCountFor(it.id, null),
+                relationshipCount = relationshipCountFor(it.id),
+                latestNote = latestNote(it.id, null),
+            )
+        }
+
+    override suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView> =
+        relationships.values.sortedBy { it.id }.drop(offset).take(limit).map { rel ->
+            RelationshipView(
+                relationship = rel,
+                srcName = entities[rel.srcId]?.canonicalName ?: "<deleted>",
+                dstName = entities[rel.dstId]?.canonicalName ?: "<deleted>",
+                noteCount = noteCountFor(null, rel.id),
+                latestNote = latestNote(null, rel.id),
+            )
+        }
+
     override suspend fun getRelationship(id: Long): RelationshipView? =
         relationships[id]?.let { rel ->
             RelationshipView(

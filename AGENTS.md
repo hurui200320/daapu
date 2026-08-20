@@ -333,13 +333,13 @@ frontend + Node/TS "hand-pi" service.
   dark-only oklch "neutral" palette), bits-ui primitives, lucide icons,
   highlight.js. Proxies `/api` to ktor; ktor serves the API only.
   - Layout: collapsible glass sidebar (chat list + search filter +
-    rename/delete dialogs, generate-title, + SSTM nav), centered
+    rename/delete dialogs, generate-title, + SSTM/ELTM nav), centered
     `max-w-3xl` message column, floating rounded composer with circular
     send button (disabled while streaming).
   - Routing: hash-based (`src/lib/router.svelte.ts`, zero deps — the hash
     never reaches the server, so any static host works without SPA fallback
     config; the same reason llama.cpp's webui uses `router: hash`). Routes:
-    `#/chat` (home),     `#/chat/<id>`, `#/sstm` (`#/eltm/...` planned). The URL
+    `#/chat` (home),     `#/chat/<id>`, `#/sstm`, `#/eltm`. The URL
     owns the active view and the open chat: an `App.svelte` `$effect`
     translates the route into `chatStore.pickChat`/`closeChat`, and store
     actions that change the open chat (create/fork/delete) navigate the hash
@@ -367,11 +367,21 @@ frontend + Node/TS "hand-pi" service.
     resync on done/error/abnormal close, optimistic user message; a send
     that never stores restores the composer draft. No client-side stop —
     the server only notices a disconnect on its next event write. Chat
-    list, model catalog, and memories list re-fetch every 30s and on
+    list, model catalog, memories list, and the ELTM view's entity/
+    relationship lists re-fetch every 30s and on
     window focus (titles created/renamed in another session only appear via
     refetch; a failed initial catalog load retries instead of leaving a
-    blank picker; SSTM merges mutate memories server-side); each replaces
+    blank picker; SSTM merges mutate memories server-side, the SSTM purge
+    writes the ELTM server-side); each replaces
     its list only when the payload changed.
+  - The ELTM view (`EltmView.svelte`, route `#/eltm`) is browse-only (writes
+    are LLM-driven): two sub-tabs — Entities (cards with counts + latest
+    note, expandable to lazily fetch the entity's relationships and diary
+    via the `/api/eltm` drill-down routes) and Relationships (cards with
+    endpoint names + validity badge, expandable to fetch their notes). Both
+    lists paginate via a load-more button (100 rows per page, oldest first);
+    the background resync refetches the loaded window, so appended pages
+    survive and a server-side shrink shrinks the list too.
   - User messages: plain-text pill bubbles (`whitespace-pre-wrap`);
     assistant: full-width markdown (marked + DOMPurify + highlight.js
     chrome from `lib/markdown.ts`). Reasoning/tool-call/tool-result parts

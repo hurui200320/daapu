@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, Brain, Loader2, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2 } from '@lucide/svelte'
+  import { Bot, Brain, Loader2, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2 } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
@@ -67,6 +67,13 @@
         class={cn(iconBtn, route.name === 'sstm' && 'bg-accent text-accent-foreground')}
       >
         <Brain class="size-5" />
+      </a>
+      <a
+        title="eltm"
+        href="#/eltm"
+        class={cn(iconBtn, route.name === 'eltm' && 'bg-accent text-accent-foreground')}
+      >
+        <Network class="size-5" />
       </a>
     </div>
   {:else}
@@ -189,6 +196,16 @@
       >
         <Brain class="size-4" />
         SSTM
+      </a>
+      <a
+        href="#/eltm"
+        class={cn(
+          buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
+          route.name === 'eltm' && 'bg-accent text-accent-foreground'
+        )}
+      >
+        <Network class="size-4" />
+        ELTM
       </a>
     </div>
   {/if}

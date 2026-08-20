@@ -320,6 +320,56 @@ class PostgresEltmService(
         }
     }
 
+    override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> = withTransaction {
+        require(limit >= 1) { "limit must be >= 1, got $limit" }
+        require(offset >= 0) { "offset must be >= 0, got $offset" }
+        val entities = EltmEntities.selectAll()
+            .orderBy(EltmEntities.id to SortOrder.ASC)
+            .limit(limit)
+            .offset(offset.toLong())
+            .map { it.toEntity() }
+        // a whole page's counts and latest notes in 2 queries instead of the
+        // single-subject helpers' 3 per row (the single-subject reads below
+        // stay per-row: one row, three queries)
+        val noteSummary = noteCountsAndLatest(EltmNotes.entityId, entities.map { it.id })
+        val relationshipCounts = relationshipCountsFor(entities.map { it.id })
+        entities.map { entity ->
+            EntityView(
+                entity = entity,
+                noteCount = noteSummary[entity.id]?.first ?: 0,
+                relationshipCount = relationshipCounts[entity.id] ?: 0,
+                latestNote = noteSummary[entity.id]?.second,
+            )
+        }
+    }
+
+    override suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView> =
+        withTransaction {
+            require(limit >= 1) { "limit must be >= 1, got $limit" }
+            require(offset >= 0) { "offset must be >= 0, got $offset" }
+            val rels = EltmRelationships.selectAll()
+                .orderBy(EltmRelationships.id to SortOrder.ASC)
+                .limit(limit)
+                .offset(offset.toLong())
+                .map { it.toRelationship() }
+            if (rels.isEmpty()) return@withTransaction emptyList()
+            // a whole page's endpoint names, note counts and latest notes in
+            // 2 queries instead of toRelationshipView's 4 per row
+            val names = EltmEntities.selectAll()
+                .where { EltmEntities.id inList rels.flatMap { listOf(it.srcId, it.dstId) } }
+                .associate { it[EltmEntities.id] to it[EltmEntities.canonicalName] }
+            val noteSummary = noteCountsAndLatest(EltmNotes.relationshipId, rels.map { it.id })
+            rels.map { rel ->
+                RelationshipView(
+                    relationship = rel,
+                    srcName = names[rel.srcId] ?: "<deleted entity ${rel.srcId}>",
+                    dstName = names[rel.dstId] ?: "<deleted entity ${rel.dstId}>",
+                    noteCount = noteSummary[rel.id]?.first ?: 0,
+                    latestNote = noteSummary[rel.id]?.second,
+                )
+            }
+        }
+
     override suspend fun getEntity(id: Long): EntityView? = withTransaction {
         val entity = findEntityById(id) ?: return@withTransaction null
         EntityView(
@@ -332,15 +382,7 @@ class PostgresEltmService(
 
     override suspend fun getRelationship(id: Long): RelationshipView? = withTransaction {
         val rel = findRelationshipById(id) ?: return@withTransaction null
-        RelationshipView(
-            relationship = rel,
-            srcName = findEntityById(rel.srcId)?.canonicalName
-                ?: "<deleted entity ${rel.srcId}>",
-            dstName = findEntityById(rel.dstId)?.canonicalName
-                ?: "<deleted entity ${rel.dstId}>",
-            noteCount = countNotesForRelationship(rel.id),
-            latestNote = latestNoteForRelationship(rel.id),
-        )
+        toRelationshipView(rel)
     }
 
     override suspend fun getRelationships(
@@ -353,19 +395,18 @@ class PostgresEltmService(
         val filtered = if (includeInvalid) cond else cond and (EltmRelationships.valid eq true)
         EltmRelationships.selectAll().where { filtered }
             .orderBy(EltmRelationships.id to SortOrder.DESC)
-            .map { row ->
-                val rel = row.toRelationship()
-                RelationshipView(
-                    relationship = rel,
-                    srcName = findEntityById(rel.srcId)?.canonicalName
-                        ?: "<deleted entity ${rel.srcId}>",
-                    dstName = findEntityById(rel.dstId)?.canonicalName
-                        ?: "<deleted entity ${rel.dstId}>",
-                    noteCount = countNotesForRelationship(rel.id),
-                    latestNote = latestNoteForRelationship(rel.id),
-                )
-            }
+            .map { row -> toRelationshipView(row.toRelationship()) }
     }
+
+    private fun toRelationshipView(rel: EltmRelationship): RelationshipView = RelationshipView(
+        relationship = rel,
+        srcName = findEntityById(rel.srcId)?.canonicalName
+            ?: "<deleted entity ${rel.srcId}>",
+        dstName = findEntityById(rel.dstId)?.canonicalName
+            ?: "<deleted entity ${rel.dstId}>",
+        noteCount = countNotesForRelationship(rel.id),
+        latestNote = latestNoteForRelationship(rel.id),
+    )
 
     private suspend fun noteQuery(
         column: Column<Long?>,
@@ -521,6 +562,55 @@ class PostgresEltmService(
         }.count().toInt()
 
     /**
+     * Per-subject note counts and latest notes (by event date, then id — the
+     * same ordering as the single-subject helpers' `LIMIT 1` queries) for a
+     * whole page of subjects, in ONE query. Ambient transaction.
+     *
+     * TODO: materializes every note of the page's subjects in memory; a
+     * `GROUP BY` subject + window-function (or `DISTINCT ON`) variant would
+     * scale to pages whose subjects carry heavy diaries.
+     */
+    private fun noteCountsAndLatest(
+        column: Column<Long?>,
+        subjectIds: List<Long>,
+    ): Map<Long, Pair<Int, EltmNote?>> {
+        if (subjectIds.isEmpty()) return emptyMap()
+        return EltmNotes.selectAll().where { column inList subjectIds }
+            .map { it.toNote() }
+            // a note's subject is exactly one of the two columns (migration
+            // CHECK), so the fallback chain only masks a broken schema
+            .groupBy { it.entityId ?: it.relationshipId ?: error("note has no subject") }
+            .mapValues { (_, notes) ->
+                notes.size to
+                    notes.maxWithOrNull(compareBy<EltmNote> { it.eventDate }.thenBy { it.id })
+            }
+    }
+
+    /**
+     * Per-entity relationship counts (the entity as src OR dst) for a whole
+     * page of entities, in ONE query. Ambient transaction.
+     */
+    private fun relationshipCountsFor(entityIds: List<Long>): Map<Long, Int> {
+        if (entityIds.isEmpty()) return emptyMap()
+        return EltmRelationships.select(EltmRelationships.srcId, EltmRelationships.dstId)
+            .where {
+                (EltmRelationships.srcId inList entityIds) or
+                    (EltmRelationships.dstId inList entityIds)
+            }
+            // a self-loop (src == dst, e.g. a merge-invalidated winner—
+            // winner edge) is ONE row: count it once, like
+            // countRelationshipsForEntity and the drill-down list
+            .map { row ->
+                val src = row[EltmRelationships.srcId]
+                val dst = row[EltmRelationships.dstId]
+                if (src == dst) listOf(src) else listOf(src, dst)
+            }
+            .flatten()
+            .groupingBy { it }
+            .eachCount()
+    }
+
+    /**
      * Cosine-similarity search over stored entity embeddings, most similar
      * first, at or above [threshold], capped at [limit]; [excludeId] (used
      * for near matches) skips the row itself. Ambient transaction.
@@ -556,16 +646,7 @@ class PostgresEltmService(
             .where { EltmNotes.entityId inList ids }
             .groupBy(EltmNotes.entityId)
             .associate { it[EltmNotes.entityId]!! to it[EltmNotes.id.count()].toInt() }
-        val relationshipCounts = EltmRelationships.select(
-            EltmRelationships.srcId,
-            EltmRelationships.dstId,
-        ).where {
-            (EltmRelationships.srcId inList ids) or (EltmRelationships.dstId inList ids)
-        }
-            .map { listOf(it[EltmRelationships.srcId], it[EltmRelationships.dstId]) }
-            .flatten()
-            .groupingBy { it }
-            .eachCount()
+        val relationshipCounts = relationshipCountsFor(ids)
         return candidates.map { (id, row) ->
             EntityWithScore(
                 entity = EltmEntity(

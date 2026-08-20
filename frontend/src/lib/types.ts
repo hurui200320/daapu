@@ -84,6 +84,47 @@ export interface MemoryDto {
   content: string
 }
 
+// ---- ELTM browse views (`GET /api/eltm`, read-only) ----
+
+export interface EltmEntityDto {
+  id: number
+  canonicalName: string
+  category: string
+}
+
+export interface EltmRelationshipDto {
+  id: number
+  srcId: number
+  dstId: number
+  verb: string
+  valid: boolean
+}
+
+export interface EltmNoteDto {
+  id: number
+  entityId: number | null
+  relationshipId: number | null
+  /** the LLM-resolved absolute date of the event, `YYYY-MM-DD` */
+  eventDate: string
+  note: string
+  createdAt: string
+}
+
+export interface EntityViewDto {
+  entity: EltmEntityDto
+  noteCount: number
+  relationshipCount: number
+  latestNote: EltmNoteDto | null
+}
+
+export interface RelationshipViewDto {
+  relationship: EltmRelationshipDto
+  srcName: string
+  dstName: string
+  noteCount: number
+  latestNote: EltmNoteDto | null
+}
+
 /** One entry of `GET /api/chats`: the user-visible chat title. */
 export interface ChatInfo {
   id: string

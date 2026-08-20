@@ -95,6 +95,12 @@ class EltmServiceTest {
             error("unused")
 
         override suspend fun getEntity(id: Long): EntityView? = error("unused")
+        override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> =
+            error("unused")
+
+        override suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView> =
+            error("unused")
+
         override suspend fun getRelationship(id: Long): RelationshipView? = error("unused")
         override suspend fun getRelationships(
             entityId: Long,

@@ -13,7 +13,6 @@ import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.mcp.*
-import info.skyblond.daapu.memory.sstm.PostgresSstmService
 import info.skyblond.daapu.server.ChatRunService
 import info.skyblond.daapu.server.module
 import io.ktor.client.request.*
@@ -37,7 +36,7 @@ class HandCallbackTest {
     private fun ApplicationTestBuilder.runApplicationWithService(block: suspend (ChatRunService) -> Unit) {
         val service = ChatRunService(testAppConfig())
         application {
-            module(service, PostgresSstmService())
+            module(service)
         }
         kotlinx.coroutines.runBlocking { block(service) }
     }
