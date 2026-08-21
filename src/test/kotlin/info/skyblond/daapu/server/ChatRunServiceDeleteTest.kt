@@ -10,6 +10,7 @@ import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.memory.sstm.SstmService
 import info.skyblond.daapu.testutil.RecordingSstmService
 import info.skyblond.daapu.testutil.addMemoryRound
+import info.skyblond.daapu.testutil.chatRunService
 import info.skyblond.daapu.testutil.mergeRunFlow
 import kotlinx.coroutines.runBlocking
 import java.time.Instant
@@ -58,7 +59,7 @@ class ChatRunServiceDeleteTest {
         val sstm = RecordingSstmService()
         val hand = oneShotHand(sstm)
         val service =
-            ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+            chatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
 
         assertTrue(service.deleteChat("chat-1"))
         assertNull(store.load("chat-1"), "the row is deleted only after extraction")
@@ -109,7 +110,7 @@ class ChatRunServiceDeleteTest {
             },
         )
         val service =
-            ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+            chatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
 
         assertFailsWith<IllegalStateException> { service.deleteChat("chat-1") }
         assertTrue(store.load("chat-1") != null, "a failed extraction must keep the row")
@@ -146,7 +147,7 @@ class ChatRunServiceDeleteTest {
             },
         )
         val service =
-            ChatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+            chatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
 
         val e = assertFailsWith<HandRunException> { service.deleteChat("chat-1") }
         assertEquals("round_limit", e.type)
@@ -158,7 +159,7 @@ class ChatRunServiceDeleteTest {
     @Test
     fun `delete of a missing chat returns false without calling the LLM`() = runBlocking {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
-        val service = ChatRunService(
+        val service = chatRunService(
             testAppConfig(),
             hand = hand,
             chatStore = FakeChatStore(),
@@ -174,7 +175,7 @@ class ChatRunServiceDeleteTest {
         val store = FakeChatStore()
         store.seed("chat-1")
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
-        val service = ChatRunService(
+        val service = chatRunService(
             testAppConfig(),
             hand = hand,
             chatStore = store,
@@ -206,7 +207,7 @@ class ChatRunServiceDeleteTest {
                 textRunFlow("likes coffee")
             },
         )
-        service = ChatRunService(
+        service = chatRunService(
             testAppConfig(),
             hand = hand,
             chatStore = store,

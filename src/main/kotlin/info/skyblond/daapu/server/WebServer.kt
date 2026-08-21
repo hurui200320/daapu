@@ -3,10 +3,12 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.config.AppConfig
+import info.skyblond.daapu.di.daapuModule
+import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.handToolCallback
 import info.skyblond.daapu.hand.handToolList
-import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.sstm.SstmService
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
 import info.skyblond.daapu.server.EntityViewDto.Companion.toDto
 import info.skyblond.daapu.server.MemoryDto.Companion.toDto
@@ -30,6 +32,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.koin.core.Koin
+import org.koin.dsl.koinApplication
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
 
@@ -53,25 +57,39 @@ data class ErrorResponse(val error: String)
  * Start the HTTP API server (the frontend is a separate dev server that
  * proxies `/api` here; this process only serves the API).
  *
- * The MCP tool servers come from [AppConfig.mcp] (`config.jsonc`): the
- * provider connects eagerly at construction, so a server that cannot be
- * reached aborts startup instead of silently degrading every chat run.
+ * The whole object graph lives in the Koin container (`di/DaapuModule.kt`);
+ * resolving its root ([ChatRunService]) eagerly before the server starts
+ * runs every definition, so the fail-fast config validation and the MCP
+ * tool servers' eager connect (a server that cannot be reached aborts
+ * startup instead of silently degrading every chat run) fire at boot.
+ * Resource cleanup is Koin's too: the shutdown hook closes the container,
+ * which fires the `onClose` callbacks (hand client, MCP clients).
  */
 fun startWebServer(config: AppConfig) {
-    val service = ChatRunService(config, McpToolProvider(config.mcp.servers))
-    // graceful close of the MCP clients (stdio subprocesses, HTTP sessions)
-    Runtime.getRuntime().addShutdownHook(Thread { service.close() })
+    val koinApp = koinApplication { modules(daapuModule(config)) }
+    // eager resolution: every fail-fast validation above fires here, never
+    // mid-run (the resolved service is what the module below serves)
+    koinApp.koin.get<ChatRunService>()
+    // graceful close of the hand client and the MCP clients (stdio
+    // subprocesses, HTTP sessions) via the container's onClose callbacks
+    Runtime.getRuntime().addShutdownHook(Thread { koinApp.close() })
     embeddedServer(Netty, port = config.server.port, host = "0.0.0.0") {
-        module(service)
+        module(koinApp.koin)
     }.start(wait = true)
 }
 
-internal fun Application.module(
-    service: ChatRunService,
-    // tests inject a fake; production uses the service's own store
-    eltmService: EltmService = service.eltmService,
-) {
-    val sstmService = service.sstmService
+/**
+ * The HTTP API: routes take their services from the Koin container, not
+ * from [ChatRunService] — the service only holds what its own methods use
+ * (the stores and the hand callback service live here as independent
+ * definitions, shared with the run pipeline). Tests assemble the container
+ * with fake seams (see `testutil/TestDi.kt`) and pass its `Koin` instance.
+ */
+internal fun Application.module(koin: Koin) {
+    val service = koin.get<ChatRunService>()
+    val sstmService = koin.get<SstmService>()
+    val eltmService = koin.get<EltmService>()
+    val handCallback = koin.get<HandCallbackService>()
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
@@ -130,8 +148,8 @@ internal fun Application.module(
             get("/models") {
                 call.respond(service.models())
             }
-            handToolCallback(service.handCallback)
-            handToolList(service.handCallback)
+            handToolCallback(handCallback)
+            handToolList(handCallback)
             route("/chats") {
                 get {
                     call.respond(service.listChats())

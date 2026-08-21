@@ -11,10 +11,11 @@ import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
-import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.mcp.*
+import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.server.ChatRunService
 import info.skyblond.daapu.server.module
+import info.skyblond.daapu.testutil.testKoinApp
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -33,12 +34,16 @@ class HandCallbackTest {
 
     private fun json() = Json { ignoreUnknownKeys = true }
 
-    private fun ApplicationTestBuilder.runApplicationWithService(block: suspend (ChatRunService) -> Unit) {
-        val service = ChatRunService(testAppConfig())
+    private fun ApplicationTestBuilder.runApplicationWithService(
+        block: suspend (ChatRunService, HandCallbackService) -> Unit,
+    ) {
+        val koinApp = testKoinApp()
+        val service = koinApp.koin.get<ChatRunService>()
+        val handCallback = koinApp.koin.get<HandCallbackService>()
         application {
-            module(service)
+            module(koinApp.koin)
         }
-        kotlinx.coroutines.runBlocking { block(service) }
+        kotlinx.coroutines.runBlocking { block(service, handCallback) }
     }
 
     private suspend fun io.ktor.client.HttpClient.callback(
@@ -105,8 +110,8 @@ class HandCallbackTest {
 
     @Test
     fun `missing or wrong token is rejected`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", EmptyProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", EmptyProvider(), textModel())
             val (status, _) = client.callback(token = null, body = callbackRequest())
             assertEquals(HttpStatusCode.Unauthorized, status)
             val (status2, _) = client.callback(token = "wrong", body = callbackRequest())
@@ -116,7 +121,7 @@ class HandCallbackTest {
 
     @Test
     fun `an unknown runId answers fatal`() = testApplication {
-        runApplicationWithService { service ->
+        runApplicationWithService { service, handCallback ->
             val (status, body) = client.callback(body = callbackRequest(runId = "nope"))
             assertEquals(HttpStatusCode.OK, status)
             val response =
@@ -133,8 +138,8 @@ class HandCallbackTest {
 
     @Test
     fun `the tool list serves the registered run's provider specifications`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", FlagProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", FlagProvider(), textModel())
             val (status, body) = client.toolList(runId = "run-1")
             assertEquals(HttpStatusCode.OK, status)
             val response = json().parseToJsonElement(body).let { it as JsonObject }
@@ -153,8 +158,8 @@ class HandCallbackTest {
 
     @Test
     fun `an empty tool provider answers an empty list`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", EmptyProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", EmptyProvider(), textModel())
             val (status, body) = client.toolList(runId = "run-1")
             assertEquals(HttpStatusCode.OK, status)
             val response = json().parseToJsonElement(body).let { it as JsonObject }
@@ -164,8 +169,8 @@ class HandCallbackTest {
 
     @Test
     fun `the tool list rejects a missing or wrong token`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", EmptyProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", EmptyProvider(), textModel())
             val (noToken, _) = client.toolList(runId = "run-1", token = null)
             assertEquals(HttpStatusCode.Unauthorized, noToken)
             val (wrongToken, _) = client.toolList(runId = "run-1", token = "wrong")
@@ -175,7 +180,7 @@ class HandCallbackTest {
 
     @Test
     fun `the tool list answers 404 for an unknown runId and 400 for a blank one`() = testApplication {
-        runApplicationWithService { service ->
+        runApplicationWithService { service, handCallback ->
             val (unknown, _) = client.toolList(runId = "nope")
             assertEquals(HttpStatusCode.NotFound, unknown)
             val (blank, _) = client.toolList(runId = "")
@@ -185,8 +190,8 @@ class HandCallbackTest {
 
     @Test
     fun `a provider that cannot list its tools answers 500`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", TransportFailingSpecProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", TransportFailingSpecProvider(), textModel())
             val (status, _) = client.toolList(runId = "run-1")
             assertEquals(HttpStatusCode.InternalServerError, status)
         }
@@ -194,11 +199,11 @@ class HandCallbackTest {
 
     @Test
     fun `the tool list answers the registered provider even while the run is in flight`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", FlagProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", FlagProvider(), textModel())
             val (before, _) = client.toolList(runId = "run-1")
             assertEquals(HttpStatusCode.OK, before)
-            service.handCallback.unregister("run-1")
+            handCallback.unregister("run-1")
             val (after, _) = client.toolList(runId = "run-1")
             assertEquals(HttpStatusCode.NotFound, after, "an evicted run must no longer resolve")
         }
@@ -206,9 +211,9 @@ class HandCallbackTest {
 
     @Test
     fun `a tool call executes and returns its parts`() = testApplication {
-        runApplicationWithService { service ->
+        runApplicationWithService { service, handCallback ->
             val provider = EchoProvider()
-            service.handCallback.register("run-1", provider, textModel())
+            handCallback.register("run-1", provider, textModel())
             val (status, body) = client.callback(body = callbackRequest(args = buildJsonObject {
                 put(
                     "text",
@@ -230,8 +235,8 @@ class HandCallbackTest {
 
     @Test
     fun `a tool-level error is an isError result, not fatal`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", FailingProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", FailingProvider(), textModel())
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
             val response =
@@ -243,8 +248,8 @@ class HandCallbackTest {
 
     @Test
     fun `an MCP transport failure answers fatal`() = testApplication {
-        runApplicationWithService { service ->
-            service.handCallback.register("run-1", TransportFailingProvider(), textModel())
+        runApplicationWithService { service, handCallback ->
+            handCallback.register("run-1", TransportFailingProvider(), textModel())
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
             val response =
@@ -255,10 +260,10 @@ class HandCallbackTest {
 
     @Test
     fun `a result attachment the model cannot see answers fatal`() = testApplication {
-        runApplicationWithService { service ->
+        runApplicationWithService { service, handCallback ->
             // gpt-oss-120b is text-only: an image result must fail the run
             // (today's per-round capability check equivalent)
-            service.handCallback.register("run-1", ImageProvider(), textModel())
+            handCallback.register("run-1", ImageProvider(), textModel())
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
             val response =
@@ -273,7 +278,7 @@ class HandCallbackTest {
 
     @Test
     fun `a result attachment passes for a vision model`() = testApplication {
-        runApplicationWithService { service ->
+        runApplicationWithService { service, handCallback ->
             val visionModel = ModelCatalog(
                 mapOf(
                     "bifrost" to ModelProvider(
@@ -284,7 +289,7 @@ class HandCallbackTest {
                 )
             ).findModel("bifrost/cerebras/gemma-4-31b")!!
             assertTrue(visionModel.supports(LLMCapability.Input.Vision.Image))
-            service.handCallback.register("run-1", ImageProvider(), visionModel)
+            handCallback.register("run-1", ImageProvider(), visionModel)
             val (status, body) = client.callback(body = callbackRequest())
             assertEquals(HttpStatusCode.OK, status)
             val response =
@@ -296,9 +301,9 @@ class HandCallbackTest {
     @Test
     fun `an overrunning tool is cancelled and answers an isError timeout result`() =
         testApplication {
-            runApplicationWithService { service ->
+            runApplicationWithService { service, handCallback ->
                 val provider = SlowProvider(timeoutSeconds = 1)
-                service.handCallback.register("run-1", provider, textModel())
+                handCallback.register("run-1", provider, textModel())
                 val start = System.currentTimeMillis()
                 val (status, body) = client.callback(body = callbackRequest())
                 val elapsed = System.currentTimeMillis() - start
@@ -325,9 +330,9 @@ class HandCallbackTest {
     @Test
     fun `a tool with a disabled timeout answers normally after the budget would have expired`() =
         testApplication {
-            runApplicationWithService { service ->
+            runApplicationWithService { service, handCallback ->
                 val provider = SlowProvider(delayMs = 1_500)
-                service.handCallback.register("run-1", provider, textModel())
+                handCallback.register("run-1", provider, textModel())
                 val (status, body) = client.callback(body = callbackRequest())
                 assertEquals(HttpStatusCode.OK, status)
                 val response = json().parseToJsonElement(body)
@@ -340,7 +345,7 @@ class HandCallbackTest {
     @Test
     fun `an overrunning MCP tool answers an isError timeout result without a retry and keeps the connection`() =
         testApplication {
-            runApplicationWithService { service ->
+            runApplicationWithService { service, handCallback ->
                 // the real MCP stack: the provider's in-flight call hangs until
                 // the budget expires (enforced by the callback route's
                 // withTimeout, sourced from the server's REQUIRED config)
@@ -369,7 +374,7 @@ class HandCallbackTest {
                 )
                 try {
                     kotlinx.coroutines.runBlocking { provider.specifications() }
-                    service.handCallback.register("run-1", provider, textModel())
+                    handCallback.register("run-1", provider, textModel())
                     val start = System.currentTimeMillis()
                     val (status, body) = client.callback(
                         body = callbackRequest(name = "calc__hang")

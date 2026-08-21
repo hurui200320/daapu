@@ -116,9 +116,9 @@ data class HandConfig(
  * fraction and keep rounds are per-model (`agent/model/LLM.kt`), since they
  * depend on the model's context size. All model ids are REQUIRED and
  * reference the catalog (`agent/ModelCatalog.kt`); they are resolved once at
- * `ChatRunService` construction and reused for every run — a chat run's own
- * model is never used for the one-shot pipeline. Catalog membership is
- * validated at startup by `ChatRunService` (the config layer does not know
+ * startup by the DI container (`di/DaapuModule.kt`) and reused for every
+ * run — a chat run's own model is never used for the one-shot pipeline.
+ * Catalog membership is validated at startup (the config layer does not know
  * the catalog).
  */
 @Serializable
@@ -145,9 +145,9 @@ data class MemoryConfig(
  * evict it into the ELTM (the only eviction path; the SSTM is always fully
  * in context, so the capacity is the capacity lever, never retrieval). The
  * two model ids are REQUIRED and reference the catalog
- * (`agent/ModelCatalog.kt`); they are resolved once at `ChatRunService`
- * construction (unknown ids and a merge model without tool-call support
- * fail fast).
+ * (`agent/ModelCatalog.kt`); they are resolved once at startup by the DI
+ * container (`di/DaapuModule.kt`; unknown ids and a merge model without
+ * tool-call support fail fast).
  */
 @Serializable
 data class SstmConfig(
@@ -188,9 +188,12 @@ data class SstmConfig(
  * The ELTM (external long-term memory) settings: the diary model
  * (entities/relationships/notes, see `memory/eltm/`), the models behind it,
  * and the recall tool's knobs. All three model ids are
- * REQUIRED and reference the catalog (`agent/ModelCatalog.kt`); they are
- * resolved once at `ChatRunService` construction (unknown ids and a
- * writer/recall model without tool-call support fail fast). The embedding
+ * REQUIRED and reference the catalog (`agent/ModelCatalog.kt`); the
+ * embedding and writer ids are resolved once at startup by the DI
+ * container (`di/DaapuModule.kt`; unknown ids and a writer model without
+ * tool-call support fail fast), while the recall id — the sub-session is
+ * unwired until Phase 4 — is only validated at its future definition
+ * site. The embedding
  * model's output dimensions must be at most
  * [MAX_VECTOR_DIMENSIONS] (pgvector's HNSW indexing limit): the ELTM
  * columns are fixed at that width and shorter vectors are zero-padded on
@@ -247,9 +250,9 @@ data class EltmConfig(
 /**
  * The session-title generation settings (see `agent/oneshot/TitleGenerator.kt`).
  * The model id is REQUIRED and references the catalog
- * (`agent/ModelCatalog.kt`); it is resolved once at `ChatRunService`
- * construction, like the memory pipeline models — a chat run's own model is
- * never used for it.
+ * (`agent/ModelCatalog.kt`); it is resolved once at startup by the DI
+ * container (`di/DaapuModule.kt`), like the memory pipeline models — a
+ * chat run's own model is never used for it.
  */
 @Serializable
 data class TitleConfig(

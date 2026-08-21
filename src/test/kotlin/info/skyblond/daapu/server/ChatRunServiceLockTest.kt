@@ -1,6 +1,7 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.testutil.chatRunService
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
@@ -17,7 +18,7 @@ import kotlin.test.assertNotSame
  */
 class ChatRunServiceLockTest {
 
-    private val service = ChatRunService(testAppConfig())
+    private val service = chatRunService(testAppConfig())
 
     @Test
     fun `second acquire on the same chat conflicts`() {

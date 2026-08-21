@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm") version "2.4.0"
     kotlin("plugin.serialization") version "2.4.0"
+    id("io.insert-koin.compiler.plugin") version "1.1.0"
     application
 }
 
@@ -19,6 +20,9 @@ val mcpSdkVersion = "0.15.0"
 // ktor must stay uniform across the classpath: the MCP SDK depends on
 // ktor-client-core 3.5.1, so the server artifacts follow the same version
 val ktorVersion = "3.5.1"
+// dependency injection: the container + the compiler plugin DSL
+// (org.koin.plugin.module.dsl.*), see di/DaapuModule.kt
+val koinVersion = "4.2.2"
 
 dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.38")
@@ -26,6 +30,9 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+
+    implementation(platform("io.insert-koin:koin-bom:$koinVersion"))
+    implementation("io.insert-koin:koin-core")
 
     implementation("org.jetbrains.exposed:exposed-core:$exposedVersion")
     implementation("org.jetbrains.exposed:exposed-jdbc:$exposedVersion")

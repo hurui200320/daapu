@@ -5,6 +5,7 @@ import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
+import info.skyblond.daapu.testutil.chatRunService
 import kotlinx.coroutines.runBlocking
 import java.time.Instant
 import kotlin.test.*
@@ -25,7 +26,7 @@ class ChatRunServiceStoreTest {
     // triggers the ELTM purge (which reads the SSTM)
     private val sstmService = info.skyblond.daapu.testutil.RecordingSstmService()
 
-    private fun service() = ChatRunService(
+    private fun service() = chatRunService(
         testAppConfig(),
         hand = hand,
         chatStore = store,
@@ -82,7 +83,7 @@ class ChatRunServiceStoreTest {
         )
 
         val result = runBlocking {
-            ChatRunService(
+            chatRunService(
                 testAppConfig(),
                 hand = deletingHand,
                 chatStore = store

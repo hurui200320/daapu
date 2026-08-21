@@ -15,6 +15,9 @@ import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
 import info.skyblond.daapu.mcp.MockToolReply
+import info.skyblond.daapu.testutil.assertFailsFast
+import info.skyblond.daapu.testutil.chatRunService
+import info.skyblond.daapu.testutil.testKoinApp
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
@@ -27,7 +30,7 @@ import kotlin.test.*
  */
 class ChatRunServiceTest {
 
-    private val service = ChatRunService(testAppConfig())
+    private val service = chatRunService(testAppConfig())
 
     private fun request(
         text: String? = null,
@@ -160,9 +163,9 @@ class ChatRunServiceTest {
     fun `a config without the bifrost provider fails fast at construction`() {
         // the catalog pins its models to the bifrost gateway (see
         // ModelCatalog.kt); a config without it is a wiring bug
-        val e = assertFailsWith<IllegalStateException> {
-            ChatRunService(testAppConfig().copy(providers = emptyMap()))
-        }
+        val e = assertIs<IllegalStateException>(
+            assertFailsFast { chatRunService(testAppConfig().copy(providers = emptyMap())) }
+        )
         assertEquals("Provider config 'bifrost' not found", e.message)
     }
 
@@ -184,66 +187,73 @@ class ChatRunServiceTest {
                 recallModel = "bifrost/cerebras/gemma-4-31b",
             ),
         )
-        val e = assertFailsWith<IllegalArgumentException> {
-            ChatRunService(testAppConfig().copy(memory = valid.copy(compactModel = "bifrost/nope")))
-        }
+        val e = assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                chatRunService(testAppConfig().copy(memory = valid.copy(compactModel = "bifrost/nope")))
+            }
+        )
         assertTrue(
             e.message!!.contains("memory.compactModel"),
             "the error should name the config key: ${e.message}"
         )
-        assertFailsWith<IllegalArgumentException> {
-            ChatRunService(
-                testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(extractModel = "bifrost/nope")))
-            )
-        }
-        assertFailsWith<IllegalArgumentException> {
-            ChatRunService(
-                testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(mergeModel = "bifrost/nope")))
-            )
-        }
+        assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                chatRunService(
+                    testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(extractModel = "bifrost/nope")))
+                )
+            }
+        )
+        assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                chatRunService(
+                    testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(mergeModel = "bifrost/nope")))
+                )
+            }
+        )
     }
 
     @Test
     fun `an unknown eltm model id fails fast at construction`() {
-        // same as the memory pipeline models: the ELTM models (REQUIRED
-        // config) are resolved once at startup
+        // same as the memory pipeline models: the resolved ELTM models
+        // (REQUIRED config) are checked once at startup. The recall model
+        // is NOT resolved here: the recall sub-session is not wired into
+        // the graph yet (the chat loop queries the ELTM through the
+        // `eltm__*` tools instead), so its id is only validated at the
+        // Phase 4 definition site.
         val base = testAppConfig().memory.eltm
-        val e = assertFailsWith<IllegalArgumentException> {
-            ChatRunService(
-                testAppConfig().copy(
-                    memory = testAppConfig().memory.copy(
-                        eltm = base.copy(embeddingModel = "bifrost/nope")
+        val e = assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                chatRunService(
+                    testAppConfig().copy(
+                        memory = testAppConfig().memory.copy(
+                            eltm = base.copy(embeddingModel = "bifrost/nope")
+                        )
                     )
                 )
-            )
-        }
+            }
+        )
         assertTrue(
             e.message!!.contains("memory.eltm.embeddingModel"),
             "the error should name the config key: ${e.message}"
         )
-        assertFailsWith<IllegalArgumentException> {
-            ChatRunService(
-                testAppConfig().copy(
-                    memory = testAppConfig().memory.copy(eltm = base.copy(writerModel = "bifrost/nope"))
+        assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                chatRunService(
+                    testAppConfig().copy(
+                        memory = testAppConfig().memory.copy(eltm = base.copy(writerModel = "bifrost/nope"))
+                    )
                 )
-            )
-        }
-        assertFailsWith<IllegalArgumentException> {
-            ChatRunService(
-                testAppConfig().copy(
-                    memory = testAppConfig().memory.copy(eltm = base.copy(recallModel = "bifrost/nope"))
-                )
-            )
-        }
+            }
+        )
     }
 
     @Test
     fun `an unknown title model id fails fast at construction`() {
         // same as the memory pipeline models: the title generator's model is
         // resolved once at startup, so a typo fails here, not on the button
-        val e = assertFailsWith<IllegalArgumentException> {
-            ChatRunService(testAppConfig().copy(title = TitleConfig(model = "bifrost/nope")))
-        }
+        val e = assertIs<IllegalArgumentException>(
+            assertFailsFast { chatRunService(testAppConfig().copy(title = TitleConfig(model = "bifrost/nope"))) }
+        )
         assertTrue(
             e.message!!.contains("title.model"),
             "the error should name the config key: ${e.message}"
@@ -256,7 +266,7 @@ class ChatRunServiceTest {
         // default) is skipped — CombinedToolProvider fails fast on a
         // namespace-less child — so the set is exactly the namespaced
         // read-only ELTM tools
-        val service = ChatRunService(testAppConfig())
+        val service = chatRunService(testAppConfig())
         assertEquals(setOf("eltm"), service.chatToolProvider.namespaces())
         assertEquals(
             listOf(
@@ -292,7 +302,8 @@ class ChatRunServiceTest {
                 )
             )
         )
-        val service = ChatRunService(testAppConfig(), mcpToolProvider = mcp)
+        val koinApp = testKoinApp(testAppConfig(), mcpToolProvider = mcp)
+        val service = koinApp.koin.get<ChatRunService>()
         try {
             assertEquals(setOf("calc", "eltm"), service.chatToolProvider.namespaces())
             val names = service.chatToolProvider.specifications().map { it.name }
@@ -313,7 +324,9 @@ class ChatRunServiceTest {
             assertFalse(add.isError)
             assertEquals("add", server.toolCalls.single().first)
         } finally {
-            service.close()
+            // closing the container fires the onClose callbacks (the
+            // CombinedToolProvider closes the MCP client it cached)
+            koinApp.close()
             server.close()
         }
     }

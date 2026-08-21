@@ -11,6 +11,7 @@ import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.testKoinApp
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -36,8 +37,6 @@ import kotlin.test.assertTrue
  */
 class WebServerTest {
 
-    private fun service() = ChatRunService(testAppConfig())
-
     private val model = "bifrost/cerebras/gpt-oss-120b"
 
     private val json = Json { explicitNulls = false }
@@ -59,7 +58,7 @@ class WebServerTest {
     @Test
     fun `blank message is rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Application.Json)
                 setBody(messageBody(text = "   "))
@@ -71,7 +70,7 @@ class WebServerTest {
     @Test
     fun `missing and unknown models are rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             listOf(
                 """{"text":"hi"}""",
                 """{"text":"hi","model":"no/such-model"}"""
@@ -88,7 +87,7 @@ class WebServerTest {
     @Test
     fun `malformed image data url is rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Application.Json)
                 setBody(messageBody(images = listOf("http://example.com/image.png")))
@@ -100,7 +99,7 @@ class WebServerTest {
     @Test
     fun `wrong content type is rejected`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             val response = client.post("/api/chats/chat-1/messages") {
                 contentType(ContentType.Text.Plain)
                 setBody("not json")
@@ -115,12 +114,13 @@ class WebServerTest {
 
     @Test
     fun `message on a chat with an active run is rejected with 409`() {
-        val chatService = service()
+        val koinApp = testKoinApp()
+        val chatService = koinApp.koin.get<ChatRunService>()
         val chatId = "chat-running"
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService) }
+                application { module(koinApp.koin) }
                 val response = client.post("/api/chats/$chatId/messages") {
                     contentType(ContentType.Application.Json)
                     setBody(messageBody())
@@ -134,12 +134,13 @@ class WebServerTest {
 
     @Test
     fun `delete on a chat with an active run is rejected with 409`() {
-        val chatService = service()
+        val koinApp = testKoinApp()
+        val chatService = koinApp.koin.get<ChatRunService>()
         val chatId = "chat-running"
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService) }
+                application { module(koinApp.koin) }
                 val response = client.delete("/api/chats/$chatId")
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
@@ -159,9 +160,7 @@ class WebServerTest {
         )
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), chatStore = store)
-                )
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
             }
             val response = client.delete("/api/chats/chat-1/messages/2")
             assertEquals(HttpStatusCode.NoContent, response.status)
@@ -176,9 +175,7 @@ class WebServerTest {
     fun `truncate on a missing chat is 404`() {
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), chatStore = FakeChatStore())
-                )
+                module(testKoinApp(testAppConfig(), chatStore = FakeChatStore()).koin)
             }
             val response = client.delete("/api/chats/nope/messages/0")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -191,9 +188,7 @@ class WebServerTest {
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), chatStore = store)
-                )
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
             }
             // non-numeric, out of bounds, and an index pointing at an assistant
             // message are all rejected before any store write
@@ -211,12 +206,13 @@ class WebServerTest {
 
     @Test
     fun `truncate on a chat with an active run is rejected with 409`() {
-        val chatService = service()
+        val koinApp = testKoinApp()
+        val chatService = koinApp.koin.get<ChatRunService>()
         val chatId = "chat-running"
         val lock = chatService.acquireChatLock(chatId)
         try {
             testApplication {
-                application { module(chatService) }
+                application { module(koinApp.koin) }
                 val response = client.delete("/api/chats/$chatId/messages/0")
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
@@ -236,9 +232,7 @@ class WebServerTest {
         )
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), chatStore = store)
-                )
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
             }
             val response = client.post("/api/chats/chat-1/fork/1")
             assertEquals(HttpStatusCode.Created, response.status)
@@ -259,9 +253,7 @@ class WebServerTest {
     fun `fork on a missing chat is 404`() {
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), chatStore = FakeChatStore())
-                )
+                module(testKoinApp(testAppConfig(), chatStore = FakeChatStore()).koin)
             }
             val response = client.post("/api/chats/nope/fork/0")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -274,9 +266,7 @@ class WebServerTest {
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), chatStore = store)
-                )
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
             }
             // non-numeric, out of bounds, and a user-message index are all
             // rejected; no fork chat is created
@@ -295,7 +285,7 @@ class WebServerTest {
     @Test
     fun `blank or missing chat title is rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             listOf("""{"title":"   "}""", """{}""").forEach { body ->
                 val response = client.put("/api/chats/chat-1") {
                     contentType(ContentType.Application.Json)
@@ -309,7 +299,7 @@ class WebServerTest {
     @Test
     fun `empty memory content is rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             val response = client.post("/api/memories") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"   "}""")
@@ -321,7 +311,7 @@ class WebServerTest {
     @Test
     fun `non-numeric memory id is rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             val response = client.put("/api/memories/abc") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"memory"}""")
@@ -335,7 +325,7 @@ class WebServerTest {
     @Test
     fun `eltm non-numeric ids are rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             listOf(
                 "/api/eltm/entities/abc",
                 "/api/eltm/entities/abc/notes",
@@ -352,7 +342,7 @@ class WebServerTest {
     @Test
     fun `eltm bad list params are rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             listOf(
                 "/api/eltm/entities?limit=0",
                 "/api/eltm/entities?limit=-1",
@@ -373,7 +363,7 @@ class WebServerTest {
     @Test
     fun `eltm bad note filters are rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             listOf(
                 "/api/eltm/entities/1/notes?from=not-a-date",
                 "/api/eltm/entities/1/notes?to=2025/01/01",
@@ -390,7 +380,7 @@ class WebServerTest {
     @Test
     fun `eltm bad includeInvalid is rejected with 400`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             val response = client.get("/api/eltm/entities/1/relationships?includeInvalid=maybe")
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
@@ -400,7 +390,7 @@ class WebServerTest {
     fun `eltm missing subjects are 404`() {
         val eltm = FakeEltmService()
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             listOf(
                 "/api/eltm/entities/1",
                 "/api/eltm/entities/1/notes",
@@ -424,7 +414,7 @@ class WebServerTest {
             eltm.attachNoteToEntity(1, LocalDate.of(2026, 2, 1), "second note")
         }
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             val response = client.get("/api/eltm/entities")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
@@ -454,7 +444,7 @@ class WebServerTest {
             eltm.createEntity("Carol", "person")
         }
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             val response = client.get("/api/eltm/entities?limit=1&offset=1")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
@@ -472,7 +462,7 @@ class WebServerTest {
             eltm.createRelationship(1, 2, "works with")
         }
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             val response = client.get("/api/eltm/relationships")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
@@ -496,7 +486,7 @@ class WebServerTest {
             eltm.attachNoteToRelationship(1, LocalDate.of(2026, 1, 2), "collaborate")
         }
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             val notes = client.get("/api/eltm/entities/1/notes")
             assertEquals(HttpStatusCode.OK, notes.status)
             val notesBody = json.parseToJsonElement(notes.bodyAsText()).jsonArray
@@ -527,7 +517,7 @@ class WebServerTest {
             eltm.attachNoteToRelationship(1, LocalDate.of(2026, 3, 1), "left", valid = false)
         }
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             val hidden = client.get("/api/eltm/entities/1/relationships")
             assertEquals(HttpStatusCode.OK, hidden.status)
             val hiddenBody = json.parseToJsonElement(hidden.bodyAsText()).jsonArray
@@ -554,7 +544,7 @@ class WebServerTest {
             eltm.attachNoteToRelationship(1, LocalDate.of(2026, 3, 1), "left", valid = false)
         }
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             val response = client.get("/api/eltm/relationships")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
@@ -576,7 +566,7 @@ class WebServerTest {
             eltm.attachNoteToEntity(1, LocalDate.of(2026, 3, 1), "mar")
         }
         testApplication {
-            application { module(service(), eltmService = eltm) }
+            application { module(testKoinApp(eltmService = eltm).koin) }
             val response = client.get("/api/eltm/entities/1/notes?from=2026-02-01&to=2026-02-28")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
@@ -588,7 +578,7 @@ class WebServerTest {
     @Test
     fun `model catalog is served`() {
         testApplication {
-            application { module(service()) }
+            application { module(testKoinApp().koin) }
             val response = client.get("/api/models")
             assertEquals(HttpStatusCode.OK, response.status)
         }
@@ -603,9 +593,7 @@ class WebServerTest {
         )
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), hand = hand, chatStore = store)
-                )
+                module(testKoinApp(testAppConfig(), hand = hand, chatStore = store).koin)
             }
             val response = client.post("/api/chats/chat-1/title")
             assertEquals(HttpStatusCode.OK, response.status)
@@ -622,13 +610,7 @@ class WebServerTest {
         val hand = FakeHand()
         testApplication {
             application {
-                module(
-                    ChatRunService(
-                        testAppConfig(),
-                        hand = hand,
-                        chatStore = FakeChatStore()
-                    )
-                )
+                module(testKoinApp(testAppConfig(), hand = hand, chatStore = FakeChatStore()).koin)
             }
             val response = client.post("/api/chats/nope/title")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -643,9 +625,7 @@ class WebServerTest {
         val hand = FakeHand()
         testApplication {
             application {
-                module(
-                    ChatRunService(testAppConfig(), hand = hand, chatStore = store)
-                )
+                module(testKoinApp(testAppConfig(), hand = hand, chatStore = store).koin)
             }
             val response = client.post("/api/chats/chat-1/title")
             assertEquals(HttpStatusCode.OK, response.status)
@@ -686,11 +666,11 @@ class WebServerTest {
         testApplication {
             application {
                 module(
-                    ChatRunService(
+                    testKoinApp(
                         testAppConfig().copy(title = TitleConfig(model = "bifrost/cerebras/gpt-oss-120b")),
                         hand = hand,
                         chatStore = store,
-                    )
+                    ).koin
                 )
             }
             val response = client.post("/api/chats/chat-1/title")

@@ -8,6 +8,7 @@ import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
+import info.skyblond.daapu.testutil.chatRunService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
@@ -69,7 +70,7 @@ class ChatRunServiceHistoryEditTest {
     private fun service(
         store: FakeChatStore,
         hand: FakeHand = FakeHand(runScript = { error("the LLM must not be called") }),
-    ) = ChatRunService(testAppConfig(), hand = hand, chatStore = store)
+    ) = chatRunService(testAppConfig(), hand = hand, chatStore = store)
 
     // ---- truncate ----
 

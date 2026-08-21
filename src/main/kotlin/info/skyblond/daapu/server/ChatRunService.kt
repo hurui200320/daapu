@@ -4,26 +4,12 @@ import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.TitleGenerator
-import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
-import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
-import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
-import info.skyblond.daapu.config.AppConfig
-import info.skyblond.daapu.hand.HandCallbackService
-import info.skyblond.daapu.hand.HandClient
-import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.HttpHandClient
-import info.skyblond.daapu.mcp.McpToolProvider
-import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.eltm.PostgresEltmService
-import info.skyblond.daapu.memory.sstm.PostgresSstmService
-import info.skyblond.daapu.memory.sstm.SstmService
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentHashMap
@@ -41,212 +27,42 @@ class ChatRunSetup(
 /**
  * Service for executing an agent request.
  *
- * The hand client is built once (one HTTP client, shared across runs — a
- * run's state lives entirely inside the hand call, so sharing is safe);
- * the model catalog, the chat store, the system prompt, the MCP tool
- * provider (cached clients), the SSTM service (shared with the
- * memory CRUD routes), the hand callback service (the in-flight run
- * registry behind the hand's tool callbacks, `hand/HandCallbackService.kt`),
- * and the hand service wrapping them (`hand/HandService.kt`: the agent
- * layer's hand seam, which wires the runId + in-flight registration around
- * every `/v1/run` call) are also reused. The one-shot pipeline services — compaction
- * (`ChatCompactionService`), SSTM extraction (`SstmExtractionService`),
- * session titles (`TitleGenerator`),
- * and the persist loop itself (`PersistChatService`) — are stateless
- * across runs and are constructed once here as well; their models come
- * from the REQUIRED `memory.compactModel` + `memory.sstm.extractModel/
- * mergeModel` + `title.model` config, resolved once at construction
- * (never the run's model).
+ * Pure constructor injection: the whole object graph — the hand seam, the
+ * stores, the one-shot pipeline services, the models — is assembled by the
+ * Koin container (`di/DaapuModule.kt`) and injected here. Resolving this
+ * root (eagerly, in `WebServer.startWebServer`) runs every definition, so
+ * the fail-fast config validation (REQUIRED `memory.*`/`title.model` ids,
+ * tool-call capability, the eager MCP connect) fires at startup, never
+ * mid-run. Tests assemble the same module with fake seams overridden (see
+ * `testutil/TestDi.kt`).
+ *
+ * The class only holds what it uses: the chat store, the model catalog,
+ * the session-title generator, the chat loop's tool set, the SSTM
+ * extraction pipeline (deletion) and the persist loop. The stores and the
+ * hand callback service live in the container and are consumed directly by
+ * the web server module; cleanup is Koin's job too (`onClose` on the
+ * `HandService`/`CombinedToolProvider` definitions, triggered by
+ * `koinApp.close()` in the shutdown hook) — this service owns no resources
+ * itself. The one-shot pipeline services are stateless across runs and are
+ * constructed once as well; their models come from the REQUIRED
+ * `memory.compactModel` + `memory.sstm.extractModel/mergeModel` +
+ * `title.model` config, resolved once at startup (never the run's model).
  */
 class ChatRunService(
-    config: AppConfig,
-    // the MCP clients are cached in the provider (connected eagerly at
-    // construction, see mcp/McpToolProvider.kt): per-request runs must not
-    // reconnect per turn. The default builds no clients, so a service
-    // constructed without MCP servers (tests) behaves like the old
-    // EmptyToolProvider path.
-    private val mcpToolProvider: McpToolProvider = McpToolProvider(emptyList()),
-    private val hand: HandClient = HttpHandClient(config.hand.baseUrl, config.hand.token),
-    internal val handCallback: HandCallbackService = HandCallbackService(config.hand.token),
-    // all chats-table access (list/create/rename/delete/title) goes through
-    // this seam, so the service holds no raw DB calls (tests inject a fake)
-    private val chatStore: ChatStore = PostgresChatStore(),
-    // the SSTM store: shared with the memory CRUD routes and the turn-loop
-    // injection. Public: the web server module reads it for `/api/memories`.
-    val sstmService: SstmService = PostgresSstmService(),
-    // the ELTM store: injectable for tests (defaults to the Postgres-backed
-    // store built below, like sstmService); the public `eltmService` val
-    // resolves the injection
-    // FIXME: fix this ugly injection, using koin or dagger?
-    private val injectedEltmService: EltmService? = null,
-) : AutoCloseable {
-
-    // PoC: the catalog pins its models to the bifrost gateway (see
-    // ModelCatalog.kt); a config without it is a wiring bug, so fail fast
-    // at startup instead of at model resolution time.
-    private val bifrostConfig = config.providers["bifrost"]
-        ?: error("Provider config 'bifrost' not found")
-    private val modelCatalog = ModelCatalog(
-        mapOf(
-            "bifrost" to ModelProvider(
-                id = "bifrost",
-                baseUrl = bifrostConfig.baseUrl,
-                apiKey = bifrostConfig.apiKey,
-            )
-        )
-    )
-    private val systemPrompt = renderMainAgentSystemPrompt(true)
-    private val memoryConfig = config.memory
-
-    /** This brain's tool callback endpoint the hand POSTs to (loopback PoC). */
-    // TODO: configurable. Currently fine but will break in docker when move to production.
-    private val handCallbackUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tool"
-
-    /**
-     * This brain's tool-listing endpoint the hand queries before EVERY LLM
-     * request (`GET {url}?runId=...`): the run's tool set is resolved per
-     * round from the registered provider, not captured statically in the
-     * run request.
-     */
-    private val handToolListUrl: String = "http://127.0.0.1:${config.server.port}/api/hand/tools"
-
-    /**
-     * The agent layer's hand seam: the HTTP client plus the tool-callback
-     * wiring (the in-flight run registry behind the hand's tool callbacks,
-     * `hand/HandService.kt`). The runId and the register/unregister
-     * lifecycle live here — the chat loop never sees them.
-     */
-    private val handService = HandService(hand, handCallback, handCallbackUrl, handToolListUrl)
-
-    // the one-shot pipeline models: all REQUIRED config, resolved once at
-    // construction (a chat run's own model is never used for these)
-    private val compactModel = memoryConfig.compactModel.let { id ->
-        modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("memory.compactModel '$id' is not in the model catalog")
-    }
-    private val extractModel = memoryConfig.sstm.extractModel.let { id ->
-        modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("memory.sstm.extractModel '$id' is not in the model catalog")
-    }
-    private val mergeModel = memoryConfig.sstm.mergeModel.let { id ->
-        val model = modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("memory.sstm.mergeModel '$id' is not in the model catalog")
-        require(model.supports(LLMCapability.Output.ToolCalls)) {
-            "memory.sstm.mergeModel '${model.id}' must support tool calls (the memory merge agent runs a tool loop)"
-        }
-        model
-    }
-    private val titleModel = config.title.model.let { id ->
-        modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("title.model '$id' is not in the model catalog")
-    }
-
-    // the ELTM models: REQUIRED config (`memory.eltm`), resolved once at
-    // construction like the memory pipeline models. The writer/recall agents
-    // run tool loops; the embedding model's output dimensions must not
-    // exceed the fixed ELTM column width (validated at catalog construction).
-    private val embeddingModel = config.memory.eltm.embeddingModel.let { id ->
-        modelCatalog.findEmbeddingModel(id)
-            ?: throw IllegalArgumentException("memory.eltm.embeddingModel '$id' is not in the model catalog")
-    }
-    private val writerModel = config.memory.eltm.writerModel.let { id ->
-        val model = modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("memory.eltm.writerModel '$id' is not in the model catalog")
-        require(model.supports(LLMCapability.Output.ToolCalls)) {
-            "memory.eltm.writerModel '${model.id}' must support tool calls (the ELTM writer runs a tool loop)"
-        }
-        model
-    }
-    private val recallModel = config.memory.eltm.recallModel.let { id ->
-        val model = modelCatalog.findModel(id)
-            ?: throw IllegalArgumentException("memory.eltm.recallModel '$id' is not in the model catalog")
-        require(model.supports(LLMCapability.Output.ToolCalls)) {
-            "memory.eltm.recallModel '${model.id}' must support tool calls (the recall sub-session runs a tool loop)"
-        }
-        model
-    }
-
-    // one-shot pipeline services: stateless across runs, so a single
-    // instance is shared by every concurrent chat run. They talk to the
-    // hand through the same `/v1/run` seam as the chat loop, carrying the
-    // same `hand.*` policy knobs (transient retry budget, idle timeout);
-    // the merge's round cap lives in SstmExtractionService.
-    private val titleGenerator = TitleGenerator(
-        model = titleModel,
-        hand = handService,
-        lastNRound = config.title.lastNRound,
-        maxRetries = config.hand.maxRetries,
-        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
-    )
-    private val compactionService = ChatCompactionService(
-        model = compactModel,
-        hand = handService,
-        maxRetries = config.hand.maxRetries,
-        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
-    )
-
-    private val eltmConfig = config.memory.eltm
-
-    // the ELTM store: shared by the writer and (Phase 4) the recall
-    // sub-session; embeddings go through the hand with the same retry
-    // budget and the stream idle timeout as the embed timeout. Exposed for
-    // the browse-only `/api/eltm` routes (WebServer.kt).
-    val eltmService: EltmService = injectedEltmService ?: PostgresEltmService(
-        embeddingModel = embeddingModel,
-        hand = handService,
-        entityMatchThreshold = eltmConfig.entityMatchThreshold,
-        noteSearchThreshold = eltmConfig.noteSearchThreshold,
-        maxRetries = config.hand.maxRetries,
-        timeoutMs = config.hand.streamIdleTimeoutMs,
-    )
-
+    private val chatStore: ChatStore,
+    private val modelCatalog: ModelCatalog,
+    private val titleGenerator: TitleGenerator,
     /**
      * The chat loop's tool set: the MCP servers plus the read-only ELTM
      * tools (`eltm__*`, see `agent/oneshot/eltm/EltmToolProvider.kt`), so
      * the main agent can query the external long-term memory directly (the
      * `recall` sub-session tool that offloads this is deferred). The MCP
-     * child is only included when it serves namespaces: the
-     * `McpToolProvider(emptyList())` default (no servers configured)
-     * advertises nothing, and [CombinedToolProvider] fails fast on a
-     * namespace-less child. Exposed for tests.
+     * child is only included when it serves namespaces. Exposed for tests.
      */
-    internal val chatToolProvider: CombinedToolProvider = CombinedToolProvider(
-        buildList {
-            if (mcpToolProvider.namespaces().isNotEmpty()) add(mcpToolProvider)
-            add(EltmToolProvider(eltmService, readOnly = true, namespace = "eltm"))
-        }
-    )
-    private val eltmWriterService = EltmWriterService(
-        writerModel = writerModel,
-        hand = handService,
-        eltmService = eltmService,
-        maxWriterRounds = eltmConfig.maxWriterRounds,
-        maxRetries = config.hand.maxRetries,
-        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
-    )
-    private val sstmExtractionService = SstmExtractionService(
-        extractModel = extractModel,
-        mergeModel = mergeModel,
-        hand = handService,
-        sstmService = sstmService,
-        maxMergeRounds = config.memory.sstm.maxMergeRounds,
-        maxRetries = config.hand.maxRetries,
-        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
-        eltmWriterService = eltmWriterService,
-        sstmCapacity = config.memory.sstm.maxCapacity,
-        purgeBatchSize = config.memory.sstm.purgeBatchSize,
-    )
-    private val persistService = PersistChatService(
-        chatStore = chatStore,
-        sstmService = sstmService,
-        eltmService = eltmService,
-        hand = handService,
-        compactionService = compactionService,
-        sstmExtractionService = sstmExtractionService,
-        maxRounds = config.hand.maxRounds,
-        maxRetries = config.hand.maxRetries,
-        streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
-    )
+    internal val chatToolProvider: CombinedToolProvider,
+    private val sstmExtractionService: SstmExtractionService,
+    private val persistService: PersistChatService,
+) {
 
     // one run per chat at a time: a chat's history is loaded and stored as a
     // whole, so concurrent runs would corrupt each other.
@@ -546,19 +362,10 @@ class ChatRunService(
             chatId = setup.chatId,
             model = setup.model,
             userParts = setup.parts,
-            systemPrompt = systemPrompt,
+            systemPrompt = renderMainAgentSystemPrompt(true),
             toolProvider = chatToolProvider,
             callback = callback,
         )
-    }
-
-    /**
-     * Close the shared MCP clients and the hand HTTP client (called from
-     * the JVM shutdown hook registered in `WebServer.startWebServer`).
-     */
-    override fun close() {
-        chatToolProvider.close()
-        handService.close()
     }
 
     companion object {

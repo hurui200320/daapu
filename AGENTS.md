@@ -69,13 +69,49 @@ frontend + Node/TS "hand-pi" service.
   request: `ChatRunService.prepareRun` validates (model REQUIRED per
   message, no server default), `runChat` runs the turn loop
   (`agent/persist/PersistChatService.kt`). Model catalog
-  (`agent/ModelCatalog.kt`), chat store, and system prompt are built once and
-  shared; the system prompt travels out of band (no `system` role in the
-  neutral format; stored chats never contain it). Progress streams as SSE
+  (`agent/ModelCatalog.kt`) and chat store are built once and
+  shared; the system prompt is rendered per run and travels out of band
+  (no `system` role in the neutral format; stored chats never contain it).
+  Progress streams as SSE
   from `server/WebServer.kt` (incl. `tool_call`/`tool_result` echoes). The
   SSE stream is flushed with a `comment` event before the run starts: ktor
   Netty's `responseWriteTimeoutSeconds` (10s default) would otherwise kill
   a run silent during compaction/SSTM extraction (502 at the proxy).
+  - **DI** (`di/DaapuModule.kt`, Koin 4.2 + the Koin compiler plugin
+    `io.insert-koin.compiler.plugin`, the project's recommended setup):
+    the whole object graph is one `module { }` built by
+    `daapuModule(config)`. Every definition is a `single`; the Koin
+    compiler plugin DSL (`org.koin.plugin.module.dsl.single`,
+    `single<ChatRunService>()` auto-wires its constructor — the classic
+    `org.koin.core.module.dsl` builder DSL is gone in Koin 4, only the
+    plugin DSL remains, lambda form included) gives compile-time graph
+    checks.
+    `ChatRunService` is pure constructor injection and holds only what its
+    own methods use (chat store, catalog, title generator, tool set,
+    extraction + persist services — no config, no body-built pipeline, and
+    no pass-through stores: the FIXME'd `injectedEltmService` seam is gone,
+    `single<EltmService>` provides it like any other service). The one-shot
+    models are resolved inline in their consumers' definitions via
+    `requiredLlm(...)`, which replicates the old fail-fast `require(...)`
+    checks with the same messages (the recall model is NOT resolved at
+    boot: the recall sub-session is unwired until Phase 4, its id is
+    validated at its future definition site). Resource cleanup is Koin's:
+    `onClose` on the `HandService`/`CombinedToolProvider` definitions (the
+    hand HTTP client, the MCP clients) fires when the JVM shutdown hook
+    calls `koinApp.close()`. `startWebServer` resolves the root
+    (`koin.get<ChatRunService>()`) BEFORE the server starts, so every
+    fail-fast validation and the eager MCP connect run at startup, never
+    mid-run; the routes resolve `SstmService`/`EltmService`/
+    `HandCallbackService` from the same container (`Application.module(koin)`)
+    — the service is never a pass-through. Tests
+    assemble the same module with `testutil/TestDi.kt`: `testKoinApp(...)`
+    (returns the `KoinApplication`; `chatRunService(...)` = `.koin.get()`)
+    with overrides for `hand = ...`, `chatStore = ...`, `sstmService = ...`,
+    `eltmService = ...`, `mcpToolProvider = ...` (Koin 4 allows
+    overrides by default — the override module just re-declares the seam
+    types after the production one); `assertFailsFast` unwraps Koin's
+    `InstanceCreationException` wrappers so the fail-fast config tests can
+    pin the original error type/message.
   - **Memory** (`memory/sstm/SstmService.kt` + `PostgresSstmService.kt`,
     shared by memory CRUD routes and turn-loop injection): the loop consumes
     a versioned snapshot (`listMemories` → `MemoriesWithVersion`).
@@ -140,8 +176,10 @@ frontend + Node/TS "hand-pi" service.
     queries the ELTM directly, a debugging/interim surface until the
     Phase 4 `recall` sub-session tool, planned under the `gsg` namespace,
     offloads the browsing; the system prompt's developer note documents
-    this). `memory.eltm.recallModel` is resolved
-    already. `chats.eltm_version` mirrors `sstm_version` ("" = first run
+    this). `memory.eltm.recallModel` is NOT
+    resolved yet: the recall sub-session is unwired, so its id is only
+    validated at the Phase 4 definition site (unlike the writer/embedding
+    models, which fail fast at boot). `chats.eltm_version` mirrors `sstm_version` ("" = first run
     flags); the version is the global write counter
     (`EltmService.version()`) — every visible-state write (entity/
     relationship insert, revive, invalidation, merge, note append) bumps
@@ -336,8 +374,9 @@ frontend + Node/TS "hand-pi" service.
     `POST /api/chats/{id}/title` — no per-chat lock, like rename; titles
     from the last stored history; empty chat short-circuits; a title model
     that can't see the history → 400) are REQUIRED config (missing id fails
-    at config load), resolved once at `ChatRunService` construction
-    (unknown ids and a merge model without tool-call support fail fast);
+    at config load), resolved once at startup by the DI container
+    (`di/DaapuModule.kt`; unknown ids and a merge model without tool-call
+    support fail fast);
     the one-shot services are constructed once and shared. A chat run's own
     model is never used for the pipeline. The ELTM models
     (`memory.eltm.embeddingModel/writerModel/recallModel`) are REQUIRED the
@@ -345,7 +384,11 @@ frontend + Node/TS "hand-pi" service.
     SSTM purge and the recall tool are unconditional system-prompt
     promises); writer/recall must support tool calls; the embedding entry's
     `dimensions` must not exceed `MAX_VECTOR_DIMENSIONS` (checked at
-    catalog construction). The writer/recall/embedding one-shot knobs come
+    catalog construction). The embedding/writer ids fail fast at boot
+    (resolved by the container's `EltmService`/`EltmWriterService`
+    definitions); the recall id is only validated at its Phase 4
+    definition site (the sub-session is unwired). The
+    writer/recall/embedding one-shot knobs come
     from `memory.eltm.*` + `hand.*` (the embed timeout is the hand's
     `streamIdleTimeoutMs`). `title.lastNRound` (default `0`)
     caps history fed to the title model; the title generator reads the chat
