@@ -300,7 +300,7 @@ class WebServerTest {
     fun `empty memory content is rejected with 400`() {
         testApplication {
             application { module(testKoinApp().koin) }
-            val response = client.post("/api/memories") {
+            val response = client.post("/api/sstm") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"   "}""")
             }
@@ -312,7 +312,7 @@ class WebServerTest {
     fun `non-numeric memory id is rejected with 400`() {
         testApplication {
             application { module(testKoinApp().koin) }
-            val response = client.put("/api/memories/abc") {
+            val response = client.put("/api/sstm/abc") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"content":"memory"}""")
             }

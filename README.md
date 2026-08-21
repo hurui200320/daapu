@@ -281,10 +281,10 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | `POST /api/chats/{id}/fork/{index}`     | Fork: copy history up to and including the assistant message at `index` (`finishReason` `"stop"` required) into a new chat. |
 | `GET /api/chats/{id}/chat`              | Full chat as neutral-format JSON (raw `chat_json`).         |
 | `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |
-| `GET /api/memories`                     | Shared short-term memories (in injection order).             |
-| `POST /api/memories`                    | Create a memory.                                             |
-| `PUT /api/memories/{id}`                | Update a memory (bumps `last_update`).                       |
-| `DELETE /api/memories/{id}`             | Delete a memory.                                             |
+| `GET /api/sstm`                         | Shared short-term memories (in injection order).             |
+| `POST /api/sstm`                        | Create a memory.                                             |
+| `PUT /api/sstm/{id}`                    | Update a memory (bumps `last_update`).                       |
+| `DELETE /api/sstm/{id}`                 | Delete a memory.                                             |
 | `GET /api/hand/tools`                   | Internal: the hand's per-round tool advertisement (`?runId=...`). |
 | `POST /api/hand/tool`                   | Internal: the hand's tool-execution callback (`runId`-scoped). |
 

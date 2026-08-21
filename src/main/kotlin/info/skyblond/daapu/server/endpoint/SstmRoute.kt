@@ -10,8 +10,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
 fun Route.registerSstmEndpoints(sstmService: SstmService) {
-    // FIXME: rename to /sstm
-    route("/memories") {
+    route("/sstm") {
         get {
             call.respond(
                 sstmService.listMemories().memories.map { it.toDto() }

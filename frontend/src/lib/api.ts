@@ -141,13 +141,13 @@ function parseBlock(block: string): StreamEvent | null {
 }
 
 export async function listMemories(): Promise<MemoryDto[]> {
-  const res = await fetch('/api/memories')
+  const res = await fetch('/api/sstm')
   if (!res.ok) throw new Error(await parseError(res))
   return res.json()
 }
 
 export async function createMemory(content: string): Promise<MemoryDto> {
-  const res = await fetch('/api/memories', {
+  const res = await fetch('/api/sstm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -157,7 +157,7 @@ export async function createMemory(content: string): Promise<MemoryDto> {
 }
 
 export async function updateMemory(id: number, content: string): Promise<MemoryDto> {
-  const res = await fetch(`/api/memories/${id}`, {
+  const res = await fetch(`/api/sstm/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -167,7 +167,7 @@ export async function updateMemory(id: number, content: string): Promise<MemoryD
 }
 
 export async function deleteMemory(id: number): Promise<void> {
-  const res = await fetch(`/api/memories/${id}`, { method: 'DELETE' })
+  const res = await fetch(`/api/sstm/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await parseError(res))
 }
 
