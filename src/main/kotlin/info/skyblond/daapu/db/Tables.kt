@@ -102,6 +102,21 @@ object EltmRelationships : Table("eltm_relationships") {
 }
 
 /**
+ * ELTM entity attributes: structured key-value facts about an entity,
+ * complementary to the diary notes — attributes are current-state facts (one
+ * row per (entity, key); setting again overwrites, deleting removes), the
+ * notes are the temporal narrative. The value must be a single line: the
+ * entity embedding text appends `key: value` lines, alphabetically by key.
+ */
+object EltmEntityAttributes : Table("eltm_entity_attributes") {
+    val entityId = long("entity_id").references(EltmEntities.id, ReferenceOption.CASCADE)
+    val key = text("key")
+    val value = text("value")
+
+    override val primaryKey = PrimaryKey(entityId, key)
+}
+
+/**
  * ELTM diary notes: add-only (no update/delete methods exist in
  * `memory/eltm/`), strictly single-subject (exactly one of [entityId] /
  * [relationshipId], enforced by the migration's CHECK). A new note supersedes

@@ -1,16 +1,12 @@
 package info.skyblond.daapu.agent.oneshot.eltm
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.agent.oneshot.sstm.MergeMemoryToolProvider
-import info.skyblond.daapu.agent.tool.CombinedToolProvider
-import info.skyblond.daapu.agent.tool.ToolCallRequest
-import info.skyblond.daapu.agent.tool.ToolProvider
-import info.skyblond.daapu.agent.tool.ToolSpec
-import info.skyblond.daapu.agent.tool.ToolTransportException
+import info.skyblond.daapu.agent.tool.*
 import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.normalizeAttributeKey
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
@@ -66,7 +62,7 @@ class EltmToolProvider(
     private val readSpecs = listOf(
         ToolSpec(
             name = "search_entities",
-            description = "Semantic search over entities; returns matching entities with their similarity and latest note inline. Call this BEFORE creating an entity to find an existing one.",
+            description = "Semantic search over entities; returns matching entities with their similarity, attributes and latest note inline. Call this BEFORE creating an entity to find an existing one.",
             schema = objectSchema(
                 required = listOf("query"),
                 "query" to stringSchema("The entity to search for, e.g. \"alice\""),
@@ -143,7 +139,7 @@ class EltmToolProvider(
         ),
         ToolSpec(
             name = "merge_entities",
-            description = "Merge a duplicate entity into the canonical one: every relationship and note is re-pointed; colliding relationships are folded.",
+            description = "Merge a duplicate entity into the canonical one: every relationship and note is re-pointed and the loser's attributes fold into the winner (the winner keeps its value on a colliding key); colliding relationships are folded.",
             schema = objectSchema(
                 required = listOf("winner_id", "loser_id"),
                 "winner_id" to integerSchema("The entity that survives (the better-canonical one)"),
@@ -169,6 +165,25 @@ class EltmToolProvider(
                 "event_date" to stringSchema("The absolute date the event happened, YYYY-MM-DD; today when unknown"),
                 "note" to stringSchema("The self-contained diary entry (1-3 sentences; names, numbers, ids verbatim)"),
                 "valid" to boolSchema("The structural validity to set. `false` ends the relationship (e.g. left the company), true (re)establishes it (e.g. rejoined the company). Omit to leave the validity unchanged"),
+            ),
+        ),
+        ToolSpec(
+            name = "set_entity_attribute",
+            description = "Set a structured fact (key-value attribute) on ONE entity, e.g. model=\"Paperwhite 6\", realname, nickname. Attributes are CURRENT-STATE facts — one value per (entity, key): setting the same key again overwrites; setting the identical value is a no-op. Use attributes for timeless structured facts; use add_entity_note for dated events.",
+            schema = objectSchema(
+                required = listOf("entity_id", "key", "value"),
+                "entity_id" to integerSchema("The entity id"),
+                "key" to stringSchema("The attribute key, e.g. \"model\", \"realname\", \"nickname\" (canonicalized: lowercase, spaces become underscores)"),
+                "value" to stringSchema("The attribute value, a SINGLE line, e.g. \"Paperwhite 6\""),
+            ),
+        ),
+        ToolSpec(
+            name = "delete_entity_attribute",
+            description = "Remove a structured fact (key-value attribute) from ONE entity, e.g. a nickname that no longer applies.",
+            schema = objectSchema(
+                required = listOf("entity_id", "key"),
+                "entity_id" to integerSchema("The entity id"),
+                "key" to stringSchema("The attribute key to remove, e.g. \"nickname\""),
             ),
         ),
     )
@@ -213,7 +228,13 @@ class EltmToolProvider(
                             lines += buildString {
                                 append("# Entity ${hit.entity.id} - \"${hit.entity.canonicalName}\" (${hit.entity.category})")
                                 append(" - similarity ${"%.3f".format(hit.score)}, notes ${hit.noteCount}, relations ${hit.relationshipCount}")
-                                eltmService.getEntity(hit.entity.id)?.latestNote?.let {
+                                if (hit.attributes.isNotEmpty()) {
+                                    append("\nAttributes:\n")
+                                    append(hit.attributes.toSortedMap().entries.joinToString("\n") {
+                                        "  ${it.key}: ${it.value}"
+                                    })
+                                }
+                                hit.latestNote?.let {
                                     append("\nLatest note (${it.eventDate}): ${it.note}")
                                 }
                             }
@@ -226,7 +247,7 @@ class EltmToolProvider(
                     val id = args.requiredLong("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
-                    if (eltmService.getEntity(id) == null) {
+                    if (!eltmService.entityExists(id)) {
                         return errorResult(request, "entity $id does not exist")
                     }
                     val includeInvalid = args.optionalBool("include_invalid") ?: false
@@ -247,7 +268,7 @@ class EltmToolProvider(
                     val entityId = args.requiredLong("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
-                    if (eltmService.getEntity(entityId) == null) {
+                    if (!eltmService.entityExists(entityId)) {
                         return errorResult(request, "entity $entityId does not exist")
                     }
                     val (from, to) = args.strictDateRange()
@@ -265,7 +286,7 @@ class EltmToolProvider(
                     val relId = args.requiredLong("relationship_id") ?: return errorResult(
                         request, "relationship_id is required and must be a number"
                     )
-                    if (eltmService.getRelationship(relId) == null) {
+                    if (!eltmService.relationshipExists(relId)) {
                         return errorResult(request, "relationship $relId does not exist")
                     }
                     val (from, to) = args.strictDateRange()
@@ -290,10 +311,10 @@ class EltmToolProvider(
                             request, "a note search accepts at most one subject"
                         )
                     }
-                    if (entityId != null && eltmService.getEntity(entityId) == null) {
+                    if (entityId != null && !eltmService.entityExists(entityId)) {
                         return errorResult(request, "entity $entityId does not exist")
                     }
-                    if (relId != null && eltmService.getRelationship(relId) == null) {
+                    if (relId != null && !eltmService.relationshipExists(relId)) {
                         return errorResult(request, "relationship $relId does not exist")
                     }
                     val (from, to) = args.strictDateRange()
@@ -316,6 +337,12 @@ class EltmToolProvider(
                     buildString {
                         append("# Entity ${entity.id} - \"${entity.canonicalName}\" (${entity.category})")
                         append(" - notes ${view?.noteCount ?: 0}, relations ${view?.relationshipCount ?: 0}")
+                        if (view != null && view.attributes.isNotEmpty()) {
+                            append("\nAttributes:\n")
+                            append(view.attributes.toSortedMap().entries.joinToString("\n") {
+                                "  ${it.key}: ${it.value}"
+                            })
+                        }
                         if (result.nearMatches.isEmpty()) {
                             append("\nNo near matches.")
                         } else {
@@ -323,6 +350,12 @@ class EltmToolProvider(
                             result.nearMatches.forEach { match ->
                                 append("\n- Entity ${match.entity.id} - \"${match.entity.canonicalName}\" (${match.entity.category})")
                                 append(" - similarity ${"%.3f".format(match.score)}, notes ${match.noteCount}, relations ${match.relationshipCount}")
+                                if (match.attributes.isNotEmpty()) {
+                                    append("\n  Attributes:\n")
+                                    append(match.attributes.toSortedMap().entries.joinToString("\n") {
+                                        "    ${it.key}: ${it.value}"
+                                    })
+                                }
                             }
                         }
                     }.let { textResult(request, it) }
@@ -365,7 +398,8 @@ class EltmToolProvider(
                     )
                     if (args.containsKey("valid")) {
                         return errorResult(
-                            request, "valid only applies to a relationship subject (add_relationship_note)"
+                            request,
+                            "valid only applies to a relationship subject (add_relationship_note)"
                         )
                     }
                     val eventDate = args.strictDate("event_date") ?: return errorResult(
@@ -392,7 +426,8 @@ class EltmToolProvider(
                         request, "note is required and must not be blank"
                     )
                     val valid = args.optionalBool("valid")
-                    val created = eltmService.attachNoteToRelationship(relId, eventDate, note, valid)
+                    val created =
+                        eltmService.attachNoteToRelationship(relId, eventDate, note, valid)
                     val relView = eltmService.getRelationship(relId)
                     val stateLabel = relView?.relationship?.valid?.let {
                         if (it) "active" else "invalidated"
@@ -405,6 +440,46 @@ class EltmToolProvider(
                     )
                 }
 
+                "set_entity_attribute" -> {
+                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                        request, "entity_id is required and must be a number"
+                    )
+                    val key = args.requiredText("key") ?: return errorResult(
+                        request, "key is required and must not be blank"
+                    )
+                    val value = args.requiredText("value") ?: return errorResult(
+                        request, "value is required and must not be blank"
+                    )
+                    // canonicalize here so the echoed messages show the model
+                    // the stored key form (the service canonicalizes too —
+                    // idempotent, the service stays the enforcement point)
+                    val k = normalizeAttributeKey(key)
+                    val changed = eltmService.setEntityAttribute(entityId, k, value)
+                    if (changed) {
+                        textResult(request, "Attribute \"$k\" set on entity $entityId.")
+                    } else {
+                        textResult(
+                            request,
+                            "Attribute \"$k\" already set to \"$value\" on entity $entityId."
+                        )
+                    }
+                }
+
+                "delete_entity_attribute" -> {
+                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                        request, "entity_id is required and must be a number"
+                    )
+                    val key = args.requiredText("key") ?: return errorResult(
+                        request, "key is required and must not be blank"
+                    )
+                    val k = normalizeAttributeKey(key)
+                    eltmService.deleteEntityAttribute(entityId, k)
+                    textResult(
+                        request,
+                        "Attribute \"$k\" removed from entity $entityId."
+                    )
+                }
+
                 else -> errorResult(request, "Unknown ELTM tool '${request.name}'")
             }
         } catch (e: CancellationException) {
@@ -413,12 +488,23 @@ class EltmToolProvider(
             // the model cannot react to a dead transport: fail the run
             throw e
         } catch (e: EmbeddingException) {
-            // the embedding model rejected the content: the model can react
+            // the embedding model rejected the content: the model can react.
+            // The actionable fix depends on WHAT was embedded: a note can be
+            // split, an attribute (a single fact) only shortened, a merge
+            // re-embeds the winner's name+category+attributes (shorten or
+            // delete the offending attribute and retry the merge)
             if (e.type == "invalid_request") {
-                errorResult(
-                    request,
-                    "content too large for the embedding model, split it into several smaller notes (or shorten the name) and retry."
-                )
+                val fix = when (bareName(request.name)) {
+                    "set_entity_attribute" ->
+                        "shorten the value and retry."
+                    "merge_entities" ->
+                        "the merged entity's content is too large, shorten or delete an attribute and retry."
+                    "create_entity" ->
+                        "shorten the name and retry."
+                    else ->
+                        "split it into several smaller notes and retry."
+                }
+                errorResult(request, "content too large for the embedding model, $fix")
             } else {
                 errorResult(request, "embedding failed (${e.type}): ${e.message}")
             }
@@ -496,6 +582,8 @@ class EltmToolProvider(
             "merge_entities",
             "add_entity_note",
             "add_relationship_note",
+            "set_entity_attribute",
+            "delete_entity_attribute",
         )
 
         private fun stringSchema(description: String) = buildJsonObject {

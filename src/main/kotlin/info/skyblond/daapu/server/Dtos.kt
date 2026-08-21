@@ -132,6 +132,8 @@ data class EntityViewDto(
     val noteCount: Int,
     val relationshipCount: Int,
     val latestNote: EltmNoteDto?,
+    /** Current-state key-value facts, keys alphabetically ordered. */
+    val attributes: Map<String, String>,
 ) {
     companion object {
         fun EntityView.toDto() = EntityViewDto(
@@ -139,6 +141,7 @@ data class EntityViewDto(
             noteCount = noteCount,
             relationshipCount = relationshipCount,
             latestNote = latestNote?.toDto(),
+            attributes = attributes.toSortedMap(),
         )
     }
 }

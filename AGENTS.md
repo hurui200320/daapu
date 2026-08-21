@@ -122,8 +122,14 @@ frontend + Node/TS "hand-pi" service.
     never reach the store; `updateMemory` skips identical writes (no
     fingerprint churn).
   - **ELTM** (`memory/eltm/EltmService.kt` + `PostgresEltmService.kt`, the
-    diary model): entities `(id, name, category)` and relationships
-    `(src, verb, dst, valid)` hold NO content — all descriptive content
+    diary model): entities `(id, name, category)` + **attributes**
+    (`(entity_id, key, value)` — current-state key-value facts, e.g. a
+    kindle's `model`, a person's `realname`/`nickname`: one row per
+    (entity, key), setting again overwrites, deleting removes, keys
+    canonicalized like verbs and values required single-line) and
+    relationships
+    `(src, verb, dst, valid)` hold NO diary content — all descriptive
+    content
     lives in **notes**, add-only dated diary entries `(subject, event_date,
     note)` strictly single-subject (one entity XOR one relationship, a
     migration CHECK). `valid=false` is a soft delete;
@@ -138,7 +144,7 @@ frontend + Node/TS "hand-pi" service.
     the SSTM purge only: `SstmExtractionService.purgeSstmToEltm` (after
     extraction/merge or its skip) moves the oldest `memory.sstm.purgeBatchSize`
     SSTM rows per batch through the ELTM writer agent
-    (`agent/oneshot/eltm/EltmWriterService.kt` + 10-tool
+    (`agent/oneshot/eltm/EltmWriterService.kt` + 12-tool
     `EltmToolProvider.kt` — RW mode; the same provider's `readOnly`
     mode = the 5 read tools for the Phase 4 recall sub-session — `runCollect`
     tool loop, model =
@@ -160,9 +166,15 @@ frontend + Node/TS "hand-pi" service.
     service one-to-one (no entity/relationship mixing in one tool:
     `create_entity`/`create_relationship`, `get_entity_notes`/
     `get_relationship_notes`, `add_entity_note`/
-    `add_relationship_note`, plus the shared reads `search_entities`,
+    `add_relationship_note`, `set_entity_attribute`/
+    `delete_entity_attribute`, plus the shared reads `search_entities`,
     `get_relationships`, `search_notes`); read tools fail fast on
-    nonexistent subjects and malformed date filters. There is exactly ONE
+    nonexistent subjects and malformed date filters. Attribute writes
+    re-embed the entity (the embedding text is `name + category` plus the
+    attributes as `key: value` lines, alphabetically by key — so facts are
+    semantically searchable), and `merge_entities` folds the loser's
+    attributes into the winner (the winner's value wins a colliding key).
+    There is exactly ONE
     `eltm_relationships` row per triple (full unique index): `valid` is a
     state of the relationship, never a second row — it only changes
     through diary events (`add_relationship_note`'s `valid` flag),
@@ -182,7 +194,8 @@ frontend + Node/TS "hand-pi" service.
     models, which fail fast at boot). `chats.eltm_version` mirrors `sstm_version` ("" = first run
     flags); the version is the global write counter
     (`EltmService.version()`) — every visible-state write (entity/
-    relationship insert, revive, invalidation, merge, note append) bumps
+    relationship insert, revive, invalidation, merge, note append,
+    attribute set when the value changes / delete) bumps
     the counter
     (`memory_meta_number.eltm_version`, an atomic
     `value = value + 1` UPDATE inside the write's OWN transaction — never
@@ -443,7 +456,8 @@ frontend + Node/TS "hand-pi" service.
     writes the ELTM server-side); each replaces
     its list only when the payload changed.
   - The ELTM view (`EltmView.svelte`, route `#/eltm`) is browse-only (writes
-    are LLM-driven): two sub-tabs — Entities (cards with counts + latest
+    are LLM-driven): two sub-tabs — Entities (cards with attribute chips,
+    counts + latest
     note, expandable to lazily fetch the entity's relationships and diary
     via the `/api/eltm` drill-down routes) and Relationships (cards with
     endpoint names + validity badge, expandable to fetch their notes). Both

@@ -24,7 +24,7 @@ class EltmToolProviderTest {
         (result.parts.single() as ChatMessagePart.Text).text
 
     @Test
-    fun `the writer advertises the ten eltm tools in order with integer ids`() {
+    fun `the writer advertises the twelve eltm tools in order with integer ids`() {
         val provider = EltmToolProvider(FakeEltmService())
         val specs = runBlocking { provider.specifications() }
         assertEquals(
@@ -39,6 +39,8 @@ class EltmToolProviderTest {
                 "merge_entities",
                 "add_entity_note",
                 "add_relationship_note",
+                "set_entity_attribute",
+                "delete_entity_attribute",
             ),
             specs.map { it.name },
         )
@@ -79,6 +81,16 @@ class EltmToolProviderTest {
         )
         assertTrue(result.isError)
         assertTrue(textOf(result).contains("not available in read-only mode"), textOf(result))
+
+        val attrWrite = provider.execute(
+            toolCall("c2", "set_entity_attribute", buildJsonObject {
+                put("entity_id", 1)
+                put("key", "model")
+                put("value", "Paperwhite 6")
+            }),
+        )
+        assertTrue(attrWrite.isError)
+        assertTrue(textOf(attrWrite).contains("not available in read-only mode"), textOf(attrWrite))
     }
 
     @Test
@@ -687,6 +699,249 @@ class EltmToolProviderTest {
     }
 
     @Test
+    fun `set_entity_attribute sets, no-ops and overwrites`() = runBlocking {
+        val eltm = FakeEltmService()
+        val kindle = eltm.createEntity("kindle", "device").entity
+        val provider = EltmToolProvider(eltm)
+
+        val set = provider.execute(
+            toolCall("c1", "set_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "model")
+                put("value", "Paperwhite 6")
+            }),
+        )
+        assertFalse(set.isError, textOf(set))
+        assertTrue(textOf(set).contains("Attribute \"model\" set on entity"), textOf(set))
+        assertEquals<Map<String, String>?>(mapOf("model" to "Paperwhite 6"), eltm.attributes[kindle.id])
+        val versionAfterSet = eltm.writeVersion
+
+        // the same value again is a no-op: nothing bumps
+        val noop = provider.execute(
+            toolCall("c2", "set_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "model")
+                put("value", "Paperwhite 6")
+            }),
+        )
+        assertFalse(noop.isError, textOf(noop))
+        assertTrue(textOf(noop).contains("already set"), textOf(noop))
+        assertEquals(versionAfterSet, eltm.writeVersion, "a no-op set touches nothing")
+
+        // a different value overwrites and bumps
+        val overwrite = provider.execute(
+            toolCall("c3", "set_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "model")
+                put("value", "Paperwhite 7")
+            }),
+        )
+        assertFalse(overwrite.isError, textOf(overwrite))
+        assertEquals(versionAfterSet + 1, eltm.writeVersion)
+        assertEquals<Map<String, String>?>(mapOf("model" to "Paperwhite 7"), eltm.attributes[kindle.id])
+
+        // a missing entity fails fast
+        val missing = provider.execute(
+            toolCall("c4", "set_entity_attribute", buildJsonObject {
+                put("entity_id", 999)
+                put("key", "model")
+                put("value", "x")
+            }),
+        )
+        assertTrue(missing.isError)
+        assertTrue(textOf(missing).contains("999"), textOf(missing))
+    }
+
+    @Test
+    fun `set_entity_attribute canonicalizes the key and rejects multi-line values`() = runBlocking {
+        val eltm = FakeEltmService()
+        val kindle = eltm.createEntity("kindle", "device").entity
+        val provider = EltmToolProvider(eltm)
+
+        val set = provider.execute(
+            toolCall("c1", "set_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "  Real Name  ")
+                put("value", "Alice")
+            }),
+        )
+        assertFalse(set.isError, textOf(set))
+        assertTrue(textOf(set).contains("Attribute \"real_name\" set on entity"), textOf(set))
+        assertEquals<Map<String, String>?>(mapOf("real_name" to "Alice"), eltm.attributes[kindle.id])
+
+        val multiLine = provider.execute(
+            toolCall("c2", "set_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "note")
+                put("value", "line one\nline two")
+            }),
+        )
+        assertTrue(multiLine.isError)
+        assertTrue(textOf(multiLine).contains("single line"), textOf(multiLine))
+        assertEquals<Map<String, String>?>(mapOf("real_name" to "Alice"), eltm.attributes[kindle.id], "nothing mutates")
+    }
+
+    @Test
+    fun `delete_entity_attribute removes the fact and fails fast on a missing key`() = runBlocking {
+        val eltm = FakeEltmService()
+        val kindle = eltm.createEntity("kindle", "device").entity
+        eltm.setEntityAttribute(kindle.id, "model", "Paperwhite 6")
+        eltm.setEntityAttribute(kindle.id, "nickname", "reader")
+        val versionAfterSet = eltm.writeVersion
+        val provider = EltmToolProvider(eltm)
+
+        val removed = provider.execute(
+            toolCall("c1", "delete_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "model")
+            }),
+        )
+        assertFalse(removed.isError, textOf(removed))
+        assertTrue(textOf(removed).contains("Attribute \"model\" removed"), textOf(removed))
+        assertEquals(versionAfterSet + 1, eltm.writeVersion, "a delete bumps")
+        assertEquals<Map<String, String>?>(mapOf("nickname" to "reader"), eltm.attributes[kindle.id])
+
+        val missingKey = provider.execute(
+            toolCall("c2", "delete_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "model")
+            }),
+        )
+        assertTrue(missingKey.isError)
+        assertTrue(textOf(missingKey).contains("does not exist"), textOf(missingKey))
+
+        val missingEntity = provider.execute(
+            toolCall("c3", "delete_entity_attribute", buildJsonObject {
+                put("entity_id", 999)
+                put("key", "model")
+            }),
+        )
+        assertTrue(missingEntity.isError)
+        assertTrue(textOf(missingEntity).contains("999"), textOf(missingEntity))
+    }
+
+    @Test
+    fun `search_entities renders the entity attributes alphabetically`() = runBlocking {
+        val eltm = FakeEltmService()
+        val kindle = eltm.createEntity("kindle", "device").entity
+        eltm.setEntityAttribute(kindle.id, "realname", "Alice")
+        eltm.setEntityAttribute(kindle.id, "model", "Paperwhite 6")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "search_entities", buildJsonObject { put("query", "kindle") }),
+        )
+        assertFalse(result.isError, textOf(result))
+        val text = textOf(result)
+        assertTrue(
+            text.contains("Attributes:\n  model: Paperwhite 6\n  realname: Alice"),
+            "attributes render alphabetically, one indented line per key: $text",
+        )
+    }
+
+    @Test
+    fun `merge_entities folds the loser's attributes into the winner`() = runBlocking {
+        val eltm = FakeEltmService()
+        val winner = eltm.createEntity("Apple", "company").entity
+        val loser = eltm.createEntity("Apple Inc", "company").entity
+        eltm.setEntityAttribute(winner.id, "ticker", "AAPL")
+        eltm.setEntityAttribute(winner.id, "hq", "Cupertino")
+        eltm.setEntityAttribute(loser.id, "ticker", "APPL")
+        eltm.setEntityAttribute(loser.id, "founded", "1976")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "merge_entities", buildJsonObject {
+                put("winner_id", winner.id)
+                put("loser_id", loser.id)
+            }),
+        )
+        assertFalse(result.isError, textOf(result))
+        assertEquals<Map<String, String>?>(
+            mapOf("ticker" to "AAPL", "hq" to "Cupertino", "founded" to "1976"),
+            eltm.attributes[winner.id],
+            "the winner keeps its value on a colliding key, the loser's unique key folds in",
+        )
+        assertNull(eltm.attributes[loser.id], "the loser's attribute rows are gone with the merge")
+    }
+
+    @Test
+    fun `a merge whose fold re-embed fails rolls back without mutating`() = runBlocking {
+        val eltm = FakeEltmService()
+        val winner = eltm.createEntity("Apple", "company").entity
+        val loser = eltm.createEntity("Apple Inc", "company").entity
+        eltm.setEntityAttribute(loser.id, "founded", "1976")
+        val versionBefore = eltm.writeVersion
+        eltm.embedFailure = EmbeddingException(
+            "invalid_request", "input too large for the embedding model"
+        )
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "merge_entities", buildJsonObject {
+                put("winner_id", winner.id)
+                put("loser_id", loser.id)
+            }),
+        )
+        assertTrue(result.isError)
+        val text = textOf(result)
+        assertTrue(text.contains("shorten or delete an attribute"), text)
+        assertFalse(
+            text.contains("split it into several smaller notes"),
+            "an attribute cannot be split, the merge must be fixed by its attributes: $text"
+        )
+        assertEquals(versionBefore, eltm.writeVersion, "a failed merge bumps nothing")
+        assertNotNull(eltm.entities[loser.id], "the loser row survives a failed merge")
+        assertEquals<Map<String, String>?>(
+            mapOf("founded" to "1976"),
+            eltm.attributes[loser.id],
+            "the loser's attributes survive a failed merge",
+        )
+    }
+
+    @Test
+    fun `attribute writes fail on an embedding failure without mutating`() = runBlocking {
+        val eltm = FakeEltmService()
+        val kindle = eltm.createEntity("kindle", "device").entity
+        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "set_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "model")
+                put("value", "Paperwhite 6")
+            }),
+        )
+        assertTrue(result.isError)
+        assertTrue(textOf(result).contains("embedding failed"), textOf(result))
+        assertNull(eltm.attributes[kindle.id], "a failed embed leaves the store untouched")
+    }
+
+    @Test
+    fun `delete_entity_attribute fails on an embedding failure without mutating`() = runBlocking {
+        val eltm = FakeEltmService()
+        val kindle = eltm.createEntity("kindle", "device").entity
+        eltm.setEntityAttribute(kindle.id, "model", "Paperwhite 6")
+        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "delete_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "model")
+            }),
+        )
+        assertTrue(result.isError)
+        assertTrue(textOf(result).contains("embedding failed"), textOf(result))
+        assertEquals<Map<String, String>?>(
+            mapOf("model" to "Paperwhite 6"),
+            eltm.attributes[kindle.id],
+            "a failed embed leaves the store untouched",
+        )
+    }
+
+    @Test
     fun `an embedding too-large error tells the model to split the content`() = runBlocking {
         val eltm = FakeEltmService()
         val alice = eltm.createEntity("Alice", "person").entity
@@ -721,6 +976,32 @@ class EltmToolProviderTest {
     }
 
     @Test
+    fun `an embedding too-large error on an attribute tells the model to shorten the value`() = runBlocking {
+        val eltm = FakeEltmService()
+        val kindle = eltm.createEntity("kindle", "device").entity
+        eltm.embedFailure = EmbeddingException(
+            "invalid_request", "input too large for the embedding model"
+        )
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "set_entity_attribute", buildJsonObject {
+                put("entity_id", kindle.id)
+                put("key", "serial")
+                put("value", "a very long value")
+            }),
+        )
+        assertTrue(result.isError)
+        val text = textOf(result)
+        assertTrue(text.contains("shorten the value"), text)
+        assertFalse(
+            text.contains("split it into several smaller notes"),
+            "an attribute is a single fact, it cannot be split: $text"
+        )
+        assertNull(eltm.attributes[kindle.id], "a failed embed leaves the store untouched")
+    }
+
+    @Test
     fun `writer input lists the victims verbatim with a current date header`() {
         val writer = testEltmWriterService(FakeHand())
         val input = EltmWriterService.buildWriterInput(
@@ -741,7 +1022,7 @@ class EltmToolProviderTest {
         val provider = EltmToolProvider(FakeEltmService(), namespace = "eltm")
         assertEquals(setOf("eltm"), provider.namespaces())
         val specs = runBlocking { provider.specifications() }
-        assertEquals(10, specs.size)
+        assertEquals(12, specs.size)
         assertTrue(
             specs.all { it.name.startsWith("eltm__") },
             "every advertised name carries the namespace prefix: ${specs.map { it.name }}"

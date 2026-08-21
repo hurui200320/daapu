@@ -8,13 +8,20 @@ import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.core.Function
 import org.jetbrains.exposed.v1.core.functions.vector.VectorDistance
 import org.jetbrains.exposed.v1.core.functions.vector.VectorDistanceMetric
+import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.*
 import java.sql.SQLException
 import java.time.LocalDate
 
 /**
  * Postgres-backed [EltmService] over the `eltm_entities` /
- * `eltm_relationships` / `eltm_notes` tables (`V1__init.sql`).
+ * `eltm_entity_attributes` / `eltm_relationships` / `eltm_notes` tables
+ * (`V1__init.sql`).
+ *
+ * The entity embedding is `embed(canonical_name || ' ' || category)`, plus
+ * the attributes as `key: value` lines alphabetically by key
+ * ([entityEmbeddingText]) — attribute writes re-embed the entity, so facts
+ * are semantically searchable.
  *
  * Embeddings go through the hand ([HandService.embed]) and are zero-padded
  * to the fixed column width ([MAX_VECTOR_DIMENSIONS]) on write; similarity
@@ -55,7 +62,7 @@ class PostgresEltmService(
             // are computed from the row's stored embedding
             existing
         } else {
-            val embedding = embedText("$canonical $cat")
+            val embedding = embedText(entityEmbeddingText(canonical, cat, emptyMap()))
             val id = withTransaction {
                 try {
                     val inserted = EltmEntities.insert {
@@ -225,86 +232,225 @@ class PostgresEltmService(
         inserted
     }
 
-    override suspend fun mergeEntities(winnerId: Long, loserId: Long) {
+    override suspend fun setEntityAttribute(entityId: Long, key: String, value: String): Boolean {
+        val k = normalizeAttributeKey(key)
+        val v = value.trim()
+        require(k.isNotBlank()) { "attribute key must not be blank" }
+        require(v.isNotBlank()) { "attribute value must not be blank" }
+        // the value is appended to the entity embedding text as a single
+        // `key: value` line: a newline would corrupt the line structure
+        require(v.none { it == '\n' || it == '\r' }) {
+            "attribute value must be a single line"
+        }
+        // ONE transaction for the whole read-modify-write, the hand embed
+        // call included: the connection is held across the embed (the price
+        // of consistency). The entity row is locked FOR UPDATE before the
+        // attribute read, so a concurrent attribute write on the same entity
+        // (or a merge) blocks here and then sees the fresh state — the
+        // embedding text and the attribute row can never diverge. The no-op
+        // set is a pure read: no embedding call, no counter bump.
+        return withTransaction {
+            // fail fast on a missing subject with a clear message before
+            // the embed call (the FK would catch it later with a SQL error);
+            // the FOR UPDATE lock is the serialization point
+            val row = findEntityRowByIdForUpdate(entityId)
+                ?: throw IllegalArgumentException("entity $entityId does not exist")
+            val current = attributesOf(entityId)
+            if (current[k] == v) {
+                return@withTransaction false
+            }
+            // EmbeddingException (e.g. invalid_request) propagates for the
+            // tool layer to map to a model-visible error (rolled back)
+            val embedding = embedText(
+                entityEmbeddingText(
+                    row[EltmEntities.canonicalName],
+                    row[EltmEntities.category],
+                    current + (k to v),
+                )
+            )
+            // one row per (entity, key): overwrite the value in place
+            EltmEntityAttributes.upsert(
+                keys = arrayOf(EltmEntityAttributes.entityId, EltmEntityAttributes.key),
+            ) {
+                it[EltmEntityAttributes.entityId] = entityId
+                it[EltmEntityAttributes.key] = k
+                it[EltmEntityAttributes.value] = v
+            }
+            EltmEntities.update({ EltmEntities.id eq entityId }) {
+                it[EltmEntities.embedding] = embedding
+            }
+            bumpWriteVersion()
+            true
+        }
+    }
+
+    override suspend fun deleteEntityAttribute(entityId: Long, key: String) {
+        val k = normalizeAttributeKey(key)
+        require(k.isNotBlank()) { "attribute key must not be blank" }
+        // like setEntityAttribute: ONE transaction with the hand embed call
+        // inside and the entity row locked FOR UPDATE at the start, so the
+        // embedding always matches the surviving attributes
         withTransaction {
-            require(winnerId != loserId) { "cannot merge an entity into itself" }
-            val winnerExists = findEntityById(winnerId) != null
-            val loserExists = findEntityById(loserId) != null
-            require(winnerExists) { "entity $winnerId does not exist" }
-            require(loserExists) { "entity $loserId does not exist" }
-
-            val loserRels = EltmRelationships.selectAll().where {
-                (EltmRelationships.srcId eq loserId) or (EltmRelationships.dstId eq loserId)
-            }.toList()
-            for (rel in loserRels) {
-                val newSrc =
-                    if (rel[EltmRelationships.srcId] == loserId) winnerId
-                    else rel[EltmRelationships.srcId]
-                val newDst =
-                    if (rel[EltmRelationships.dstId] == loserId) winnerId
-                    else rel[EltmRelationships.dstId]
-
-                val survivor = findRelationshipByTriple(newSrc, rel[EltmRelationships.verb], newDst)
-                when {
-                    // the re-pointed edge would become a self-loop (winner—winner,
-                    // from winner—loser, loser—winner or loser—loser): invalidate
-                    // instead of re-pointing — a self-loop is never meaningful.
-                    // A twin self-loop row may already exist (another loser edge
-                    // collapsed onto the same triple first): fold into it instead
-                    // of violating the unique index
-                    newSrc == newDst -> if (survivor != null) {
-                        EltmNotes.update({ EltmNotes.relationshipId eq rel[EltmRelationships.id] }) {
-                            it[EltmNotes.relationshipId] = survivor[EltmRelationships.id]
-                        }
-                        EltmRelationships.deleteWhere {
-                            EltmRelationships.id eq rel[EltmRelationships.id]
-                        }
-                    } else {
-                        EltmRelationships.update({ EltmRelationships.id eq rel[EltmRelationships.id] }) {
-                            it[EltmRelationships.srcId] = newSrc
-                            it[EltmRelationships.dstId] = newDst
-                            it[EltmRelationships.valid] = false
-                        }
-                    }
-
-                    survivor != null && survivor[EltmRelationships.id] != rel[EltmRelationships.id] -> {
-                        // collides with an existing row of the same triple
-                        // (valid or not): re-point the duplicate's diary notes
-                        // to the survivor, fold the validity (the survivor
-                        // holds the edge if either row held it), and only
-                        // THEN delete the duplicate row (the ON DELETE
-                        // CASCADE must never destroy diary notes)
-                        EltmNotes.update({ EltmNotes.relationshipId eq rel[EltmRelationships.id] }) {
-                            it[EltmNotes.relationshipId] = survivor[EltmRelationships.id]
-                        }
-                        if (rel[EltmRelationships.valid] && !survivor[EltmRelationships.valid]) {
-                            EltmRelationships.update({ EltmRelationships.id eq survivor[EltmRelationships.id] }) {
-                                it[EltmRelationships.valid] = true
-                            }
-                        }
-                        EltmRelationships.deleteWhere {
-                            EltmRelationships.id eq rel[EltmRelationships.id]
-                        }
-                    }
-
-                    // no collision (or the survivor IS this row): re-point
-                    else -> EltmRelationships.update({ EltmRelationships.id eq rel[EltmRelationships.id] }) {
-                        it[EltmRelationships.srcId] = newSrc
-                        it[EltmRelationships.dstId] = newDst
-                    }
-                }
+            val row = findEntityRowByIdForUpdate(entityId)
+                ?: throw IllegalArgumentException("entity $entityId does not exist")
+            val current = attributesOf(entityId)
+            require(current.containsKey(k)) {
+                "attribute \"$k\" does not exist on entity $entityId"
             }
-
-            // re-point the loser's entity notes, then delete the loser row
-            // (the cascade never fires: no note references the loser anymore)
-            EltmNotes.update({ EltmNotes.entityId eq loserId }) {
-                it[EltmNotes.entityId] = winnerId
+            val embedding = embedText(
+                entityEmbeddingText(
+                    row[EltmEntities.canonicalName],
+                    row[EltmEntities.category],
+                    current - k,
+                )
+            )
+            EltmEntityAttributes.deleteWhere {
+                (EltmEntityAttributes.entityId eq entityId) and
+                    (EltmEntityAttributes.key eq k)
             }
-            EltmEntities.deleteWhere { EltmEntities.id eq loserId }
-            // one bump for the whole transactional merge (the loser delete is
-            // the reliable change signal; the re-points ride the same commit)
+            EltmEntities.update({ EltmEntities.id eq entityId }) {
+                it[EltmEntities.embedding] = embedding
+            }
             bumpWriteVersion()
         }
+    }
+
+    override suspend fun mergeEntities(winnerId: Long, loserId: Long) = withTransaction {
+        require(winnerId != loserId) { "cannot merge an entity into itself" }
+        // the WHOLE merge — the reads, the fold's embed and the writes —
+        // runs in ONE transaction, the hand embed call included: the
+        // connection is held across the embed (the price of consistency).
+        // Both entity rows are locked FOR UPDATE first, so the fold can
+        // never race a concurrent attribute write: an attribute write on
+        // either entity blocks here and then sees the merged state — the
+        // loser's rows present at write time are exactly the ones folded
+        // (no orphaned row silently cascade-deleted, no PK collision).
+        // Winner wins a colliding key.
+        // The two row locks are taken in ascending id order (not winner
+        // first), so two opposite-direction concurrent merges (A→B and B→A)
+        // acquire the locks in the same order and can never deadlock — the
+        // second blocks on the first and then proceeds on the merged state.
+        val firstId = minOf(winnerId, loserId)
+        val secondId = maxOf(winnerId, loserId)
+        val firstRow = findEntityRowByIdForUpdate(firstId)
+            ?: throw IllegalArgumentException("entity $firstId does not exist")
+        val secondRow = findEntityRowByIdForUpdate(secondId)
+            ?: throw IllegalArgumentException("entity $secondId does not exist")
+        // the row of [winnerId]/[loserId] among the two locked rows
+        val winnerRow = if (firstId == winnerId) firstRow else secondRow
+        val loserRow = if (firstId == winnerId) secondRow else firstRow
+        val winnerName = winnerRow[EltmEntities.canonicalName]
+        val winnerCat = winnerRow[EltmEntities.category]
+        val winnerAttrs = attributesOf(winnerId)
+        val loserAttrs = attributesOf(loserId)
+        // the fold plan is the shared decision logic (the loser's unique
+        // keys fold in, the colliding ones keep the winner's value), so the
+        // writes below and the re-embed decision can never drift from the
+        // fakes' behavior
+        val foldPlan = planAttributeFold(winnerAttrs, loserAttrs)
+        // only re-embed when the fold actually changed the winner's
+        // attribute text — an attribute-less merge reuses the stored vector
+        // (an EmbeddingException propagates for the tool layer to map,
+        // rolled back before anything moved)
+        val winnerEmbedding = if (foldPlan.changesText) {
+            embedText(entityEmbeddingText(winnerName, winnerCat, foldPlan.winnerAttributes))
+        } else null
+
+        val loserRels = EltmRelationships.selectAll().where {
+            (EltmRelationships.srcId eq loserId) or (EltmRelationships.dstId eq loserId)
+        }.toList()
+        for (rel in loserRels) {
+            val newSrc =
+                if (rel[EltmRelationships.srcId] == loserId) winnerId
+                else rel[EltmRelationships.srcId]
+            val newDst =
+                if (rel[EltmRelationships.dstId] == loserId) winnerId
+                else rel[EltmRelationships.dstId]
+
+            val survivor = findRelationshipByTriple(newSrc, rel[EltmRelationships.verb], newDst)
+            when {
+                // the re-pointed edge would become a self-loop (winner—winner,
+                // from winner—loser, loser—winner or loser—loser): invalidate
+                // instead of re-pointing — a self-loop is never meaningful.
+                // A twin self-loop row may already exist (another loser edge
+                // collapsed onto the same triple first): fold into it instead
+                // of violating the unique index
+                newSrc == newDst -> if (survivor != null) {
+                    EltmNotes.update({ EltmNotes.relationshipId eq rel[EltmRelationships.id] }) {
+                        it[EltmNotes.relationshipId] = survivor[EltmRelationships.id]
+                    }
+                    EltmRelationships.deleteWhere {
+                        EltmRelationships.id eq rel[EltmRelationships.id]
+                    }
+                } else {
+                    EltmRelationships.update({ EltmRelationships.id eq rel[EltmRelationships.id] }) {
+                        it[EltmRelationships.srcId] = newSrc
+                        it[EltmRelationships.dstId] = newDst
+                        it[EltmRelationships.valid] = false
+                    }
+                }
+
+                survivor != null && survivor[EltmRelationships.id] != rel[EltmRelationships.id] -> {
+                    // collides with an existing row of the same triple
+                    // (valid or not): re-point the duplicate's diary notes
+                    // to the survivor, fold the validity (the survivor
+                    // holds the edge if either row held it), and only
+                    // THEN delete the duplicate row (the ON DELETE
+                    // CASCADE must never destroy diary notes)
+                    EltmNotes.update({ EltmNotes.relationshipId eq rel[EltmRelationships.id] }) {
+                        it[EltmNotes.relationshipId] = survivor[EltmRelationships.id]
+                    }
+                    if (rel[EltmRelationships.valid] && !survivor[EltmRelationships.valid]) {
+                        EltmRelationships.update({ EltmRelationships.id eq survivor[EltmRelationships.id] }) {
+                            it[EltmRelationships.valid] = true
+                        }
+                    }
+                    EltmRelationships.deleteWhere {
+                        EltmRelationships.id eq rel[EltmRelationships.id]
+                    }
+                }
+
+                // no collision (or the survivor IS this row): re-point
+                else -> EltmRelationships.update({ EltmRelationships.id eq rel[EltmRelationships.id] }) {
+                    it[EltmRelationships.srcId] = newSrc
+                    it[EltmRelationships.dstId] = newDst
+                }
+            }
+        }
+
+        // re-point the loser's entity notes, fold its attributes per the
+        // shared plan (the colliding rows are dropped: re-pointing them
+        // would overwrite the winner's value on the composite PK; the
+        // foldable rows re-point to the winner), then delete the loser row
+        // (the cascade never fires: no note references the loser anymore)
+        EltmNotes.update({ EltmNotes.entityId eq loserId }) {
+            it[EltmNotes.entityId] = winnerId
+        }
+        val droppedKeys = foldPlan.droppedKeys.toList()
+        if (droppedKeys.isNotEmpty()) {
+            EltmEntityAttributes.deleteWhere {
+                (EltmEntityAttributes.entityId eq loserId) and
+                    (EltmEntityAttributes.key inList droppedKeys)
+            }
+        }
+        val foldableKeys = foldPlan.foldableKeys.toList()
+        if (foldableKeys.isNotEmpty()) {
+            EltmEntityAttributes.update({
+                (EltmEntityAttributes.entityId eq loserId) and
+                    (EltmEntityAttributes.key inList foldableKeys)
+            }) {
+                it[EltmEntityAttributes.entityId] = winnerId
+            }
+        }
+        if (winnerEmbedding != null) {
+            EltmEntities.update({ EltmEntities.id eq winnerId }) {
+                it[EltmEntities.embedding] = winnerEmbedding
+            }
+        }
+        EltmEntities.deleteWhere { EltmEntities.id eq loserId }
+        // one bump for the whole transactional merge (the loser delete is
+        // the reliable change signal; the re-points ride the same commit)
+        bumpWriteVersion()
     }
 
     // ------------------------------------------------------------------
@@ -328,17 +474,19 @@ class PostgresEltmService(
             .limit(limit)
             .offset(offset.toLong())
             .map { it.toEntity() }
-        // a whole page's counts and latest notes in 2 queries instead of the
-        // single-subject helpers' 3 per row (the single-subject reads below
-        // stay per-row: one row, three queries)
+        // a whole page's counts, latest notes and attributes in 3 batch
+        // queries instead of the single-subject helpers' 5 per row (the
+        // single-subject reads below stay per-row: one row, five queries)
         val noteSummary = noteCountsAndLatest(EltmNotes.entityId, entities.map { it.id })
         val relationshipCounts = relationshipCountsFor(entities.map { it.id })
+        val attributes = attributesFor(entities.map { it.id })
         entities.map { entity ->
             EntityView(
                 entity = entity,
                 noteCount = noteSummary[entity.id]?.first ?: 0,
                 relationshipCount = relationshipCounts[entity.id] ?: 0,
                 latestNote = noteSummary[entity.id]?.second,
+                attributes = attributes[entity.id] ?: emptyMap(),
             )
         }
     }
@@ -377,6 +525,7 @@ class PostgresEltmService(
             noteCount = countNotesForEntity(id),
             relationshipCount = countRelationshipsForEntity(id),
             latestNote = latestNoteForEntity(id),
+            attributes = attributesOf(id),
         )
     }
 
@@ -384,6 +533,12 @@ class PostgresEltmService(
         val rel = findRelationshipById(id) ?: return@withTransaction null
         toRelationshipView(rel)
     }
+
+    override suspend fun entityExists(entityId: Long): Boolean =
+        withTransaction { findEntityRowById(entityId) != null }
+
+    override suspend fun relationshipExists(relationshipId: Long): Boolean =
+        withTransaction { findRelationshipById(relationshipId) != null }
 
     override suspend fun getRelationships(
         entityId: Long,
@@ -522,6 +677,17 @@ class PostgresEltmService(
     private fun findEntityRowById(id: Long): ResultRow? =
         EltmEntities.selectAll().where { EltmEntities.id eq id }.singleOrNull()
 
+    /**
+     * The entity row with `FOR UPDATE` — the read-modify-write lock held
+     * for the whole write transaction, so a concurrent write on the same
+     * entity (set/delete attribute, merge) blocks here until this commit
+     * and then re-reads the fresh state (never a stale read-modify-write).
+     */
+    private fun findEntityRowByIdForUpdate(id: Long): ResultRow? =
+        EltmEntities.selectAll().where { EltmEntities.id eq id }
+            .forUpdate(ForUpdateOption.ForUpdate)
+            .singleOrNull()
+
     private fun findEntityById(id: Long): EltmEntity? =
         findEntityRowById(id)?.toEntity()
 
@@ -611,14 +777,38 @@ class PostgresEltmService(
     }
 
     /**
+     * The current-state attributes of ONE entity, keys alphabetically
+     * ordered. Ambient transaction.
+     */
+    private fun attributesOf(entityId: Long): Map<String, String> =
+        EltmEntityAttributes.selectAll().where { EltmEntityAttributes.entityId eq entityId }
+            .map { it[EltmEntityAttributes.key] to it[EltmEntityAttributes.value] }
+            .toMap()
+            .toSortedMap()
+
+    /**
+     * Per-entity current-state attributes (keys alphabetically ordered) for a
+     * whole page of entities, in ONE query. Ambient transaction.
+     */
+    private fun attributesFor(entityIds: List<Long>): Map<Long, Map<String, String>> {
+        if (entityIds.isEmpty()) return emptyMap()
+        return EltmEntityAttributes.selectAll()
+            .where { EltmEntityAttributes.entityId inList entityIds }
+            .map { it[EltmEntityAttributes.entityId] to (it[EltmEntityAttributes.key] to it[EltmEntityAttributes.value]) }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, pairs) -> pairs.toMap().toSortedMap() }
+    }
+
+    /**
      * Cosine-similarity search over stored entity embeddings, most similar
      * first, at or above [threshold], capped at [limit]; [excludeId] (used
      * for near matches) skips the row itself. Ambient transaction.
      *
-     * The count columns of the original correlated-subquery SQL come from
-     * two group-by queries over the candidate ids (Exposed v1 has no scalar
-     * subquery in the select list); the candidate set is at most [limit]
-     * rows, so the extra round trips are negligible.
+     * The count, latest-note and attribute columns of the original
+     * correlated-subquery SQL come from batch queries over the candidate
+     * ids (Exposed v1 has no scalar subquery in the select list); the
+     * candidate set is at most [limit] rows, so the extra round trips are
+     * negligible.
      */
     private fun similarEntities(
         queryVector: List<Float>,
@@ -642,11 +832,12 @@ class PostgresEltmService(
             .map { it[EltmEntities.id] to it }
         if (candidates.isEmpty()) return emptyList()
         val ids = candidates.map { (id, _) -> id }
-        val noteCounts = EltmNotes.select(EltmNotes.entityId, EltmNotes.id.count())
-            .where { EltmNotes.entityId inList ids }
-            .groupBy(EltmNotes.entityId)
-            .associate { it[EltmNotes.entityId]!! to it[EltmNotes.id.count()].toInt() }
+        // note counts AND latest notes in ONE query over the candidate ids
+        // (the same batch helper the page reads use), so each hit carries
+        // its full model-visible picture without a per-hit drill-down
+        val noteSummary = noteCountsAndLatest(EltmNotes.entityId, ids)
         val relationshipCounts = relationshipCountsFor(ids)
+        val attributes = attributesFor(ids)
         return candidates.map { (id, row) ->
             EntityWithScore(
                 entity = EltmEntity(
@@ -654,9 +845,11 @@ class PostgresEltmService(
                     canonicalName = row[EltmEntities.canonicalName],
                     category = row[EltmEntities.category],
                 ),
-                noteCount = noteCounts[id] ?: 0,
+                noteCount = noteSummary[id]?.first ?: 0,
+                latestNote = noteSummary[id]?.second,
                 relationshipCount = relationshipCounts[id] ?: 0,
                 score = 1.0 - row[dist],
+                attributes = attributes[id] ?: emptyMap(),
             )
         }
     }

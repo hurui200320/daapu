@@ -244,6 +244,17 @@
               #{view.entity.id} · {view.noteCount} notes · {view.relationshipCount} rels
             </span>
           </button>
+          {#if Object.keys(view.attributes).length > 0}
+            <div class="mt-1 flex flex-wrap gap-1 pl-6">
+              {#each Object.entries(view.attributes) as [key, value]}
+                <span
+                  class="rounded-full border border-border/30 bg-background/40 px-2 py-0.5 text-xs"
+                >
+                  <span class="text-muted-foreground">{key}</span> <span class="font-medium">{value}</span>
+                </span>
+              {/each}
+            </div>
+          {/if}
           {#if view.latestNote}
             <p class="mt-1 line-clamp-2 pl-6 text-xs text-muted-foreground">
               <span class="tabular-nums">{view.latestNote.eventDate}</span> — {view.latestNote.note}

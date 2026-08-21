@@ -31,6 +31,73 @@ class EltmServiceTest {
         assertEquals("", normalizeVerb("   "))
     }
 
+    @Test
+    fun `normalizeAttributeKey is verb-like`() {
+        assertEquals("model", normalizeAttributeKey(" Model "))
+        assertEquals("real_name", normalizeAttributeKey("Real Name"))
+        assertEquals("", normalizeAttributeKey("   "))
+    }
+
+    // ------------------------------------------------------------------
+    // entity embedding text
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `entityEmbeddingText appends alphabetically ordered attribute lines`() {
+        assertEquals(
+            "kindle device",
+            entityEmbeddingText("kindle", "device", emptyMap()),
+            "without attributes the text is the plain name + category"
+        )
+        assertEquals(
+            "kindle device\nmodel: Paperwhite 6\nrealname: Alice",
+            entityEmbeddingText(
+                "kindle", "device",
+                mapOf("realname" to "Alice", "model" to "Paperwhite 6"),
+            ),
+            "the keys are ordered alphabetically, not by insertion order"
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // attribute fold planning (the merge's attribute decision logic)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `planAttributeFold keeps the winner's value on a colliding key`() {
+        val plan = planAttributeFold(
+            winnerAttrs = mapOf("ticker" to "AAPL", "hq" to "Cupertino"),
+            loserAttrs = mapOf("ticker" to "APPL", "founded" to "1976"),
+        )
+        assertEquals(setOf("founded"), plan.foldableKeys)
+        assertEquals(setOf("ticker"), plan.droppedKeys)
+        assertEquals(
+            mapOf("ticker" to "AAPL", "hq" to "Cupertino", "founded" to "1976"),
+            plan.winnerAttributes,
+            "the winner's value wins the collision, the loser's unique key folds in"
+        )
+        assertTrue(plan.changesText)
+    }
+
+    @Test
+    fun `planAttributeFold with no new keys is a pure read`() {
+        val winner = mapOf("ticker" to "AAPL", "founded" to "1976")
+        val plan = planAttributeFold(winner, mapOf("ticker" to "APPL"))
+        assertTrue(plan.foldableKeys.isEmpty(), plan.foldableKeys.toString())
+        assertEquals(setOf("ticker"), plan.droppedKeys)
+        assertEquals(winner, plan.winnerAttributes, "no new key: the text never changes")
+        assertFalse(plan.changesText)
+    }
+
+    @Test
+    fun `planAttributeFold with no attributes changes nothing`() {
+        val plan = planAttributeFold(emptyMap(), emptyMap())
+        assertTrue(plan.foldableKeys.isEmpty())
+        assertTrue(plan.droppedKeys.isEmpty())
+        assertTrue(plan.winnerAttributes.isEmpty())
+        assertFalse(plan.changesText)
+    }
+
     // ------------------------------------------------------------------
     // zero-padding
     // ------------------------------------------------------------------
@@ -78,6 +145,15 @@ class EltmServiceTest {
             error("unused")
 
         override suspend fun mergeEntities(winnerId: Long, loserId: Long) = error("unused")
+        override suspend fun entityExists(entityId: Long): Boolean = error("unused")
+        override suspend fun relationshipExists(relationshipId: Long): Boolean = error("unused")
+        override suspend fun setEntityAttribute(
+            entityId: Long,
+            key: String,
+            value: String,
+        ): Boolean = error("unused")
+
+        override suspend fun deleteEntityAttribute(entityId: Long, key: String) = error("unused")
         override suspend fun attachNoteToEntity(
             entityId: Long,
             eventDate: java.time.LocalDate,

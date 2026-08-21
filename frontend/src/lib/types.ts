@@ -115,6 +115,8 @@ export interface EntityViewDto {
   noteCount: number
   relationshipCount: number
   latestNote: EltmNoteDto | null
+  /** current-state key-value facts (e.g. model, realname), keys sorted */
+  attributes: Record<string, string>
 }
 
 export interface RelationshipViewDto {

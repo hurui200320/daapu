@@ -61,6 +61,7 @@ class FakeEltmService : EltmService {
     val entities = mutableMapOf<Long, EltmEntity>()
     val relationships = mutableMapOf<Long, EltmRelationship>()
     val notes = mutableMapOf<Long, EltmNote>()
+    val attributes = mutableMapOf<Long, MutableMap<String, String>>()
     val merged = mutableListOf<Pair<Long, Long>>()
     val invalidated = mutableListOf<Long>()
 
@@ -178,11 +179,52 @@ class FakeEltmService : EltmService {
         return noteRow
     }
 
+    override suspend fun setEntityAttribute(entityId: Long, key: String, value: String): Boolean {
+        val k = normalizeAttributeKey(key)
+        val v = value.trim()
+        require(k.isNotBlank()) { "attribute key must not be blank" }
+        require(v.isNotBlank()) { "attribute value must not be blank" }
+        require(v.none { it == '\n' || it == '\r' }) { "attribute value must be a single line" }
+        require(entities.containsKey(entityId)) { "entity $entityId does not exist" }
+        val current = attributes[entityId]
+        if (current != null && current[k] == v) return false
+        // mirror Postgres: validation and the no-op check come first, the
+        // embed (and its failure) last, so a failure leaves the store
+        // untouched
+        failEmbed()
+        attributes.getOrPut(entityId) { mutableMapOf() }[k] = v
+        writeVersion++
+        return true
+    }
+
+    override suspend fun deleteEntityAttribute(entityId: Long, key: String) {
+        val k = normalizeAttributeKey(key)
+        require(k.isNotBlank()) { "attribute key must not be blank" }
+        require(entities.containsKey(entityId)) { "entity $entityId does not exist" }
+        val current = attributes[entityId]
+        require(current?.containsKey(k) == true) {
+            "attribute \"$k\" does not exist on entity $entityId"
+        }
+        failEmbed()
+        current.remove(k)
+        writeVersion++
+    }
+
     override suspend fun mergeEntities(winnerId: Long, loserId: Long) {
         require(winnerId in entities && loserId in entities) {
             "entity $winnerId or $loserId does not exist"
         }
         require(winnerId != loserId) { "cannot merge an entity into itself" }
+        // the SAME shared fold plan the Postgres service uses, so the fake
+        // can never drift from the real fold/re-embed decisions
+        val foldPlan = planAttributeFold(
+            attributes[winnerId].orEmpty(),
+            attributes[loserId].orEmpty(),
+        )
+        // mirror Postgres: the fold's embed (and its failure) happens before
+        // any mutation, and only when the fold changes the winner's
+        // attribute text — an attribute-less merge never embeds
+        if (foldPlan.changesText) failEmbed()
         writeVersion++
         merged += winnerId to loserId
         relationships.values.filter { it.srcId == loserId || it.dstId == loserId }.forEach { rel ->
@@ -228,6 +270,14 @@ class FakeEltmService : EltmService {
         notes.values.filter { it.entityId == loserId }.forEach { note ->
             notes[note.id] = note.copy(entityId = winnerId)
         }
+        // fold the loser's attributes into the winner per the shared plan
+        // (only the foldable keys move — the colliding ones are dropped
+        // with the loser, the winner's value wins)
+        attributes.remove(loserId)?.forEach { (k, v) ->
+            if (k in foldPlan.foldableKeys) {
+                attributes.getOrPut(winnerId) { mutableMapOf() }[k] = v
+            }
+        }
         entities.remove(loserId)
     }
 
@@ -240,6 +290,9 @@ class FakeEltmService : EltmService {
         it.srcId == entityId || it.dstId == entityId
     }
 
+    private fun attributesOf(entityId: Long): Map<String, String> =
+        attributes[entityId].orEmpty().toSortedMap()
+
     override suspend fun searchEntities(query: String, limit: Int): List<EntityWithScore> =
         entities.values
             .filter { it.canonicalName.contains(normalizeName(query), ignoreCase = true) }
@@ -251,8 +304,10 @@ class FakeEltmService : EltmService {
                 EntityWithScore(
                     entity = it,
                     noteCount = noteCountFor(it.id, null),
+                    latestNote = latestNote(it.id, null),
                     relationshipCount = relationshipCountFor(it.id),
                     score = 1.0,
+                    attributes = attributesOf(it.id),
                 )
             }
 
@@ -263,8 +318,14 @@ class FakeEltmService : EltmService {
                 noteCount = noteCountFor(it.id, null),
                 relationshipCount = relationshipCountFor(it.id),
                 latestNote = latestNote(it.id, null),
+                attributes = attributesOf(it.id),
             )
         }
+
+    override suspend fun entityExists(entityId: Long): Boolean = entities.containsKey(entityId)
+
+    override suspend fun relationshipExists(relationshipId: Long): Boolean =
+        relationships.containsKey(relationshipId)
 
     override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> =
         entities.values.sortedBy { it.id }.drop(offset).take(limit).map {
@@ -273,6 +334,7 @@ class FakeEltmService : EltmService {
                 noteCount = noteCountFor(it.id, null),
                 relationshipCount = relationshipCountFor(it.id),
                 latestNote = latestNote(it.id, null),
+                attributes = attributesOf(it.id),
             )
         }
 

@@ -85,3 +85,20 @@ CREATE TABLE eltm_notes                          -- the diary: add-only
 CREATE INDEX eltm_notes_entity_idx ON eltm_notes (entity_id, event_date DESC, id DESC);
 CREATE INDEX eltm_notes_rel_idx    ON eltm_notes (relationship_id, event_date DESC, id DESC);
 CREATE INDEX eltm_notes_embedding_idx ON eltm_notes USING hnsw (embedding vector_cosine_ops);
+
+-- Entity attributes: structured key-value facts about an entity, e.g. a
+-- kindle's model, a person's realname/nickname. Complementary to the diary
+-- notes: attributes are the CURRENT-STATE facts (one row per (entity, key);
+-- setting the same key again overwrites the value), the notes are the
+-- temporal narrative. The key is canonicalized like a verb (trim, collapse
+-- whitespace, lowercase, spaces to underscores); the value must be a single
+-- line — the entity embedding text appends the attributes as
+-- `key: value` lines (alphabetically by key), so facts are semantically
+-- searchable, and a newline would corrupt the line structure.
+CREATE TABLE eltm_entity_attributes
+(
+    entity_id BIGINT NOT NULL REFERENCES eltm_entities(id) ON DELETE CASCADE,
+    key       TEXT   NOT NULL,
+    value     TEXT   NOT NULL,
+    PRIMARY KEY (entity_id, key)
+);

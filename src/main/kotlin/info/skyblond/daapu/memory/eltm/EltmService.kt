@@ -16,6 +16,17 @@ data class EltmEntity(
 )
 
 /**
+ * An entity's structured key-value facts (e.g. a kindle's `model`, a
+ * person's `realname`/`nickname`), complementary to the diary notes:
+ * attributes are CURRENT-STATE facts (one row per (entity, key); setting
+ * the same key again overwrites, deleting removes), the notes are the
+ * temporal narrative. Keys are canonicalized like verbs; values must be
+ * single-line. The entity embedding text appends them as `key: value`
+ * lines alphabetically by key, so facts are semantically searchable.
+ */
+typealias EntityAttributes = Map<String, String>
+
+/**
  * One ELTM relationship: a directed edge (source entity, verb, destination
  * entity) with a structural [valid] state. There is exactly ONE row per
  * triple (full unique index): `valid=false` is a flag — an ending
@@ -53,13 +64,15 @@ data class EltmNote(
  * [noteCount] diary entries, [relationshipCount] relationships in BOTH
  * directions, valid or invalidated — each triple counts once, `valid` is a
  * state, not a second row; drill into history via
- * [EltmService.getEntityNotes]).
+ * [EltmService.getEntityNotes]) and its [attributes] (current-state facts,
+ * keys alphabetically ordered).
  */
 data class EntityView(
     val entity: EltmEntity,
     val noteCount: Int,
     val relationshipCount: Int,
     val latestNote: EltmNote?,
+    val attributes: EntityAttributes,
 )
 
 /**
@@ -75,15 +88,20 @@ data class RelationshipView(
 )
 
 /**
- * A vector-search hit: the entity plus its cosine similarity and its
+ * A vector-search hit: the entity plus its cosine similarity, its
  * content-backed prominence counters (diary-note count and relationship
- * degree), so the writer LLM can weigh candidates beyond similarity.
+ * degree), its latest diary note, and its [attributes] (current-state
+ * facts, keys alphabetically ordered) — the whole model-visible picture in
+ * one batch, so the writer LLM can weigh candidates beyond similarity
+ * without a per-hit drill-down.
  */
 data class EntityWithScore(
     val entity: EltmEntity,
     val noteCount: Int,
+    val latestNote: EltmNote?,
     val relationshipCount: Int,
     val score: Double,
+    val attributes: EntityAttributes,
 )
 
 /** The result of an entity create: the current row plus near-match suspects. */
@@ -112,6 +130,71 @@ fun normalizeName(name: String): String =
  */
 fun normalizeVerb(verb: String): String = normalizeName(verb).replace(' ', '_')
 
+/**
+ * Normalize an attribute key: like a verb ([normalizeVerb]) — attribute
+ * keys are single lowercase tokens (`"Real Name"` → `"real_name"`), so
+ * `set`/`delete` always address the same row.
+ */
+fun normalizeAttributeKey(key: String): String = normalizeVerb(key)
+
+/**
+ * The entity embedding text: the canonical name + category, plus the
+ * attributes as `key: value` lines, keys ordered alphabetically — so the
+ * text (and the vector) never depend on insertion order. Values are
+ * single-line (enforced by the service), so the lines are unambiguous.
+ */
+internal fun entityEmbeddingText(
+    canonicalName: String,
+    category: String,
+    attributes: EntityAttributes,
+): String {
+    val base = "$canonicalName $category"
+    if (attributes.isEmpty()) return base
+    val lines = attributes.toSortedMap().entries.joinToString("\n") { "${it.key}: ${it.value}" }
+    return "$base\n$lines"
+}
+
+/**
+ * The attribute-folding plan for a merge ([EltmService.mergeEntities]):
+ * which of the loser's attribute rows fold into the winner, which are
+ * dropped (the winner already holds the key — the winner's value wins; a
+ * re-point would collide on the composite PK), and the winner's post-fold
+ * attribute map. Pure decision logic, shared by the Postgres service and
+ * the test fakes, so fake-backed tests exercise the real code.
+ */
+data class AttributeFoldPlan(
+    /** Keys only the loser holds: its rows re-point to the winner. */
+    val foldableKeys: Set<String>,
+    /** Keys both entities hold: the loser's rows are dropped. */
+    val droppedKeys: Set<String>,
+    /** The winner's post-fold attribute map (`loserAttrs + winnerAttrs`). */
+    val winnerAttributes: EntityAttributes,
+) {
+    /**
+     * Whether the fold changes the winner's attribute text — exactly when a
+     * new key folds in (a colliding key keeps the winner's value, so the
+     * text is unchanged) — and with it the stored embedding: an
+     * attribute-less merge reuses the winner's vector.
+     */
+    val changesText: Boolean get() = foldableKeys.isNotEmpty()
+}
+
+/**
+ * Plan a merge's attribute fold (see [AttributeFoldPlan]): the winner keeps
+ * its value on a colliding key, the loser's unique keys fold in.
+ */
+fun planAttributeFold(
+    winnerAttrs: EntityAttributes,
+    loserAttrs: EntityAttributes,
+): AttributeFoldPlan {
+    val winnerKeys = winnerAttrs.keys
+    return AttributeFoldPlan(
+        foldableKeys = loserAttrs.keys - winnerKeys,
+        droppedKeys = winnerKeys intersect loserAttrs.keys,
+        winnerAttributes = loserAttrs + winnerAttrs,
+    )
+}
+
 private val WHITESPACE_REGEX = Regex("\\s+")
 
 /**
@@ -126,8 +209,9 @@ internal fun padVector(vector: List<Float>, width: Int): List<Float> {
 }
 
 /**
- * The ELTM (external long-term memory) store: entities, relationships, and
- * diary notes (the diary model, see `V1__init.sql`). Written by the SSTM
+ * The ELTM (external long-term memory) store: entities, attributes,
+ * relationships, and diary notes (the diary model, see `V1__init.sql`).
+ * Written by the SSTM
  * purge pipeline only (`agent/oneshot/eltm/EltmWriterService.kt`); read by
  * the writer and (Phase 4) the recall sub-session.
  *
@@ -174,7 +258,16 @@ interface EltmService {
      * `ON DELETE CASCADE` must never destroy diary notes; the survivor
      * holds the edge if either row held it); a re-point that would become
      * a self-loop (winner—winner) invalidates instead of re-pointing. The
-     * loser's entity notes are re-pointed, then the loser row is deleted.
+     * loser's entity notes are re-pointed, its attributes fold into the
+     * winner (winner's value wins a colliding key), the loser's embedding
+     * is irrelevant, the winner is re-embedded when the fold changed its
+     * attribute text, then the loser row is deleted. The whole merge — the
+     * reads, the fold's hand embed call and the writes — runs in that ONE
+     * transaction with both entity rows locked `FOR UPDATE` at the start
+     * (the connection is held across the embed), so the fold can never
+     * race a concurrent attribute write. The row locks are taken in
+     * ascending id order, so opposite-direction concurrent merges can
+     * never deadlock.
      */
     suspend fun mergeEntities(winnerId: Long, loserId: Long)
 
@@ -214,6 +307,43 @@ interface EltmService {
         note: String,
         valid: Boolean? = null,
     ): EltmNote
+
+    /**
+     * Set a current-state fact (key-value attribute) on an entity: one row
+     * per `(entity, key)` — a new key inserts, an existing key OVERWRITES
+     * the value (attributes are facts, not a diary; the notes are the
+     * diary). Setting the identical value is a no-op (pure read: no
+     * embedding call, no counter bump). A changed write re-embeds the
+     * entity (the embedding text is `name + category` plus the attributes
+     * as `key: value` lines, alphabetically by key) and bumps the global
+     * write counter — the whole read-modify-write, the hand embed call
+     * included, runs in ONE transaction with the entity row locked
+     * `FOR UPDATE` at the start (the connection is held across the embed),
+     * so the stored embedding can never diverge from the attribute rows:
+     * a concurrent attribute write serializes against the whole sequence
+     * instead of racing the embed.
+     *
+     * @return `true` when the value changed (a real write), `false` when it
+     * was already set to exactly [value] (a no-op).
+     * @throws EmbeddingException of type `invalid_request` (content too large
+     * for the embedding model) propagates for the tool layer to map.
+     */
+    @Throws(EmbeddingException::class)
+    suspend fun setEntityAttribute(entityId: Long, key: String, value: String): Boolean
+
+    /**
+     * Remove a current-state fact from an entity. Fail-fast on a missing
+     * entity or a key the entity does not have. Re-embeds the entity and
+     * bumps the global write counter — like [setEntityAttribute], the whole
+     * read-modify-write with the hand embed call inside runs in ONE
+     * transaction (the entity row locked `FOR UPDATE` at the start), so the
+     * embedding always matches the surviving attributes.
+     *
+     * @throws EmbeddingException of type `invalid_request` propagates for the
+     * tool layer to map.
+     */
+    @Throws(EmbeddingException::class)
+    suspend fun deleteEntityAttribute(entityId: Long, key: String)
 
     /**
      * Semantic search over entities: embeds [query], returns entities with
@@ -256,6 +386,20 @@ interface EltmService {
      * its note count, or null when missing.
      */
     suspend fun getRelationship(id: Long): RelationshipView?
+
+    /**
+     * Cheap existence probe for an entity (a single indexed lookup) — the
+     * read tools fail fast on a missing subject with it, without paying for
+     * the full [getEntity] view (entity row + note count + relationship
+     * count + latest note + attributes).
+     */
+    suspend fun entityExists(entityId: Long): Boolean
+
+    /**
+     * Cheap existence probe for a relationship (a single indexed lookup),
+     * the [getRelationship] counterpart of [entityExists].
+     */
+    suspend fun relationshipExists(relationshipId: Long): Boolean
 
     /**
      * The diary notes of one entity, newest event first

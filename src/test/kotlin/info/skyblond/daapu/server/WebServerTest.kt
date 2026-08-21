@@ -412,6 +412,7 @@ class WebServerTest {
             eltm.createEntity("Bob", "person")
             eltm.attachNoteToEntity(1, LocalDate.of(2026, 1, 1), "first note")
             eltm.attachNoteToEntity(1, LocalDate.of(2026, 2, 1), "second note")
+            eltm.setEntityAttribute(1, "nickname", "Ali")
         }
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
@@ -431,6 +432,16 @@ class WebServerTest {
             assertEquals(
                 "2026-02-01",
                 first["latestNote"]?.jsonObject?.get("eventDate")?.jsonPrimitive?.content
+            )
+            assertEquals(
+                "Ali",
+                first["attributes"]?.jsonObject?.get("nickname")?.jsonPrimitive?.content,
+                "current-state attributes ride the entity view"
+            )
+            assertEquals(
+                0,
+                body[1].jsonObject["attributes"]?.jsonObject?.size,
+                "an entity without facts carries an empty attributes object"
             )
         }
     }

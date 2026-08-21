@@ -19,7 +19,7 @@ import java.time.ZoneId
 /**
  * The ELTM writer agent: the one `/v1/run` tool loop that moves evicted SSTM
  * entries into the ELTM (the model, round cap, retry budget and idle timeout
- * are the `memory.eltm` / `hand.*` config values). The model executes the 10
+ * are the `memory.eltm` / `hand.*` config values). The model executes the 12
  * ELTM tools ([EltmToolProvider]) back through the hand's callback
  * route; any terminal failure throws [IllegalStateException] (wrapping the
  * cause) and fails the run — the SSTM purge only deletes a victim batch
@@ -92,14 +92,16 @@ class EltmWriterService(
 You're maintaining an external long-term memory (ELTM) knowledge store.
 You are given memory entries evicted from the short-term memory. Preserve their information by writing it into the ELTM.
 
-The ELTM has three kinds of records:
+The ELTM has four kinds of records:
 - Entities: a named thing with a category (e.g. name "Apple" with category "fruit" vs "company"). A group of people can be one entity.
 - Relationships: a directed edge (source entity, verb, destination entity). Use consistent, general, timeless verbs: "colleague_of", not "became_colleague_of". Create or fetch them with create_relationship; their validity (active/ended) only changes through a diary note (add_relationship_note's valid flag).
-- Notes: dated diary entries attached to exactly ONE entity or ONE relationship. ALL descriptive content lives in notes. Entities and relationships have no description fields.
+- Attributes: structured key-value facts about ONE entity: its current-state identity (e.g. a person's realname and nickname, a device's model). One value per (entity, key): setting the same key again overwrites. They are embedded with the entity, so facts are semantically searchable.
+- Notes: dated diary entries attached to exactly ONE entity or ONE relationship. Dated narrative events and descriptions live here. You should ONLY attach a note to a relationship if the event is related to both the entities AND the verb.
 
 Rules:
 - Record only information explicitly present in the input. Never invent details.
 - "The user" maps to the canonical entity with name "user" (category "person").
+- Timeless structured facts about an entity (model, realname, nickname, serial numbers, etc.) are ATTRIBUTES (set_entity_attribute), not notes. Use notes only for dated events and narrative. Attribute values must be a single line. Before setting an attribute, check the entity's current attributes (search_entities renders them in the hits) and skip facts already recorded.
 - Before creating an entity, call search_entities to find existing ones. create_entity returns near matches: if one of them is the same thing, use that id; if you discover true duplicates, call merge_entities with the better-canonical entity as winner_id. To rename or re-categorize an entity, create the new entity and merge the old one into it.
 - A note belongs to exactly one subject. An event about a relationship (met, broke up, started working together) attaches to that relationship. An event about one entity attaches to that entity. It may mention other entities by name in the text, but must NOT be duplicated under each of them.
 - Notes are add-only. To correct or supersede older information, add a NEW note with the current fact and its date. If a relationship no longer holds, add a note to it explaining the ending and pass valid=false; if a previously-ended relationship holds again (e.g. rejoined the company), add a note about the new event and pass valid=true. Only change validity on genuine endings.
