@@ -55,10 +55,10 @@ class PostgresEltmService(
 
         val existing = withTransaction { findEntityByKey(canonical, cat) }
         val row = if (existing != null) {
-            // exact match: create-or-fetch — pure read, nothing to touch (a
-            // rename/re-categorization is a NEW entity: create it, then
-            // merge; the prominence signal is the read views' note/
-            // relationship counts), NO second embed call — the near matches
+            // exact match: create-or-fetch — pure read, nothing to touch (an
+            // identity change goes through refineEntity, which keeps the id;
+            // the prominence signal is the read views' note/relationship
+            // counts), NO second embed call — the near matches
             // are computed from the row's stored embedding
             existing
         } else {
@@ -102,6 +102,84 @@ class PostgresEltmService(
             }
         } ?: emptyList()
         return CreateEntityResult(entity, nearMatches)
+    }
+
+    override suspend fun refineEntity(
+        entityId: Long, newName: String?, newCategory: String?,
+    ): EltmEntity {
+        val canonical = newName?.let {
+            normalizeName(it).also { name ->
+                require(name.isNotBlank()) { "entity name must not be blank" }
+            }
+        }
+        val trimmedCategory = newCategory?.trim()?.lowercase()
+        if (trimmedCategory != null) {
+            require(trimmedCategory.isNotBlank()) { "entity category must not be blank" }
+        }
+        // like setEntityAttribute: ONE transaction for the whole
+        // read-modify-write, the hand embed call included — the connection is
+        // held across the embed. The entity row is locked FOR UPDATE before
+        // the collision check, so the rename can never race a concurrent
+        // write on the same entity (or a merge). A no-op refine is a pure
+        // read: no embedding call, no counter bump.
+        return withTransaction {
+            val row = findEntityRowByIdForUpdate(entityId)
+                ?: throw IllegalArgumentException("entity $entityId does not exist")
+            val currentName = row[EltmEntities.canonicalName]
+            val currentCat = row[EltmEntities.category]
+            val newCat = trimmedCategory ?: currentCat
+            val newCanonical = canonical ?: currentName
+            if (currentName == newCanonical && currentCat == newCat) {
+                // identical (name, category): nothing changes — a refine that
+                // only echoes the current state is a pure read
+                return@withTransaction row.toEntity()
+            }
+            // fail fast on a collision before the embed: the target
+            // (name, category) is already another entity's key — the caller
+            // must merge the two instead (an unhandled unique violation on
+            // the UPDATE below would escape as a raw SQL error)
+            findEntityByKey(newCanonical, newCat)?.let { existing ->
+                if (existing[EltmEntities.id] != entityId) {
+                    throw IllegalArgumentException(
+                        "an entity \"$newCanonical\" (category $newCat) already exists " +
+                            "as entity ${existing[EltmEntities.id]}: merge the two instead"
+                    )
+                }
+            }
+            // EmbeddingException (e.g. invalid_request) propagates for the
+            // tool layer to map to a model-visible error (rolled back)
+            val embedding = embedText(
+                entityEmbeddingText(
+                    newCanonical,
+                    newCat,
+                    attributesOf(entityId),
+                )
+            )
+            try {
+                EltmEntities.update({ EltmEntities.id eq entityId }) {
+                    it[EltmEntities.canonicalName] = newCanonical
+                    it[EltmEntities.category] = newCat
+                    it[EltmEntities.embedding] = embedding
+                }
+            } catch (e: Exception) {
+                if (!isUniqueViolation(e)) throw e
+                // a concurrent run created the target (name, category)
+                // between the check above and the UPDATE: the update rolled
+                // back — re-raise the same collision error the pre-check
+                // would have given (never a raw SQL error)
+                findEntityByKey(newCanonical, newCat)?.let { existing ->
+                    if (existing[EltmEntities.id] != entityId) {
+                        throw IllegalArgumentException(
+                            "an entity \"$newCanonical\" (category $newCat) already exists " +
+                                "as entity ${existing[EltmEntities.id]}: merge the two instead"
+                        )
+                    }
+                }
+                throw e
+            }
+            bumpWriteVersion()
+            EltmEntity(entityId, newCanonical, newCat)
+        }
     }
 
     override suspend fun createRelationship(

@@ -128,6 +128,16 @@ class EltmToolProvider(
             ),
         ),
         ToolSpec(
+            name = "refine_entity",
+            description = "Rename ONE entity in place and/or change its category. e.g. a briefly-mentioned \"friend\" later identified as \"Alice\". The entity's id stays: its notes, relationships and attributes keep pointing at it. Give the new name, the new category, or both — at least one is required, an omitted field keeps the current value. Setting the current (name, category) again is a no-op. If another entity already holds the new (name, category), it errors. Merge the two instead.",
+            schema = objectSchema(
+                required = listOf("entity_id"),
+                "entity_id" to integerSchema("The entity id"),
+                "new_name" to stringSchema("The new entity name (canonicalized: trimmed, whitespace collapsed, lowercase); omitted keeps the current one"),
+                "new_category" to stringSchema("The new category, e.g. \"person\"; omitted keeps the current one"),
+            ),
+        ),
+        ToolSpec(
             name = "create_relationship",
             description = "Create or fetch a directed relationship (source entity, verb, destination entity). If triple already exists, return existing one. Use consistent, general, timeless verbs: \"works_at\", not \"started_working_at\".",
             schema = objectSchema(
@@ -361,6 +371,32 @@ class EltmToolProvider(
                     }.let { textResult(request, it) }
                 }
 
+                "refine_entity" -> {
+                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                        request, "entity_id is required and must be a number"
+                    )
+                    val newName = args.optionalText("new_name")
+                    val newCategory = args.optionalText("new_category")
+                    if (newName == null && newCategory == null) {
+                        return errorResult(
+                            request,
+                            "at least one of new_name or new_category is required"
+                        )
+                    }
+                    val refined = eltmService.refineEntity(entityId, newName, newCategory)
+                    val view = eltmService.getEntity(refined.id)
+                    buildString {
+                        append("# Entity ${refined.id} - \"${refined.canonicalName}\" (${refined.category})")
+                        append(" - notes ${view?.noteCount ?: 0}, relations ${view?.relationshipCount ?: 0}")
+                        if (view != null && view.attributes.isNotEmpty()) {
+                            append("\nAttributes:\n")
+                            append(view.attributes.toSortedMap().entries.joinToString("\n") {
+                                "  ${it.key}: ${it.value}"
+                            })
+                        }
+                    }.let { textResult(request, it) }
+                }
+
                 "create_relationship" -> {
                     val src = args.requiredLong("src_id") ?: return errorResult(
                         request, "src_id is required and must be a number"
@@ -492,7 +528,10 @@ class EltmToolProvider(
             // The actionable fix depends on WHAT was embedded: a note can be
             // split, an attribute (a single fact) only shortened, a merge
             // re-embeds the winner's name+category+attributes (shorten or
-            // delete the offending attribute and retry the merge)
+            // delete the offending attribute and retry the merge), a create
+            // re-embeds the name+category (shorten it), a refine re-embeds
+            // the name+category+attributes (shorten the name or delete an
+            // attribute and retry)
             if (e.type == "invalid_request") {
                 val fix = when (bareName(request.name)) {
                     "set_entity_attribute" ->
@@ -501,6 +540,8 @@ class EltmToolProvider(
                         "the merged entity's content is too large, shorten or delete an attribute and retry."
                     "create_entity" ->
                         "shorten the name and retry."
+                    "refine_entity" ->
+                        "shorten the name or delete an attribute and retry."
                     else ->
                         "split it into several smaller notes and retry."
                 }
@@ -578,6 +619,7 @@ class EltmToolProvider(
 
         private val WRITE_TOOLS = setOf(
             "create_entity",
+            "refine_entity",
             "create_relationship",
             "merge_entities",
             "add_entity_note",

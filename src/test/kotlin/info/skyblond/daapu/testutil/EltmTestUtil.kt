@@ -99,6 +99,48 @@ class FakeEltmService : EltmService {
         return CreateEntityResult(entity, emptyList())
     }
 
+    override suspend fun refineEntity(
+        entityId: Long,
+        newName: String?,
+        newCategory: String?,
+    ): EltmEntity {
+        // mirror Postgres: validation and the no-op/collision checks come
+        // first, the embed (and its failure) last, so a failure leaves the
+        // store untouched
+        val canonical = newName?.let {
+            normalizeName(it).also { name ->
+                require(name.isNotBlank()) { "entity name must not be blank" }
+            }
+        }
+        val trimmedCategory = newCategory?.trim()?.lowercase()
+        if (trimmedCategory != null) {
+            require(trimmedCategory.isNotBlank()) { "entity category must not be blank" }
+        }
+        val current = entities[entityId]
+            ?: throw IllegalArgumentException("entity $entityId does not exist")
+        val newCat = trimmedCategory ?: current.category
+        val newCanonical = canonical ?: current.canonicalName
+        if (current.canonicalName == newCanonical && current.category == newCat) {
+            return current
+        }
+        // fail fast on a collision before the embed, like Postgres: the
+        // target (name, category) is another entity's key — the caller must
+        // merge the two instead
+        entities.values.firstOrNull {
+            it.id != entityId && it.canonicalName == newCanonical && it.category == newCat
+        }?.let { existing ->
+            throw IllegalArgumentException(
+                "an entity \"$newCanonical\" (category $newCat) already exists " +
+                    "as entity ${existing.id}: merge the two instead"
+            )
+        }
+        failEmbed()
+        val refined = current.copy(canonicalName = newCanonical, category = newCat)
+        entities[entityId] = refined
+        writeVersion++
+        return refined
+    }
+
     override suspend fun createRelationship(srcId: Long, dstId: Long, verb: String): EltmRelationship {
         val v = normalizeVerb(verb)
         // fail fast on missing endpoints, like Postgres

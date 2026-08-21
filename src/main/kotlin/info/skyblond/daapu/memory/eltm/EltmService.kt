@@ -223,20 +223,48 @@ internal fun padVector(vector: List<Float>, width: Int): List<Float> {
 interface EltmService {
     /**
      * Create or fetch an entity by `(normalizeName(name), category)`: an
-     * exact match is a pure read — nothing is updated here (a rename or
-     * re-categorization is a NEW entity: create it, then [mergeEntities]
-     * the old one into it); the prominence signal is the read views'
-     * computed note/relationship counts — there is nothing else to touch.
-     * Otherwise the name+category text is embedded and inserted, and the
-     * global write counter (`memory_meta_number.eltm_version`) is bumped in
-     * the same transaction (a concurrent run's unique violation is caught
-     * and turned into a re-select of the existing row — true create-or-fetch
-     * semantics, an unhandled violation would fail the whole run as
-     * `tool_transport`).
+     * exact match is a pure read — nothing is updated here (identity
+     * changes go through [refineEntity] instead); the prominence signal is
+     * the read views' computed note/relationship counts — there is nothing
+     * else to touch. Otherwise the name+category text is embedded and
+     * inserted, and the global write counter
+     * (`memory_meta_number.eltm_version`) is bumped in the same transaction
+     * (a concurrent run's unique violation is caught and turned into a
+     * re-select of the existing row — true create-or-fetch semantics, an
+     * unhandled violation would fail the whole run as `tool_transport`).
      * [EmbeddingException] of type `invalid_request` propagates for the tool
      * layer to map to a model-visible error.
      */
     suspend fun createEntity(name: String, category: String): CreateEntityResult
+
+    /**
+     * Rename ONE entity in place and/or change its category — e.g. a
+     * briefly-mentioned "friend" later identified by name, or re-categorized
+     * without a rename. The entity's id
+     * stays: notes, relationships and attributes keep pointing at it, so a
+     * refine is never a create+merge (those are only for true duplicates).
+     *
+     * A null [newName] keeps the current name, a null [newCategory] keeps
+     * the current category; at least one of the two is expected to change
+     * something. Like [setEntityAttribute], the whole read-modify-write with
+     * the hand embed call inside runs in ONE transaction (the entity row
+     * locked `FOR UPDATE` at the start), so the stored embedding always
+     * matches the new name+category and the unchanged attributes.
+     *
+     * @throws IllegalArgumentException when the entity does not exist, a
+     * provided name/category is blank, or another entity already holds the
+     * target `(normalizeName(newName), newCategory)` — the caller must merge
+     * the two instead (fail-fast, never a silent auto-merge).
+     * @throws EmbeddingException of type `invalid_request` (content too large
+     * for the embedding model) propagates for the tool layer to map, rolled
+     * back before anything moved.
+     */
+    @Throws(EmbeddingException::class)
+    suspend fun refineEntity(
+        entityId: Long,
+        newName: String?,
+        newCategory: String?,
+    ): EltmEntity
 
     /**
      * Create or fetch a relationship by `(srcId, verb, dstId)`. There is

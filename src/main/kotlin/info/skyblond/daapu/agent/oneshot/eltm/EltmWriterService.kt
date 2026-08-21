@@ -19,7 +19,7 @@ import java.time.ZoneId
 /**
  * The ELTM writer agent: the one `/v1/run` tool loop that moves evicted SSTM
  * entries into the ELTM (the model, round cap, retry budget and idle timeout
- * are the `memory.eltm` / `hand.*` config values). The model executes the 12
+ * are the `memory.eltm` / `hand.*` config values). The model executes the 13
  * ELTM tools ([EltmToolProvider]) back through the hand's callback
  * route; any terminal failure throws [IllegalStateException] (wrapping the
  * cause) and fails the run — the SSTM purge only deletes a victim batch
@@ -101,8 +101,9 @@ The ELTM has four kinds of records:
 Rules:
 - Record only information explicitly present in the input. Never invent details.
 - "The user" maps to the canonical entity with name "user" (category "person").
+- When new entity should be created but without a defined name, include words like "unknown", "unspecified" in the name with some description. E.g. "unknown chinese company", or "unspecified female friend", etc.
 - Timeless structured facts about an entity (model, realname, nickname, serial numbers, etc.) are ATTRIBUTES (set_entity_attribute), not notes. Use notes only for dated events and narrative. Attribute values must be a single line. Before setting an attribute, check the entity's current attributes (search_entities renders them in the hits) and skip facts already recorded.
-- Before creating an entity, call search_entities to find existing ones. create_entity returns near matches: if one of them is the same thing, use that id; if you discover true duplicates, call merge_entities with the better-canonical entity as winner_id. To rename or re-categorize an entity, create the new entity and merge the old one into it.
+- Before creating an entity, call search_entities to find existing ones. create_entity returns near matches: if one of them is the same thing, use that id; if you discover true duplicates, call merge_entities with the better-canonical entity as winner_id. To refine an EXISTING entity's identity (e.g. a placeholder "friend" now identified as "Alice", or a re-categorization), call refine_entity with its id and the new name and/or category: the entity keeps its id, so its notes, relationships and attributes stay attached. Only merge when two entities are true duplicates.
 - A note belongs to exactly one subject. An event about a relationship (met, broke up, started working together) attaches to that relationship. An event about one entity attaches to that entity. It may mention other entities by name in the text, but must NOT be duplicated under each of them.
 - Notes are add-only. To correct or supersede older information, add a NEW note with the current fact and its date. If a relationship no longer holds, add a note to it explaining the ending and pass valid=false; if a previously-ended relationship holds again (e.g. rejoined the company), add a note about the new event and pass valid=true. Only change validity on genuine endings.
 - Before adding a note about a subject, check its recent notes with get_entity_notes / get_relationship_notes (or search_notes to find already-recorded content) and skip content that is already recorded: a retried run must not duplicate diary entries.

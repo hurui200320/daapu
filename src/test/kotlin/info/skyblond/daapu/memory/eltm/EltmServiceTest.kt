@@ -145,6 +145,12 @@ class EltmServiceTest {
             error("unused")
 
         override suspend fun mergeEntities(winnerId: Long, loserId: Long) = error("unused")
+        override suspend fun refineEntity(
+            entityId: Long,
+            newName: String?,
+            newCategory: String?,
+        ): EltmEntity = error("unused")
+
         override suspend fun entityExists(entityId: Long): Boolean = error("unused")
         override suspend fun relationshipExists(relationshipId: Long): Boolean = error("unused")
         override suspend fun setEntityAttribute(

@@ -144,7 +144,7 @@ frontend + Node/TS "hand-pi" service.
     the SSTM purge only: `SstmExtractionService.purgeSstmToEltm` (after
     extraction/merge or its skip) moves the oldest `memory.sstm.purgeBatchSize`
     SSTM rows per batch through the ELTM writer agent
-    (`agent/oneshot/eltm/EltmWriterService.kt` + 12-tool
+    (`agent/oneshot/eltm/EltmWriterService.kt` + 13-tool
     `EltmToolProvider.kt` — RW mode; the same provider's `readOnly`
     mode = the 5 read tools for the Phase 4 recall sub-session — `runCollect`
     tool loop, model =
@@ -152,8 +152,13 @@ frontend + Node/TS "hand-pi" service.
     ONLY after its writer run succeeds — a writer failure fails the run,
     purged batches stay purged (content safe in the ELTM), surviving rows
     retry idempotently. Writer semantics: create exact-matches are pure
-    reads (create-or-fetch — nothing is ever updated: renaming an entity is
-    create + merge), unique violations (concurrent runs) re-select
+    reads (create-or-fetch — nothing is ever updated here: an identity
+    change goes through `refine_entity`, which renames one entity in place
+    — new name and/or category, an omitted field keeps the current value —
+    keeping its id, so notes/relationships/
+    attributes stay attached; identical (name, category) is a no-op and a
+    collision with another entity's (name, category) errors so the model
+    merges), unique violations (concurrent runs) re-select
     the winner, `merge_entities` folds colliding triples (the
     duplicate's notes re-pointed BEFORE its delete, so the
     cascade never eats diary notes) and invalidates re-pointed self-loops;
@@ -164,7 +169,8 @@ frontend + Node/TS "hand-pi" service.
     explanatory note in ONE transaction (one counter bump; idempotent —
     setting the current state is a no-op). The ELTM tools mirror the
     service one-to-one (no entity/relationship mixing in one tool:
-    `create_entity`/`create_relationship`, `get_entity_notes`/
+    `create_entity`/`refine_entity`/`create_relationship`,
+    `get_entity_notes`/
     `get_relationship_notes`, `add_entity_note`/
     `add_relationship_note`, `set_entity_attribute`/
     `delete_entity_attribute`, plus the shared reads `search_entities`,

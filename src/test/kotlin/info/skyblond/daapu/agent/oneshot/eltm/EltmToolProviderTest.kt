@@ -24,7 +24,7 @@ class EltmToolProviderTest {
         (result.parts.single() as ChatMessagePart.Text).text
 
     @Test
-    fun `the writer advertises the twelve eltm tools in order with integer ids`() {
+    fun `the writer advertises the thirteen eltm tools in order with integer ids`() {
         val provider = EltmToolProvider(FakeEltmService())
         val specs = runBlocking { provider.specifications() }
         assertEquals(
@@ -35,6 +35,7 @@ class EltmToolProviderTest {
                 "get_relationship_notes",
                 "search_notes",
                 "create_entity",
+                "refine_entity",
                 "create_relationship",
                 "merge_entities",
                 "add_entity_note",
@@ -91,6 +92,15 @@ class EltmToolProviderTest {
         )
         assertTrue(attrWrite.isError)
         assertTrue(textOf(attrWrite).contains("not available in read-only mode"), textOf(attrWrite))
+
+        val refineWrite = provider.execute(
+            toolCall("c3", "refine_entity", buildJsonObject {
+                put("entity_id", 1)
+                put("new_name", "Alice")
+            }),
+        )
+        assertTrue(refineWrite.isError)
+        assertTrue(textOf(refineWrite).contains("not available in read-only mode"), textOf(refineWrite))
     }
 
     @Test
@@ -395,6 +405,216 @@ class EltmToolProviderTest {
         assertFalse(other.isError)
         assertEquals(2, eltm.entities.size, "category separates homonyms")
         assertEquals(2, eltm.writeVersion, "only real inserts bump the version")
+    }
+
+    @Test
+    fun `refine_entity renames the entity in place keeping its id and content`() = runBlocking {
+        val eltm = FakeEltmService()
+        val friend = eltm.createEntity("friend", "person").entity
+        eltm.attachNoteToEntity(friend.id, LocalDate.parse("2026-08-01"), "met at a party")
+        val bob = eltm.createEntity("Bob", "person").entity
+        eltm.createRelationship(friend.id, bob.id, "colleague_of")
+        eltm.setEntityAttribute(friend.id, "nickname", "buddy")
+        val versionBefore = eltm.writeVersion
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "refine_entity", buildJsonObject {
+                put("entity_id", friend.id)
+                put("new_name", "  Alice Smith  ")
+            }),
+        )
+        assertFalse(result.isError, textOf(result))
+        val text = textOf(result)
+        assertTrue(text.contains("\"alice smith\" (person)"), "the refined identity renders: $text")
+        assertTrue(text.contains("notes 1") && text.contains("relations 1"), text)
+        assertTrue(text.contains("nickname: buddy"), "attributes survive the refine: $text")
+        assertEquals("alice smith", eltm.entities[friend.id]!!.canonicalName)
+        assertEquals("person", eltm.entities[friend.id]!!.category)
+        assertEquals(versionBefore + 1, eltm.writeVersion, "a real refine bumps the version")
+        assertEquals(1, eltm.notes.size, "the diary note stays attached")
+        assertTrue(
+            eltm.relationships.values.single().srcId == friend.id,
+            "relationships keep pointing at the same id"
+        )
+        assertNull(
+            eltm.entities.values.firstOrNull { it.canonicalName == "friend" },
+            "the placeholder name is gone"
+        )
+    }
+
+    @Test
+    fun `refine_entity changes the category optionally and canonicalizes`() = runBlocking {
+        val eltm = FakeEltmService()
+        val friend = eltm.createEntity("friend", "general").entity
+        val provider = EltmToolProvider(eltm)
+
+        val keepCat = provider.execute(
+            toolCall("c1", "refine_entity", buildJsonObject {
+                put("entity_id", friend.id)
+                put("new_name", "alice")
+            }),
+        )
+        assertFalse(keepCat.isError, textOf(keepCat))
+        assertEquals(
+            "general", eltm.entities[friend.id]!!.category,
+            "an omitted category keeps the current one"
+        )
+
+        val changeCat = provider.execute(
+            toolCall("c2", "refine_entity", buildJsonObject {
+                put("entity_id", friend.id)
+                put("new_name", "Alice")
+                put("new_category", "  Person  ")
+            }),
+        )
+        assertFalse(changeCat.isError, textOf(changeCat))
+        assertTrue(
+            textOf(changeCat).contains("\"alice\" (person)"),
+            "name and category canonicalize: ${textOf(changeCat)}"
+        )
+    }
+
+    @Test
+    fun `refine_entity is a no-op when nothing changes`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val versionBefore = eltm.writeVersion
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "refine_entity", buildJsonObject {
+                put("entity_id", alice.id)
+                put("new_name", "alice")
+                put("new_category", "PERSON")
+            }),
+        )
+        assertFalse(result.isError, textOf(result))
+        assertTrue(textOf(result).contains("\"alice\" (person)"), textOf(result))
+        assertEquals(versionBefore, eltm.writeVersion, "a no-op refine touches nothing")
+    }
+
+    @Test
+    fun `refine_entity fails fast on a missing entity and an empty call`() = runBlocking {
+        val eltm = FakeEltmService()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val provider = EltmToolProvider(eltm)
+
+        val missing = provider.execute(
+            toolCall("c1", "refine_entity", buildJsonObject {
+                put("entity_id", 999)
+                put("new_name", "Bob")
+            }),
+        )
+        assertTrue(missing.isError)
+        assertTrue(textOf(missing).contains("999"), textOf(missing))
+
+        // neither new_name nor new_category: a degenerate call is an error,
+        // not a silent no-op
+        val empty = provider.execute(
+            toolCall("c2", "refine_entity", buildJsonObject {
+                put("entity_id", alice.id)
+            }),
+        )
+        assertTrue(empty.isError)
+        assertTrue(textOf(empty).contains("new_name or new_category"), textOf(empty))
+        assertEquals("alice", eltm.entities[alice.id]!!.canonicalName, "nothing mutates")
+        assertEquals("person", eltm.entities[alice.id]!!.category)
+
+        // a blank new_name alone is the same degenerate call
+        val blank = provider.execute(
+            toolCall("c3", "refine_entity", buildJsonObject {
+                put("entity_id", alice.id)
+                put("new_name", "   ")
+            }),
+        )
+        assertTrue(blank.isError)
+        assertTrue(textOf(blank).contains("new_name or new_category"), textOf(blank))
+    }
+
+    @Test
+    fun `refine_entity can change only the category keeping the name`() = runBlocking {
+        val eltm = FakeEltmService()
+        val friend = eltm.createEntity("friend", "general").entity
+        val versionBefore = eltm.writeVersion
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "refine_entity", buildJsonObject {
+                put("entity_id", friend.id)
+                put("new_category", "  Person  ")
+            }),
+        )
+        assertFalse(result.isError, textOf(result))
+        assertTrue(
+            textOf(result).contains("\"friend\" (person)"),
+            "the name is untouched and the category renders: ${textOf(result)}"
+        )
+        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName, "the name is kept")
+        assertEquals("person", eltm.entities[friend.id]!!.category)
+        assertEquals(versionBefore + 1, eltm.writeVersion, "a real category change bumps")
+    }
+
+    @Test
+    fun `refine_entity errors when another entity holds the target name`() = runBlocking {
+        val eltm = FakeEltmService()
+        val friend = eltm.createEntity("friend", "person").entity
+        val alice = eltm.createEntity("Alice", "person").entity
+        val versionBefore = eltm.writeVersion
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "refine_entity", buildJsonObject {
+                put("entity_id", friend.id)
+                put("new_name", "Alice")
+            }),
+        )
+        assertTrue(result.isError)
+        val text = textOf(result)
+        assertTrue(text.contains(alice.id.toString()), "the error names the existing entity: $text")
+        assertTrue(text.contains("merge"), "the model is told to merge instead: $text")
+        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName, "nothing changed")
+        assertEquals(versionBefore, eltm.writeVersion, "a collision bumps nothing")
+    }
+
+    @Test
+    fun `refine_entity fails on an embedding failure without mutating`() = runBlocking {
+        val eltm = FakeEltmService()
+        val friend = eltm.createEntity("friend", "person").entity
+        val versionBefore = eltm.writeVersion
+        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
+        val provider = EltmToolProvider(eltm)
+
+        val result = provider.execute(
+            toolCall("c1", "refine_entity", buildJsonObject {
+                put("entity_id", friend.id)
+                put("new_name", "Alice")
+            }),
+        )
+        assertTrue(result.isError)
+        assertTrue(textOf(result).contains("embedding failed"), textOf(result))
+        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName)
+        assertEquals(versionBefore, eltm.writeVersion, "a failed embed leaves the store untouched")
+
+        // a too-large error tells the model to shorten the name or delete
+        // an attribute: a refine re-embeds the name+category+attributes
+        eltm.embedFailure = EmbeddingException(
+            "invalid_request", "input too large for the embedding model"
+        )
+        val tooLarge = provider.execute(
+            toolCall("c2", "refine_entity", buildJsonObject {
+                put("entity_id", friend.id)
+                put("new_name", "a very long name")
+            }),
+        )
+        assertTrue(tooLarge.isError)
+        val text = textOf(tooLarge)
+        assertTrue(text.contains("shorten the name or delete an attribute"), text)
+        assertFalse(
+            text.contains("split it into several smaller notes"),
+            "a name cannot be split, it must be shortened: $text"
+        )
+        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName)
     }
 
     @Test
@@ -1022,7 +1242,7 @@ class EltmToolProviderTest {
         val provider = EltmToolProvider(FakeEltmService(), namespace = "eltm")
         assertEquals(setOf("eltm"), provider.namespaces())
         val specs = runBlocking { provider.specifications() }
-        assertEquals(12, specs.size)
+        assertEquals(13, specs.size)
         assertTrue(
             specs.all { it.name.startsWith("eltm__") },
             "every advertised name carries the namespace prefix: ${specs.map { it.name }}"
