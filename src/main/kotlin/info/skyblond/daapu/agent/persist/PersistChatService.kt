@@ -8,6 +8,7 @@ import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.ZonedDateTime
@@ -48,6 +49,7 @@ import java.time.ZonedDateTime
 class PersistChatService(
     private val chatStore: ChatStore,
     private val sstmService: SstmService,
+    private val eltmService: EltmService,
     private val hand: HandService,
     private val compactionService: ChatCompactionService,
     /**
@@ -83,9 +85,10 @@ class PersistChatService(
 
         val loaded = chatStore.load(chatId) ?: ChatEntry(
             ChatInfo(chatId, DEFAULT_CHAT_TITLE),
-            ChatContent(emptyList(), "")
+            ChatContent(emptyList(), "", "")
         )
         val chatSstmVersion = loaded.content.sstmVersion
+        val chatEltmVersion = loaded.content.eltmVersion
         var chat = loaded.content.messages
 
         // history compaction: fire before the round when the measured prompt
@@ -109,6 +112,7 @@ class PersistChatService(
         }
 
         var sstm = sstmService.listMemories()
+        var eltmVersion = eltmService.version()
         // the run's user message: stamped and injected by injectContext below
         chat = chat + ChatMessage(
             role = ChatMessageRole.User,
@@ -119,8 +123,7 @@ class PersistChatService(
             InjectionSpec(
                 time = ZonedDateTime.now(),
                 sstmUpdated = chatSstmVersion != sstm.version,
-                // TODO: hook these up (ELTM update tracking)
-                eltmUpdated = false,
+                eltmUpdated = chatEltmVersion != eltmVersion,
                 memoryList = sstm.memories.map { it.content },
             )
         )
@@ -176,12 +179,13 @@ class PersistChatService(
                         // updated flag (injectContext replaces the stale
                         // injection on the run's message in place)
                         sstm = sstmService.listMemories()
+                        eltmVersion = eltmService.version()
                         chat = contextInjection.injectContext(
                             chat,
                             InjectionSpec(
                                 time = ZonedDateTime.now(),
                                 sstmUpdated = chatSstmVersion != sstm.version,
-                                eltmUpdated = false,
+                                eltmUpdated = chatEltmVersion != eltmVersion,
                                 memoryList = sstm.memories.map { it.content },
                             )
                         )
@@ -196,7 +200,7 @@ class PersistChatService(
 
         // only the success path stores: a failed run never reaches here
         chat = contextInjection.removeInjection(chat)
-        chatStore.store(chatId, ChatContent(chat, sstm.version))
+        chatStore.store(chatId, ChatContent(chat, sstm.version, eltmVersion))
     }
 
     private sealed interface HandTerminal {

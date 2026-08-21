@@ -74,6 +74,11 @@ class ChatRunService(
     // the SSTM store: shared with the memory CRUD routes and the turn-loop
     // injection. Public: the web server module reads it for `/api/memories`.
     val sstmService: SstmService = PostgresSstmService(),
+    // the ELTM store: injectable for tests (defaults to the Postgres-backed
+    // store built below, like sstmService); the public `eltmService` val
+    // resolves the injection
+    // FIXME: fix this ugly injection, using koin or dagger?
+    private val injectedEltmService: EltmService? = null,
 ) : AutoCloseable {
 
     // PoC: the catalog pins its models to the bifrost gateway (see
@@ -186,7 +191,7 @@ class ChatRunService(
     // sub-session; embeddings go through the hand with the same retry
     // budget and the stream idle timeout as the embed timeout. Exposed for
     // the browse-only `/api/eltm` routes (WebServer.kt).
-    val eltmService: EltmService = PostgresEltmService(
+    val eltmService: EltmService = injectedEltmService ?: PostgresEltmService(
         embeddingModel = embeddingModel,
         hand = handService,
         entityMatchThreshold = eltmConfig.entityMatchThreshold,
@@ -234,6 +239,7 @@ class ChatRunService(
     private val persistService = PersistChatService(
         chatStore = chatStore,
         sstmService = sstmService,
+        eltmService = eltmService,
         hand = handService,
         compactionService = compactionService,
         sstmExtractionService = sstmExtractionService,
@@ -341,6 +347,10 @@ class ChatRunService(
      * `""`: the `sstms` table is untouched, but the kept history may no
      * longer cover the memories merged from the dropped tail, so the next
      * run must re-flag `sstm-updated` and re-inject the current memory list.
+     * The stored `eltm_version` is reset to `""` the same way: the `eltm_*`
+     * tables are untouched, but the kept history may no longer cover what
+     * was purged from the dropped tail, so the next run must re-flag
+     * `eltm-updated`.
      */
     suspend fun truncateChat(chatId: String, index: Int): Boolean = withChatLock(chatId) {
         val entry = chatStore.load(chatId) ?: return@withChatLock false
@@ -369,7 +379,7 @@ class ChatRunService(
         // still validate defensively: a violating truncation would brick the
         // chat on load
         ChatCodec.validateChat(kept)
-        chatStore.store(chatId, ChatContent(kept, ""))
+        chatStore.store(chatId, ChatContent(kept, "", ""))
         true
     }
 
@@ -385,9 +395,9 @@ class ChatRunService(
      * Takes no per-chat lock: it is a pure read + insert into a NEW row, so
      * a concurrent run can only make the fork reflect the committed state
      * without the in-flight turn (snapshot semantics) — nothing corrupts.
-     * The fork's `sstm_version` starts as `""` (like a fresh chat): the fork
-     * has never seen a memory list, so its first run must flag
-     * `sstm-updated`.
+     * The fork's `sstm_version` and `eltm_version` start as `""` (like a
+     * fresh chat): the fork has never seen a memory list or the ELTM, so its
+     * first run must flag `sstm-updated`/`eltm-updated`.
      */
     suspend fun forkChat(chatId: String, index: Int): ChatInfo? {
         val entry = chatStore.load(chatId) ?: return null
@@ -406,7 +416,7 @@ class ChatRunService(
         val kept = messages.subList(0, index + 1).toList()
         ChatCodec.validateChat(kept)
         val forked = chatStore.newChat()
-        chatStore.store(forked.id, ChatContent(kept, ""))
+        chatStore.store(forked.id, ChatContent(kept, "", ""))
         return forked
     }
 

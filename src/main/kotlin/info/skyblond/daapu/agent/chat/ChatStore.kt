@@ -11,7 +11,8 @@ data class ChatInfo(val id: String, val title: String)
 
 data class ChatContent(
     val messages: List<ChatMessage>,
-    val sstmVersion: String
+    val sstmVersion: String,
+    val eltmVersion: String
 )
 
 data class ChatEntry(

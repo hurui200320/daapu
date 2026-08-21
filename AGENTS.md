@@ -149,7 +149,11 @@ frontend + Node/TS "hand-pi" service.
     (`memory_meta_number.eltm_version`, an atomic
     `value = value + 1` UPDATE inside the write's OWN transaction — never
     on a no-op upsert touch, so a missed bump would silently break the
-    flag), NOT a content hash.
+    flag), NOT a content hash. The persist loop reads `EltmService.version()`
+    AFTER the pre-round compaction (purge writes during extraction must
+    count), compares it against the stored `chats.eltm_version` at both
+    injection sites (`eltmUpdated`), and stamps the version it saw on the
+    successful store — like `sstm_version`, a failed run never moves it.
     **Vector columns are FIXED at `vector(2000)`**
     (pgvector's HNSW limit, `MAX_VECTOR_DIMENSIONS` in `config/Config.kt`,
     `db/VectorColumnType.kt`): the embedding model's output dimensions
@@ -195,7 +199,7 @@ frontend + Node/TS "hand-pi" service.
   - **ChatStore** (`agent/chat/ChatStore.kt`): all `chats`-table access
     (list/create/rename/delete + load/store) lives behind it —
     `ChatRunService` holds no raw DB calls. `load` → full `ChatEntry`
-    (id/title/history/sstm version or null); `ChatInfo` (id+title) is the
+    (id/title/history/sstm + eltm versions or null); `ChatInfo` (id+title) is the
     wire shape only. `renameChat`/`generateTitle` take no lock (upsert never
     touches the title).
   - **History mutation is by message INDEX** (chat array is the wire format;
@@ -204,7 +208,9 @@ frontend + Node/TS "hand-pi" service.
       user message at `index` and everything after it — WITHOUT SSTM
       extraction (a typo'd turn must not leak into memories) — resets
       `sstm_version` to `""` (kept history may no longer cover merged
-      memories, so next run must re-flag), takes the per-chat lock (same
+      memories, so next run must re-flag) and `eltm_version` to `""` the
+      same way (kept history may no longer cover the ELTM), takes the
+      per-chat lock (same
       upsert-resurrection argument), 400 on non-user/out-of-bounds index or
       an index leaving the chat ending mid-turn (consecutive user turns
       occur after compaction, whose summary user message sits before the
@@ -213,7 +219,8 @@ frontend + Node/TS "hand-pi" service.
       to and including the assistant message at `index` (`finishReason`
       must be `"stop"`) into a NEW row — no lock (pure read+insert; a
       racing run only makes the fork miss the in-flight turn); the fork's
-      `sstm_version` starts `""` so its first run flags `sstm-updated`.
+      `sstm_version` and `eltm_version` start `""` so its first run flags
+      `sstm-updated`/`eltm-updated`.
     - Both validate via `ChatCodec.validateChat`. The frontend reveals the
       actions on message hover (trash on user, fork on assistant stop),
       hides them while streaming (optimistic/uncommitted messages would
