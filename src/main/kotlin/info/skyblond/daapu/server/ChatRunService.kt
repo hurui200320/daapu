@@ -48,6 +48,7 @@ class ChatRunSetup(
  * `memory.compactModel` + `memory.sstm.extractModel/mergeModel` +
  * `title.model` config, resolved once at startup (never the run's model).
  */
+// TODO: extract to agent.chat.ChatService
 class ChatRunService(
     private val chatStore: ChatStore,
     private val modelCatalog: ModelCatalog,

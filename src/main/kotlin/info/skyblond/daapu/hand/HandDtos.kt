@@ -50,7 +50,7 @@ data class HandRunRequest(
     /**
      * The brain's tool-listing endpoint the hand queries BEFORE every LLM
      * request of the run (`GET {toolListUrl}?runId=...`, see
-     * `hand/HandCallbackRoute.kt`): the tool set is no longer passed
+     * `server/endpoint/HandRoute.kt`): the tool set is no longer passed
      * statically, so a run always works with the provider's latest
      * advertisements (MCP servers can change theirs at runtime). The
      * response feeds the LLM request's `tools` only — execution budgets
@@ -169,7 +169,7 @@ data class HandRetryPayload(val attempt: Int, val delayMs: Long, val message: St
 @Serializable
 data class HandDonePayload(val finishReason: String)
 
-/** The tool callback POST body (hand → brain, `hand/HandCallbackRoute.kt`). */
+/** The tool callback POST body (hand → brain, `server/endpoint/HandRoute.kt`). */
 @Serializable
 data class HandToolCallbackRequest(
     val runId: String,
@@ -197,7 +197,7 @@ data class HandToolCallbackResponse(
 
 /**
  * The tool-listing response body (hand → `GET /api/hand/tools`, see
- * `hand/HandCallbackRoute.kt`): the in-flight run's provider
+ * `server/endpoint/HandRoute.kt`): the in-flight run's provider
  * advertisements, resolved per LLM request by the hand.
  */
 @Serializable

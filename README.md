@@ -267,7 +267,7 @@ langchain4j):
 ## API
 
 All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
-`hand` routes live in `hand/HandCallbackRoute.kt`):
+`hand` routes live in `server/endpoint/HandRoute.kt`):
 
 | Method & path                           | Purpose                                                      |
 |-----------------------------------------|--------------------------------------------------------------|

@@ -1,9 +1,20 @@
-package info.skyblond.daapu.hand
+package info.skyblond.daapu.server.endpoint
 
+import info.skyblond.daapu.hand.HandCallbackService
+import info.skyblond.daapu.hand.HandToolCallbackRequest
+import info.skyblond.daapu.hand.HandToolListResponse
+import info.skyblond.daapu.hand.HandToolSpec
 import io.ktor.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+
+fun Route.registerHandEndpoints(service: HandCallbackService) {
+    route("/hand") {
+        handToolList(service)
+        handToolCallback(service)
+    }
+}
 
 /**
  * The hand-pi tool callback route: the hand POSTs each tool call here
@@ -21,8 +32,8 @@ import io.ktor.server.routing.*
  * are their own HTTP requests, possibly from a different connection than
  * the SSE run stream.
  */
-fun Route.handToolCallback(service: HandCallbackService) {
-    post("/hand/tool") {
+private fun Route.handToolCallback(service: HandCallbackService) {
+    post("/tool") {
         if (!service.verifyToken(call.request.headers["x-daapu-token"])) {
             call.respond(HttpStatusCode.Unauthorized)
             return@post
@@ -46,8 +57,8 @@ fun Route.handToolCallback(service: HandCallbackService) {
  * - `500` — the provider failed to list its tools (e.g. an unreachable
  *   MCP server): the hand ends the run with `error{tool_transport}`.
  */
-fun Route.handToolList(service: HandCallbackService) {
-    get("/hand/tools") {
+private fun Route.handToolList(service: HandCallbackService) {
+    get("/tools") {
         if (!service.verifyToken(call.request.headers["x-daapu-token"])) {
             call.respond(HttpStatusCode.Unauthorized)
             return@get

@@ -27,12 +27,12 @@ frontend + Node/TS "hand-pi" service.
     hand only POSTs when a tool call executes).
   - Tool advertisements travel per-round, not in the run request: the hand
     GETs `{toolListUrl}?runId=...` (`GET /api/hand/tools`,
-    `hand/HandCallbackRoute.kt`) BEFORE EVERY LLM request, so MCP servers can
+    `server/endpoint/HandRoute.kt`) BEFORE EVERY LLM request, so MCP servers can
     add/remove tools mid-session; a failed list ends the run with
     `tool_transport` (same as a callback `fatal`). The per-round list feeds
     the LLM request's `tools` only — execution budgets never leave the
     brain. Tool execution calls back via
-    `POST /api/hand/tool` (`hand/HandCallbackRoute.kt`), resolving the
+    `POST /api/hand/tool` (`server/endpoint/HandRoute.kt`), resolving the
     in-flight run by `runId` in `hand/HandCallbackService.kt`. A round's
     tool calls execute IN PARALLEL (all callback POSTs fire at once; results
     are reassembled into history and the SSE stream in the model's call

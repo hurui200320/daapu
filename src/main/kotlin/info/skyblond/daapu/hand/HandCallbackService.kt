@@ -18,7 +18,7 @@ class ActiveRun(
 /**
  * The brain side of the hand's tool callback: the in-flight run registry
  * (keyed by the `runId` the hand's callbacks carry) plus the token check
- * and tool execution behind `POST /api/hand/tool` (see [HandCallbackRoute]).
+ * and tool execution behind `POST /api/hand/tool` (see `server/endpoint/HandRoute.kt`).
  *
  * Runs are registered before the hand run starts and evicted when it ends,
  * so stale ids don't accumulate.

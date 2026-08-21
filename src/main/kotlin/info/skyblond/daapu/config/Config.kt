@@ -82,7 +82,7 @@ data class AppConfig(
  * configuration per request; only the loopback endpoint, the shared
  * static token, and the run-policy knobs are configured here. The token
  * also authenticates the hand's tool callbacks into this process
- * (`hand/HandCallbackRoute.kt`). The run-policy knobs are REQUIRED per
+ * (`server/endpoint/HandRoute.kt`). The run-policy knobs are REQUIRED per
  * request (the hand holds no defaults) and sent with every run.
  */
 @Serializable

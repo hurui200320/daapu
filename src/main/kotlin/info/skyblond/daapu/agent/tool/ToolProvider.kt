@@ -36,7 +36,7 @@ data class ToolCallRequest(
  * before EVERY LLM request and uses the returned list for that round, so
  * the model always sees the provider's latest advertisements. The hand
  * executes accepted tool calls back through the tool callback route
- * (`hand/HandCallbackRoute.kt`), which looks up the in-flight run's
+ * (`server/endpoint/HandRoute.kt`), which looks up the in-flight run's
  * provider by `runId` and calls [execute]. [specifications] is suspend
  * because a real provider may need to reconnect to tool servers after a
  * transport failure (the MCP provider `mcp/McpToolProvider.kt` connects
