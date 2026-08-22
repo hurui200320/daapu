@@ -158,12 +158,14 @@ The external long-term memory (diary model) that the SSTM is purged into
 the SSTM purge and the recall tool are unconditional system-prompt promises,
 so the `eltm` section must be present and complete.
 
-- `embeddingModel`, `writerModel`, `recallModel` — REQUIRED catalog model
-  ids for the ELTM embedding, the ELTM writer, and the recall sub-session
-  (Phase 4); the writer and recall models must support tool calls, and all
-  three are resolved once at startup (unknown ids fail fast). The writer's
-  round cap is `maxWriterRounds` (default 150); the recall sub-session's
-  execution budget is `recallTimeoutSeconds` (default 600).
+- `embeddingModel`, `writerModel`, `recallModel`, `rewriteModel` — REQUIRED
+  catalog model ids for the ELTM embedding, the ELTM writer, the recall
+  sub-session (Phase 4), and the per-turn query rewrite one-shot; the writer
+  and recall models must support tool calls, and all four are resolved once
+  at startup (unknown ids fail fast). The writer's round cap is
+  `maxWriterRounds` (default 150); the recall sub-session's execution budget
+  is `recallTimeoutSeconds` (default 600); `rewriteRounds` (default 5) caps
+  the chat tail fed to the query rewrite (the last N user rounds).
 - `entityMatchThreshold` (0.5) / `noteSearchThreshold` (0.1) — the vector
   cosine floors for entity near-match candidates and note search.
 - The ELTM vector columns are FIXED at `vector(2000)` (pgvector's HNSW

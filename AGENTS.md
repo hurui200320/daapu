@@ -240,8 +240,9 @@ frontend + Node/TS "hand-pi" service.
     `<injection>` structurally via the XSD. Harness parts never outlive the
     request — anchors are regenerated per request and stripped before every
     store, so a stored chat can never carry a stale anchor and a zone change
-    can never strand one in storage. Compaction and SSTM extraction — the
-    one-shots that may receive the loop's injected in-loop chat — sanitize
+    can never strand one in storage. Compaction, SSTM extraction, and the
+    query rewrite — the one-shots that may receive the loop's injected
+    in-loop chat — sanitize
     their input first (`removeInjection`) then re-anchor, so the loop's
     injected in-loop chat never double-injects; `TitleGenerator` needs
     neither: it reads the stored row, which is always clean.
@@ -398,13 +399,14 @@ frontend + Node/TS "hand-pi" service.
     support fail fast);
     the one-shot services are constructed once and shared. A chat run's own
     model is never used for the pipeline. The ELTM models
-    (`memory.eltm.embeddingModel/writerModel/recallModel`) are REQUIRED the
+    (`memory.eltm.embeddingModel/writerModel/recallModel/rewriteModel`) are REQUIRED the
     same way — `memory.eltm` is mandatory config for every deployment (the
     SSTM purge and the recall tool are unconditional system-prompt
     promises); writer/recall must support tool calls; the embedding entry's
     `dimensions` must not exceed `MAX_VECTOR_DIMENSIONS` (checked at
-    catalog construction). The embedding/writer ids fail fast at boot
-    (resolved by the container's `EltmService`/`EltmWriterService`
+    catalog construction). The embedding/writer/rewrite ids fail fast at boot
+    (resolved by the container's `EltmService`/`EltmWriterService`/
+    `QueryRewriteService`
     definitions); the recall id is only validated at its Phase 4
     definition site (the sub-session is unwired). The
     writer/recall/embedding one-shot knobs come
@@ -415,6 +417,22 @@ frontend + Node/TS "hand-pi" service.
     every store).
     Compactions emit no dedicated SSE event — the frontend resyncs the chat
     after the run (done/error).
+  - **Query rewrite** (`agent/oneshot/rewrite/QueryRewriteService.kt`,
+    config `memory.eltm.rewriteModel` + `rewriteRounds`): a no-tools
+    `runCollect` one-shot that runs BEFORE the first hand round of every
+    chat turn, after the injection. It sanitizes the input
+    (`removeInjection`), clips the last `rewriteRounds` user rounds
+    (`takeLastNRound`, ≥ 1 enforced by config), re-anchors/re-injects with
+    its own empty spec (the loop's memory list and updated flags never leak
+    into the rewrite prompt), and asks the model to rewrite the latest
+    input into standalone retrieval queries; the `Nothing worth query.`
+    sentinel — and a clipped chat with no user message at all — maps to
+    `null` (no LLM call). The result is NOT consumed yet — it will feed
+    the ELTM retrieval side when wired. Capability-checked against its own
+    model before the call (a `memory.eltm.rewriteModel` config error), and
+    the run model's own capability check runs before the rewrite, so an
+    incapable chat never spends a rewrite call. A failed rewrite fails the
+    run (the chat loop never stores).
 - **frontend/** — Svelte 5 + Vite + TS (no Gradle build step), styled after
   llama.cpp's webui: Tailwind v4 (CSS-first, tokens in `src/app.css`,
   dark-only oklch "neutral" palette), bits-ui primitives, lucide icons,

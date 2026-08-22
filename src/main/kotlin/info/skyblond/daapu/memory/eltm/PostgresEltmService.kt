@@ -34,6 +34,7 @@ import java.time.LocalDate
  * planning) lives outside the SQL; the queries stay covered only by
  * fakes until DB-backed integration tests exist.
  */
+// TODO: split this to EltmStore, the service should own the embedded text construction, etc.
 class PostgresEltmService(
     private val embeddingModel: EmbeddingModel,
     private val hand: HandService,

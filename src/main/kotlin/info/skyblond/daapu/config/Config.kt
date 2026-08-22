@@ -187,9 +187,9 @@ data class SstmConfig(
 /**
  * The ELTM (external long-term memory) settings: the diary model
  * (entities/relationships/notes, see `memory/eltm/`), the models behind it,
- * and the recall tool's knobs. All three model ids are
+ * and the recall tool's knobs. All four model ids are
  * REQUIRED and reference the catalog (`agent/ModelCatalog.kt`); the
- * embedding and writer ids are resolved once at startup by the DI
+ * embedding, writer, and rewrite ids are resolved once at startup by the DI
  * container (`di/DaapuModule.kt`; unknown ids and a writer model without
  * tool-call support fail fast), while the recall id — the sub-session is
  * unwired until Phase 4 — is only validated at its future definition
@@ -211,6 +211,18 @@ data class EltmConfig(
     /** Catalog LLM id of the recall sub-session (a tool loop); REQUIRED. */
     val recallModel: String,
     /**
+     * Catalog LLM id of the query rewrite one-shot (a no-tools `/v1/run`,
+     * see `agent/oneshot/rewrite/QueryRewriteService.kt`): rewrites the
+     * run's latest input into standalone retrieval queries before the chat
+     * round; REQUIRED.
+     */
+    val rewriteModel: String,
+    /**
+     * How many trailing user rounds of the chat feed the query rewrite
+     * one-shot; must be at least 1.
+     */
+    val rewriteRounds: Int = 5,
+    /**
      * Vector cosine similarity floor for the `create_entity` near-match
      * candidates (0..1): a candidate above it is offered to the writer LLM
      * for disambiguation/merge decisions.
@@ -231,9 +243,11 @@ data class EltmConfig(
             "memory.eltm.embeddingModel" to embeddingModel,
             "memory.eltm.writerModel" to writerModel,
             "memory.eltm.recallModel" to recallModel,
+            "memory.eltm.rewriteModel" to rewriteModel,
         ).forEach { (name, id) ->
             require(id.isNotBlank()) { "$name must not be blank" }
         }
+        require(rewriteRounds >= 1) { "memory.eltm.rewriteRounds must be >= 1, got $rewriteRounds" }
         require(entityMatchThreshold in 0.0..1.0) {
             "memory.eltm.entityMatchThreshold must be in [0, 1], got $entityMatchThreshold"
         }

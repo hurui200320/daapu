@@ -11,6 +11,7 @@ import info.skyblond.daapu.agent.oneshot.TitleGenerator
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
+import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
@@ -173,14 +174,26 @@ fun daapuModule(config: AppConfig): Module = module {
             purgeBatchSize = config.memory.sstm.purgeBatchSize,
         )
     }
+
+    single<QueryRewriteService> {
+        QueryRewriteService(
+            model = requiredLlm("memory.eltm.rewriteModel", config.memory.eltm.rewriteModel),
+            hand = get(),
+            maxRetries = config.hand.maxRetries,
+            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+        )
+    }
+
     single<PersistChatService> {
         PersistChatService(
             chatStore = get(),
             sstmService = get(),
             eltmService = get(),
+            queryRewriteService = get(),
             hand = get(),
             compactionService = get(),
             sstmExtractionService = get(),
+            rewriteRounds = config.memory.eltm.rewriteRounds,
             maxRounds = config.hand.maxRounds,
             maxRetries = config.hand.maxRetries,
             streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,

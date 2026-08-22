@@ -186,6 +186,7 @@ class ChatRunServiceTest {
                 embeddingModel = "bifrost/zenmux sub/google/gemini-embedding-2",
                 writerModel = "bifrost/cerebras/gemma-4-31b",
                 recallModel = "bifrost/cerebras/gemma-4-31b",
+                rewriteModel = "bifrost/cerebras/gemma-4-31b",
             ),
         )
         val e = assertIs<IllegalArgumentException>(
@@ -242,6 +243,15 @@ class ChatRunServiceTest {
                 chatRunService(
                     testAppConfig().copy(
                         memory = testAppConfig().memory.copy(eltm = base.copy(writerModel = "bifrost/nope"))
+                    )
+                )
+            }
+        )
+        assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                chatRunService(
+                    testAppConfig().copy(
+                        memory = testAppConfig().memory.copy(eltm = base.copy(rewriteModel = "bifrost/nope"))
                     )
                 )
             }

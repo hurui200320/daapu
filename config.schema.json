@@ -130,9 +130,10 @@
           "required": [
             "embeddingModel",
             "writerModel",
-            "recallModel"
+            "recallModel",
+            "rewriteModel"
           ],
-          "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the SSTM purge and the recall tool are unconditional system-prompt promises. The embedding and writer model ids are resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a writer without tool-call support fail fast); the recall id is only validated when the (unwired) recall sub-session gets its Phase 4 definition. The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
+          "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the SSTM purge and the recall tool are unconditional system-prompt promises. The embedding, writer, and rewrite model ids are resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a writer without tool-call support fail fast); the recall id is only validated when the (unwired) recall sub-session gets its Phase 4 definition. The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
           "properties": {
             "embeddingModel": {
               "type": "string",
@@ -148,6 +149,17 @@
               "type": "string",
               "minLength": 1,
               "description": "Required catalog LLM id of the recall sub-session (a tool loop; must support tool calls)."
+            },
+            "rewriteModel": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required catalog LLM id of the query rewrite one-shot (a no-tools /v1/run): rewrites the run's latest input into standalone retrieval queries before the chat round."
+            },
+            "rewriteRounds": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5,
+              "description": "How many trailing user rounds of the chat feed the query rewrite one-shot."
             },
             "entityMatchThreshold": {
               "type": "number",

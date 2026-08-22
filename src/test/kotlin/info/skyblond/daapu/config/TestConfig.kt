@@ -35,6 +35,7 @@ fun testAppConfig() = AppConfig(
             embeddingModel = "bifrost/zenmux sub/google/gemini-embedding-2",
             writerModel = "bifrost/cerebras/gemma-4-31b",
             recallModel = "bifrost/cerebras/gemma-4-31b",
+            rewriteModel = "bifrost/cerebras/gemma-4-31b",
         ),
     ),
     title = TitleConfig(model = "bifrost/cerebras/gemma-4-31b"),

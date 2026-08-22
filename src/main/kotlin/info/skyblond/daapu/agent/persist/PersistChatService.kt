@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
+import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
@@ -50,6 +51,7 @@ class PersistChatService(
     private val chatStore: ChatStore,
     private val sstmService: SstmService,
     private val eltmService: EltmService,
+    private val queryRewriteService: QueryRewriteService,
     private val hand: HandService,
     private val compactionService: ChatCompactionService,
     /**
@@ -60,6 +62,11 @@ class PersistChatService(
      * reads the final state.
      */
     private val sstmExtractionService: SstmExtractionService,
+    /**
+     * How many trailing user rounds of the chat feed the query rewrite
+     * one-shot (config `memory.eltm.rewriteRounds`).
+     */
+    private val rewriteRounds: Int,
     // the hand's /v1/run policy knobs (config `hand.*`): the hand holds no
     // defaults, every parameter is REQUIRED per request, so the brain
     // sources them here
@@ -127,6 +134,18 @@ class PersistChatService(
                 memoryList = sstm.memories.map { it.content },
             )
         )
+
+        // the capability check runs BEFORE the rewrite and the first hand
+        // round: a chat the run model cannot process must fail without
+        // spending a rewrite call (and the rewrite one-shot checks its OWN
+        // model against the same chat inside rewriteQuery)
+        model.checkPromptContentCapabilities(chat)
+
+        // the query rewrite one-shot: rewrites the run's latest input into
+        // standalone retrieval queries from the last `rewriteRounds` user
+        // rounds (config `memory.eltm.rewriteRounds`). The result is not
+        // consumed yet — it will feed the ELTM retrieval side once wired.
+        queryRewriteService.rewriteQuery(chat, rewriteRounds)
 
         while (true) {
             // the prompt is complete (history + the out-of-band system prompt +
