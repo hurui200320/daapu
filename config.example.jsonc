@@ -86,7 +86,16 @@
       // rewrites the run's latest input into standalone retrieval queries.
       "rewriteModel": "bifrost/cerebras/gemma-4-31b",
       // How many trailing user rounds of the chat feed the rewrite.
+      // REQUIRED (related to the rewrite model's context size).
       "rewriteRounds": 5,
+      // How many related entities the ELTM context injection puts into the
+      // <memories>' <related-entities> (the injection size is related to the
+      // main model's context). REQUIRED; 0 = skip the entity search.
+      "relatedEntitiesLimit": 5,
+      // How many related diary notes the ELTM context injection puts into
+      // <memories>' <related-notes>. REQUIRED; 0 = skip the note search
+      // (with both limits 0 the rewrite one-shot is skipped too).
+      "relatedNotesLimit": 5,
       // Cosine floor for create_entity near-match candidates (0..1).
       "entityMatchThreshold": 0.5,
       // Cosine floor for search_notes (0..1).

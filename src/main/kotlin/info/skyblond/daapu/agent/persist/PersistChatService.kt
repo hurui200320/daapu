@@ -9,7 +9,10 @@ import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
+import info.skyblond.daapu.memory.eltm.EltmEntity
+import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.EntityWithScore
 import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.ZonedDateTime
@@ -67,6 +70,19 @@ class PersistChatService(
      * one-shot (config `memory.eltm.rewriteRounds`).
      */
     private val rewriteRounds: Int,
+    /**
+     * How many related entities the ELTM context injection puts into the
+     * `<memories>`' `<related-entities>` (config
+     * `memory.eltm.relatedEntitiesLimit`); `0` skips the entity search.
+     */
+    private val relatedEntitiesLimit: Int,
+    /**
+     * How many related diary notes the ELTM context injection puts into the
+     * `<memories>`' `<related-notes>` (config `memory.eltm.relatedNotesLimit`);
+     * `0` skips the note search, and with both limits `0` the query rewrite
+     * one-shot is skipped too (it exists only to feed these searches).
+     */
+    private val relatedNotesLimit: Int,
     // the hand's /v1/run policy knobs (config `hand.*`): the hand holds no
     // defaults, every parameter is REQUIRED per request, so the brain
     // sources them here
@@ -125,15 +141,6 @@ class PersistChatService(
             role = ChatMessageRole.User,
             parts = userParts,
         )
-        chat = contextInjection.injectContext(
-            chat,
-            InjectionSpec(
-                time = ZonedDateTime.now(),
-                sstmUpdated = chatSstmVersion != sstm.version,
-                eltmUpdated = chatEltmVersion != eltmVersion,
-                memoryList = sstm.memories.map { it.content },
-            )
-        )
 
         // the capability check runs BEFORE the rewrite and the first hand
         // round: a chat the run model cannot process must fail without
@@ -143,9 +150,43 @@ class PersistChatService(
 
         // the query rewrite one-shot: rewrites the run's latest input into
         // standalone retrieval queries from the last `rewriteRounds` user
-        // rounds (config `memory.eltm.rewriteRounds`). The result is not
-        // consumed yet — it will feed the ELTM retrieval side once wired.
-        queryRewriteService.rewriteQuery(chat, rewriteRounds)
+        // rounds (config `memory.eltm.rewriteRounds`), then searches the ELTM
+        // for related entities and diary notes to inject under `<memories>`
+        // (config `memory.eltm.relatedEntitiesLimit`/`relatedNotesLimit`).
+        // With both limits 0 the whole chain is skipped: no rewrite call, no
+        // embedding calls, empty related sections.
+        val (relatedEntities, relatedNotes) = if (relatedEntitiesLimit == 0 && relatedNotesLimit == 0) {
+            emptyList<EntityWithScore>() to emptyList<RelatedNoteView>()
+        } else {
+            queryRewriteService.rewriteQuery(chat, rewriteRounds)?.let { query ->
+                val entities = if (relatedEntitiesLimit > 0) {
+                    eltmService.searchEntities(query, relatedEntitiesLimit)
+                } else {
+                    emptyList()
+                }
+                val notes = if (relatedNotesLimit > 0) {
+                    resolveRelatedNotes(
+                        notes = eltmService.searchNotes(query, null, null, null, null, relatedNotesLimit),
+                        knownEntities = entities,
+                    )
+                } else {
+                    emptyList()
+                }
+                entities to notes
+            } ?: Pair(emptyList(), emptyList())
+        }
+
+        chat = contextInjection.injectContext(
+            chat,
+            InjectionSpec(
+                time = ZonedDateTime.now(),
+                sstmUpdated = chatSstmVersion != sstm.version,
+                eltmUpdated = chatEltmVersion != eltmVersion,
+                memoryList = sstm.memories.map { it.content },
+                relatedEntities = relatedEntities,
+                relatedNotes = relatedNotes,
+            )
+        )
 
         while (true) {
             // the prompt is complete (history + the out-of-band system prompt +
@@ -196,7 +237,11 @@ class PersistChatService(
                         // the extraction may have changed the SSTM, so refresh
                         // the injection with the fresh memory list and the
                         // updated flag (injectContext replaces the stale
-                        // injection on the run's message in place)
+                        // injection on the run's message in place). The
+                        // related entities/notes were retrieved for THIS run's
+                        // input, which the compaction never changes, so the
+                        // pre-round search results stay valid — no re-search,
+                        // no mid-loop rewrite/embed call.
                         sstm = sstmService.listMemories()
                         eltmVersion = eltmService.version()
                         chat = contextInjection.injectContext(
@@ -206,6 +251,8 @@ class PersistChatService(
                                 sstmUpdated = chatSstmVersion != sstm.version,
                                 eltmUpdated = chatEltmVersion != eltmVersion,
                                 memoryList = sstm.memories.map { it.content },
+                                relatedEntities = relatedEntities,
+                                relatedNotes = relatedNotes,
                             )
                         )
                         // fall through: the next loop iteration starts a fresh
@@ -226,6 +273,57 @@ class PersistChatService(
         data object Done : HandTerminal
 
         data class RunError(val type: String, val message: String) : HandTerminal
+    }
+
+    /**
+     * Turn raw diary-note search hits into the injection's [RelatedNoteView]
+     * list by resolving each note's subject to NAMES (the render carries no
+     * ids-only references): an entity subject reuses the search's own hits
+     * when the note's entity is among them, otherwise a [EltmService.getEntity]
+     * fallback; a relationship subject resolves via
+     * [EltmService.getRelationship] (which carries the endpoint names and the
+     * verb). A note whose subject cannot be resolved (impossible under the
+     * notes CHECK) is skipped rather than rendered with partial ids.
+     */
+    private suspend fun resolveRelatedNotes(
+        notes: List<EltmNote>,
+        knownEntities: List<EntityWithScore>,
+    ): List<RelatedNoteView> = notes.mapNotNull { note ->
+        when {
+            note.entityId != null -> {
+                val entity: EltmEntity = knownEntities.firstOrNull { it.entity.id == note.entityId }?.entity
+                    ?: eltmService.getEntity(note.entityId)?.entity
+                    ?: return@mapNotNull null
+                RelatedNoteView(
+                    id = note.id,
+                    eventDate = note.eventDate,
+                    subjectType = "entity",
+                    subjectAttributes = linkedMapOf(
+                        "name" to entity.canonicalName,
+                        "category" to entity.category,
+                    ),
+                    note = note.note,
+                )
+            }
+
+            note.relationshipId != null -> {
+                val relationship = eltmService.getRelationship(note.relationshipId)
+                    ?: return@mapNotNull null
+                RelatedNoteView(
+                    id = note.id,
+                    eventDate = note.eventDate,
+                    subjectType = "relationship",
+                    subjectAttributes = linkedMapOf(
+                        "src-name" to relationship.srcName,
+                        "verb" to relationship.relationship.verb,
+                        "dst-name" to relationship.dstName,
+                    ),
+                    note = note.note,
+                )
+            }
+
+            else -> null // impossible: the notes CHECK enforces exactly one subject
+        }
     }
 
     /**

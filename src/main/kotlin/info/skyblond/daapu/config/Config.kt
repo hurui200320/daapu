@@ -219,9 +219,26 @@ data class EltmConfig(
     val rewriteModel: String,
     /**
      * How many trailing user rounds of the chat feed the query rewrite
-     * one-shot; must be at least 1.
+     * one-shot; must be at least 1. REQUIRED: the round limit is related to
+     * the rewrite model's context size, so it must be explicit.
      */
-    val rewriteRounds: Int = 5,
+    val rewriteRounds: Int,
+    /**
+     * How many related entities the ELTM context injection (search seeded by
+     * the rewritten query) puts into `<memories>`' `<related-entities>`;
+     * REQUIRED — the injected size is related to the main model's context,
+     * so the operator must set it explicitly. `0` skips the entity search
+     * (no embed call, empty section).
+     */
+    val relatedEntitiesLimit: Int,
+    /**
+     * How many related diary notes the ELTM context injection puts into
+     * `<memories>`' `<related-notes>`; REQUIRED like
+     * [relatedEntitiesLimit]. `0` skips the note search (no embed call,
+     * empty section); with both limits `0`, the query rewrite one-shot is
+     * skipped too (it exists only to feed these searches).
+     */
+    val relatedNotesLimit: Int,
     /**
      * Vector cosine similarity floor for the `create_entity` near-match
      * candidates (0..1): a candidate above it is offered to the writer LLM
@@ -248,6 +265,12 @@ data class EltmConfig(
             require(id.isNotBlank()) { "$name must not be blank" }
         }
         require(rewriteRounds >= 1) { "memory.eltm.rewriteRounds must be >= 1, got $rewriteRounds" }
+        require(relatedEntitiesLimit >= 0) {
+            "memory.eltm.relatedEntitiesLimit must be >= 0, got $relatedEntitiesLimit"
+        }
+        require(relatedNotesLimit >= 0) {
+            "memory.eltm.relatedNotesLimit must be >= 0, got $relatedNotesLimit"
+        }
         require(entityMatchThreshold in 0.0..1.0) {
             "memory.eltm.entityMatchThreshold must be in [0, 1], got $entityMatchThreshold"
         }

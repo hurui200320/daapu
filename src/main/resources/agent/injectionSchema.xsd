@@ -25,6 +25,59 @@
                         <xs:sequence>
                             <!-- memory, 0 to unlimited items, aka unbounded -->
                             <xs:element name="memory" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+                            <!-- the ELTM context injection: retrieved entities and diary notes (always present, possibly empty) -->
+                            <xs:element name="related-entities" minOccurs="0">
+                                <xs:complexType>
+                                    <xs:sequence>
+                                        <!-- entity, 0 to unlimited items -->
+                                        <xs:element name="entity" minOccurs="0" maxOccurs="unbounded">
+                                            <xs:complexType>
+                                                <xs:sequence>
+                                                    <!-- attribute, 0 to unlimited items: current-state facts as key/value pairs -->
+                                                    <xs:element name="attribute" minOccurs="0" maxOccurs="unbounded">
+                                                        <xs:complexType>
+                                                            <xs:simpleContent>
+                                                                <xs:extension base="xs:string">
+                                                                    <xs:attribute name="key" type="xs:string" use="required"/>
+                                                                </xs:extension>
+                                                            </xs:simpleContent>
+                                                        </xs:complexType>
+                                                    </xs:element>
+                                                </xs:sequence>
+                                                <xs:attribute name="id" type="xs:long" use="required"/>
+                                                <xs:attribute name="name" type="xs:string" use="required"/>
+                                                <xs:attribute name="category" type="xs:string" use="required"/>
+                                            </xs:complexType>
+                                        </xs:element>
+                                    </xs:sequence>
+                                </xs:complexType>
+                            </xs:element>
+                            <xs:element name="related-notes" minOccurs="0">
+                                <xs:complexType>
+                                    <xs:sequence>
+                                        <!-- note, 0 to unlimited items: a dated diary entry whose subject is identified by names -->
+                                        <xs:element name="note" minOccurs="0" maxOccurs="unbounded">
+                                            <xs:complexType>
+                                                <xs:simpleContent>
+                                                    <xs:extension base="xs:string">
+                                                        <xs:attribute name="id" type="xs:long" use="required"/>
+                                                        <xs:attribute name="date" type="xs:string" use="required"/>
+                                                        <xs:attribute name="subject-type" type="xs:string" use="required"/>
+                                                        <!-- the subject is ONE entity (name+category) XOR ONE relationship
+                                                             (src-name+verb+dst-name); the union is declared because XSD 1.0
+                                                             cannot express the XOR, the generator always emits exactly one set -->
+                                                        <xs:attribute name="name" type="xs:string"/>
+                                                        <xs:attribute name="category" type="xs:string"/>
+                                                        <xs:attribute name="src-name" type="xs:string"/>
+                                                        <xs:attribute name="verb" type="xs:string"/>
+                                                        <xs:attribute name="dst-name" type="xs:string"/>
+                                                    </xs:extension>
+                                                </xs:simpleContent>
+                                            </xs:complexType>
+                                        </xs:element>
+                                    </xs:sequence>
+                                </xs:complexType>
+                            </xs:element>
                         </xs:sequence>
                     </xs:complexType>
                 </xs:element>

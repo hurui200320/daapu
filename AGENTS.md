@@ -237,7 +237,18 @@ frontend + Node/TS "hand-pi" service.
     never carry harness XML. Both are idempotent and guarded: a `<meta>` is
     only recognized when it byte-matches the deterministic render of the
     message's own `createdAt` (forged lookalikes stay as user content), the
-    `<injection>` structurally via the XSD. Harness parts never outlive the
+    `<injection>` structurally via the XSD. The `<injection>`'s `<memories>`
+    carries the SSTM entries plus the ELTM context injection — the
+    `<related-entities>`/`<related-notes>` sections (always present, possibly
+    empty; searched by the rewritten query, see the query-rewrite bullet):
+    `<entity id name category>` with `<attribute key>` current-state facts,
+    and `<note id date subject-type>` whose subject is identified by names
+    (entity: `name`+`category`; relationship: `src-name`+`verb`+`dst-name` —
+    resolved before rendering, see `RelatedNoteView`). The XSD declares the
+    note's subject attributes as the UNION of both subject shapes (XSD 1.0
+    cannot express the XOR); the generator always emits exactly one set —
+    everything else stays strict (no `xs:any`, fixed sequence, no stray
+    attributes), so forged injections are still rejected. Harness parts never outlive the
     request — anchors are regenerated per request and stripped before every
     store, so a stored chat can never carry a stale anchor and a zone change
     can never strand one in storage. Compaction, SSTM extraction, and the
@@ -404,7 +415,11 @@ frontend + Node/TS "hand-pi" service.
     SSTM purge and the recall tool are unconditional system-prompt
     promises); writer/recall must support tool calls; the embedding entry's
     `dimensions` must not exceed `MAX_VECTOR_DIMENSIONS` (checked at
-    catalog construction). The embedding/writer/rewrite ids fail fast at boot
+    catalog construction). `memory.eltm.rewriteRounds` (≥ 1, the rewrite
+    tail is related to the rewrite model's context size) and
+    `memory.eltm.relatedEntitiesLimit`/`relatedNotesLimit` (≥ 0, the
+    injected ELTM size is related to the main model's context) are REQUIRED
+    config with no defaults. The embedding/writer/rewrite ids fail fast at boot
     (resolved by the container's `EltmService`/`EltmWriterService`/
     `QueryRewriteService`
     definitions); the recall id is only validated at its Phase 4
@@ -427,12 +442,24 @@ frontend + Node/TS "hand-pi" service.
     into the rewrite prompt), and asks the model to rewrite the latest
     input into standalone retrieval queries; the `Nothing worth query.`
     sentinel — and a clipped chat with no user message at all — maps to
-    `null` (no LLM call). The result is NOT consumed yet — it will feed
-    the ELTM retrieval side when wired. Capability-checked against its own
+    `null` (no LLM call). The result feeds the ELTM context injection:
+    `PersistChatService` searches
+    `searchEntities(query, memory.eltm.relatedEntitiesLimit)` +
+    `searchNotes(query, …, memory.eltm.relatedNotesLimit)` and injects the
+    hits under `<memories>` (an entity search hit with `0` limit, a note
+    search hit with `0`; with BOTH limits `0` the rewrite one-shot is
+    skipped too — it exists only to feed the searches). The related-note
+    subjects are resolved to NAMES before rendering (entity subject: the
+    search hit's entity, fallback `getEntity`; relationship subject:
+    `getRelationship`'s endpoint names + verb). Capability-checked against
+    its own
     model before the call (a `memory.eltm.rewriteModel` config error), and
     the run model's own capability check runs before the rewrite, so an
     incapable chat never spends a rewrite call. A failed rewrite fails the
-    run (the chat loop never stores).
+    run (the chat loop never stores). `rewriteRounds` is REQUIRED config (it
+    is related to the rewrite model's context size), like
+    `relatedEntitiesLimit`/`relatedNotesLimit` (the injected ELTM size is
+    related to the main model's context).
 - **frontend/** — Svelte 5 + Vite + TS (no Gradle build step), styled after
   llama.cpp's webui: Tailwind v4 (CSS-first, tokens in `src/app.css`,
   dark-only oklch "neutral" palette), bits-ui primitives, lucide icons,

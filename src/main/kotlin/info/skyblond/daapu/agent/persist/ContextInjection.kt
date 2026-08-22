@@ -3,10 +3,12 @@ package info.skyblond.daapu.agent.persist
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.memory.eltm.EntityWithScore
 import org.w3c.dom.Document
 import java.io.StringReader
 import java.io.StringWriter
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter.ISO_LOCAL_DATE
@@ -25,6 +27,21 @@ import javax.xml.validation.Validator
 
 
 /**
+ * A related diary note ready for the injection XML: the note itself plus its
+ * subject identified by names, so the model sees which diary it belongs to
+ * without ids-only references. For an entity subject ([subjectType] `"entity"`)
+ * [subjectAttributes] carries `name` + `category`; for a relationship subject
+ * (`"relationship"`) it carries `src-name`, `verb`, `dst-name`.
+ */
+data class RelatedNoteView(
+    val id: Long,
+    val eventDate: LocalDate,
+    val subjectType: String,
+    val subjectAttributes: Map<String, String>,
+    val note: String,
+)
+
+/**
  * The context injection payload for the latest user message (see
  * [ContextInjection.generateInjection]).
  */
@@ -33,6 +50,8 @@ data class InjectionSpec(
     val sstmUpdated: Boolean,
     val eltmUpdated: Boolean,
     val memoryList: List<String>,
+    val relatedEntities: List<EntityWithScore> = emptyList(),
+    val relatedNotes: List<RelatedNoteView> = emptyList(),
 )
 
 /**
@@ -148,7 +167,9 @@ class ContextInjection {
         time: ZonedDateTime,
         sstmUpdated: Boolean,
         eltmUpdated: Boolean,
-        memoryList: List<String>
+        memoryList: List<String>,
+        relatedEntities: List<EntityWithScore> = emptyList(),
+        relatedNotes: List<RelatedNoteView> = emptyList(),
     ): ChatMessagePart.Text {
         val documentBuilderFactory = DocumentBuilderFactory.newInstance()
         val documentBuilder = documentBuilderFactory.newDocumentBuilder()
@@ -183,6 +204,46 @@ class ContextInjection {
             memories.appendChild(
                 document.createElement("memory").apply {
                     textContent = sanitizeForXml10(memoryText)
+                }
+            )
+        }
+
+        // the ELTM context injection: the entities and diary notes retrieved
+        // for the run's input, under <memories> after the SSTM entries. Both
+        // containers are always present (empty ones included), so the shape
+        // the model sees is stable across requests.
+        val relatedEntitiesElement = document.createElement("related-entities")
+        memories.appendChild(relatedEntitiesElement)
+        relatedEntities.forEach { hit ->
+            relatedEntitiesElement.appendChild(
+                document.createElement("entity").apply {
+                    setAttribute("id", hit.entity.id.toString())
+                    setAttribute("name", sanitizeForXml10(hit.entity.canonicalName))
+                    setAttribute("category", sanitizeForXml10(hit.entity.category))
+                    hit.attributes.forEach { (key, value) ->
+                        appendChild(
+                            document.createElement("attribute").apply {
+                                setAttribute("key", sanitizeForXml10(key))
+                                textContent = sanitizeForXml10(value)
+                            }
+                        )
+                    }
+                }
+            )
+        }
+
+        val relatedNotesElement = document.createElement("related-notes")
+        memories.appendChild(relatedNotesElement)
+        relatedNotes.forEach { view ->
+            relatedNotesElement.appendChild(
+                document.createElement("note").apply {
+                    setAttribute("id", view.id.toString())
+                    setAttribute("date", ISO_LOCAL_DATE.format(view.eventDate))
+                    setAttribute("subject-type", view.subjectType)
+                    view.subjectAttributes.forEach { (key, value) ->
+                        setAttribute(key, sanitizeForXml10(value))
+                    }
+                    textContent = sanitizeForXml10(view.note)
                 }
             )
         }
@@ -275,6 +336,8 @@ class ContextInjection {
                             sstmUpdated = spec.sstmUpdated,
                             eltmUpdated = spec.eltmUpdated,
                             memoryList = spec.memoryList,
+                            relatedEntities = spec.relatedEntities,
+                            relatedNotes = spec.relatedNotes,
                         )
                     ) + parts
                 )

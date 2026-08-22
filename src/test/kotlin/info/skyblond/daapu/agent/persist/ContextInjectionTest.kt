@@ -4,7 +4,10 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.memory.eltm.EltmEntity
+import info.skyblond.daapu.memory.eltm.EntityWithScore
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import kotlin.test.Test
@@ -349,5 +352,167 @@ class ContextInjectionTest {
             createdAt = Instant.parse("2026-08-18T12:34:56Z"),
         )
         assertEquals(lone, contextInjection.removeInjection(listOf(lone)).single())
+    }
+
+    @Test
+    fun `test related entities and notes render under memories`() {
+        val hits = listOf(
+            EntityWithScore(
+                entity = EltmEntity(id = 1, canonicalName = "alice", category = "person"),
+                noteCount = 3,
+                latestNote = null,
+                relationshipCount = 2,
+                score = 0.9,
+                attributes = linkedMapOf(
+                    "real_name" to "Alice Smith",
+                    "job" to "engineer",
+                ),
+            )
+        )
+        val notes = listOf(
+            RelatedNoteView(
+                id = 10,
+                eventDate = LocalDate.of(2026, 8, 1),
+                subjectType = "entity",
+                subjectAttributes = linkedMapOf("name" to "alice", "category" to "person"),
+                note = "Met Bob at the conference",
+            ),
+            RelatedNoteView(
+                id = 11,
+                eventDate = LocalDate.of(2026, 7, 15),
+                subjectType = "relationship",
+                subjectAttributes = linkedMapOf(
+                    "src-name" to "alice", "verb" to "works_at", "dst-name" to "acme"
+                ),
+                note = "Joined Acme as an engineer",
+            ),
+        )
+        val injectionPart = contextInjection.generateInjection(
+            ZonedDateTime.now(), false, false,
+            listOf("sstm memory"), hits, notes
+        )
+        assertTrue { contextInjection.isInjection(injectionPart) }
+        val text = injectionPart.text
+        // the DOM transformer serializes attributes in alphabetical order
+        // (id/date/subject-type never reorder), so the tags are pinned in
+        // that order; the entity carries its current-state attribute facts
+        assertTrue { text.contains("""<entity category="person" id="1" name="alice">""") }
+        assertTrue { text.contains("""<attribute key="real_name">Alice Smith</attribute>""") }
+        assertTrue { text.contains("""<attribute key="job">engineer</attribute>""") }
+        // the notes with name-identified subjects, one per subject kind
+        assertTrue {
+            text.contains(
+                """<note category="person" date="2026-08-01" id="10" name="alice" subject-type="entity">Met Bob at the conference</note>"""
+            )
+        }
+        assertTrue {
+            text.contains(
+                """<note date="2026-07-15" dst-name="acme" id="11" src-name="alice" subject-type="relationship" verb="works_at">Joined Acme as an engineer</note>"""
+            )
+        }
+        // the SSTM entries stay in front, the ELTM sections come after
+        assertTrue { text.indexOf("<memory>sstm memory</memory>") < text.indexOf("<related-entities>") }
+        assertTrue { text.indexOf("<related-entities>") < text.indexOf("<related-notes>") }
+    }
+
+    @Test
+    fun `test related sections round trip through removeInjection`() {
+        // an injection carrying related content is still recognized and
+        // stripped: the stored chat never carries harness XML
+        val decorated = contextInjection.injectContext(
+            listOf(user("hi")),
+            InjectionSpec(
+                time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
+                sstmUpdated = false,
+                eltmUpdated = false,
+                memoryList = emptyList(),
+                relatedEntities = listOf(
+                    EntityWithScore(
+                        entity = EltmEntity(1, "alice", "person"),
+                        noteCount = 0, latestNote = null, relationshipCount = 0,
+                        score = 0.9, attributes = emptyMap(),
+                    )
+                ),
+                relatedNotes = listOf(
+                    RelatedNoteView(
+                        id = 10, eventDate = LocalDate.of(2026, 8, 1),
+                        subjectType = "entity",
+                        subjectAttributes = linkedMapOf("name" to "alice", "category" to "person"),
+                        note = "hi",
+                    )
+                ),
+            ),
+        )
+        assertTrue { contextInjection.isInjection(decorated[0].parts.first() as ChatMessagePart.Text) }
+        val cleaned = contextInjection.removeInjection(decorated)
+        assertEquals(listOf(ChatMessagePart.Text("hi")), cleaned[0].parts)
+    }
+
+    @Test
+    fun `test related sections sanitize control characters and single-escape markup`() {
+        val hits = listOf(
+            EntityWithScore(
+                entity = EltmEntity(1, "bad\u0001name", "cat <&"),
+                noteCount = 0, latestNote = null, relationshipCount = 0,
+                score = 1.0,
+                attributes = linkedMapOf("k\u0001ey" to "v<&al\u0001ue"),
+            )
+        )
+        val notes = listOf(
+            RelatedNoteView(
+                id = 1,
+                eventDate = LocalDate.of(2026, 8, 1),
+                subjectType = "entity",
+                subjectAttributes = linkedMapOf("name" to "\u0001n", "category" to "c"),
+                note = "bad\u0001note <a>&",
+            )
+        )
+        val injectionPart = contextInjection.generateInjection(
+            ZonedDateTime.now(), false, false,
+            emptyList(), hits, notes
+        )
+        assertTrue { contextInjection.isInjection(injectionPart) }
+        val text = injectionPart.text
+        // XML-1.0-invalid chars are stripped everywhere, including attribute
+        // values; markup is escaped exactly once, never double-escaped
+        assertFalse { text.contains('\u0001') }
+        assertTrue { text.contains("""name="badname"""") }
+        assertTrue { text.contains("""category="cat &lt;&amp;"""") }
+        assertTrue { text.contains("badnote &lt;a&gt;&amp;") }
+        assertFalse { text.contains("&amp;lt;") }
+        // and the DOM parse round-trips back to the sanitized original
+        val parsed = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+            .newDocumentBuilder()
+            .parse(java.io.ByteArrayInputStream(text.toByteArray()))
+        val attributeNode = parsed.getElementsByTagName("attribute").item(0)
+        assertEquals("v<&alue", attributeNode.textContent)
+        assertEquals("key", attributeNode.attributes.getNamedItem("key").nodeValue)
+        val noteNode = parsed.getElementsByTagName("note").item(0)
+        assertEquals("badnote <a>&", noteNode.textContent)
+        assertEquals("n", noteNode.attributes.getNamedItem("name").nodeValue)
+    }
+
+    @Test
+    fun `test related sections strictness`() {
+        // the new sections keep the same anti-forgery strictness: unknown
+        // elements/attributes inside them, a missing required attribute, and
+        // out-of-order sections are all rejected by the schema
+        val strict = """
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info>
+            <memories><related-entities><entity id="1" name="a" category="b" surprise="x"/></related-entities></memories></injection>
+        """.trimIndent()
+        assertFalse { contextInjection.isInjection(ChatMessagePart.Text(strict)) }
+
+        val missingSubjectType = """
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info>
+            <memories><related-notes><note id="1" date="2026-08-01">text</note></related-notes></memories></injection>
+        """.trimIndent()
+        assertFalse { contextInjection.isInjection(ChatMessagePart.Text(missingSubjectType)) }
+
+        val reordered = """
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info>
+            <memories><memory>x</memory><related-notes/><related-entities/></memories></injection>
+        """.trimIndent()
+        assertFalse { contextInjection.isInjection(ChatMessagePart.Text(reordered)) }
     }
 }

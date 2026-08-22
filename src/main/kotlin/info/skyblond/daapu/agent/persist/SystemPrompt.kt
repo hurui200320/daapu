@@ -125,13 +125,26 @@ Items:
 + `sstm-updated`: true if the SSTM has been updated since the last response.
 + `eltm-updated`: true if the ELTM has been updated since the last call to `recall`.
 
-### SSTM injection (`memories`)
+### Memories injection (`memories`)
 
-Here is the latest shared short term memories.
+The `memory` tag carries a list of the latest shared short term memories.
 
 > **CRITICAL:** You MUST NOT directly referencing any memory because this section will be removed once user send next message,
 > and the injection on next message may have different content. Instead, when you need to reference or use the fact,
 > you should always repeat the fact you need in the response or tool calls, so that the context will have a copy of them.
+
+The `memories` section also carries the ELTM context injection:
+
++ `<related-entities>`: `<entity id=".." name=".." category="..">` elements, each carrying its current-state facts as
+  `<attribute key="..">value</attribute>` children.
++ `<related-notes>`: dated diary entries, each `<note id=".." date=".." subject-type="entity|relationship">`.
+  An entity-subject note adds `name` and `category` attributes, a relationship-subject note adds `src-name`,
+  `verb` and `dst-name`.
+
+They are the results of an ELTM search seeded by the user's latest input.
+These entries are per-request retrieval results, not a memory dump: an absent entry means "nothing related was found
+in the long-term memory", not "this does not exist". The same "removed once user send next message" caveat applies:
+repeat any fact you use in your response or tool calls.
 
 ${if (isDevelopment) {
 """

@@ -83,7 +83,10 @@ class ConfigTest {
                         "embeddingModel": "bifrost/embed",
                         "writerModel": "bifrost/w",
                         "recallModel": "bifrost/r",
-                        "rewriteModel": "bifrost/rw"
+                        "rewriteModel": "bifrost/rw",
+                        "rewriteRounds": 5,
+                        "relatedEntitiesLimit": 5,
+                        "relatedNotesLimit": 5
                     }
                 },
                 "title": {
@@ -134,7 +137,7 @@ class ConfigTest {
                         "baseUrl": "http://host/x//y",
                     },
                 },
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -151,7 +154,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -170,7 +173,7 @@ class ConfigTest {
                     "bifrost": { "apiKey": "k1", "baseUrl": "http://h1" },
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -192,7 +195,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -242,7 +245,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -266,7 +269,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -316,7 +319,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "server": { "port": 0 },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -442,7 +445,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                     "mcp": {
                         "servers": [
@@ -483,6 +486,9 @@ class ConfigTest {
                         "writerModel": "bifrost/w",
                         "recallModel": "bifrost/r",
                         "rewriteModel": "bifrost/rw",
+                        "rewriteRounds": 7,
+                        "relatedEntitiesLimit": 3,
+                        "relatedNotesLimit": 0,
                         "entityMatchThreshold": 0.3,
                         "noteSearchThreshold": 0.2,
                         "recallTimeoutSeconds": 60,
@@ -503,7 +509,9 @@ class ConfigTest {
         assertEquals("bifrost/w", decoded.eltm.writerModel)
         assertEquals("bifrost/r", decoded.eltm.recallModel)
         assertEquals("bifrost/rw", decoded.eltm.rewriteModel)
-        assertEquals(5, decoded.eltm.rewriteRounds, "rewriteRounds defaults to 5")
+        assertEquals(7, decoded.eltm.rewriteRounds)
+        assertEquals(3, decoded.eltm.relatedEntitiesLimit)
+        assertEquals(0, decoded.eltm.relatedNotesLimit)
         assertEquals(0.3, decoded.eltm.entityMatchThreshold)
         assertEquals(0.2, decoded.eltm.noteSearchThreshold)
         assertEquals(60L, decoded.eltm.recallTimeoutSeconds)
@@ -524,7 +532,7 @@ class ConfigTest {
                 """.trimIndent()
             )
         }
-        assertTrue(
+assertTrue(
             e.message!!.contains("memory"),
             "the error should name the missing field: ${e.message}"
         )
@@ -537,13 +545,41 @@ class ConfigTest {
                     "memory": {
                         "compactModel": "bifrost/x",
                         "extractModel": "bifrost/y",
-                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" }
+                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
                 """.trimIndent()
             )
         }
+    }
+
+    @Test
+    fun `memory config requires the eltm round and limit knobs`() {
+        // rewriteRounds/relatedEntitiesLimit/relatedNotesLimit are REQUIRED
+        // (they bound the rewrite tail and the injected ELTM size against
+        // the model context): a config missing any of them must fail at
+        // decode, not fall back to a default
+        val e = assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": {
+                        "compactModel": "bifrost/x",
+                        "sstm": { "extractModel": "bifrost/y", "mergeModel": "bifrost/z", "maxCapacity": 100, "purgeBatchSize": 10 },
+                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5 }
+                    },
+                    "title": { "model": "bifrost/t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("relatedNotesLimit"),
+            "the error should name the missing field: ${e.message}"
+        )
     }
 
     @Test
@@ -558,7 +594,7 @@ class ConfigTest {
                     "providers": {},
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" }
+                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -604,6 +640,9 @@ class ConfigTest {
             writerModel = "w",
             recallModel = "r",
             rewriteModel = "rw",
+            rewriteRounds = 5,
+            relatedEntitiesLimit = 5,
+            relatedNotesLimit = 5,
         )
         val validSstm = SstmConfig(
             extractModel = "bifrost/x",
@@ -664,6 +703,9 @@ class ConfigTest {
             writerModel = "w",
             recallModel = "r",
             rewriteModel = "rw",
+            rewriteRounds = 5,
+            relatedEntitiesLimit = 5,
+            relatedNotesLimit = 5,
         )
         valid.validate()
 
@@ -681,6 +723,15 @@ class ConfigTest {
         // user round must feed the rewrite (0/negative is a config error)
         assertFailsWith<IllegalArgumentException> { valid.copy(rewriteRounds = 0).validate() }
         assertFailsWith<IllegalArgumentException> { valid.copy(rewriteRounds = -1).validate() }
+
+        // the related-limit knobs are REQUIRED and bound the injection size
+        // against the main model's context: negative is a config error,
+        // 0 skips the individual search (and is a valid value)
+        assertFailsWith<IllegalArgumentException> {
+            valid.copy(relatedEntitiesLimit = -1).validate()
+        }
+        assertFailsWith<IllegalArgumentException> { valid.copy(relatedNotesLimit = -1).validate() }
+        valid.copy(relatedEntitiesLimit = 0, relatedNotesLimit = 0).validate()
 
         // thresholds must stay in [0, 1]
         assertFailsWith<IllegalArgumentException> { valid.copy(entityMatchThreshold = 1.1).validate() }
@@ -703,7 +754,7 @@ class ConfigTest {
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
@@ -719,7 +770,7 @@ class ConfigTest {
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "bifrost/t", "lastNRound": 3 }
             }
             """.trimIndent()
@@ -737,7 +788,7 @@ class ConfigTest {
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } }
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } }
                 }
                 """.trimIndent()
             )
@@ -748,7 +799,7 @@ class ConfigTest {
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw" } },
+                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": {}
                 }
                 """.trimIndent()

@@ -82,7 +82,11 @@
     "memory": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["compactModel", "sstm", "eltm"],
+      "required": [
+        "compactModel",
+        "sstm",
+        "eltm"
+      ],
       "description": "The memory pipeline settings: compaction (agent/oneshot/compaction/), the SSTM (short-term memory, agent/oneshot/sstm/) and the ELTM (external long-term memory, memory/eltm/). The model ids are REQUIRED, resolved once at startup by the DI container (di/DaapuModule.kt) and reused for every run (never the run's model). The compaction trigger fraction and keep rounds are per-model (agent/model/LLM.kt), depending on the model's context size.",
       "properties": {
         "compactModel": {
@@ -93,7 +97,12 @@
         "sstm": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["extractModel", "mergeModel", "maxCapacity", "purgeBatchSize"],
+          "required": [
+            "extractModel",
+            "mergeModel",
+            "maxCapacity",
+            "purgeBatchSize"
+          ],
           "description": "The SSTM (short-term memory) settings: the extractor/merger one-shots that write it and the capacity/purge knobs that evict it into the ELTM (the only eviction path; the SSTM is always fully in context, so the capacity is the capacity lever, never retrieval). The two model ids are resolved once at startup by the DI container (di/DaapuModule.kt; the merge model must support tool calls).",
           "properties": {
             "extractModel": {
@@ -131,7 +140,10 @@
             "embeddingModel",
             "writerModel",
             "recallModel",
-            "rewriteModel"
+            "rewriteModel",
+            "rewriteRounds",
+            "relatedEntitiesLimit",
+            "relatedNotesLimit"
           ],
           "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the SSTM purge and the recall tool are unconditional system-prompt promises. The embedding, writer, and rewrite model ids are resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a writer without tool-call support fail fast); the recall id is only validated when the (unwired) recall sub-session gets its Phase 4 definition. The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
           "properties": {
@@ -158,8 +170,17 @@
             "rewriteRounds": {
               "type": "integer",
               "minimum": 1,
-              "default": 5,
-              "description": "How many trailing user rounds of the chat feed the query rewrite one-shot."
+              "description": "REQUIRED: how many trailing user rounds of the chat feed the query rewrite one-shot (the limit is related to the rewrite model's context size)."
+            },
+            "relatedEntitiesLimit": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "REQUIRED: how many related entities the ELTM context injection puts into <memories>' <related-entities> (injection size is related to the main model's context); 0 skips the entity search."
+            },
+            "relatedNotesLimit": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "REQUIRED: how many related diary notes the ELTM context injection puts into <memories>' <related-notes> (injection size is related to the main model's context); 0 skips the note search (with both limits 0 the query rewrite one-shot is skipped too)."
             },
             "entityMatchThreshold": {
               "type": "number",
@@ -194,7 +215,9 @@
     "title": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model"],
+      "required": [
+        "model"
+      ],
       "description": "Session-title generation settings (agent/oneshot/TitleGenerator.kt): the model id is REQUIRED, resolved once at startup by the DI container (di/DaapuModule.kt) like the memory pipeline models (never the run's model).",
       "properties": {
         "model": {

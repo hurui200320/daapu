@@ -164,8 +164,14 @@ so the `eltm` section must be present and complete.
   and recall models must support tool calls, and all four are resolved once
   at startup (unknown ids fail fast). The writer's round cap is
   `maxWriterRounds` (default 150); the recall sub-session's execution budget
-  is `recallTimeoutSeconds` (default 600); `rewriteRounds` (default 5) caps
+  is `recallTimeoutSeconds` (default 600); `rewriteRounds` (REQUIRED) caps
   the chat tail fed to the query rewrite (the last N user rounds).
+- `relatedEntitiesLimit` / `relatedNotesLimit` — REQUIRED (the injected
+  ELTM size is related to the main model's context, so they must be
+  explicit): how many related entities and diary notes the ELTM context
+  injection puts into the `<injection>`'s `<memories>` section (searched by
+  the rewritten query); `0` skips that search (with both `0` the rewrite
+  one-shot is skipped too).
 - `entityMatchThreshold` (0.5) / `noteSearchThreshold` (0.1) — the vector
   cosine floors for entity near-match candidates and note search.
 - The ELTM vector columns are FIXED at `vector(2000)` (pgvector's HNSW

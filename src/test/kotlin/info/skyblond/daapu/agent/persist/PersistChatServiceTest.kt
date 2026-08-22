@@ -22,6 +22,9 @@ import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
 import info.skyblond.daapu.mcp.MockToolReply
+import info.skyblond.daapu.memory.eltm.EltmEntity
+import info.skyblond.daapu.memory.eltm.EltmNote
+import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
 import info.skyblond.daapu.memory.sstm.ShortTermMemory
@@ -36,6 +39,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.time.Instant
+import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.*
 
@@ -100,6 +105,8 @@ class PersistChatServiceTest {
         sstmCapacity: Int = 1_000_000,
         purgeBatchSize: Int = 10,
         rewriteRounds: Int = 5,
+        relatedEntitiesLimit: Int = 5,
+        relatedNotesLimit: Int = 5,
         chatScript: suspend (HandRunRequest) -> List<HandEvent> = { stopEvents() },
         compactionScript: suspend (HandRunRequest) -> List<HandEvent> =
             { textRunFlow("compacted summary") },
@@ -184,6 +191,8 @@ class PersistChatServiceTest {
                             purgeBatchSize = purgeBatchSize,
                         ),
                     rewriteRounds = rewriteRounds,
+                    relatedEntitiesLimit = relatedEntitiesLimit,
+                    relatedNotesLimit = relatedNotesLimit,
                     maxRounds = 64,
                     maxRetries = 0,
                     streamIdleTimeoutMs = 300_000,
@@ -1026,8 +1035,8 @@ class PersistChatServiceTest {
             injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
             "the loop's injection is untouched by the rewrite",
         )
-        // the rewrite result is not consumed yet: the chat round is the
-        // last request either way
+        // the rewrite result feeds the <memories>' related-entities/notes
+        // search of the chat round's injection (empty with an empty ELTM)
         assertEquals(2, outcome.hand.requests.size, "rewrite run + chat round")
     }
 
@@ -1132,6 +1141,165 @@ class PersistChatServiceTest {
         )
         assertFailsWith<ModelCapabilityException> { service.rewriteQuery(chat, 1) }
         assertTrue(hand.requests.isEmpty(), "no hand request must be made")
+    }
+
+    // ------------------------------------------------------------------
+    // ELTM context injection (the rewritten query seeds entity/note search)
+    // ------------------------------------------------------------------
+
+    /**
+     * A fake ELTM whose substring search matches "alice": one person entity
+     * with an attribute, one company entity, one relationship
+     * (alice→works_at→acme), and two diary notes (one per subject kind)
+     * whose texts mention alice.
+     */
+    private fun eltmSeededForAliceSearch() = FakeEltmService().apply {
+        val alice = EltmEntity(id = 1, canonicalName = "alice", category = "person")
+        entities[1] = alice
+        attributes[1] = mutableMapOf("real_name" to "Alice Smith")
+        entities[2] = EltmEntity(id = 2, canonicalName = "bob", category = "person")
+        entities[3] = EltmEntity(id = 3, canonicalName = "acme", category = "company")
+        relationships[1] = EltmRelationship(
+            id = 1, srcId = 1, dstId = 3, verb = "works_at", valid = true,
+        )
+        notes[1] = EltmNote(
+            id = 1, entityId = 1, relationshipId = null,
+            eventDate = LocalDate.of(2026, 8, 1),
+            note = "alice met bob at the conference",
+            createdAt = OffsetDateTime.parse("2026-08-01T12:00:00Z"),
+        )
+        notes[2] = EltmNote(
+            id = 2, entityId = null, relationshipId = 1,
+            eventDate = LocalDate.of(2026, 7, 15),
+            note = "alice joined acme as an engineer",
+            createdAt = OffsetDateTime.parse("2026-07-15T12:00:00Z"),
+        )
+    }
+
+    @Test
+    fun `the eltm context injection carries the searched entities and notes`() {
+        val outcome = run(
+            eltmService = eltmSeededForAliceSearch(),
+            rewriteScript = { textRunFlow("alice") },
+        )
+        assertNull(outcome.error)
+
+        // the injection of the chat round carries the entity with its
+        // current-state attribute facts and the notes with name-identified
+        // subjects (entity: name+category, relationship: src-name+verb+dst-name).
+        // The text is JSON-encoded (`"` is `\"`) and the DOM transformer
+        // serializes attributes alphabetically.
+        val injection = injectionOf(outcome.hand.requests.last())
+        assertTrue(
+            injection.contains("""<entity category=\"person\" id=\"1\" name=\"alice\"><attribute key=\"real_name\">Alice Smith</attribute></entity>"""),
+            "the related entity and its attributes must be injected: $injection",
+        )
+        assertTrue(
+            injection.contains(
+                """<note category=\"person\" date=\"2026-08-01\" id=\"1\" name=\"alice\" subject-type=\"entity\">alice met bob at the conference</note>"""
+            ),
+            "the entity diary note must be injected with its subject names: $injection",
+        )
+        assertTrue(
+            injection.contains(
+                """<note date=\"2026-07-15\" dst-name=\"acme\" id=\"2\" src-name=\"alice\" subject-type=\"relationship\" verb=\"works_at\">alice joined acme as an engineer</note>"""
+            ),
+            "the relationship diary note must be injected with its subject names: $injection",
+        )
+        // the stored chat never carries the harness XML
+        val stored = assertNotNull(outcome.store.stored)
+        assertFalse(ChatCodec.encodeChat(stored).contains("related-entities"))
+    }
+
+    @Test
+    fun `the nothing-to-query sentinel leaves the related sections empty`() {
+        // a matching ELTM is seeded, but the rewrite answers with the
+        // sentinel: no search runs, both sections stay empty
+        val outcome = run(
+            eltmService = eltmSeededForAliceSearch(),
+            rewriteScript = { textRunFlow("Nothing worth query.") },
+        )
+        assertNull(outcome.error)
+        val injection = injectionOf(outcome.hand.requests.last())
+        assertFalse(injection.contains("<entity"), "no related entities must be injected")
+        assertFalse(injection.contains("subject-type"), "no related notes must be injected")
+    }
+
+    @Test
+    fun `a zero related-notes limit skips the note search but keeps the entity search`() {
+        val outcome = run(
+            eltmService = eltmSeededForAliceSearch(),
+            relatedNotesLimit = 0,
+            rewriteScript = { textRunFlow("alice") },
+        )
+        assertNull(outcome.error)
+        val injection = injectionOf(outcome.hand.requests.last())
+        assertTrue(
+            injection.contains("""<entity category=\"person\" id=\"1\" name=\"alice\">"""),
+            "the entity search still runs: $injection",
+        )
+        assertFalse(injection.contains("subject-type"), "the note search must be skipped")
+    }
+
+    @Test
+    fun `both related limits zero skip the rewrite and the searches entirely`() {
+        val outcome = run(
+            eltmService = eltmSeededForAliceSearch(),
+            relatedEntitiesLimit = 0,
+            relatedNotesLimit = 0,
+            rewriteScript = { error("the rewrite must not run when both limits are zero") },
+        )
+        assertNull(outcome.error)
+        assertEquals(
+            1, outcome.hand.requests.size,
+            "only the chat round: no rewrite, no searches",
+        )
+        val injection = injectionOf(outcome.hand.requests.last())
+        assertFalse(injection.contains("<entity"))
+        assertFalse(injection.contains("subject-type"))
+    }
+
+    @Test
+    fun `a reactive compaction keeps the pre-round related context in the refreshed injection`() {
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            eltmService = eltmSeededForAliceSearch(),
+            rewriteScript = { textRunFlow("alice") },
+            chatScript = { request ->
+                if (request.messages.any { message ->
+                        message.parts.any { part ->
+                            part is ChatMessagePart.Text &&
+                                    part.text.startsWith("CONTEXT COMPACTION")
+                        }
+                    }) {
+                    stopEvents()
+                } else {
+                    listOf(
+                        HandEvent.RunError("context_exhausted", "input too big")
+                    )
+                }
+            },
+        )
+        assertNull(outcome.error)
+        assertEquals(
+            5,
+            outcome.hand.requests.size,
+            "rewrite -> exhausted run -> compactor -> extractor -> fresh run",
+        )
+        // both the exhausted run and the compacted retry carry the same
+        // pre-round search results: the compaction refreshes the injection
+        // in place, it never re-searches
+        for (request in listOf(outcome.hand.requests[1], outcome.hand.requests[4])) {
+            val injection = injectionOf(request)
+            assertTrue(
+                injection.contains("""<entity category=\"person\" id=\"1\" name=\"alice\">"""),
+                "the re-injected message must keep the pre-round related entity: $injection",
+            )
+            assertTrue(
+                injection.contains("""id=\"2\" src-name=\"alice\" subject-type=\"relationship\" """),
+                "the re-injected message must keep the pre-round related note: $injection",
+            )
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1383,6 +1551,8 @@ class PersistChatServiceTest {
                         purgeBatchSize = 10,
                     ),
                     rewriteRounds = 5,
+                    relatedEntitiesLimit = 5,
+                    relatedNotesLimit = 5,
                     maxRounds = 64,
                     maxRetries = 0,
                     streamIdleTimeoutMs = 300_000,
@@ -1569,6 +1739,8 @@ class PersistChatServiceTest {
             compactionService = compactionService,
             sstmExtractionService = extractionService,
             rewriteRounds = 5,
+            relatedEntitiesLimit = 5,
+            relatedNotesLimit = 5,
             maxRounds = 64,
             maxRetries = 0,
             streamIdleTimeoutMs = 300_000,

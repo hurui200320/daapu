@@ -187,6 +187,9 @@ class ChatRunServiceTest {
                 writerModel = "bifrost/cerebras/gemma-4-31b",
                 recallModel = "bifrost/cerebras/gemma-4-31b",
                 rewriteModel = "bifrost/cerebras/gemma-4-31b",
+                rewriteRounds = 5,
+                relatedEntitiesLimit = 5,
+                relatedNotesLimit = 5,
             ),
         )
         val e = assertIs<IllegalArgumentException>(
