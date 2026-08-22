@@ -32,6 +32,9 @@ class ModelCatalog(
     private val bifrostProvider = providers["bifrost"]
         ?: throw IllegalArgumentException("ModelCatalog requires a provider with id 'bifrost'")
 
+    private val deepinfraProvider = providers["deepinfra"]
+        ?: throw IllegalArgumentException("ModelCatalog requires a provider with id 'deepinfra'")
+
     val models: List<LLM> = listOf(
         LLM(
             provider = bifrostProvider,
@@ -82,6 +85,11 @@ class ModelCatalog(
         EmbeddingModel(
             provider = bifrostProvider,
             modelId = "zenmux sub/google/gemini-embedding-2",
+            dimensions = 1536,
+        ),
+        EmbeddingModel(
+            provider = deepinfraProvider,
+            modelId = "Qwen/Qwen3-Embedding-8B",
             dimensions = 1536,
         ),
     )

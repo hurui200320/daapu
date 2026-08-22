@@ -62,19 +62,15 @@ fun daapuModule(config: AppConfig): Module = module {
         )
     } withOptions { onClose { it?.close() } }
 
-    // the model catalog, pinned to the bifrost gateway (see ModelCatalog.kt):
-    // a config without it is a wiring bug, so fail fast at startup
     single<ModelCatalog> {
-        val bifrostConfig = config.providers["bifrost"]
-            ?: error("Provider config 'bifrost' not found")
         ModelCatalog(
-            mapOf(
-                "bifrost" to ModelProvider(
-                    id = "bifrost",
-                    baseUrl = bifrostConfig.baseUrl,
-                    apiKey = bifrostConfig.apiKey,
+            config.providers.map { (id, config) ->
+                id to ModelProvider(
+                    id = id,
+                    baseUrl = config.baseUrl,
+                    apiKey = config.apiKey,
                 )
-            )
+            }.toMap()
         )
     }
 
