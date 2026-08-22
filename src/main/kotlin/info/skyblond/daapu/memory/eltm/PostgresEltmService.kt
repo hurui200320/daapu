@@ -248,7 +248,7 @@ class PostgresEltmService(
         }
         // EmbeddingException (e.g. invalid_request: content too large)
         // propagates for the tool layer to map to a model-visible error
-        val embedding = embedText(trimmed)
+        val embedding = embedText(noteEmbeddingText(trimmed))
         val id = withTransaction {
             val inserted = EltmNotes.insert {
                 it[EltmNotes.entityId] = entityId
@@ -274,7 +274,7 @@ class PostgresEltmService(
         }
         // EmbeddingException (e.g. invalid_request: content too large)
         // propagates for the tool layer to map to a model-visible error
-        val embedding = embedText(trimmed)
+        val embedding = embedText(noteEmbeddingText(trimmed))
         val id = insertNoteWithValidity(relationshipId, eventDate, trimmed, embedding, valid)
         return withTransaction { findNoteById(id)!! }
     }
@@ -980,7 +980,8 @@ class PostgresEltmService(
 
     companion object {
         private const val NEAR_MATCH_LIMIT = 5
-        private const val ELTM_VERSION_KEY = "eltm_version"
+        /** The `memory_meta_number` key of the global ELTM write counter (see [MemoryMetaNumber]). */
+        internal const val ELTM_VERSION_KEY = "eltm_version"
 
         /** The pgvector cosine distance `column <=> vector` as an Exposed expression. */
         private fun cosineDistance(

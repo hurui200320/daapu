@@ -155,6 +155,17 @@ internal fun entityEmbeddingText(
 }
 
 /**
+ * The note embedding text: currently the trimmed note itself — no decoration
+ * (no date, no subject). The single point to change if the format ever
+ * evolves; the re-embed helper (`EmbeddingRefreshMain`) and the write path
+ * both derive the vector from the stored note through this function, so a
+ * format change never strands old embeddings. The trimmed form is what the
+ * service validates and stores, so the function applied to the stored row
+ * reproduces exactly the text that was embedded.
+ */
+internal fun noteEmbeddingText(note: String): String = note.trim()
+
+/**
  * The attribute-folding plan for a merge ([EltmService.mergeEntities]):
  * which of the loser's attribute rows fold into the winner, which are
  * dropped (the winner already holds the key — the winner's value wins; a

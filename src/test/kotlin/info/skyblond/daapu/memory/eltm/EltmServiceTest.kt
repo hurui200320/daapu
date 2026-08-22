@@ -60,6 +60,21 @@ class EltmServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // note embedding text
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `noteEmbeddingText is the trimmed note`() {
+        assertEquals("bought a kindle", noteEmbeddingText("  bought a kindle  "))
+        assertEquals("a\nb", noteEmbeddingText("  a\nb  "), "internal newlines are content, not structure")
+        assertEquals("", noteEmbeddingText("   "), "the blank check stays at the call site")
+        // the shape must be reproducible from the stored row: what the
+        // service stores IS the trimmed text, so refreshing an existing
+        // note re-embeds exactly the text it was embedded with before
+        assertEquals(noteEmbeddingText("  hello  "), noteEmbeddingText(noteEmbeddingText("  hello  ")))
+    }
+
+    // ------------------------------------------------------------------
     // attribute fold planning (the merge's attribute decision logic)
     // ------------------------------------------------------------------
 

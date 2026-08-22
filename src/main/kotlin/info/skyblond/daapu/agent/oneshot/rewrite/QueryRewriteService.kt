@@ -75,8 +75,6 @@ class QueryRewriteService(
             throw IllegalStateException("Query rewrite failed", e)
         }
 
-        logger.info { "Raw rewrite result: $rewrite" }
-
         return if (rewrite == NOTHING_TO_QUERY) null
         else rewrite
     }
@@ -98,8 +96,6 @@ class QueryRewriteService(
     }
 
     companion object {
-        private val logger = KotlinLogging.logger {}
-
         private const val NOTHING_TO_QUERY = "Nothing worth query."
 
         private fun renderRewriteSystemPrompt(): String = """
