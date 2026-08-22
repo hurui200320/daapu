@@ -3,10 +3,8 @@ package info.skyblond.daapu.db
 import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
 import org.jetbrains.exposed.v1.core.ReferenceOption
 import org.jetbrains.exposed.v1.core.Table
-import org.jetbrains.exposed.v1.javatime.CurrentTimestamp
 import org.jetbrains.exposed.v1.javatime.CurrentTimestampWithTimeZone
 import org.jetbrains.exposed.v1.javatime.date
-import org.jetbrains.exposed.v1.javatime.timestamp
 import org.jetbrains.exposed.v1.javatime.timestampWithTimeZone
 
 /**
@@ -16,7 +14,6 @@ object Chats : Table("chats") {
     val id = text("id")
     val title = text("title")
     val chatJson = text("chat_json").default("[]")
-    val sstmVersion = text("sstm_version").default("")
     // the ELTM version fingerprint of the last successful run; "" means
     // "never compared yet", so the first run flags eltm-updated. Updated by
     // the recall tool mid-run (a column-only UPDATE, never the store upsert).
@@ -30,18 +27,6 @@ object Chats : Table("chats") {
  * `V1__init.sql` (kept in sync manually so inserts state the title explicitly).
  */
 const val DEFAULT_CHAT_TITLE = "New chat"
-
-/**
- * Shared Short Term Memories.
- */
-object SSTMs : Table("sstms") {
-    val id = long("id").autoIncrement()
-    val lastUpdate = timestamp("last_update")
-        .defaultExpression(CurrentTimestamp)
-    val content = text("content")
-
-    override val primaryKey = PrimaryKey(id)
-}
 
 /**
  * Simple numeric key-value meta store (`memory_meta_number` in

@@ -27,7 +27,7 @@ class ChatCompactionService(
 ) {
     /**
      * Compact the given chat history, returning the compacted chat plus the
-     * dropped raw messages (which feed the SSTM extraction before they are
+     * dropped raw messages (which feed the memory extraction before they are
      * discarded).
      *
      * The [fullChat] is the raw conversation history (the system prompt is
@@ -65,7 +65,7 @@ class ChatCompactionService(
         // Treat the input as potentially injected (a reactive compaction runs
         // on the chat loop's injected in-loop chat): sanitize first so no
         // harness part is ever fed twice, then split the clean chat — the
-        // dropped region the SSTM extraction sees is clean too.
+        // dropped region the memory extraction sees is clean too.
         val clean = contextInjection.removeInjection(fullChat)
         val (chatToCompact, chatToPreserve) = splitMessage(clean, excludeLastNRound)
         // fail fast on a capability mismatch before the LLM call: the same

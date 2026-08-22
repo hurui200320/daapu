@@ -2,7 +2,7 @@
  * Global transient error notifications, rendered as a fixed top-right stack
  * in App.svelte. Action errors from anywhere (sidebar CRUD, chat load, send
  * failures) surface here; contextual errors that stay tied to their view
- * (the chat view's run-error banner, the SSTM view's inline error) are
+ * (the chat view's run-error banner, the ELTM view's inline error) are
  * intentionally NOT routed through this store.
  */
 class ToastStore {

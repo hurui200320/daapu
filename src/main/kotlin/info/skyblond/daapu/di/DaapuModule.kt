@@ -11,8 +11,8 @@ import info.skyblond.daapu.agent.oneshot.TitleGenerator
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
+import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
-import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
@@ -24,8 +24,6 @@ import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.PostgresEltmService
-import info.skyblond.daapu.memory.sstm.PostgresSstmService
-import info.skyblond.daapu.memory.sstm.SstmService
 import info.skyblond.daapu.server.ChatRunService
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.onClose
@@ -75,10 +73,9 @@ fun daapuModule(config: AppConfig): Module = module {
         )
     }
 
-    // the stores: all chats-table access and the SSTM/ELTM tables live
+    // the stores: all chats-table access and the ELTM tables live
     // behind these seams, so tests override them with fakes
     single<ChatStore> { PostgresChatStore() }
-    single<SstmService> { PostgresSstmService() }
     single<EltmService> {
         PostgresEltmService(
             embeddingModel = get<ModelCatalog>().findEmbeddingModel(config.memory.eltm.embeddingModel)
@@ -157,21 +154,13 @@ fun daapuModule(config: AppConfig): Module = module {
             streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
         )
     }
-    single<SstmExtractionService> {
-        SstmExtractionService(
-            extractModel = requiredLlm("memory.sstm.extractModel", config.memory.sstm.extractModel),
-            mergeModel = requiredLlm(
-                "memory.sstm.mergeModel", config.memory.sstm.mergeModel,
-                toolLoopNote = "the memory merge agent runs a tool loop",
-            ),
+    single<MemoryExtractionService> {
+        MemoryExtractionService(
+            extractModel = requiredLlm("memory.eltm.extractionModel", config.memory.eltm.extractionModel),
             hand = get(),
-            sstmService = get(),
-            maxMergeRounds = config.memory.sstm.maxMergeRounds,
             maxRetries = config.hand.maxRetries,
             streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
             eltmWriterService = get(),
-            sstmCapacity = config.memory.sstm.maxCapacity,
-            purgeBatchSize = config.memory.sstm.purgeBatchSize,
         )
     }
 
@@ -187,12 +176,11 @@ fun daapuModule(config: AppConfig): Module = module {
     single<PersistChatService> {
         PersistChatService(
             chatStore = get(),
-            sstmService = get(),
             eltmService = get(),
             queryRewriteService = get(),
             hand = get(),
             compactionService = get(),
-            sstmExtractionService = get(),
+            memoryExtractionService = get(),
             rewriteRounds = config.memory.eltm.rewriteRounds,
             relatedEntitiesLimit = config.memory.eltm.relatedEntitiesLimit,
             relatedNotesLimit = config.memory.eltm.relatedNotesLimit,

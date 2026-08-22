@@ -6,49 +6,11 @@ import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.memory.eltm.*
-import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
-import info.skyblond.daapu.memory.sstm.ShortTermMemory
-import info.skyblond.daapu.memory.sstm.SstmService
-import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
 
 /**
- * An in-memory [SstmService] whose contents change as memories are
- * deleted/created — the shape the SSTM purge needs (the fixed-list
- * [RecordingSstmService] can only pin call contracts).
- */
-class MutableSstmService(
-    initial: List<ShortTermMemory> = emptyList(),
-) : SstmService {
-    private val items = initial.toMutableList()
-    val deleted = mutableListOf<Long>()
-
-    override suspend fun listMemories(): MemoriesWithVersion =
-        MemoriesWithVersion(items.toList(), "test-version")
-
-    override suspend fun createMemory(content: String): ShortTermMemory {
-        val memory = ShortTermMemory(items.size + 1L, Instant.now(), content)
-        items += memory
-        return memory
-    }
-
-    override suspend fun updateMemory(id: Long, content: String): ShortTermMemory? {
-        val index = items.indexOfFirst { it.id == id }
-        if (index < 0) return null
-        val updated = items[index].copy(lastUpdate = Instant.now(), content = content)
-        items[index] = updated
-        return updated
-    }
-
-    override suspend fun deleteMemory(id: Long): Boolean {
-        deleted += id
-        return items.removeIf { it.id == id }
-    }
-}
-
-/**
- * An in-memory [EltmService] for writer/purge tests: mirrors the Postgres
+ * An in-memory [EltmService] for writer tests: mirrors the Postgres
  * semantics where they matter for tool/pipeline behavior (normalization,
  * create-or-fetch for entities and relationships, add-only notes, subject
  * existence, the

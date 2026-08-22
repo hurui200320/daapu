@@ -76,7 +76,7 @@ frontend + Node/TS "hand-pi" service.
   from `server/WebServer.kt` (incl. `tool_call`/`tool_result` echoes). The
   SSE stream is flushed with a `comment` event before the run starts: ktor
   Netty's `responseWriteTimeoutSeconds` (10s default) would otherwise kill
-  a run silent during compaction/SSTM extraction (502 at the proxy).
+  a run silent during compaction/memory extraction (502 at the proxy).
   - **DI** (`di/DaapuModule.kt`, Koin 4.2 + the Koin compiler plugin
     `io.insert-koin.compiler.plugin`, the project's recommended setup):
     the whole object graph is one `module { }` built by
@@ -101,26 +101,17 @@ frontend + Node/TS "hand-pi" service.
     calls `koinApp.close()`. `startWebServer` resolves the root
     (`koin.get<ChatRunService>()`) BEFORE the server starts, so every
     fail-fast validation and the eager MCP connect run at startup, never
-    mid-run; the routes resolve `SstmService`/`EltmService`/
+    mid-run; the routes resolve `EltmService`/
     `HandCallbackService` from the same container (`Application.module(koin)`)
     — the service is never a pass-through. Tests
     assemble the same module with `testutil/TestDi.kt`: `testKoinApp(...)`
     (returns the `KoinApplication`; `chatRunService(...)` = `.koin.get()`)
-    with overrides for `hand = ...`, `chatStore = ...`, `sstmService = ...`,
+    with overrides for `hand = ...`, `chatStore = ...`,
     `eltmService = ...`, `mcpToolProvider = ...` (Koin 4 allows
     overrides by default — the override module just re-declares the seam
     types after the production one); `assertFailsFast` unwraps Koin's
     `InstanceCreationException` wrappers so the fail-fast config tests can
     pin the original error type/message.
-  - **Memory** (`memory/sstm/SstmService.kt` + `PostgresSstmService.kt`,
-    shared by memory CRUD routes and turn-loop injection): the loop consumes
-    a versioned snapshot (`listMemories` → `MemoriesWithVersion`).
-    `chats.sstm_version` is an order-sensitive SHA-256 of the `sstms` table
-    (`AbstractSstmService.digestVersion`) from the last successful run; the
-    injection's `<sstm-updated>` flag is `true` when the fingerprint differs
-    (fresh chats store `""`, so the first run always flags). Failed runs
-    never reach the store; `updateMemory` skips identical writes (no
-    fingerprint churn).
   - **ELTM** (`memory/eltm/EltmService.kt` + `PostgresEltmService.kt`, the
     diary model): entities `(id, name, category)` + **attributes**
     (`(entity_id, key, value)` — current-state key-value facts, e.g. a
@@ -141,17 +132,16 @@ frontend + Node/TS "hand-pi" service.
     historical count is unreconstructable: no event ledger; entities and
     relationships carry NO timestamps — content lives in the notes).
     Write path =
-    the SSTM purge only: `SstmExtractionService.purgeSstmToEltm` (after
-    extraction/merge or its skip) moves the oldest `memory.sstm.purgeBatchSize`
-    SSTM rows per batch through the ELTM writer agent
+    the memory extraction pipeline only (see the compaction & extraction
+    bullet): the extractor's facts travel through the ELTM writer agent
     (`agent/oneshot/eltm/EltmWriterService.kt` + 13-tool
     `EltmToolProvider.kt` — RW mode; the same provider's `readOnly`
-    mode = the 5 read tools for the Phase 4 recall sub-session — `runCollect`
+    mode = the 5 read tools for the chat loop's tool set and the Phase 4
+    recall sub-session — `runCollect`
     tool loop, model =
-    `memory.eltm.writerModel`, cap `maxWriterRounds`) and deletes each batch
-    ONLY after its writer run succeeds — a writer failure fails the run,
-    purged batches stay purged (content safe in the ELTM), surviving rows
-    retry idempotently. Writer semantics: create exact-matches are pure
+    `memory.eltm.writerModel`, cap `maxWriterRounds`). A writer failure
+    fails the run; a retry re-extracts
+    (content is safe, the writer skips already-recorded content). Writer semantics: create exact-matches are pure
     reads (create-or-fetch — nothing is ever updated here: an identity
     change goes through `refine_entity`, which renames one entity in place
     — new name and/or category, an omitted field keeps the current value —
@@ -196,9 +186,10 @@ frontend + Node/TS "hand-pi" service.
     offloads the browsing; the system prompt's developer note documents
     this). `memory.eltm.recallModel` is NOT
     resolved yet: the recall sub-session is unwired, so its id is only
-    validated at the Phase 4 definition site (unlike the writer/embedding
-    models, which fail fast at boot). `chats.eltm_version` mirrors `sstm_version` ("" = first run
-    flags); the version is the global write counter
+    validated at the Phase 4 definition site (unlike the
+    extraction/embedding/writer/rewrite models, which fail fast at boot).
+    `chats.eltm_version` ("" = first run
+    flags) is the global write counter
     (`EltmService.version()`) — every visible-state write (entity/
     relationship insert, revive, invalidation, merge, note append,
     attribute set when the value changes / delete) bumps
@@ -207,10 +198,10 @@ frontend + Node/TS "hand-pi" service.
     `value = value + 1` UPDATE inside the write's OWN transaction — never
     on a no-op upsert touch, so a missed bump would silently break the
     flag), NOT a content hash. The persist loop reads `EltmService.version()`
-    AFTER the pre-round compaction (purge writes during extraction must
+    AFTER the pre-round compaction (extraction writes during compaction must
     count), compares it against the stored `chats.eltm_version` at both
     injection sites (`eltmUpdated`), and stamps the version it saw on the
-    successful store — like `sstm_version`, a failed run never moves it.
+    successful store — a failed run never moves it.
     **Vector columns are FIXED at `vector(2000)`**
     (pgvector's HNSW limit, `MAX_VECTOR_DIMENSIONS` in `config/Config.kt`,
     `db/VectorColumnType.kt`): the embedding model's output dimensions
@@ -238,7 +229,7 @@ frontend + Node/TS "hand-pi" service.
     only recognized when it byte-matches the deterministic render of the
     message's own `createdAt` (forged lookalikes stay as user content), the
     `<injection>` structurally via the XSD. The `<injection>`'s `<memories>`
-    carries the SSTM entries plus the ELTM context injection — the
+    carries the ELTM context injection — the
     `<related-entities>`/`<related-notes>` sections (always present, possibly
     empty; searched by the rewritten query, see the query-rewrite bullet):
     `<entity id name category>` with `<attribute key>` current-state facts,
@@ -251,7 +242,7 @@ frontend + Node/TS "hand-pi" service.
     attributes), so forged injections are still rejected. Harness parts never outlive the
     request — anchors are regenerated per request and stripped before every
     store, so a stored chat can never carry a stale anchor and a zone change
-    can never strand one in storage. Compaction, SSTM extraction, and the
+    can never strand one in storage. Compaction, memory extraction, and the
     query rewrite — the one-shots that may receive the loop's injected
     in-loop chat — sanitize
     their input first (`removeInjection`) then re-anchor, so the loop's
@@ -259,26 +250,26 @@ frontend + Node/TS "hand-pi" service.
     neither: it reads the stored row, which is always clean.
   - **Locks**: per-chat `Mutex` guards concurrent runs (409) and deletes —
     `agent/chat/PostgresChatStore.store` is an upsert, so deleting mid-run
-    would resurrect the row. `deleteChat` runs the SSTM extraction pipeline
+    would resurrect the row. `deleteChat` runs the memory extraction pipeline
     over the full history BEFORE deleting, holding the lock (entry kept in
     the map) for the whole operation; a failed extraction fails the delete
-    (row survives; retry re-extracts, merger deduplicates). Lock entries are
+    (row survives; retry re-extracts; the writer skips already-recorded
+    content). Lock entries are
     created atomically via `ConcurrentHashMap.compute` (`tryLock`) and
     evicted on completion/delete, so dead ids don't accumulate.
   - **ChatStore** (`agent/chat/ChatStore.kt`): all `chats`-table access
     (list/create/rename/delete + load/store) lives behind it —
     `ChatRunService` holds no raw DB calls. `load` → full `ChatEntry`
-    (id/title/history/sstm + eltm versions or null); `ChatInfo` (id+title) is the
+    (id/title/history + the eltm version or null); `ChatInfo` (id+title) is the
     wire shape only. `renameChat`/`generateTitle` take no lock (upsert never
     touches the title).
   - **History mutation is by message INDEX** (chat array is the wire format;
     frontend renders stored order — no message ids):
     - `DELETE /api/chats/{id}/messages/{index}` (`truncateChat`): drops the
-      user message at `index` and everything after it — WITHOUT SSTM
+      user message at `index` and everything after it — WITHOUT memory
       extraction (a typo'd turn must not leak into memories) — resets
-      `sstm_version` to `""` (kept history may no longer cover merged
-      memories, so next run must re-flag) and `eltm_version` to `""` the
-      same way (kept history may no longer cover the ELTM), takes the
+      `eltm_version` to `""` (kept history may no longer cover what was
+      written from the dropped tail, so the next run must re-flag), takes the
       per-chat lock (same
       upsert-resurrection argument), 400 on non-user/out-of-bounds index or
       an index leaving the chat ending mid-turn (consecutive user turns
@@ -288,8 +279,7 @@ frontend + Node/TS "hand-pi" service.
       to and including the assistant message at `index` (`finishReason`
       must be `"stop"`) into a NEW row — no lock (pure read+insert; a
       racing run only makes the fork miss the in-flight turn); the fork's
-      `sstm_version` and `eltm_version` start `""` so its first run flags
-      `sstm-updated`/`eltm-updated`.
+      `eltm_version` starts `""` so its first run flags `eltm-updated`.
     - Both validate via `ChatCodec.validateChat`. The frontend reveals the
       actions on message hover (trash on user, fork on assistant stop),
       hides them while streaming (optimistic/uncommitted messages would
@@ -323,9 +313,9 @@ frontend + Node/TS "hand-pi" service.
   throws `McpTransportException` → `fatal` → `tool_transport` when the
   server stays down. Result attachments are capability-checked against the
   run's model.
-- **Compaction & SSTM extraction** (`agent/oneshot/compaction/`,
-  `agent/oneshot/sstm/`, wired in `agent/persist/PersistChatService.kt`,
-  config under `memory.*`):
+- **Compaction & memory extraction** (`agent/oneshot/compaction/`,
+  `agent/oneshot/eltm/MemoryExtractionService.kt`, wired in
+  `agent/persist/PersistChatService.kt`, config under `memory.*`):
   - Proactive trigger: before the round, when `currentPromptTokens(chat)`
     (last assistant message's provider-reported `meta.inputTokens` — usage
     REQUIRED on every hand response, the hand fails a round when the
@@ -359,69 +349,54 @@ frontend + Node/TS "hand-pi" service.
     (e.g. images + text-only model) → `ModelCapabilityException`
     (via `LLM.checkPromptContentCapabilities`) — a `memory.compactModel`
     config error.
-  - `SstmExtractionService.processDiscardedMessages(droppedMessages)` runs
-    on raw dropped messages BEFORE they're discarded: it sanitizes them
-    (`removeInjection`) and re-anchors every user message with its own
-    `<meta>` send time (`injectContext`, null spec — the extractor is
-    STATELESS: no current date anywhere in its input or prompt, so the
-    extraction time never matters; every relative date resolves against the
-    message's own anchor). The **extractor**
-    one-shot (no tools; raw history + attachments, capability-checked —
-    a `memory.sstm.extractModel` config error) returns a fact list or the
-    `Nothing worth remember.` sentinel (only skip path; blank extraction is
-    a hand `empty_response` error). A failed extraction (e.g. truncated
-    `length`) or one producing tool calls/no text throws and fails the run.
-    The **merger** is a `/v1/run` tool loop (≤ `memory.sstm.maxMergeRounds`
-    rounds, default 150; the hand executes `add/update/list` memory tools
-    back through the callback route against the `sstms` table). It runs
-    without a lock — a
-    concurrent run's injection read may observe a half-merged SSTM, healed
-    by the `sstm-updated` comparison next round. Transient `upstream`
-    failures retry with hand backoff; ANY terminal failure (classified hand
-    error, exhausted retries, `round_limit` cap, `empty_response`) throws
-    and fails the run (compaction-triggered run: nothing stored, retry
-    re-runs the pipeline; deletion: row survives, retry re-extracts) — so
-    unmerged memories are never lost; already-applied merges stick. The
-    `sstm-updated` flag needs no plumbing: the digest changes on merge
-    write and the loop compares against `chats.sstm_version` (a mid-run
-    reactive compaction re-injects the latest user message's `<injection>`
-    with the fresh flag + memories via a fresh `injectContext` — and, when
-    the keep count collapses to zero and replaces the whole chat, the loop
-    re-appends the run's user parts first so the retried round still
-    carries the user input).
-  - `SstmExtractionService.purgeSstmToEltm` runs at the END of
-    `processDiscardedMessages` — after the extraction/merge OR its skip (an
-    over-capacity SSTM whose dropped content is unmemorable still purges):
-    while the SSTM's total memory content char length exceeds
-    `memory.sstm.maxCapacity` (a model-agnostic proxy for the injected SSTM
-    size), the oldest `purgeBatchSize` memories (by `(last_update, id)`)
-    are handed to the
-    ELTM writer agent (see the ELTM bullet) and deleted from the SSTM only
-    after the writer run succeeds; a writer failure throws (`ELTM write
-    failed`) and fails the run, already-purged batches stay purged.
-  - Model resolution: `memory.compactModel` + `memory.sstm.extractModel/
-    mergeModel` and
-    `title.model` (`agent/oneshot/TitleGenerator.kt`, used by
+  - `MemoryExtractionService.processDiscardedMessages(droppedMessages)`
+    (`agent/oneshot/eltm/MemoryExtractionService.kt`) runs on raw dropped
+    messages BEFORE they're discarded: it sanitizes them (`removeInjection`)
+    and re-anchors every user message with its own `<meta>` send time
+    (`injectContext`, null spec — the extractor is STATELESS: no current
+    date anywhere in its input or prompt, so the extraction time never
+    matters; every relative date resolves against the message's own anchor).
+    The **extractor** one-shot (no tools; raw history + attachments,
+    capability-checked — a `memory.eltm.extractionModel` config error)
+    returns a fact list or the `Nothing worth remember.` sentinel (the only
+    skip path; blank extraction is a hand `empty_response` error). A failed
+    extraction (e.g. truncated `length`) or one producing tool calls/no
+    text throws and fails the run. On a non-sentinel extraction the
+    **ELTM writer** runs (`EltmWriterService.writeToEltm`, a `/v1/run` tool
+    loop with ≤ `memory.eltm.maxWriterRounds` rounds against the ELTM
+    diary) — the extracted facts go STRAIGHT into the ELTM, there is no
+    intermediate short-term store. Transient `upstream` failures retry with
+    hand backoff; ANY terminal failure (classified hand error, exhausted
+    retries, `round_limit` cap, `empty_response`) throws and fails the run
+    (compaction-triggered run: nothing stored, retry re-extracts;
+    deletion: row survives, retry re-extracts) — so unwritten memories are
+    never lost; whatever the writer already recorded sticks (it skips
+    already-recorded content, so a retry does not duplicate diary entries).
+    Note dates: the writer stamps `event_date` with the extraction day (for
+    compaction-triggered runs: the compaction day), never a later date.
+  - Model resolution: `memory.compactModel` + `memory.eltm.extractionModel`
+    and `title.model` (`agent/oneshot/TitleGenerator.kt`, used by
     `POST /api/chats/{id}/title` — no per-chat lock, like rename; titles
     from the last stored history; empty chat short-circuits; a title model
     that can't see the history → 400) are REQUIRED config (missing id fails
     at config load), resolved once at startup by the DI container
-    (`di/DaapuModule.kt`; unknown ids and a merge model without tool-call
-    support fail fast);
+    (`di/DaapuModule.kt`; unknown ids fail fast — no tool-call requirement
+    on the extractor);
     the one-shot services are constructed once and shared. A chat run's own
     model is never used for the pipeline. The ELTM models
-    (`memory.eltm.embeddingModel/writerModel/recallModel/rewriteModel`) are REQUIRED the
+    (`memory.eltm.extractionModel/embeddingModel/writerModel/recallModel/
+    rewriteModel`) are REQUIRED the
     same way — `memory.eltm` is mandatory config for every deployment (the
-    SSTM purge and the recall tool are unconditional system-prompt
+    extraction pipeline and the recall tool are unconditional system-prompt
     promises); writer/recall must support tool calls; the embedding entry's
     `dimensions` must not exceed `MAX_VECTOR_DIMENSIONS` (checked at
     catalog construction). `memory.eltm.rewriteRounds` (≥ 1, the rewrite
     tail is related to the rewrite model's context size) and
     `memory.eltm.relatedEntitiesLimit`/`relatedNotesLimit` (≥ 0, the
     injected ELTM size is related to the main model's context) are REQUIRED
-    config with no defaults. The embedding/writer/rewrite ids fail fast at boot
-    (resolved by the container's `EltmService`/`EltmWriterService`/
-    `QueryRewriteService`
+    config with no defaults. The extraction/embedding/writer/rewrite ids fail fast at boot
+    (resolved by the container's `MemoryExtractionService`/`EltmService`/
+    `EltmWriterService`/`QueryRewriteService`
     definitions); the recall id is only validated at its Phase 4
     definition site (the sub-session is unwired). The
     writer/recall/embedding one-shot knobs come
@@ -438,8 +413,8 @@ frontend + Node/TS "hand-pi" service.
     chat turn, after the injection. It sanitizes the input
     (`removeInjection`), clips the last `rewriteRounds` user rounds
     (`takeLastNRound`, ≥ 1 enforced by config), re-anchors/re-injects with
-    its own empty spec (the loop's memory list and updated flags never leak
-    into the rewrite prompt), and asks the model to rewrite the latest
+    its own empty spec (the loop's ELTM injection and updated flags never
+    leak into the rewrite prompt), and asks the model to rewrite the latest
     input into standalone retrieval queries; the `Nothing worth query.`
     sentinel — and a clipped chat with no user message at all — maps to
     `null` (no LLM call). The result feeds the ELTM context injection:
@@ -465,13 +440,13 @@ frontend + Node/TS "hand-pi" service.
   dark-only oklch "neutral" palette), bits-ui primitives, lucide icons,
   highlight.js. Proxies `/api` to ktor; ktor serves the API only.
   - Layout: collapsible glass sidebar (chat list + search filter +
-    rename/delete dialogs, generate-title, + SSTM/ELTM nav), centered
+    rename/delete dialogs, generate-title, + ELTM nav), centered
     `max-w-3xl` message column, floating rounded composer with circular
     send button (disabled while streaming).
   - Routing: hash-based (`src/lib/router.svelte.ts`, zero deps — the hash
     never reaches the server, so any static host works without SPA fallback
     config; the same reason llama.cpp's webui uses `router: hash`). Routes:
-    `#/chat` (home),     `#/chat/<id>`, `#/sstm`, `#/eltm`. The URL
+    `#/chat` (home),     `#/chat/<id>`, `#/eltm`. The URL
     owns the active view and the open chat: an `App.svelte` `$effect`
     translates the route into `chatStore.pickChat`/`closeChat`, and store
     actions that change the open chat (create/fork/delete) navigate the hash
@@ -489,22 +464,22 @@ frontend + Node/TS "hand-pi" service.
   - State in `src/lib/chat-store.svelte.ts` (module-scope singleton —
     `$effect` runes NOT usable there; model-picker persistence in
     `App.svelte`). An in-flight delete locks the chat read-only via the
-    store's `deletingIds` set (backend SSTM extraction can take minutes):
+    store's `deletingIds` set (backend memory extraction can take minutes):
     the dialog closes on click (fire-and-forget), sidebar actions and send
     stay disabled until the backend confirms ("deleting chat" banner).
     Transient action errors → global toasts (`lib/toast-store.svelte.ts`,
     rendered in `App.svelte`); contextual errors stay tied to their view
-    (run-error banner `streamError`, SSTM view inline error). SSE
+    (run-error banner `streamError`, ELTM view inline error). SSE
     semantics preserved verbatim: tool-round commits, retry wipes, DB
     resync on done/error/abnormal close, optimistic user message; a send
     that never stores restores the composer draft. No client-side stop —
     the server only notices a disconnect on its next event write. Chat
-    list, model catalog, memories list, and the ELTM view's entity/
+    list, model catalog, and the ELTM view's entity/
     relationship lists re-fetch every 30s and on
     window focus (titles created/renamed in another session only appear via
     refetch; a failed initial catalog load retries instead of leaving a
-    blank picker; SSTM merges mutate memories server-side, the SSTM purge
-    writes the ELTM server-side); each replaces
+    blank picker; the extraction pipeline writes the ELTM server-side);
+    each replaces
     its list only when the payload changed.
   - The ELTM view (`EltmView.svelte`, route `#/eltm`) is browse-only (writes
     are LLM-driven): two sub-tabs — Entities (cards with attribute chips,

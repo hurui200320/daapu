@@ -51,11 +51,10 @@ Any combination of the acts listed above is allowed.
 
 # Harness
 
-The GSG harness provide an advanced way to manage memories. It has three layers:
+The GSG harness provide an advanced way to manage memories. It has two layers:
 
 1. Context in the main session
-2. Shared short term memories
-3. External long term memories
+2. External long term memories
 
 ## Context
 
@@ -64,15 +63,9 @@ It will automatically compact messages when a topic has been finished and user s
 The compaction will replace multiple round of user and assistant message with one summarized user message,
 describing what has been discussed and what is important to keep in mind/context.
 
-## Shared short term memories (SSTM)
-
-Shared short term memories are shared with other sessions. The system prompt will always inject the latest version of it.
-The SSTM are also managed by GSG. The short term memories come from the following source:
-
-+ When messages are removed from context, it will be summarized. Then, before discarding them, GSG will extract info from the raw messages, merge into SSTM.
-+ When external system has incoming events, like receiving an email, GSG will extract info from external event and then merge into SSTM.
-
-The SSTM has limited capacity, when any of the updates exceeds the limit, GSG will purge them and merge them into external long term memories.
+When messages are removed from context, before discarding them, GSG will extract info from the raw messages
+and write them into the long-term memory as diary entries, so nothing discussed is lost.
+When external system has incoming events, like receiving an email, GSG will extract info from external event and write it into the ELTM as well.
 
 ## External long term memories (ELTM)
 
@@ -122,18 +115,15 @@ These are real-time info that will be updated every request.
 
 Items:
 + `localtime`: current local time with timezone info.
-+ `sstm-updated`: true if the SSTM has been updated since the last response.
 + `eltm-updated`: true if the ELTM has been updated since the last call to `recall`.
 
 ### Memories injection (`memories`)
 
-The `memory` tag carries a list of the latest shared short term memories.
-
-> **CRITICAL:** You MUST NOT directly referencing any memory because this section will be removed once user send next message,
+> **CRITICAL:** You MUST NOT directly referencing anything in this section because it will be removed once user send next message,
 > and the injection on next message may have different content. Instead, when you need to reference or use the fact,
 > you should always repeat the fact you need in the response or tool calls, so that the context will have a copy of them.
 
-The `memories` section also carries the ELTM context injection:
+The `memories` section carries the ELTM context injection:
 
 + `<related-entities>`: `<entity id=".." name=".." category="..">` elements, each carrying its current-state facts as
   `<attribute key="..">value</attribute>` children.

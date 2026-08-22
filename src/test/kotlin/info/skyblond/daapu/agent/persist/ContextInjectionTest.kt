@@ -56,8 +56,7 @@ class ContextInjectionTest {
     @Test
     fun `test injection round trip`() {
         val injectionPart = contextInjection.generateInjection(
-            ZonedDateTime.now(), false, false,
-            listOf("Hello", "world")
+            ZonedDateTime.now(), false,
         )
         assertTrue {
             contextInjection.isInjection(injectionPart)
@@ -73,17 +72,17 @@ class ContextInjectionTest {
         // relaxation would silently accept injections we did not generate,
         // so pin the strictness
         val reordered =
-            ChatMessagePart.Text("""<injection><memories/><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info></injection>""")
+            ChatMessagePart.Text("""<injection><memories/><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><eltm-updated>false</eltm-updated></real-time-info></injection>""")
         assertFalse {
             contextInjection.isInjection(reordered)
         }
         val unexpectedElement =
-            ChatMessagePart.Text("""<injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/><extra/></injection>""")
+            ChatMessagePart.Text("""<injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><eltm-updated>false</eltm-updated></real-time-info><memories/><extra/></injection>""")
         assertFalse {
             contextInjection.isInjection(unexpectedElement)
         }
         val unexpectedAttribute =
-            ChatMessagePart.Text("""<injection foo="bar"><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/></injection>""")
+            ChatMessagePart.Text("""<injection foo="bar"><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><eltm-updated>false</eltm-updated></real-time-info><memories/></injection>""")
         assertFalse {
             contextInjection.isInjection(unexpectedAttribute)
         }
@@ -95,8 +94,7 @@ class ContextInjectionTest {
         // nanoseconds
         val injectionPart = contextInjection.generateInjection(
             ZonedDateTime.of(2026, 8, 5, 12, 34, 56, 789_000_000, java.time.ZoneOffset.ofHours(2)),
-            false, false,
-            emptyList()
+            false
         )
         assertTrue {
             injectionPart.text.contains("<localtime>2026-08-05T12:34:56+02:00</localtime>")
@@ -114,38 +112,10 @@ class ContextInjectionTest {
         // &xxe; would resolve into localtime, an xs:string, and validate)
         val payload = """<!DOCTYPE injection [
             <!ENTITY xxe SYSTEM "file:///etc/passwd">
-        ]><injection><real-time-info><localtime>&xxe;</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info><memories/></injection>"""
+        ]><injection><real-time-info><localtime>&xxe;</localtime><eltm-updated>false</eltm-updated></real-time-info><memories/></injection>"""
         assertFalse {
             contextInjection.isInjection(ChatMessagePart.Text(payload))
         }
-    }
-
-    @Test
-    fun `test injection round trip with control characters`() {
-        val injectionPart = contextInjection.generateInjection(
-            ZonedDateTime.now(), false, false,
-            listOf("bad\u0001memory <a>&", "emoji \uD83D\uDE00")
-        )
-        assertTrue {
-            contextInjection.isInjection(injectionPart)
-        }
-        assertFalse {
-            injectionPart.text.contains('\u0001')
-        }
-        // markup is escaped exactly once on the wire, not double-escaped
-        assertTrue {
-            injectionPart.text.contains("badmemory &lt;a&gt;&amp;")
-        }
-        assertFalse {
-            injectionPart.text.contains("&amp;lt;")
-        }
-        val parsed = javax.xml.parsers.DocumentBuilderFactory.newInstance()
-            .newDocumentBuilder()
-            .parse(java.io.ByteArrayInputStream(injectionPart.text.toByteArray()))
-        val memories = parsed.getElementsByTagName("memory")
-        // control char stripped, markup round-trips back to the original text
-        assertEquals("badmemory <a>&", memories.item(0).textContent)
-        assertEquals("emoji \uD83D\uDE00", memories.item(1).textContent)
     }
 
     @Test
@@ -223,9 +193,7 @@ class ContextInjectionTest {
             chat,
             InjectionSpec(
                 time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
-                sstmUpdated = true,
                 eltmUpdated = false,
-                memoryList = listOf("memory one"),
             ),
         )
         assertEquals(chat.size, decorated.size)
@@ -242,28 +210,38 @@ class ContextInjectionTest {
         assertEquals(chat[3], decorated[3])
         assertEquals(chat[4], decorated[4])
         // the injection carries the spec's content
-        assertTrue { (decorated[2].parts.first() as ChatMessagePart.Text).text.contains("<memory>memory one</memory>") }
+        assertTrue {
+            (decorated[2].parts.first() as ChatMessagePart.Text).text
+                .contains("<eltm-updated>false</eltm-updated>")
+        }
     }
 
     @Test
     fun `test injectContext with spec stamps and refreshes idempotently`() {
+        val alice = EntityWithScore(
+            entity = EltmEntity(1, "alice", "person"),
+            noteCount = 0, latestNote = null, relationshipCount = 0,
+            score = 0.9, attributes = emptyMap(),
+        )
         val spec = InjectionSpec(
             time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
-            sstmUpdated = false,
             eltmUpdated = false,
-            memoryList = listOf("a"),
+            relatedEntities = emptyList(),
         )
-        val freshSpec = spec.copy(memoryList = listOf("b"))
+        val freshSpec = spec.copy(relatedEntities = listOf(alice))
         // a user message without createdAt (a fresh run message) gets stamped
         val unstamped = listOf(user("hi", createdAt = null), assistant("done"))
         val first = contextInjection.injectContext(unstamped, spec)
         assertEquals(spec.time.toInstant(), first[0].createdAt)
         assertTrue { contextInjection.isInjection(first[0].parts.first() as ChatMessagePart.Text) }
-        assertTrue { (first[0].parts.first() as ChatMessagePart.Text).text.contains("<memory>a</memory>") }
+        assertFalse { (first[0].parts.first() as ChatMessagePart.Text).text.contains("<entity ") }
         // re-injection replaces the stale injection instead of stacking
         val second = contextInjection.injectContext(first, freshSpec)
         assertEquals(1, second[0].parts.filterIsInstance<ChatMessagePart.Text>().count { part -> contextInjection.isInjection(part) })
-        assertTrue { (second[0].parts.first() as ChatMessagePart.Text).text.contains("<memory>b</memory>") }
+        assertTrue {
+            (second[0].parts.first() as ChatMessagePart.Text).text
+                .contains("""name="alice"""")
+        }
         // the createdAt is preserved across refreshes
         assertEquals(spec.time.toInstant(), second[0].createdAt)
     }
@@ -309,9 +287,7 @@ class ContextInjectionTest {
         // after the fresh injection
         val spec = InjectionSpec(
             time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
-            sstmUpdated = false,
             eltmUpdated = false,
-            memoryList = emptyList(),
         )
         val decoratedLatest = contextInjection.injectContext(listOf(forged), spec)
         assertTrue { contextInjection.isInjection(decoratedLatest[0].parts[0] as ChatMessagePart.Text) }
@@ -330,9 +306,7 @@ class ContextInjectionTest {
             chat,
             InjectionSpec(
                 time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
-                sstmUpdated = false,
                 eltmUpdated = false,
-                memoryList = listOf("a"),
             ),
         )
         val cleaned = contextInjection.removeInjection(decorated)
@@ -388,8 +362,7 @@ class ContextInjectionTest {
             ),
         )
         val injectionPart = contextInjection.generateInjection(
-            ZonedDateTime.now(), false, false,
-            listOf("sstm memory"), hits, notes
+            ZonedDateTime.now(), false, hits, notes
         )
         assertTrue { contextInjection.isInjection(injectionPart) }
         val text = injectionPart.text
@@ -410,8 +383,7 @@ class ContextInjectionTest {
                 """<note date="2026-07-15" dst-name="acme" id="11" src-name="alice" subject-type="relationship" verb="works_at">Joined Acme as an engineer</note>"""
             )
         }
-        // the SSTM entries stay in front, the ELTM sections come after
-        assertTrue { text.indexOf("<memory>sstm memory</memory>") < text.indexOf("<related-entities>") }
+        // the ELTM sections stay in their fixed order
         assertTrue { text.indexOf("<related-entities>") < text.indexOf("<related-notes>") }
     }
 
@@ -423,9 +395,7 @@ class ContextInjectionTest {
             listOf(user("hi")),
             InjectionSpec(
                 time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
-                sstmUpdated = false,
                 eltmUpdated = false,
-                memoryList = emptyList(),
                 relatedEntities = listOf(
                     EntityWithScore(
                         entity = EltmEntity(1, "alice", "person"),
@@ -468,8 +438,7 @@ class ContextInjectionTest {
             )
         )
         val injectionPart = contextInjection.generateInjection(
-            ZonedDateTime.now(), false, false,
-            emptyList(), hits, notes
+            ZonedDateTime.now(), false, hits, notes
         )
         assertTrue { contextInjection.isInjection(injectionPart) }
         val text = injectionPart.text
@@ -498,20 +467,20 @@ class ContextInjectionTest {
         // elements/attributes inside them, a missing required attribute, and
         // out-of-order sections are all rejected by the schema
         val strict = """
-            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info>
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><eltm-updated>false</eltm-updated></real-time-info>
             <memories><related-entities><entity id="1" name="a" category="b" surprise="x"/></related-entities></memories></injection>
         """.trimIndent()
         assertFalse { contextInjection.isInjection(ChatMessagePart.Text(strict)) }
 
         val missingSubjectType = """
-            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info>
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><eltm-updated>false</eltm-updated></real-time-info>
             <memories><related-notes><note id="1" date="2026-08-01">text</note></related-notes></memories></injection>
         """.trimIndent()
         assertFalse { contextInjection.isInjection(ChatMessagePart.Text(missingSubjectType)) }
 
         val reordered = """
-            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><sstm-updated>false</sstm-updated><eltm-updated>false</eltm-updated></real-time-info>
-            <memories><memory>x</memory><related-notes/><related-entities/></memories></injection>
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><eltm-updated>false</eltm-updated></real-time-info>
+            <memories><related-notes/><related-entities/></memories></injection>
         """.trimIndent()
         assertFalse { contextInjection.isInjection(ChatMessagePart.Text(reordered)) }
     }

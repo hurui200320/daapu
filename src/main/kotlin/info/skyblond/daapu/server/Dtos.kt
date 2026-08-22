@@ -5,7 +5,6 @@ import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EntityView
 import info.skyblond.daapu.memory.eltm.RelationshipView
-import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import info.skyblond.daapu.server.EltmEntityDto.Companion.toDto
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
 import info.skyblond.daapu.server.EltmRelationshipDto.Companion.toDto
@@ -48,27 +47,9 @@ data class ModelInfo(
     val maxOutputTokens: Long?,
 )
 
-@Serializable
-data class MemoryDto(
-    val id: Long,
-    val lastUpdate: String,
-    val content: String,
-) {
-    companion object {
-        fun ShortTermMemory.toDto() = MemoryDto(
-            id = id,
-            lastUpdate = lastUpdate.toString(),
-            content = content
-        )
-    }
-}
-
-@Serializable
-data class MemoryWriteRequest(val content: String)
-
 // ----------------------------------------------------------------------
 // ELTM read views (the `#/eltm` frontend tab: browse-only, writes are
-// LLM-driven via the SSTM purge pipeline)
+// LLM-driven via the extraction pipeline)
 // ----------------------------------------------------------------------
 
 @Serializable

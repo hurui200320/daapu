@@ -7,7 +7,6 @@ import info.skyblond.daapu.di.daapuModule
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.sstm.SstmService
 import info.skyblond.daapu.server.ChatRunService
 import kotlin.test.assertFails
 import org.koin.core.KoinApplication
@@ -34,13 +33,12 @@ fun testKoinApp(
     config: AppConfig = testAppConfig(),
     hand: HandClient? = null,
     chatStore: ChatStore? = null,
-    sstmService: SstmService? = null,
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
 ): KoinApplication = koinApplication {
     modules(
         daapuModule(config),
-        testOverrides(hand, chatStore, sstmService, eltmService, mcpToolProvider),
+        testOverrides(hand, chatStore, eltmService, mcpToolProvider),
     )
 }
 
@@ -48,11 +46,10 @@ fun chatRunService(
     config: AppConfig = testAppConfig(),
     hand: HandClient? = null,
     chatStore: ChatStore? = null,
-    sstmService: SstmService? = null,
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
 ): ChatRunService = testKoinApp(
-    config, hand, chatStore, sstmService, eltmService, mcpToolProvider,
+    config, hand, chatStore, eltmService, mcpToolProvider,
 ).koin.get<ChatRunService>()
 
 /**
@@ -64,13 +61,11 @@ fun chatRunService(
 fun testOverrides(
     hand: HandClient? = null,
     chatStore: ChatStore? = null,
-    sstmService: SstmService? = null,
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
 ): Module = module {
     if (hand != null) single<HandClient> { hand }
     if (chatStore != null) single<ChatStore> { chatStore }
-    if (sstmService != null) single<SstmService> { sstmService }
     if (eltmService != null) single<EltmService> { eltmService }
     if (mcpToolProvider != null) single<McpToolProvider> { mcpToolProvider }
 }

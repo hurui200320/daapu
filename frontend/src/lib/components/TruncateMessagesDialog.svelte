@@ -21,7 +21,7 @@
 
   function confirmDelete() {
     if (target == null) return
-    // fast operation (no SSTM extraction): fire-and-forget, errors surface as
+    // fast operation (no memory extraction): fire-and-forget, errors surface as
     // a toast; on success the store slices the message list locally
     store.truncateMessages(target.chatId, target.index)
     onClose()

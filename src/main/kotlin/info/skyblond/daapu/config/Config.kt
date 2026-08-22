@@ -110,23 +110,20 @@ data class HandConfig(
 }
 
 /**
- * The memory pipeline settings: compaction (`agent/oneshot/compaction/`),
- * the SSTM (short-term memory, `agent/oneshot/sstm/`), and the ELTM
- * (external long-term memory, `memory/eltm/`). The compaction trigger
- * fraction and keep rounds are per-model (`agent/model/LLM.kt`), since they
- * depend on the model's context size. All model ids are REQUIRED and
- * reference the catalog (`agent/ModelCatalog.kt`); they are resolved once at
- * startup by the DI container (`di/DaapuModule.kt`) and reused for every
- * run — a chat run's own model is never used for the one-shot pipeline.
- * Catalog membership is validated at startup (the config layer does not know
- * the catalog).
+ * The memory pipeline settings: compaction (`agent/oneshot/compaction/`)
+ * and the ELTM (external long-term memory, `memory/eltm/`). The compaction
+ * trigger fraction and keep rounds are per-model (`agent/model/LLM.kt`),
+ * since they depend on the model's context size. All model ids are REQUIRED
+ * and reference the catalog (`agent/ModelCatalog.kt`); they are resolved
+ * once at startup by the DI container (`di/DaapuModule.kt`) and reused for
+ * every run — a chat run's own model is never used for the one-shot
+ * pipeline. Catalog membership is validated at startup (the config layer
+ * does not know the catalog).
  */
 @Serializable
 data class MemoryConfig(
     /** Catalog model id for the compaction summarizer. */
     val compactModel: String,
-    /** The short-term memory (SSTM) settings. */
-    val sstm: SstmConfig,
     /**
      * The external long-term memory (ELTM) settings.
      */
@@ -134,66 +131,20 @@ data class MemoryConfig(
 ) {
     fun validate() {
         require(compactModel.isNotBlank()) { "memory.compactModel must not be blank" }
-        sstm.validate()
         eltm.validate()
-    }
-}
-
-/**
- * The SSTM (short-term memory) settings: the extractor/merger one-shots
- * that write it (`agent/oneshot/sstm/`) and the capacity/purge knobs that
- * evict it into the ELTM (the only eviction path; the SSTM is always fully
- * in context, so the capacity is the capacity lever, never retrieval). The
- * two model ids are REQUIRED and reference the catalog
- * (`agent/ModelCatalog.kt`); they are resolved once at startup by the DI
- * container (`di/DaapuModule.kt`; unknown ids and a merge model without
- * tool-call support fail fast).
- */
-@Serializable
-data class SstmConfig(
-    /**
-     * Catalog model id for the memory extractor (sees the raw dropped
-     * history, images included).
-     */
-    val extractModel: String,
-    /** Catalog model id for the memory merger (a tool loop). */
-    val mergeModel: String,
-    /** Round cap for the merge tool loop; `0` = unlimited. */
-    val maxMergeRounds: Int = 150,
-    /**
-     * SSTM capacity: the total char length (`String.length`, UTF-16 units)
-     * of all memory contents; when the SSTM exceeds it after an update, the
-     * oldest entries are purged into the ELTM. A model-agnostic proxy for
-     * the injected SSTM size, so the context injection never blows up the
-     * context regardless of the model.
-     */
-    val maxCapacity: Int,
-    /** How many SSTM entries one purge batch moves into the ELTM. */
-    val purgeBatchSize: Int,
-) {
-    fun validate() {
-        listOf(
-            "memory.sstm.extractModel" to extractModel,
-            "memory.sstm.mergeModel" to mergeModel,
-        ).forEach { (name, id) ->
-            require(id.isNotBlank()) { "$name must not be blank" }
-        }
-        require(maxMergeRounds >= 0) { "memory.sstm.maxMergeRounds must be >= 0, got $maxMergeRounds" }
-        require(maxCapacity > 0) { "memory.sstm.maxCapacity must be > 0, got $maxCapacity" }
-        require(purgeBatchSize >= 1) { "memory.sstm.purgeBatchSize must be >= 1, got $purgeBatchSize" }
     }
 }
 
 /**
  * The ELTM (external long-term memory) settings: the diary model
  * (entities/relationships/notes, see `memory/eltm/`), the models behind it,
- * and the recall tool's knobs. All four model ids are
+ * and the recall tool's knobs. The model ids are
  * REQUIRED and reference the catalog (`agent/ModelCatalog.kt`); the
- * embedding, writer, and rewrite ids are resolved once at startup by the DI
- * container (`di/DaapuModule.kt`; unknown ids and a writer model without
- * tool-call support fail fast), while the recall id — the sub-session is
- * unwired until Phase 4 — is only validated at its future definition
- * site. The embedding
+ * extraction, embedding, writer, and rewrite ids are resolved once at
+ * startup by the DI container (`di/DaapuModule.kt`; unknown ids and a
+ * writer model without tool-call support fail fast), while the recall id —
+ * the sub-session is unwired until Phase 4 — is only validated at its future
+ * definition site. The embedding
  * model's output dimensions must be at most
  * [MAX_VECTOR_DIMENSIONS] (pgvector's HNSW indexing limit): the ELTM
  * columns are fixed at that width and shorter vectors are zero-padded on
@@ -201,6 +152,11 @@ data class SstmConfig(
  */
 @Serializable
 data class EltmConfig(
+    /**
+     * Catalog model id for the memory extractor (sees the raw dropped
+     * history, images included); no tool call support required. REQUIRED.
+     */
+    val extractionModel: String,
     /**
      * Catalog id of the embedding model (`agent/ModelCatalog.kt`), whose
      * entry carries the output dimensions. REQUIRED.
@@ -257,6 +213,7 @@ data class EltmConfig(
 ) {
     fun validate() {
         listOf(
+            "memory.eltm.extractionModel" to extractionModel,
             "memory.eltm.embeddingModel" to embeddingModel,
             "memory.eltm.writerModel" to writerModel,
             "memory.eltm.recallModel" to recallModel,
@@ -471,7 +428,7 @@ data class McpServerConfig(
  */
 val TOOL_RESERVED_NAMESPACES: Set<String> = setOf(
     "system", "inner", "internal", "gsg",
-    "sstm", "eltm", "harness"
+    "eltm", "harness"
 )
 
 /**

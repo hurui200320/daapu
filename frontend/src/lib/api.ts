@@ -3,7 +3,6 @@ import type {
   ChatMessage,
   EntityViewDto,
   EltmNoteDto,
-  MemoryDto,
   ModelInfo,
   RelationshipViewDto,
   StreamEvent,
@@ -138,37 +137,6 @@ function parseBlock(block: string): StreamEvent | null {
   }
   if (dataLines.length === 0) return null
   return { event, data: dataLines.join('\n') }
-}
-
-export async function listMemories(): Promise<MemoryDto[]> {
-  const res = await fetch('/api/sstm')
-  if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
-}
-
-export async function createMemory(content: string): Promise<MemoryDto> {
-  const res = await fetch('/api/sstm', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  })
-  if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
-}
-
-export async function updateMemory(id: number, content: string): Promise<MemoryDto> {
-  const res = await fetch(`/api/sstm/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  })
-  if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
-}
-
-export async function deleteMemory(id: number): Promise<void> {
-  const res = await fetch(`/api/sstm/${id}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(await parseError(res))
 }
 
 // ---- ELTM browse (read-only; writes are LLM-driven) ----

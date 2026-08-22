@@ -73,13 +73,8 @@ class ConfigTest {
                 },
                 "memory": {
                     "compactModel": "bifrost/x",
-                    "sstm": {
-                        "extractModel": "bifrost/y",
-                        "mergeModel": "bifrost/z",
-                        "maxCapacity": 100,
-                        "purgeBatchSize": 10
-                    },
                     "eltm": {
+                        "extractionModel": "bifrost/x",
                         "embeddingModel": "bifrost/embed",
                         "writerModel": "bifrost/w",
                         "recallModel": "bifrost/r",
@@ -137,7 +132,7 @@ class ConfigTest {
                         "baseUrl": "http://host/x//y",
                     },
                 },
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -154,7 +149,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -173,7 +168,7 @@ class ConfigTest {
                     "bifrost": { "apiKey": "k1", "baseUrl": "http://h1" },
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -195,7 +190,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -245,7 +240,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -269,7 +264,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -319,7 +314,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "server": { "port": 0 },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -445,7 +440,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "t" },
                     "mcp": {
                         "servers": [
@@ -475,13 +470,8 @@ class ConfigTest {
                 "providers": {},
                 "memory": {
                     "compactModel": "bifrost/x",
-                    "sstm": {
-                        "extractModel": "bifrost/y",
-                        "mergeModel": "bifrost/z",
-                        "maxCapacity": 200,
-                        "purgeBatchSize": 20
-                    },
                     "eltm": {
+                        "extractionModel": "bifrost/x",
                         "embeddingModel": "bifrost/embed",
                         "writerModel": "bifrost/w",
                         "recallModel": "bifrost/r",
@@ -500,11 +490,7 @@ class ConfigTest {
             """.trimIndent()
         ).memory
         assertEquals("bifrost/x", decoded.compactModel)
-        assertEquals("bifrost/y", decoded.sstm.extractModel)
-        assertEquals("bifrost/z", decoded.sstm.mergeModel)
-        assertEquals(150, decoded.sstm.maxMergeRounds)
-        assertEquals(200, decoded.sstm.maxCapacity)
-        assertEquals(20, decoded.sstm.purgeBatchSize)
+        assertEquals("bifrost/x", decoded.eltm.extractionModel)
         assertEquals("bifrost/embed", decoded.eltm.embeddingModel)
         assertEquals("bifrost/w", decoded.eltm.writerModel)
         assertEquals("bifrost/r", decoded.eltm.recallModel)
@@ -519,8 +505,8 @@ class ConfigTest {
     }
 
     @Test
-    fun `memory config requires all three model ids`() {
-        // all three models are required: a config missing the memory section
+    fun `memory config requires the memory section and its model ids`() {
+        // the memory models are required: a config missing the memory section
         // or any model id must fail at decode, not fall back to a default
         val e = assertFailsWith<Exception> {
             decodeAppConfig(
@@ -544,8 +530,7 @@ assertTrue(
                     "providers": {},
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "extractModel": "bifrost/y",
-                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
+                        "eltm": { "extractionModel": "x", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -568,8 +553,7 @@ assertTrue(
                     "providers": {},
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "sstm": { "extractModel": "bifrost/y", "mergeModel": "bifrost/z", "maxCapacity": 100, "purgeBatchSize": 10 },
-                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5 }
+                        "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -583,9 +567,9 @@ assertTrue(
     }
 
     @Test
-    fun `memory config requires the sstm section`() {
-        // the SSTM is REQUIRED (the injection is an unconditional
-        // system-prompt promise): a config missing it must fail at decode
+    fun `memory config requires the eltm extraction model`() {
+        // the extraction model is REQUIRED (it drives the memory extraction
+        // pipeline): a config missing it must fail at decode
         val e = assertFailsWith<Exception> {
             decodeAppConfig(
                 """
@@ -602,16 +586,16 @@ assertTrue(
             )
         }
         assertTrue(
-            e.message!!.contains("sstm"),
+            e.message!!.contains("extractionModel"),
             "the error should name the missing field: ${e.message}"
         )
     }
 
     @Test
     fun `memory config requires the eltm section`() {
-        // the ELTM is REQUIRED for every deployment (the SSTM purge and the
-        // recall tool are unconditional system-prompt promises): a config
-        // missing it must fail at decode
+        // the ELTM is REQUIRED for every deployment (the extraction pipeline
+        // and the recall tool are unconditional system-prompt promises): a
+        // config missing it must fail at decode
         val e = assertFailsWith<Exception> {
             decodeAppConfig(
                 """
@@ -619,8 +603,7 @@ assertTrue(
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "memory": {
-                        "compactModel": "bifrost/x",
-                        "sstm": { "extractModel": "bifrost/y", "mergeModel": "bifrost/z", "maxCapacity": 100, "purgeBatchSize": 10 }
+                        "compactModel": "bifrost/x"
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -636,6 +619,7 @@ assertTrue(
     @Test
     fun `memory config validation`() {
         val validEltm = EltmConfig(
+            extractionModel = "bifrost/x",
             embeddingModel = "bifrost/embed",
             writerModel = "w",
             recallModel = "r",
@@ -644,25 +628,17 @@ assertTrue(
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
         )
-        val validSstm = SstmConfig(
-            extractModel = "bifrost/x",
-            mergeModel = "bifrost/z",
-            maxCapacity = 100,
-            purgeBatchSize = 10,
-        )
         val blank = assertFailsWith<IllegalArgumentException> {
             MemoryConfig(
                 compactModel = "bifrost/x",
-                sstm = validSstm.copy(mergeModel = "  "),
-                eltm = validEltm,
+                eltm = validEltm.copy(extractionModel = "  "),
             ).validate()
         }
-        assertTrue(blank.message!!.contains("mergeModel"))
+        assertTrue(blank.message!!.contains("extractionModel"))
 
         val blankCompact = assertFailsWith<IllegalArgumentException> {
             MemoryConfig(
                 compactModel = "  ",
-                sstm = validSstm,
                 eltm = validEltm,
             ).validate()
         }
@@ -670,35 +646,9 @@ assertTrue(
     }
 
     @Test
-    fun `sstm config validation`() {
-        val valid = SstmConfig(
-            extractModel = "bifrost/x",
-            mergeModel = "bifrost/z",
-            maxCapacity = 100,
-            purgeBatchSize = 10,
-        )
-        valid.validate()
-
-        val negativeRounds = assertFailsWith<IllegalArgumentException> {
-            valid.copy(maxMergeRounds = -1).validate()
-        }
-        assertTrue(negativeRounds.message!!.contains("maxMergeRounds"))
-        valid.copy(maxMergeRounds = 0).validate()
-
-        val badCapacity = assertFailsWith<IllegalArgumentException> {
-            valid.copy(maxCapacity = 0).validate()
-        }
-        assertTrue(badCapacity.message!!.contains("maxCapacity"))
-
-        val badBatch = assertFailsWith<IllegalArgumentException> {
-            valid.copy(purgeBatchSize = 0).validate()
-        }
-        assertTrue(badBatch.message!!.contains("purgeBatchSize"))
-    }
-
-    @Test
     fun `eltm config validation`() {
         val valid = EltmConfig(
+            extractionModel = "bifrost/x",
             embeddingModel = "bifrost/embed",
             writerModel = "w",
             recallModel = "r",
@@ -754,7 +704,7 @@ assertTrue(
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
@@ -770,7 +720,7 @@ assertTrue(
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "title": { "model": "bifrost/t", "lastNRound": 3 }
             }
             """.trimIndent()
@@ -788,7 +738,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } }
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } }
                 }
                 """.trimIndent()
             )
@@ -799,7 +749,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "sstm": { "extractModel": "y", "mergeModel": "z", "maxCapacity": 100, "purgeBatchSize": 10 }, "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": {}
                 }
                 """.trimIndent()

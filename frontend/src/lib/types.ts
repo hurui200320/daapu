@@ -78,12 +78,6 @@ export interface ModelInfo {
   maxOutputTokens: number | null
 }
 
-export interface MemoryDto {
-  id: number
-  lastUpdate: string
-  content: string
-}
-
 // ---- ELTM browse views (`GET /api/eltm`, read-only) ----
 
 export interface EltmEntityDto {

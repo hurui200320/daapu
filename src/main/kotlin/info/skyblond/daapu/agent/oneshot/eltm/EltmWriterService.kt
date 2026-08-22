@@ -5,25 +5,23 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.oneshot.sstm.formatDate
 import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.toHandModelSpec
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.sstm.ShortTermMemory
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import java.time.LocalDate
-import java.time.ZoneId
 
 /**
- * The ELTM writer agent: the one `/v1/run` tool loop that moves evicted SSTM
- * entries into the ELTM (the model, round cap, retry budget and idle timeout
- * are the `memory.eltm` / `hand.*` config values). The model executes the 13
- * ELTM tools ([EltmToolProvider]) back through the hand's callback
- * route; any terminal failure throws [IllegalStateException] (wrapping the
- * cause) and fails the run — the SSTM purge only deletes a victim batch
- * after its writer run succeeds, so a failed writing never loses data.
+ * The ELTM writer agent: the one `/v1/run` tool loop that writes the facts
+ * extracted from discarded conversations into the ELTM (the model, round
+ * cap, retry budget and idle timeout are the `memory.eltm` / `hand.*`
+ * config values). The model executes the 13 ELTM tools
+ * ([EltmToolProvider]) back through the hand's callback route; any terminal
+ * failure throws [IllegalStateException] (wrapping the cause) and fails the
+ * run — a failed write never loses data (a retry re-extracts from the still
+ * existing history, and the writer skips content that is already recorded).
  */
 class EltmWriterService(
     private val writerModel: LLM,
@@ -35,10 +33,10 @@ class EltmWriterService(
     private val streamIdleTimeoutMs: Long,
 ) {
     suspend fun writeToEltm(
-        victims: List<ShortTermMemory>,
+        facts: String,
         date: LocalDate = LocalDate.now(),
     ) {
-        require(victims.isNotEmpty()) { "cannot write an empty victim batch" }
+        require(facts.isNotBlank()) { "cannot write a blank fact batch" }
         require(writerModel.supports(LLMCapability.Output.ToolCalls)) {
             "Writer model ${writerModel.id} does not support tool calls"
         }
@@ -46,7 +44,7 @@ class EltmWriterService(
         val chat = listOf(
             ChatMessage(
                 ChatMessageRole.User,
-                listOf(ChatMessagePart.Text(buildWriterInput(victims, date))),
+                listOf(ChatMessagePart.Text(buildWriterInput(facts, date))),
             ),
         )
         try {
@@ -74,23 +72,22 @@ class EltmWriterService(
         private val logger = KotlinLogging.logger {}
 
         /**
-         * The writer's input: the current date plus the victims' contents
+         * The writer's input: the current date plus the extracted facts
          * verbatim (the only source the writer may record — it must never
          * invent details).
          */
-        internal fun buildWriterInput(victims: List<ShortTermMemory>, date: LocalDate): String {
-            val block = victims.joinToString("\n\n") {
-                "## Memory ${it.id}\n" +
-                        "> Last modified: ${formatDate(LocalDate.ofInstant(it.lastUpdate, ZoneId.systemDefault()))}\n" +
-                        it.content
-            }
+        internal fun buildWriterInput(facts: String, date: LocalDate): String {
             return "Current date: ${formatDate(date)}\n\n" +
-                    "Memory entries evicted from the short-term memory:\n```\n$block\n```"
+                    "Candidate facts extracted from a discarded conversation:\n```\n$facts\n```"
         }
+
+        // the bare ISO date (yyyy-MM-dd): the model only needs the day resolution,
+        // the zone has already been applied at the call site
+        internal fun formatDate(date: LocalDate): String = date.toString()
 
         private fun renderWriterSystemPrompt(): String = """
 You're maintaining an external long-term memory (ELTM) knowledge store.
-You are given memory entries evicted from the short-term memory. Preserve their information by writing it into the ELTM.
+You are given candidate facts extracted from a discarded conversation. Preserve their information by writing it into the ELTM.
 
 The ELTM has four kinds of records:
 - Entities: a named thing with a category (e.g. name "Apple" with category "fruit" vs "company"). A group of people can be one entity.

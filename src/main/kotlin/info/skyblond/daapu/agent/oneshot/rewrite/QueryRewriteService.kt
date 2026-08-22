@@ -47,8 +47,7 @@ class QueryRewriteService(
             contextInjection.removeInjection(historyClipped),
             spec = InjectionSpec(
                 time = ZonedDateTime.now(),
-                sstmUpdated = false, eltmUpdated = false,
-                memoryList = emptyList()
+                eltmUpdated = false,
             ),
         )
 

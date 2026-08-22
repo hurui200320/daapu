@@ -11,8 +11,6 @@
                         <xs:sequence>
                             <!-- localtime, string -->
                             <xs:element name="localtime" type="xs:string"/>
-                            <!-- sstm-updated, boolean -->
-                            <xs:element name="sstm-updated" type="xs:boolean"/>
                             <!-- eltm-updated, boolean -->
                             <xs:element name="eltm-updated" type="xs:boolean"/>
                         </xs:sequence>
@@ -23,8 +21,6 @@
                 <xs:element name="memories">
                     <xs:complexType>
                         <xs:sequence>
-                            <!-- memory, 0 to unlimited items, aka unbounded -->
-                            <xs:element name="memory" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
                             <!-- the ELTM context injection: retrieved entities and diary notes (always present, possibly empty) -->
                             <xs:element name="related-entities" minOccurs="0">
                                 <xs:complexType>

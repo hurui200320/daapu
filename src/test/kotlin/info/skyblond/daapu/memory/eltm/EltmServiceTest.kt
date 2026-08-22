@@ -152,7 +152,7 @@ class EltmServiceTest {
     ) : EltmService {
         override suspend fun version(): String = writeVersion.toString()
         // the store operations are exercised through FakeEltmService in the
-        // writer/purge tests
+        // writer tests
         override suspend fun createEntity(name: String, category: String): CreateEntityResult =
             error("unused")
 

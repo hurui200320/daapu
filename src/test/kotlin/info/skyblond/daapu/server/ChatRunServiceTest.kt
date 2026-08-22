@@ -8,7 +8,6 @@ import info.skyblond.daapu.config.EltmConfig
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.config.MemoryConfig
-import info.skyblond.daapu.config.SstmConfig
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.mcp.McpToolProvider
@@ -176,13 +175,8 @@ class ChatRunServiceTest {
         // must fail here, not silently skip every compaction/extraction
         val valid = MemoryConfig(
             compactModel = "bifrost/cerebras/gemma-4-31b",
-            sstm = SstmConfig(
-                extractModel = "bifrost/cerebras/gemma-4-31b",
-                mergeModel = "bifrost/cerebras/gemma-4-31b",
-                maxCapacity = 100,
-                purgeBatchSize = 10,
-            ),
             eltm = EltmConfig(
+                extractionModel = "bifrost/cerebras/gemma-4-31b",
                 embeddingModel = "bifrost/zenmux sub/google/gemini-embedding-2",
                 writerModel = "bifrost/cerebras/gemma-4-31b",
                 recallModel = "bifrost/cerebras/gemma-4-31b",
@@ -204,14 +198,11 @@ class ChatRunServiceTest {
         assertIs<IllegalArgumentException>(
             assertFailsFast {
                 chatRunService(
-                    testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(extractModel = "bifrost/nope")))
-                )
-            }
-        )
-        assertIs<IllegalArgumentException>(
-            assertFailsFast {
-                chatRunService(
-                    testAppConfig().copy(memory = valid.copy(sstm = valid.sstm.copy(mergeModel = "bifrost/nope")))
+                    testAppConfig().copy(
+                        memory = valid.copy(
+                            eltm = valid.eltm.copy(extractionModel = "bifrost/nope")
+                        )
+                    )
                 )
             }
         )

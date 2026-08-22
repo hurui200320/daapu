@@ -19,9 +19,9 @@ import kotlin.test.*
 /**
  * Pins [ChatRunService.truncateChat] and [ChatRunService.forkChat]: both
  * mutate the stored history by message index (truncate: drop a user message
- * and everything after, WITHOUT SSTM extraction; fork: copy the prefix up to
- * a naturally finished assistant message into a new chat). Neither calls the
- * LLM, and truncate runs under the per-chat lock like a delete.
+ * and everything after, WITHOUT memory extraction; fork: copy the prefix up
+ * to a naturally finished assistant message into a new chat). Neither calls
+ * the LLM, and truncate runs under the per-chat lock like a delete.
  */
 class ChatRunServiceHistoryEditTest {
 
@@ -75,10 +75,10 @@ class ChatRunServiceHistoryEditTest {
     // ---- truncate ----
 
     @Test
-    fun `truncate drops the target user message and everything after, resetting the sstm and eltm versions`() =
+    fun `truncate drops the target user message and everything after, resetting the eltm version`() =
         runBlocking {
             val store = FakeChatStore()
-            store.seed("chat-1", chat = threeRounds(), sstmVersion = "v1", eltmVersion = "e1")
+            store.seed("chat-1", chat = threeRounds(), eltmVersion = "e1")
             val srv = service(store)
 
             // u2 sits at index 2: keep u1/a1, drop u2/a2/u3/a3
@@ -87,18 +87,16 @@ class ChatRunServiceHistoryEditTest {
                 listOf(user("u1"), assistant("a1")),
                 store.load("chat-1")!!.content.messages,
             )
-            // the memories/ELTM tables are untouched, but the kept history
-            // may no longer cover what was merged into the SSTM or purged
-            // into the ELTM from the dropped tail: both versions reset so
-            // the next run re-flags `sstm-updated`/`eltm-updated`
-            assertEquals("", store.load("chat-1")!!.content.sstmVersion)
+            // the ELTM tables are untouched, but the kept history may no
+            // longer cover what was written from the dropped tail: the
+            // version resets so the next run re-flags `eltm-updated`
             assertEquals("", store.load("chat-1")!!.content.eltmVersion)
         }
 
     @Test
     fun `truncate at the first message empties the chat`() = runBlocking {
         val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds(), sstmVersion = "v1")
+        store.seed("chat-1", chat = threeRounds())
         val srv = service(store)
 
         assertTrue(srv.truncateChat("chat-1", 0))
@@ -211,7 +209,7 @@ class ChatRunServiceHistoryEditTest {
     fun `fork copies the history prefix up to the assistant stop message into a new chat`() =
         runBlocking {
             val store = FakeChatStore()
-            store.seed("chat-1", chat = threeRounds(), sstmVersion = "v1", eltmVersion = "e1")
+            store.seed("chat-1", chat = threeRounds(), eltmVersion = "e1")
             val srv = service(store)
 
             // fork at index 3 (a2): the new chat carries u1/a1/u2/a2
@@ -221,13 +219,11 @@ class ChatRunServiceHistoryEditTest {
                 store.load(forked.id)!!.content.messages
             )
             assertEquals(DEFAULT_CHAT_TITLE, forked.title)
-            // a fork has never seen a memory list or the ELTM: its first run
-            // must flag both, so the versions start fresh instead of copying
-            assertEquals("", store.load(forked.id)!!.content.sstmVersion)
+            // a fork has never seen the ELTM: its first run must flag
+            // `eltm-updated`, so the version starts fresh instead of copying
             assertEquals("", store.load(forked.id)!!.content.eltmVersion)
             // the source row is untouched
             assertEquals(threeRounds(), store.load("chat-1")!!.content.messages)
-            assertEquals("v1", store.load("chat-1")!!.content.sstmVersion)
             assertEquals("e1", store.load("chat-1")!!.content.eltmVersion)
         }
 

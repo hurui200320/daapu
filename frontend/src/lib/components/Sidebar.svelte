@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, Brain, Loader2, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2 } from '@lucide/svelte'
+  import { Bot, Loader2, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2 } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
@@ -22,7 +22,7 @@
   })
 
   // the URL owns navigation (router.svelte.ts): the active chat highlight
-  // and the SSTM tab highlight both derive from the route. While a run
+  // and the ELTM tab highlight both derive from the route. While a run
   // streams, the route may be stale (mid-run back/forward is ignored until
   // the run ends), so the streamed chat stays highlighted via the store
   const route = $derived(router.current)
@@ -61,13 +61,6 @@
         <SquarePen class="size-5" />
       </button>
       <div class="flex-1"></div>
-      <a
-        title="sstm"
-        href="#/sstm"
-        class={cn(iconBtn, route.name === 'sstm' && 'bg-accent text-accent-foreground')}
-      >
-        <Brain class="size-5" />
-      </a>
       <a
         title="eltm"
         href="#/eltm"
@@ -187,16 +180,6 @@
       {/each}
     </div>
     <div class="border-t border-sidebar-border p-2">
-      <a
-        href="#/sstm"
-        class={cn(
-          buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
-          route.name === 'sstm' && 'bg-accent text-accent-foreground'
-        )}
-      >
-        <Brain class="size-4" />
-        SSTM
-      </a>
       <a
         href="#/eltm"
         class={cn(

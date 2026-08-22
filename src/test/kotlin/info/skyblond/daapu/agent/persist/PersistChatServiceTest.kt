@@ -8,8 +8,8 @@ import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
+import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
-import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
@@ -26,13 +26,9 @@ import info.skyblond.daapu.memory.eltm.EltmEntity
 import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.sstm.MemoriesWithVersion
-import info.skyblond.daapu.memory.sstm.ShortTermMemory
-import info.skyblond.daapu.memory.sstm.SstmService
 import info.skyblond.daapu.testutil.FakeEltmService
-import info.skyblond.daapu.testutil.MutableSstmService
-import info.skyblond.daapu.testutil.mergeRunFlow
 import info.skyblond.daapu.testutil.testHandService
+import info.skyblond.daapu.testutil.writerRunFlow
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -90,20 +86,17 @@ class PersistChatServiceTest {
     /**
      * Runs one turn; returns the outcome for assertions. The fake hand
      * dispatches on the out-of-band system prompt, standing in for the four
-     * one-shot roles (compactor / extractor / merger / query rewriter) plus
+     * one-shot roles (compactor / extractor / writer / query rewriter) plus
      * the chat loop.
      */
     private fun run(
         modelId: String = "bifrost/cerebras/gemma-4-31b",
         userParts: List<ChatMessagePart> = listOf(ChatMessagePart.Text("hello")),
         store: InMemoryChatStore = InMemoryChatStore(),
-        sstmService: SstmService = InMemorySstmService(),
         eltmService: EltmService = FakeEltmService(),
         toolProvider: ToolProvider = EmptyToolProvider,
-        sstmExtractionService: SstmExtractionService? = null,
+        memoryExtractionService: MemoryExtractionService? = null,
         compactionKeepRounds: Int = 3,
-        sstmCapacity: Int = 1_000_000,
-        purgeBatchSize: Int = 10,
         rewriteRounds: Int = 5,
         relatedEntitiesLimit: Int = 5,
         relatedNotesLimit: Int = 5,
@@ -112,7 +105,6 @@ class PersistChatServiceTest {
             { textRunFlow("compacted summary") },
         extractionScript: suspend (HandRunRequest) -> List<HandEvent> =
             { textRunFlow("Nothing worth remember.") },
-        mergeScript: (suspend (HandRunRequest) -> List<HandEvent>)? = null,
         writerScript: suspend (HandRunRequest) -> List<HandEvent> =
             { textRunFlow("done") },
         rewriteScript: suspend (HandRunRequest) -> List<HandEvent> =
@@ -127,9 +119,6 @@ class PersistChatServiceTest {
 
                     request.systemPrompt?.startsWith("You're extracting") == true ->
                         extractionScript(request)
-
-                    request.systemPrompt?.startsWith("You're merging") == true ->
-                        mergeScript?.invoke(request) ?: error("unexpected merge run")
 
                     request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
                         writerScript(request)
@@ -162,23 +151,19 @@ class PersistChatServiceTest {
             runCatching {
                 PersistChatService(
                     chatStore = store,
-                    sstmService = sstmService,
                     eltmService = eltmService,
                     queryRewriteService = rewriteService,
                     hand = handService,
                     compactionService = compactionService,
                     // the default answers the extractor with the sentinel, so
                     // extraction is a no-op: compaction-focused tests neither
-                    // accumulate calls nor run the merge
-                    sstmExtractionService = sstmExtractionService
-                        ?: SstmExtractionService(
+                    // accumulate calls nor run the writer
+                    memoryExtractionService = memoryExtractionService
+                        ?: MemoryExtractionService(
                             extractModel = model,
                             hand = handService,
-                            sstmService = sstmService,
                             maxRetries = 0,
                             streamIdleTimeoutMs = 300_000,
-                            // the purge must never fire here: the SSTM stays
-                            // far under an effectively unbounded capacity
                             eltmWriterService = EltmWriterService(
                                 writerModel = model,
                                 hand = handService,
@@ -187,8 +172,6 @@ class PersistChatServiceTest {
                                 maxRetries = 0,
                                 streamIdleTimeoutMs = 300_000,
                             ),
-                            sstmCapacity = sstmCapacity,
-                            purgeBatchSize = purgeBatchSize,
                         ),
                     rewriteRounds = rewriteRounds,
                     relatedEntitiesLimit = relatedEntitiesLimit,
@@ -247,7 +230,7 @@ class PersistChatServiceTest {
                     "tool list travels in the request",
         )
         assertEquals(systemPrompt, request.systemPrompt, "the system prompt travels out of band")
-        assertTrue(injectionOf(request).contains("<sstm-updated>true</sstm-updated>"))
+        assertTrue(injectionOf(request).contains("<eltm-updated>true</eltm-updated>"))
 
         // the model spec carries the reasoning effort from the model's
         // Reasoning capability (not a per-request field)
@@ -265,70 +248,6 @@ class PersistChatServiceTest {
         assertNotNull(stored[0].createdAt, "the stored user message must carry its send time")
         assertEquals(listOf(ChatMessagePart.Text("ok")), stored[1].parts)
         assertEquals("stop", stored[1].finishReason)
-    }
-
-    @Test
-    fun `sstm version is persisted on the chat and the sstm-updated flag tracks changes`() {
-        val store = InMemoryChatStore()
-        val sstm = InMemorySstmService(version = "v1")
-
-        // a fresh chat has no stored version, so the first run must flag
-        // the memory list as updated and persist the version it saw
-        var outcome = run(store = store, sstmService = sstm)
-        assertNull(outcome.error)
-        assertTrue(
-            injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
-            "fresh chat must flag memories as updated",
-        )
-        assertEquals("v1", store.storedSstmVersion, "run must persist the memory version")
-
-        // same version as the last run: nothing changed, no flag
-        outcome = run(store = store, sstmService = sstm)
-        assertNull(outcome.error)
-        assertTrue(
-            injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>false</sstm-updated>"),
-            "an unchanged version must not flag",
-        )
-        assertEquals("v1", store.storedSstmVersion)
-
-        // a memory edit bumps the version: the next run must flag again
-        sstm.version = "v2"
-        outcome = run(store = store, sstmService = sstm)
-        assertNull(outcome.error)
-        assertTrue(
-            injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
-            "a changed version must flag",
-        )
-        assertEquals("v2", store.storedSstmVersion)
-    }
-
-    @Test
-    fun `sstm version is not persisted on a failed run`() {
-        val store = InMemoryChatStore()
-        val sstm = InMemorySstmService(version = "v1")
-        val outcome = run(store = store, sstmService = sstm)
-        assertNull(outcome.error)
-        assertEquals("v1", store.storedSstmVersion)
-
-        // a failed run must not touch the stored version: history stays
-        // at the last good state
-        sstm.version = "v2"
-        val failed = run(
-            store = store,
-            sstmService = sstm,
-            chatScript = { listOf(HandEvent.RunError("upstream", "boom")) },
-        )
-        assertIs<HandRunException>(failed.error)
-        assertEquals("v1", store.storedSstmVersion, "failed run must not update the version")
-
-        // ... so the next successful run still flags the pending change
-        val retry = run(store = store, sstmService = sstm)
-        assertNull(retry.error)
-        assertTrue(
-            injectionOf(retry.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
-            "a change missed by a failed run must flag on the next success",
-        )
-        assertEquals("v2", store.storedSstmVersion)
     }
 
     @Test
@@ -396,42 +315,30 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `a purge during reactive compaction bumps the ELTM version the re-injected flag sees`() {
-        // the SSTM is over capacity, so the reactive compaction's extraction
-        // pipeline purges the oldest batch into the ELTM, bumping the ELTM
-        // version BETWEEN the initial injection and the re-injection: the
-        // loop must read the version fresh at the re-injection — the
-        // exhausted attempt's injection (pre-purge) says false, the retried
-        // round's must count the purge write, and the run stores the
-        // bumped version
+    fun `an extraction during reactive compaction bumps the ELTM version the re-injected flag sees`() {
+        // the reactive compaction's extraction writes the dropped facts
+        // straight into the ELTM (the writer run creates an entity), bumping
+        // the ELTM version BETWEEN the initial injection and the
+        // re-injection: the loop must read the version fresh at the
+        // re-injection — the exhausted attempt's injection (pre-write) says
+        // false, the retried round's must count the write, and the run
+        // stores the bumped version
         val store = InMemoryChatStore()
-        val sstm = MutableSstmService(
-            listOf(
-                ShortTermMemory(
-                    id = 1L,
-                    lastUpdate = Instant.parse("2026-08-01T00:00:00Z"),
-                    content = "a".repeat(100),
-                )
-            )
-        )
         val eltm = FakeEltmService()
         val writerProvider = EltmToolProvider(eltm)
 
         // run 1: a normal turn stores the ELTM version it saw
-        val first = run(store = store, sstmService = sstm, eltmService = eltm)
+        val first = run(store = store, eltmService = eltm)
         assertNull(first.error)
         assertEquals("0", store.storedEltmVersion)
 
         // run 2: the first chat attempt is exhausted, the reactive
-        // compaction's pipeline purges the over-capacity SSTM (writer run
-        // creates an entity), and the retried round is re-injected
+        // compaction's pipeline extracts the dropped messages and the writer
+        // run creates an entity, and the retried round is re-injected
         var chatRounds = 0
         val outcome = run(
             store = store,
-            sstmService = sstm,
             eltmService = eltm,
-            sstmCapacity = 50,
-            purgeBatchSize = 10,
             chatScript = { _ ->
                 if (++chatRounds == 1) {
                     listOf(HandEvent.RunError("context_exhausted", "input too big"))
@@ -439,6 +346,7 @@ class PersistChatServiceTest {
                     stopEvents()
                 }
             },
+            extractionScript = { textRunFlow("likes coffee") },
             writerScript = { _ ->
                 val call = ChatMessagePart.ToolCall(
                     id = "call_1",
@@ -459,24 +367,27 @@ class PersistChatServiceTest {
         )
         assertNull(outcome.error)
 
-        // the purge really wrote into the ELTM, bumping its version
+        // the extraction really wrote into the ELTM, bumping its version
         assertTrue(
             eltm.entities.values.any { it.canonicalName == "alice" },
-            "the purge must write the victim into the ELTM",
+            "the extraction must write the facts into the ELTM",
         )
         // request order: rewrite, exhausted chat, compactor, extractor, writer, fresh run
-        assertEquals(6, outcome.hand.requests.size, "rewrite -> exhausted -> compact -> extract -> purge -> fresh run")
-        // the exhausted attempt was injected BEFORE the purge: its flag must
-        // still say the stored version matches
+        assertEquals(
+            6, outcome.hand.requests.size,
+            "rewrite -> exhausted -> compact -> extract -> write -> fresh run"
+        )
+        // the exhausted attempt was injected BEFORE the extraction: its flag
+        // must still say the stored version matches
         assertTrue(
             injectionOf(outcome.hand.requests[1]).contains("<eltm-updated>false</eltm-updated>"),
-            "the pre-purge injection must not flag",
+            "the pre-extraction injection must not flag",
         )
-        // the retried round was re-injected AFTER the purge: the fresh read
-        // must flag the bumped version
+        // the retried round was re-injected AFTER the extraction: the fresh
+        // read must flag the bumped version
         assertTrue(
             injectionOf(outcome.hand.requests.last()).contains("<eltm-updated>true</eltm-updated>"),
-            "the re-injected flag must count the purge write",
+            "the re-injected flag must count the extraction write",
         )
         assertEquals("1", store.storedEltmVersion, "the run must store the version it last saw")
     }
@@ -1005,8 +916,8 @@ class PersistChatServiceTest {
     fun `the query rewrite runs before the round with the last N user rounds and its own injection`() {
         // 4 stored turns + the run's user message = 5 user rounds; with
         // rewriteRounds = 2 the rewrite sees only the trailing 2 rounds and
-        // re-injects its own (empty) spec — the loop's memory list and
-        // updated flags must not leak into the rewrite prompt
+        // re-injects its own (empty) spec — the loop's updated flags must
+        // not leak into the rewrite prompt
         val outcome = run(
             store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
             rewriteRounds = 2,
@@ -1026,13 +937,13 @@ class PersistChatServiceTest {
         // the rewrite received the loop's injected chat sanitized and
         // re-injected with its own spec: the loop's flags are not in it
         assertTrue(
-            injectionOf(rewrite).contains("<sstm-updated>false</sstm-updated>"),
+            injectionOf(rewrite).contains("<eltm-updated>false</eltm-updated>"),
             "the rewrite sees its own injection, not the loop's",
         )
 
         // the chat round still carried the loop's real injection
         assertTrue(
-            injectionOf(outcome.hand.requests.last()).contains("<sstm-updated>true</sstm-updated>"),
+            injectionOf(outcome.hand.requests.last()).contains("<eltm-updated>true</eltm-updated>"),
             "the loop's injection is untouched by the rewrite",
         )
         // the rewrite result feeds the <memories>' related-entities/notes
@@ -1488,8 +1399,8 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `pre-round compaction extracts SSTM from the dropped messages`() {
-        val sstm = InMemorySstmService()
+    fun `pre-round compaction extracts memories into the ELTM from the dropped messages`() {
+        val eltm = FakeEltmService()
         val model = catalogModel("bifrost/cerebras/gemma-4-31b", compactionKeepRounds = 3)
         val hand = FakeHand(
             runScript = { request ->
@@ -1500,8 +1411,8 @@ class PersistChatServiceTest {
                     request.systemPrompt?.startsWith("You're extracting") == true ->
                         textRunFlow("likes coffee")
 
-                    request.systemPrompt?.startsWith("You're merging") == true ->
-                        mergeRunFlow(sstm, "likes coffee")
+                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
+                        writerRunFlow(eltm)
 
                     else -> stopEvents()
                 }
@@ -1526,29 +1437,23 @@ class PersistChatServiceTest {
             runCatching {
                 PersistChatService(
                     chatStore = store,
-                    sstmService = sstm,
-                    eltmService = FakeEltmService(),
+                    eltmService = eltm,
                     queryRewriteService = rewriteService,
                     hand = handService,
                     compactionService = compactionService,
-                    sstmExtractionService = SstmExtractionService(
+                    memoryExtractionService = MemoryExtractionService(
                         extractModel = model,
                         hand = handService,
-                        sstmService = sstm,
                         maxRetries = 0,
                         streamIdleTimeoutMs = 300_000,
-                        // the purge must never fire in these tests: the SSTM
-                        // stays far under an effectively unbounded capacity
                         eltmWriterService = EltmWriterService(
                             writerModel = model,
                             hand = handService,
-                            eltmService = FakeEltmService(),
+                            eltmService = eltm,
                             maxWriterRounds = 150,
                             maxRetries = 0,
                             streamIdleTimeoutMs = 300_000,
                         ),
-                        sstmCapacity = 1_000_000,
-                        purgeBatchSize = 10,
                     ),
                     rewriteRounds = 5,
                     relatedEntitiesLimit = 5,
@@ -1568,8 +1473,8 @@ class PersistChatServiceTest {
         }
         assertNull(error)
 
-        // request order: compactor, extractor, merge, rewrite, chat round
-        assertEquals(5, hand.requests.size, "compactor + extractor + merge + rewrite + chat round")
+        // request order: compactor, extractor, writer, rewrite, chat round
+        assertEquals(5, hand.requests.size, "compactor + extractor + writer + rewrite + chat round")
 
         // the raw dropped messages (not the summary) fed the extraction:
         // the extractor's run starts with the dropped complete turn,
@@ -1598,8 +1503,11 @@ class PersistChatServiceTest {
             "the extractor must not receive a full context injection",
         )
 
-        // the merge agent's add_memory call hit the SSTM
-        assertEquals(listOf("likes coffee"), sstm.created)
+        // the writer run recorded the extracted fact into the ELTM diary
+        assertTrue(
+            eltm.notes.values.map { it.note }.contains("likes coffee"),
+            "the extracted fact lands in the ELTM",
+        )
 
         // the run completed and stored the compacted history
         val stored = assertNotNull(store.stored)
@@ -1647,13 +1555,9 @@ class PersistChatServiceTest {
             },
             "the retried round must carry the user's input again",
         )
-        assertTrue(
-            injectionOf(retried).contains("<sstm-updated>true</sstm-updated>"),
-            "the re-appended injection must carry the fresh flag",
-        )
         // the ELTM version read fresh at the re-injection: a fresh chat's
         // stored version is "" vs the fake's "0", so the re-appended
-        // injection must flag eltm-updated too
+        // injection must flag eltm-updated
         assertTrue(
             injectionOf(retried).contains("<eltm-updated>true</eltm-updated>"),
             "the re-appended injection must carry the fresh eltm flag",
@@ -1676,11 +1580,11 @@ class PersistChatServiceTest {
     fun `one shared service instance serves concurrent runs without cross-talk`() = runBlocking {
         // both chats sit above the proactive compaction trigger, so each run
         // compacts and extracts through the SAME shared service instances
-        // (ChatCompactionService / SstmExtractionService / PersistChatService):
+        // (ChatCompactionService / MemoryExtractionService / PersistChatService):
         // this pins the statelessness claim of the shared services under
         // concurrent calls. Distinct chat content makes any cross-talk
         // visible in the stores.
-        val sstm = ConcurrentSstmService()
+        val eltm = FakeEltmService()
         val hand = FakeHand(
             runScript = { request ->
                 when {
@@ -1690,8 +1594,8 @@ class PersistChatServiceTest {
                     request.systemPrompt?.startsWith("You're extracting") == true ->
                         textRunFlow("likes coffee")
 
-                    request.systemPrompt?.startsWith("You're merging") == true ->
-                        mergeRunFlow(sstm, "likes coffee")
+                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
+                        writerRunFlow(eltm)
 
                     else -> stopEvents()
                 }
@@ -1705,30 +1609,24 @@ class PersistChatServiceTest {
             maxRetries = 0,
             streamIdleTimeoutMs = 300_000,
         )
-        val extractionService = SstmExtractionService(
+        val extractionService = MemoryExtractionService(
             extractModel = model,
             hand = handService,
-            sstmService = sstm,
             maxRetries = 0,
             streamIdleTimeoutMs = 300_000,
-            // the purge must never fire in these tests: the SSTM stays far
-            // under an effectively unbounded capacity
             eltmWriterService = EltmWriterService(
                 writerModel = model,
                 hand = handService,
-                eltmService = FakeEltmService(),
+                eltmService = eltm,
                 maxWriterRounds = 150,
                 maxRetries = 0,
                 streamIdleTimeoutMs = 300_000,
             ),
-            sstmCapacity = 1_000_000,
-            purgeBatchSize = 10,
         )
         val chatStore = ConcurrentChatStore()
         val persistService = PersistChatService(
             chatStore = chatStore,
-            sstmService = sstm,
-            eltmService = FakeEltmService(),
+            eltmService = eltm,
             queryRewriteService = QueryRewriteService(
                 model = model,
                 hand = handService,
@@ -1737,7 +1635,7 @@ class PersistChatServiceTest {
             ),
             hand = handService,
             compactionService = compactionService,
-            sstmExtractionService = extractionService,
+            memoryExtractionService = extractionService,
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
@@ -1810,13 +1708,18 @@ class PersistChatServiceTest {
             )
         }
 
-        // both merges applied their fact to the shared SSTM; per chat the
-        // shared hand served compactor + extractor + merge + chat round
-        assertEquals(listOf("likes coffee", "likes coffee"), sstm.created, "both merges applied")
+        // both writer runs recorded their fact into the shared ELTM diary;
+        // per chat the shared hand served compactor + extractor + writer +
+        // rewrite + chat round
+        assertEquals(
+            2,
+            eltm.notes.values.count { it.note == "likes coffee" },
+            "both extractions applied their note",
+        )
         assertEquals(
             10,
             hand.requests.size,
-            "2 chats x (compact + extract + merge + rewrite + chat round)",
+            "2 chats x (compact + extract + write + rewrite + chat round)",
         )
     }
 }
@@ -1842,22 +1745,19 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
         private set
     var storeCount = 0
         private set
-    var storedSstmVersion: String? = null
-        private set
     var storedEltmVersion: String? = null
         private set
 
     override suspend fun load(chatId: String): ChatEntry? = stored?.let {
         ChatEntry(
             ChatInfo(chatId, DEFAULT_CHAT_TITLE),
-            ChatContent(it, storedSstmVersion ?: "", storedEltmVersion ?: "")
+            ChatContent(it, storedEltmVersion ?: "")
         )
     }
 
     override suspend fun store(chatId: String, chat: ChatContent) {
         storeCount++
         stored = chat.messages
-        storedSstmVersion = chat.sstmVersion
         storedEltmVersion = chat.eltmVersion
     }
 
@@ -1875,34 +1775,6 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
 }
 
 /**
- * A fake [SstmService] whose version is settable, so tests can verify the
- * loop persists the version it saw and flips the `sstm-updated` flag when
- * the version changes between runs. Supports writes so the extraction merge
- * tests can record what the merge agent created.
- */
-private class InMemorySstmService(
-    private val memories: List<ShortTermMemory> = emptyList(),
-    var version: String = "test-version",
-) : SstmService {
-    val created = mutableListOf<String>()
-
-    override suspend fun listMemories(): MemoriesWithVersion =
-        MemoriesWithVersion(memories, version)
-
-    override suspend fun createMemory(content: String): ShortTermMemory {
-        created += content
-        version = "version-${created.size}"
-        return ShortTermMemory(created.size.toLong(), Instant.EPOCH, content)
-    }
-
-    override suspend fun updateMemory(id: Long, content: String): ShortTermMemory? =
-        memories.firstOrNull { it.id == id }?.copy(content = content)
-
-    override suspend fun deleteMemory(id: Long): Boolean =
-        memories.any { it.id == id }
-}
-
-/**
  * A thread-safe in-memory [ChatStore] keyed by chat id: the shared-service
  * concurrency test runs several chats through one service (and one store)
  * at the same time.
@@ -1910,14 +1782,14 @@ private class InMemorySstmService(
 private class ConcurrentChatStore : ChatStore {
     private val chats = ConcurrentHashMap<String, ChatContent>()
 
-    fun seed(chatId: String, chat: List<ChatMessage>, sstmVersion: String = "", eltmVersion: String = "") {
-        chats[chatId] = ChatContent(chat, sstmVersion, eltmVersion)
+    fun seed(chatId: String, chat: List<ChatMessage>, eltmVersion: String = "") {
+        chats[chatId] = ChatContent(chat, eltmVersion)
     }
 
     override suspend fun load(chatId: String): ChatEntry? = chats[chatId]?.let {
         ChatEntry(
             ChatInfo(chatId, DEFAULT_CHAT_TITLE),
-            ChatContent(it.messages, it.sstmVersion, it.eltmVersion)
+            ChatContent(it.messages, it.eltmVersion)
         )
     }
 
@@ -1938,34 +1810,6 @@ private class ConcurrentChatStore : ChatStore {
         error("not exercised by the persist loop tests")
 
     fun stored(chatId: String): List<ChatMessage>? = chats[chatId]?.messages
-}
-
-/**
- * A thread-safe [SstmService] fake whose version bumps on every write: the
- * shared-service concurrency test runs two extraction merges against one
- * instance at the same time.
- */
-private class ConcurrentSstmService : SstmService {
-    private val lock = Any()
-    private val memories = mutableListOf<ShortTermMemory>()
-    private var version = "v0"
-    val created = mutableListOf<String>()
-
-    override suspend fun listMemories(): MemoriesWithVersion = synchronized(lock) {
-        MemoriesWithVersion(memories.toList(), version)
-    }
-
-    override suspend fun createMemory(content: String): ShortTermMemory = synchronized(lock) {
-        created += content
-        val memory = ShortTermMemory(memories.size.toLong(), Instant.EPOCH, content)
-        memories += memory
-        version = "v${memories.size}"
-        memory
-    }
-
-    override suspend fun updateMemory(id: Long, content: String): ShortTermMemory? = null
-
-    override suspend fun deleteMemory(id: Long): Boolean = false
 }
 
 private class RecordingCallback : StreamingExecutionCallback {

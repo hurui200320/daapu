@@ -8,8 +8,8 @@
   let fileInput: HTMLInputElement
   let textarea: HTMLTextAreaElement
 
-  // the active chat is being deleted (the backend extracts SSTM first, which
-  // can take minutes): no message may be sent to it until it is gone
+  // the active chat is being deleted (the backend extracts memories first,
+  // which can take minutes): no message may be sent to it until it is gone
   const deleting = $derived(store.deletingIds.has(store.chatId))
 
   const usage = $derived(store.usage)

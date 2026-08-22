@@ -4,7 +4,6 @@
   import ChatView from './lib/components/ChatView.svelte'
   import EltmView from './lib/components/EltmView.svelte'
   import Sidebar from './lib/components/Sidebar.svelte'
-  import SstmView from './lib/components/SstmView.svelte'
   import { chatHomePath, replaceRoute, router } from './lib/router.svelte'
   import { toastStore } from './lib/toast-store.svelte'
 
@@ -28,7 +27,7 @@
       if (chatStore.chatId !== '') chatStore.closeChat()
     } else if (chatStore.deletedChatIds.has(route.chatId)) {
       // the route points at a chat deleted this session — e.g. the history
-      // entry left behind when the open chat was deleted from the SSTM view,
+      // entry left behind when the open chat was deleted from another view,
       // now reached via back/forward or a URL edit: the load would 404, so
       // neutralize the route instead of picking it (close whatever is open
       // and replace the dead entry with home)
@@ -63,9 +62,6 @@
          driven by the route -->
     <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'chat'}>
       <ChatView />
-    </div>
-    <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'sstm'}>
-      <SstmView />
     </div>
     <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'eltm'}>
       <EltmView />

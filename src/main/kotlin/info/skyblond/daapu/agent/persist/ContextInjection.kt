@@ -47,9 +47,7 @@ data class RelatedNoteView(
  */
 data class InjectionSpec(
     val time: ZonedDateTime,
-    val sstmUpdated: Boolean,
     val eltmUpdated: Boolean,
-    val memoryList: List<String>,
     val relatedEntities: List<EntityWithScore> = emptyList(),
     val relatedNotes: List<RelatedNoteView> = emptyList(),
 )
@@ -165,9 +163,7 @@ class ContextInjection {
     // making reusing risky if not properly handled
     fun generateInjection(
         time: ZonedDateTime,
-        sstmUpdated: Boolean,
         eltmUpdated: Boolean,
-        memoryList: List<String>,
         relatedEntities: List<EntityWithScore> = emptyList(),
         relatedNotes: List<RelatedNoteView> = emptyList(),
     ): ChatMessagePart.Text {
@@ -187,31 +183,18 @@ class ContextInjection {
             }
         )
         realtimeInfo.appendChild(
-            document.createElement("sstm-updated").apply {
-                textContent = sstmUpdated.toString()
-            }
-        )
-        realtimeInfo.appendChild(
             document.createElement("eltm-updated").apply {
                 textContent = eltmUpdated.toString()
             }
         )
 
-        // val memories
+        // the ELTM context injection: the entities and diary notes retrieved
+        // for the run's input, under <memories>. Both containers are always
+        // present (empty ones included), so the shape the model sees is
+        // stable across requests.
         val memories = document.createElement("memories")
         injection.appendChild(memories)
-        memoryList.forEach { memoryText ->
-            memories.appendChild(
-                document.createElement("memory").apply {
-                    textContent = sanitizeForXml10(memoryText)
-                }
-            )
-        }
 
-        // the ELTM context injection: the entities and diary notes retrieved
-        // for the run's input, under <memories> after the SSTM entries. Both
-        // containers are always present (empty ones included), so the shape
-        // the model sees is stable across requests.
         val relatedEntitiesElement = document.createElement("related-entities")
         memories.appendChild(relatedEntitiesElement)
         relatedEntities.forEach { hit ->
@@ -333,9 +316,7 @@ class ContextInjection {
                     parts = listOf(
                         generateInjection(
                             time = spec.time,
-                            sstmUpdated = spec.sstmUpdated,
                             eltmUpdated = spec.eltmUpdated,
-                            memoryList = spec.memoryList,
                             relatedEntities = spec.relatedEntities,
                             relatedNotes = spec.relatedNotes,
                         )

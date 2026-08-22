@@ -5,7 +5,7 @@ import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.oneshot.TitleGenerator
-import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
+import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
@@ -37,7 +37,7 @@ class ChatRunSetup(
  * `testutil/TestDi.kt`).
  *
  * The class only holds what it uses: the chat store, the model catalog,
- * the session-title generator, the chat loop's tool set, the SSTM
+ * the session-title generator, the chat loop's tool set, the memory
  * extraction pipeline (deletion) and the persist loop. The stores and the
  * hand callback service live in the container and are consumed directly by
  * the web server module; cleanup is Koin's job too (`onClose` on the
@@ -45,8 +45,8 @@ class ChatRunSetup(
  * `koinApp.close()` in the shutdown hook) — this service owns no resources
  * itself. The one-shot pipeline services are stateless across runs and are
  * constructed once as well; their models come from the REQUIRED
- * `memory.compactModel` + `memory.sstm.extractModel/mergeModel` +
- * `title.model` config, resolved once at startup (never the run's model).
+ * `memory.*` + `title.model` config, resolved once at startup (never the
+ * run's model).
  */
 // TODO: extract to agent.chat.ChatService
 class ChatRunService(
@@ -61,7 +61,7 @@ class ChatRunService(
      * child is only included when it serves namespaces. Exposed for tests.
      */
     internal val chatToolProvider: CombinedToolProvider,
-    private val sstmExtractionService: SstmExtractionService,
+    private val memoryExtractionService: MemoryExtractionService,
     private val persistService: PersistChatService,
 ) {
 
@@ -125,8 +125,8 @@ class ChatRunService(
     }
 
     /**
-     * Delete a chat row, but first run the SSTM extraction pipeline over its
-     * full history so the chat's memories survive the deletion. Refuses
+     * Delete a chat row, but first run the memory extraction pipeline over
+     * its full history so the chat's memories survive the deletion. Refuses
      * (throws [ChatRunConflictException]) while a run holds the chat lock:
      * the chat store's upsert would otherwise let an in-flight run's final
      * store resurrect the deleted row. Returns false when the chat doesn't
@@ -137,20 +137,21 @@ class ChatRunService(
      * run can start (409) while the deletion is in progress.
      *
      * A failed extraction (a classified hand error, a truncated extractor
-     * round, a model that cannot see the history) throws and FAILS the
-     * delete: the row survives untouched, and the next delete attempt
-     * re-extracts the same history, which the merge agent deduplicates.
+     * round, a model that cannot see the history, a failed ELTM writer run)
+     * throws and FAILS the delete: the row survives untouched, and the next
+     * delete attempt re-extracts the same history, which the writer
+     * deduplicates against the store.
      */
     suspend fun deleteChat(chatId: String): Boolean = withChatLock(chatId) {
         val entry = chatStore.load(chatId) ?: return@withChatLock false
-        sstmExtractionService.processDiscardedMessages(entry.content.messages)
+        memoryExtractionService.processDiscardedMessages(entry.content.messages)
         chatStore.delete(chatId)
     }
 
     /**
      * Truncate a chat: drop every message from [index] (a user message) to
      * the end, keeping `messages[0..index-1]`. The dropped tail is discarded
-     * WITHOUT SSTM extraction — deliberately: a typo'd turn must not leak
+     * WITHOUT memory extraction — deliberately: a typo'd turn must not leak
      * into memories. Returns false when the chat doesn't exist; throws
      * [BadRequestException] when [index] is out of bounds, does not point at
      * a user message, or would leave the kept prefix ending mid-turn (a user
@@ -160,14 +161,10 @@ class ChatRunService(
      *
      * Runs under the per-chat lock: an in-flight run's final store upsert
      * would otherwise resurrect the truncated tail (the same reason
-     * [deleteChat] takes the lock). The stored `sstm_version` is reset to
-     * `""`: the `sstms` table is untouched, but the kept history may no
-     * longer cover the memories merged from the dropped tail, so the next
-     * run must re-flag `sstm-updated` and re-inject the current memory list.
-     * The stored `eltm_version` is reset to `""` the same way: the `eltm_*`
-     * tables are untouched, but the kept history may no longer cover what
-     * was purged from the dropped tail, so the next run must re-flag
-     * `eltm-updated`.
+     * [deleteChat] takes the lock). The stored `eltm_version` is reset to
+     * `""`: the `eltm_*` tables are untouched, but the kept history may no
+     * longer cover what was written from the dropped tail, so the next run
+     * must re-flag `eltm-updated`.
      */
     suspend fun truncateChat(chatId: String, index: Int): Boolean = withChatLock(chatId) {
         val entry = chatStore.load(chatId) ?: return@withChatLock false
@@ -196,7 +193,7 @@ class ChatRunService(
         // still validate defensively: a violating truncation would brick the
         // chat on load
         ChatCodec.validateChat(kept)
-        chatStore.store(chatId, ChatContent(kept, "", ""))
+        chatStore.store(chatId, ChatContent(kept, ""))
         true
     }
 
@@ -212,9 +209,8 @@ class ChatRunService(
      * Takes no per-chat lock: it is a pure read + insert into a NEW row, so
      * a concurrent run can only make the fork reflect the committed state
      * without the in-flight turn (snapshot semantics) — nothing corrupts.
-     * The fork's `sstm_version` and `eltm_version` start as `""` (like a
-     * fresh chat): the fork has never seen a memory list or the ELTM, so its
-     * first run must flag `sstm-updated`/`eltm-updated`.
+     * The fork's `eltm_version` starts as `""` (like a fresh chat): the fork
+     * has never seen the ELTM, so its first run must flag `eltm-updated`.
      */
     suspend fun forkChat(chatId: String, index: Int): ChatInfo? {
         val entry = chatStore.load(chatId) ?: return null
@@ -233,7 +229,7 @@ class ChatRunService(
         val kept = messages.subList(0, index + 1).toList()
         ChatCodec.validateChat(kept)
         val forked = chatStore.newChat()
-        chatStore.store(forked.id, ChatContent(kept, "", ""))
+        chatStore.store(forked.id, ChatContent(kept, ""))
         return forked
     }
 

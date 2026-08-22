@@ -41,7 +41,6 @@ class PostgresChatStore : ChatStore {
             info = ChatInfo(entry[Chats.id], entry[Chats.title]),
             content = ChatContent(
                 messages = ChatCodec.decodeChat(chatId, entry[Chats.chatJson]),
-                sstmVersion = entry[Chats.sstmVersion],
                 eltmVersion = entry[Chats.eltmVersion]
             )
         )
@@ -57,7 +56,6 @@ class PostgresChatStore : ChatStore {
             Chats.upsert {
                 it[Chats.id] = chatId
                 it[Chats.chatJson] = chatJson
-                it[Chats.sstmVersion] = chat.sstmVersion
                 it[Chats.eltmVersion] = chat.eltmVersion
             }
         }

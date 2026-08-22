@@ -12,13 +12,13 @@
 
   let { target, onClose }: { target: ChatInfo | null; onClose: () => void } = $props()
 
-  // the backend extracts SSTM from the history before deleting, which can
+  // the backend extracts memories from the history before deleting, which can
   // take minutes: the confirm button is locked for the whole request
   const busy = $derived(target !== null && store.deletingIds.has(target.id))
 
   function confirmDelete() {
     if (!target || busy) return
-    // fire-and-forget: the backend extracts SSTM from the history before
+    // fire-and-forget: the backend extracts memories from the history before
     // deleting, which can take minutes — close the dialog right away so the
     // user isn't stuck waiting. The chat stays locked read-only via
     // [store.deletingIds] until the backend confirms or fails (toast).

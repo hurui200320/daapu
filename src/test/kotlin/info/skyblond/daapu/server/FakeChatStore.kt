@@ -6,15 +6,13 @@ import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 /**
  * An in-memory [ChatStore] for service/route tests: seeded via [seed] and
  * inspected via [title]/[deleteRow] without a database. The row stores the
- * title, the messages AND the `sstm_version`/`eltm_version` (truncations
- * and forks reset them — tests of those paths need the values to
- * round-trip).
+ * title, the messages AND the `eltm_version` (truncations and forks reset
+ * it — tests of those paths need the value to round-trip).
  */
 class FakeChatStore : ChatStore {
     private data class Row(
         val title: String,
         val chat: List<ChatMessage>,
-        val sstmVersion: String,
         val eltmVersion: String,
     )
 
@@ -28,10 +26,9 @@ class FakeChatStore : ChatStore {
         chatId: String,
         title: String = DEFAULT_CHAT_TITLE,
         chat: List<ChatMessage> = emptyList(),
-        sstmVersion: String = "",
         eltmVersion: String = "",
     ) {
-        rows[chatId] = Row(title, chat, sstmVersion, eltmVersion)
+        rows[chatId] = Row(title, chat, eltmVersion)
     }
 
     fun title(chatId: String): String? = rows[chatId]?.title
@@ -48,7 +45,7 @@ class FakeChatStore : ChatStore {
         do {
             id = "chat-${nextId++}"
         } while (rows.containsKey(id))
-        rows[id] = Row(DEFAULT_CHAT_TITLE, emptyList(), "", "")
+        rows[id] = Row(DEFAULT_CHAT_TITLE, emptyList(), "")
         return ChatInfo(id, DEFAULT_CHAT_TITLE)
     }
 
@@ -56,13 +53,13 @@ class FakeChatStore : ChatStore {
         rows[chatId]?.let {
             ChatEntry(
                 ChatInfo(chatId, it.title),
-                ChatContent(it.chat, it.sstmVersion, it.eltmVersion)
+                ChatContent(it.chat, it.eltmVersion)
             )
         }
 
     override suspend fun store(chatId: String, chat: ChatContent) {
         val title = rows[chatId]?.title ?: DEFAULT_CHAT_TITLE
-        rows[chatId] = Row(title, chat.messages, chat.sstmVersion, chat.eltmVersion)
+        rows[chatId] = Row(title, chat.messages, chat.eltmVersion)
     }
 
     override suspend fun rename(chatId: String, title: String): ChatInfo? = rows[chatId]?.let {

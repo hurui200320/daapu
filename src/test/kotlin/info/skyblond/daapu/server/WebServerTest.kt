@@ -296,30 +296,6 @@ class WebServerTest {
         }
     }
 
-    @Test
-    fun `empty memory content is rejected with 400`() {
-        testApplication {
-            application { module(testKoinApp().koin) }
-            val response = client.post("/api/sstm") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"content":"   "}""")
-            }
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-        }
-    }
-
-    @Test
-    fun `non-numeric memory id is rejected with 400`() {
-        testApplication {
-            application { module(testKoinApp().koin) }
-            val response = client.put("/api/sstm/abc") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"content":"memory"}""")
-            }
-            assertEquals(HttpStatusCode.BadRequest, response.status)
-        }
-    }
-
     // ---- ELTM browse routes (`/api/eltm`, read-only) ----
 
     @Test

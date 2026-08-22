@@ -1222,19 +1222,15 @@ class EltmToolProviderTest {
     }
 
     @Test
-    fun `writer input lists the victims verbatim with a current date header`() {
+    fun `writer input lists the extracted facts verbatim with a current date header`() {
         val writer = testEltmWriterService(FakeHand())
         val input = EltmWriterService.buildWriterInput(
-            victims = listOf(
-                info.skyblond.daapu.memory.sstm.ShortTermMemory(
-                    1, java.time.Instant.parse("2026-08-01T00:00:00Z"), "likes coffee"
-                ),
-            ),
+            facts = "likes coffee",
             date = LocalDate.parse("2026-08-18"),
         )
         assertTrue(input.startsWith("Current date: 2026-08-18\n\n"), input)
-        assertTrue(input.contains("## Memory 1"), input)
-        assertTrue(input.contains("likes coffee"), "victim content verbatim: $input")
+        assertTrue(input.contains("Candidate facts extracted from a discarded conversation"), input)
+        assertTrue(input.contains("likes coffee"), "facts verbatim: $input")
     }
 
     @Test
@@ -1284,7 +1280,7 @@ class EltmToolProviderTest {
         assertTrue(textOf(bare).contains("not advertised"), textOf(bare))
 
         val foreign = provider.execute(
-            toolCall("c2", "sstm__search_entities", buildJsonObject { put("query", "ali") }),
+            toolCall("c2", "fs__search_entities", buildJsonObject { put("query", "ali") }),
         )
         assertTrue(foreign.isError)
         assertTrue(textOf(foreign).contains("not advertised"), textOf(foreign))

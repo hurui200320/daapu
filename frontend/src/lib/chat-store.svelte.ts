@@ -60,13 +60,13 @@ class ChatStore {
   streamError = $state<string | null>(null)
 
   // in-flight deletions per chat id: while a delete request is running (the
-  // backend extracts SSTM from the history first, which can take minutes),
+  // backend extracts memories from the history first, which can take minutes),
   // the chat is read-only — no rename/title/delete/send — until the backend
   // confirms the row is gone or reports an error
   deletingIds = $state<Set<string>>(new Set())
 
   // chats deleted this session, per id: a route pointing at one (e.g. the
-  // history entry left behind when the open chat was deleted from the SSTM
+  // history entry left behind when the open chat was deleted from another
   // view) must not be picked — the load would 404; the App route effect
   // redirects such landings to home instead
   deletedChatIds = $state<Set<string>>(new Set())
@@ -241,10 +241,10 @@ class ChatStore {
   }
 
   /**
-   * Delete a chat: the backend extracts SSTM from its history before removing
-   * the row, which can take minutes. While the request is in flight the chat
-   * is read-only ([deletingIds]) — a second delete call is a no-op. On
-   * failure (e.g. the extraction failed and the row is kept) the lock is
+   * Delete a chat: the backend extracts memories from its history before
+   * removing the row, which can take minutes. While the request is in flight
+   * the chat is read-only ([deletingIds]) — a second delete call is a no-op.
+   * On failure (e.g. the extraction failed and the row is kept) the lock is
    * released and the error surfaces as a toast, so the user can retry.
    */
   async deleteChat(id: string): Promise<void> {
@@ -257,7 +257,7 @@ class ChatStore {
       if (this.chatId === id) {
         this.closeChat()
         // leave the deleted chat's route, but don't yank the user back to
-        // the chat view when they deleted it from the SSTM view; replace the
+        // the chat view when they deleted it from another view; replace the
         // history entry so the deleted chat doesn't survive as a back target
         // (from another view its stale entry stays in history, but the App
         // route effect redirects a later back/forward landing on it to home)
@@ -272,7 +272,7 @@ class ChatStore {
 
   /**
    * Drop the message at `index` (a user message) and everything after it,
-   * WITHOUT SSTM extraction (a typo'd turn must not leak into memories).
+   * WITHOUT memory extraction (a typo'd turn must not leak into memories).
    * `chatId` is pinned by the caller (the confirmation dialog captured it at
    * open time), so a chat switch before the request cannot redirect the
    * delete; the slice applies only while still on the same chat. The backend
@@ -296,11 +296,11 @@ class ChatStore {
   /**
    * Fork: copy the history up to and including the message at `index` (an
    * assistant message that ended naturally) into a new chat and switch to it.
-   * The new chat starts as "New chat" with empty sstm state (its first run
-   * flags `sstm-updated`), so the original chat stays untouched. The switch
-   * happens only while still on the source chat: a chat switch during the
-   * request must not hijack the view (the fork chat is still added to the
-   * list either way).
+   * The new chat starts as "New chat" with an empty ELTM state (its first
+   * run flags `eltm-updated`), so the original chat stays untouched. The
+   * switch happens only while still on the source chat: a chat switch during
+   * the request must not hijack the view (the fork chat is still added to
+   * the list either way).
    */
   async forkChat(index: number): Promise<void> {
     const id = this.chatId.trim()
@@ -461,8 +461,8 @@ class ChatStore {
       // the pending route may close or switch the chat the moment the stream
       // ends (back/forward or URL edit mid-run): the error banner would be
       // wiped with the view (closeChat / loadMessages clear streamError), so
-      // surface the failure as a toast instead of losing it. Same-route and
-      // SSTM-view runs keep the banner (the chat stays open).
+      // surface the failure as a toast instead of losing it. Same-route runs
+      // keep the banner (the chat stays open).
       if (failed && this.streamError && this.chatId === id) {
         const route = router.current
         if (route.name === 'chat' && route.chatId !== id) {

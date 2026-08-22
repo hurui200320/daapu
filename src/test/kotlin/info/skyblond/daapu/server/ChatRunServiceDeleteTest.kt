@@ -3,24 +3,24 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
-import info.skyblond.daapu.agent.oneshot.sstm.MergeMemoryToolProvider
+import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.*
-import info.skyblond.daapu.memory.sstm.SstmService
-import info.skyblond.daapu.testutil.RecordingSstmService
-import info.skyblond.daapu.testutil.addMemoryRound
+import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.addEntityNoteRound
 import info.skyblond.daapu.testutil.chatRunService
-import info.skyblond.daapu.testutil.mergeRunFlow
+import info.skyblond.daapu.testutil.createEntityRound
+import info.skyblond.daapu.testutil.writerRunFlow
 import kotlinx.coroutines.runBlocking
 import java.time.Instant
 import kotlin.test.*
 
 /**
  * Pins [ChatRunService.deleteChat]'s extract-before-delete behavior: the full
- * chat history is fed to the SSTM extraction pipeline while the per-chat lock
- * is held, and a failed extraction keeps the row (a retry re-extracts and the
- * merge agent deduplicates).
+ * chat history is fed to the memory extraction pipeline while the per-chat
+ * lock is held, and a failed extraction keeps the row (a retry re-extracts
+ * and the ELTM writer skips already-recorded content).
  */
 class ChatRunServiceDeleteTest {
 
@@ -33,38 +33,39 @@ class ChatRunServiceDeleteTest {
 
     /**
      * A fake hand dispatching on the one-shot system prompts: the extractor
-     * answers [extraction], the merger runs [mergeRunFlow] against [sstm].
+     * answers [extraction], the writer runs [writerRunFlow] against [eltm].
      * The delete pipeline never calls the chat loop, so any other request
      * fails the test.
      */
     private fun oneShotHand(
-        sstm: SstmService,
+        eltm: FakeEltmService,
         extraction: suspend (HandRunRequest) -> List<HandEvent> = { textRunFlow("likes coffee") },
-        merge: suspend (HandRunRequest) -> List<HandEvent> = { mergeRunFlow(sstm) },
+        writer: suspend (HandRunRequest) -> List<HandEvent> = { writerRunFlow(eltm) },
     ) = FakeHand(
         runScript = { request ->
             when {
                 request.systemPrompt?.startsWith("You're extracting") == true -> extraction(request)
-                request.systemPrompt?.startsWith("You're merging") == true -> merge(request)
+                request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true -> writer(request)
                 else -> error("unexpected run in the delete pipeline: ${request.systemPrompt}")
             }
         },
     )
 
     @Test
-    fun `delete extracts SSTM from the chat history before removing the row`() = runBlocking {
+    fun `delete extracts memories from the chat history before removing the row`() = runBlocking {
         val store = FakeChatStore()
         val history = listOf(user("u1"), assistantMessage("a1"), user("u2"))
         store.seed("chat-1", chat = history)
-        val sstm = RecordingSstmService()
-        val hand = oneShotHand(sstm)
+        val eltm = FakeEltmService()
+        val hand = oneShotHand(eltm)
         val service =
-            chatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+            chatRunService(testAppConfig(), hand = hand, chatStore = store, eltmService = eltm)
 
         assertTrue(service.deleteChat("chat-1"))
         assertNull(store.load("chat-1"), "the row is deleted only after extraction")
-        assertEquals(listOf("likes coffee"), sstm.created)
-        assertEquals(2, hand.requests.size, "extractor run + merge run")
+        val notes = eltm.notes.values.map { it.note }
+        assertTrue(notes.contains("likes coffee"), "the extracted fact lands in the ELTM")
+        assertEquals(2, hand.requests.size, "extractor run + writer run")
         // the extractor call carried the stored history with every user
         // message carrying its send-time <meta> anchor (the trailing message
         // is the extraction instruction); stripping the anchors must give the
@@ -83,11 +84,11 @@ class ChatRunServiceDeleteTest {
                 }
             }
         )
-        // no static tool list travels in the request anymore: the merge
+        // no static tool list travels in the request anymore: the writer
         // run's tools are served through the per-round GET /api/hand/tools
         // listing (pinned by HandCallbackTest), from the same provider
         assertTrue(
-            MergeMemoryToolProvider(sstm).specifications().map { it.name }.contains("add_memory")
+            EltmToolProvider(eltm).specifications().map { it.name }.contains("add_entity_note")
         )
     }
 
@@ -96,9 +97,9 @@ class ChatRunServiceDeleteTest {
         val store = FakeChatStore()
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         var rounds = 0
-        val sstm = RecordingSstmService()
+        val eltm = FakeEltmService()
         val hand = oneShotHand(
-            sstm = sstm,
+            eltm = eltm,
             extraction = {
                 // first delete: the extractor round is truncated; the
                 // retried delete extracts normally
@@ -110,32 +111,37 @@ class ChatRunServiceDeleteTest {
             },
         )
         val service =
-            chatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+            chatRunService(testAppConfig(), hand = hand, chatStore = store, eltmService = eltm)
 
         assertFailsWith<IllegalStateException> { service.deleteChat("chat-1") }
         assertTrue(store.load("chat-1") != null, "a failed extraction must keep the row")
-        assertTrue(sstm.created.isEmpty(), "a failed extraction must not merge anything")
+        assertTrue(eltm.notes.isEmpty(), "a failed extraction must not write anything")
 
-        // the retried delete re-extracts the same history; the merge agent
-        // deduplicates against whatever was already applied
+        // the retried delete re-extracts the same history; the ELTM writer
+        // deduplicates against whatever was already recorded
         assertTrue(service.deleteChat("chat-1"))
         assertNull(store.load("chat-1"))
-        assertEquals(listOf("likes coffee"), sstm.created)
+        val notes = eltm.notes.values.map { it.note }
+        assertTrue(notes.contains("likes coffee"))
     }
 
     @Test
-    fun `a round-limited merger fails the delete so a retry loses nothing`() = runBlocking {
-        // the merge run hits the round cap: the failed merge must fail the
+    fun `a round-limited writer fails the delete so a retry loses nothing`() = runBlocking {
+        // the writer run hits the round cap: the failed write must fail the
         // delete — the row survives, and a retry re-extracts the full
-        // history instead of discarding unmerged memories
+        // history instead of discarding unwritten memories
         val store = FakeChatStore()
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
-        val sstm = RecordingSstmService()
-        val provider = MergeMemoryToolProvider(sstm)
+        val eltm = FakeEltmService()
+        // the writer's first, capped round already knows the user entity
+        // (created by the real writer flow on a retry); the note tool call
+        // targets it
+        val entityId = eltm.createEntity("user", "general").entity.id
+        val provider = EltmToolProvider(eltm)
         val hand = oneShotHand(
-            sstm = sstm,
-            merge = {
-                val round = addMemoryRound("call_1", "likes coffee")
+            eltm = eltm,
+            writer = {
+                val round = addEntityNoteRound("call_note", entityId, "2026-08-17", "likes coffee")
                 listOf(HandEvent.AssistantMessage(round)) +
                         toolRoundEvents(round, provider) +
                         listOf(
@@ -147,13 +153,17 @@ class ChatRunServiceDeleteTest {
             },
         )
         val service =
-            chatRunService(testAppConfig(), hand = hand, chatStore = store, sstmService = sstm)
+            chatRunService(testAppConfig(), hand = hand, chatStore = store, eltmService = eltm)
 
-        val e = assertFailsWith<HandRunException> { service.deleteChat("chat-1") }
-        assertEquals("round_limit", e.type)
-        assertTrue(store.load("chat-1") != null, "a failed merge must keep the row")
-        // the memory applied before the cap stays; a retry deduplicates it
-        assertEquals(listOf("likes coffee"), sstm.created)
+        val e = assertFailsWith<IllegalStateException> { service.deleteChat("chat-1") }
+        // the writer wraps the hand's terminal failure: the round-limit
+        // classification is on the cause
+        val cause = assertIs<HandRunException>(e.cause)
+        assertEquals("round_limit", cause.type)
+        assertTrue(store.load("chat-1") != null, "a failed writer must keep the row")
+        // the note applied before the cap stays; a retry deduplicates it
+        val notes = eltm.notes.values.map { it.note }
+        assertTrue(notes.contains("likes coffee"))
     }
 
     @Test
@@ -163,7 +173,7 @@ class ChatRunServiceDeleteTest {
             testAppConfig(),
             hand = hand,
             chatStore = FakeChatStore(),
-            sstmService = RecordingSstmService(),
+            eltmService = FakeEltmService(),
         )
 
         assertFalse(service.deleteChat("nope"))
@@ -179,7 +189,7 @@ class ChatRunServiceDeleteTest {
             testAppConfig(),
             hand = hand,
             chatStore = store,
-            sstmService = RecordingSstmService(),
+            eltmService = FakeEltmService(),
         )
 
         assertTrue(service.deleteChat("chat-1"))
@@ -193,9 +203,9 @@ class ChatRunServiceDeleteTest {
         store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
         var concurrentAcquireConflicted = false
         lateinit var service: ChatRunService
-        val sstm = RecordingSstmService()
+        val eltm = FakeEltmService()
         val hand = oneShotHand(
-            sstm = sstm,
+            eltm = eltm,
             extraction = {
                 // mid-extraction: a new run must be rejected (409), the
                 // delete still holds the lock
@@ -211,7 +221,7 @@ class ChatRunServiceDeleteTest {
             testAppConfig(),
             hand = hand,
             chatStore = store,
-            sstmService = sstm,
+            eltmService = eltm,
         )
 
         assertTrue(service.deleteChat("chat-1"))

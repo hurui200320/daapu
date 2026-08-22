@@ -9,7 +9,7 @@ A PoC for an LLM chatbot with a memory system, split into a *brain* and a
   `src/main/kotlin/.../server/`) plus the memory system on **PostgreSQL**
   (pgvector) via Exposed + Flyway. The brain decides *when* and *how* to run
   LLM requests: the turn loop, the system prompt, history and injection,
-  compaction and SSTM memory extraction policies, tool advertisement, and
+  compaction and memory extraction policies, tool advertisement, and
   persistence — every piece of *content* lives here.
 - **The hand — hand-pi** (`hand-pi/`, a stateless Node/TS service on
   `@earendil-works/pi-ai`). Like the name suggests, the hand is the part that
@@ -107,8 +107,8 @@ cp config.example.jsonc config.jsonc
 | `providers` | `{<id>: {apiKey, baseUrl}}` (required)             | OpenAI-compatible providers, keyed by id (e.g. `bifrost`); `baseUrl` is used as-is and must carry the full `/v1` root. |
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
-| `memory`    | `compactModel` + `sstm` + `eltm` (required)        | Compaction + SSTM extraction + external long-term memory (ELTM) settings, see below. |
-| `title`     | `model` (required), `lastNRound` (default `0`)          | Session-title generation (`POST /api/chats/{id}/title`).              |
+| `memory`    | `compactModel` + `eltm` (required)                 | Compaction + external long-term memory (ELTM) settings, see below.   |
+| `title`     | `model` (required), `lastNRound` (default `0`)     | Session-title generation (`POST /api/chats/{id}/title`).             |
 | `hand`      | `baseUrl` (`http://127.0.0.1:3100`), `token` (`dev-token`), `maxRounds` (64), `maxRetries` (0), `streamIdleTimeoutMs` (300000) | The hand-pi execution service endpoint, the shared static token (`HAND_TOKEN`), and the run-policy knobs sent with every run (the hand holds no defaults). |
 
 `config.schema.json` is a JSON Schema (draft-07) mirroring the config models
@@ -118,8 +118,8 @@ and autocomplete field names.
 
 ### Memory pipeline (`memory`)
 
-History compaction and SSTM extraction (see `AGENTS.md` and
-`agent/oneshot/compaction/` + `agent/oneshot/sstm/`):
+History compaction and memory extraction (see `AGENTS.md` and
+`agent/oneshot/compaction/` + `agent/oneshot/eltm/`):
 
 - Compaction is triggered per model: the trigger fraction and the keep
   rounds live on the catalog entries (`agent/model/LLM.kt`), because the
@@ -137,35 +137,35 @@ History compaction and SSTM extraction (see `AGENTS.md` and
   `CONTEXT COMPACTION: `-marked summary user message. When the chat has
   fewer rounds than this, the keep count shrinks (down to zero) so an
   overflowing chat always compacts.
-- `compactModel` + `sstm.extractModel`/`mergeModel` — REQUIRED catalog model
-  ids for the one-shot pipelines (summarizer, memory extractor, memory merger);
-  they are resolved once at startup and reused for every run — a chat run's
-  own model is never used for these. The extractor/compactor see the raw
-  history, images included, so the model must support the content — a
-  model that cannot fails the run with a clear error (same as the chat
-  model's own capability check), and unknown ids fail fast at startup.
-- `sstm.maxCapacity` (required) — the total char length of all memory
-  contents; when the SSTM exceeds it after an update, the oldest entries are
-  purged into the ELTM (the only eviction path; the SSTM is always fully in
-  context, so this is the capacity lever, never retrieval).
-  `sstm.purgeBatchSize` (required) — how many SSTM entries one purge batch
-  moves into the ELTM.
+- `compactModel` + `eltm.extractionModel` — REQUIRED catalog model ids for
+  the one-shot pipelines (summarizer, memory extractor); they are resolved
+  once at startup and reused for every run — a chat run's own model is
+  never used for these. The extractor/compactor see the raw history,
+  images included, so the model must support the content — a model that
+  cannot fails the run with a clear error (same as the chat model's own
+  capability check), and unknown ids fail fast at startup.
+- The extracted facts are written into the ELTM diary directly by the ELTM
+  writer agent (no intermediate short-term store): the extractor
+  summarizes the dropped messages, the writer records them through its
+  tool loop, and a failed write fails the run (a retry re-extracts; the
+  writer skips content that is already recorded).
 
 ### ELTM (`memory.eltm`)
 
-The external long-term memory (diary model) that the SSTM is purged into
-(see `AGENTS.md` and `memory/eltm/`). It is REQUIRED for every deployment:
-the SSTM purge and the recall tool are unconditional system-prompt promises,
-so the `eltm` section must be present and complete.
+The external long-term memory (the diary model, see `AGENTS.md` and
+`memory/eltm/`). It is REQUIRED for every deployment: the extraction
+pipeline and the recall tool are unconditional system-prompt promises, so
+the `eltm` section must be present and complete.
 
-- `embeddingModel`, `writerModel`, `recallModel`, `rewriteModel` — REQUIRED
-  catalog model ids for the ELTM embedding, the ELTM writer, the recall
-  sub-session (Phase 4), and the per-turn query rewrite one-shot; the writer
-  and recall models must support tool calls, and all four are resolved once
-  at startup (unknown ids fail fast). The writer's round cap is
-  `maxWriterRounds` (default 150); the recall sub-session's execution budget
-  is `recallTimeoutSeconds` (default 600); `rewriteRounds` (REQUIRED) caps
-  the chat tail fed to the query rewrite (the last N user rounds).
+- `extractionModel`, `embeddingModel`, `writerModel`, `recallModel`,
+  `rewriteModel` — REQUIRED catalog model ids for the memory extractor, the
+  ELTM embedding, the ELTM writer, the recall sub-session (Phase 4), and
+  the per-turn query rewrite one-shot; the writer and recall models must
+  support tool calls, and all are resolved once at startup (unknown ids
+  fail fast). The writer's round cap is `maxWriterRounds` (default 150);
+  the recall sub-session's execution budget is `recallTimeoutSeconds`
+  (default 600); `rewriteRounds` (REQUIRED) caps the chat tail fed to the
+  query rewrite (the last N user rounds).
 - `relatedEntitiesLimit` / `relatedNotesLimit` — REQUIRED (the injected
   ELTM size is related to the main model's context, so they must be
   explicit): how many related entities and diary notes the ELTM context
@@ -285,14 +285,10 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | `PUT /api/chats/{id}`                   | Rename a chat (`{"title": "..."}`).                          |
 | `POST /api/chats/{id}/title`            | Generate a title from the chat history (no-op on an empty chat, 400 on a capability mismatch). |
 | `DELETE /api/chats/{id}`                | Delete a chat (409 while a run is active).                   |
-| `DELETE /api/chats/{id}/messages/{index}` | Truncate: drop the user message at `index` and everything after it (without SSTM extraction; 400 on a non-user/out-of-bounds index). |
+| `DELETE /api/chats/{id}/messages/{index}` | Truncate: drop the user message at `index` and everything after it (without memory extraction; 400 on a non-user/out-of-bounds index). |
 | `POST /api/chats/{id}/fork/{index}`     | Fork: copy history up to and including the assistant message at `index` (`finishReason` `"stop"` required) into a new chat. |
 | `GET /api/chats/{id}/chat`              | Full chat as neutral-format JSON (raw `chat_json`).         |
 | `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |
-| `GET /api/sstm`                         | Shared short-term memories (in injection order).             |
-| `POST /api/sstm`                        | Create a memory.                                             |
-| `PUT /api/sstm/{id}`                    | Update a memory (bumps `last_update`).                       |
-| `DELETE /api/sstm/{id}`                 | Delete a memory.                                             |
 | `GET /api/hand/tools`                   | Internal: the hand's per-round tool advertisement (`?runId=...`). |
 | `POST /api/hand/tool`                   | Internal: the hand's tool-execution callback (`runId`-scoped). |
 

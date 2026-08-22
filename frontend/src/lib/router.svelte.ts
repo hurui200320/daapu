@@ -1,6 +1,6 @@
 /**
  * Hash-based client router. Routes: `#/chat` (home), `#/chat/<id>`,
- * `#/sstm`, `#/eltm`. Hash routing
+ * `#/eltm`. Hash routing
  * needs no server cooperation — the hash is never sent to the server, so the
  * app works from any static host (vite dev/preview, ktor static, nginx)
  * without SPA fallback config; the same reason llama.cpp's webui uses
@@ -10,7 +10,7 @@
  * App.svelte translates route changes into chatStore picks/closes, and store
  * actions that change the open chat (create/fork/delete) navigate the hash.
  */
-export type Route = { name: 'chat'; chatId: string | null } | { name: 'sstm' } | { name: 'eltm' }
+export type Route = { name: 'chat'; chatId: string | null } | { name: 'eltm' }
 
 const CHAT_HOME: Route = { name: 'chat', chatId: null }
 
@@ -26,7 +26,6 @@ function parseHash(hash: string): Route {
   const path = hash.replace(/^#/, '')
   const chat = /^\/chat(?:\/([^/]+))?\/?$/.exec(path)
   if (chat) return { name: 'chat', chatId: chat[1] ? safeDecode(chat[1]) : null }
-  if (path === '/sstm' || path === '/sstm/') return { name: 'sstm' }
   if (path === '/eltm' || path === '/eltm/') return { name: 'eltm' }
   // unknown or empty hash: chat home (the URL bar is left as-is)
   return CHAT_HOME

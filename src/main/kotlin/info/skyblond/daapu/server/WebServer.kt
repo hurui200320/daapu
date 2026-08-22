@@ -5,7 +5,6 @@ import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.di.daapuModule
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.sstm.SstmService
 import info.skyblond.daapu.server.endpoint.*
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.*
@@ -65,7 +64,6 @@ fun startWebServer(config: AppConfig) {
  */
 internal fun Application.module(koin: Koin) {
     val service = koin.get<ChatRunService>()
-    val sstmService = koin.get<SstmService>()
     val eltmService = koin.get<EltmService>()
     val handCallback = koin.get<HandCallbackService>()
 
@@ -127,7 +125,6 @@ internal fun Application.module(koin: Koin) {
             registerModelsEndpoints(service)
             registerHandEndpoints(handCallback)
             registerChatsEndpoints(service)
-            registerSstmEndpoints(sstmService)
             registerEltmEndpoints(eltmService)
         }
     }

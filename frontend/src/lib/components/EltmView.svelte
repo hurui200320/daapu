@@ -42,8 +42,8 @@
   let entitiesFull = $state(false)
   let relationshipsFull = $state(false)
   // per-card expand flags and lazily fetched drill-down payloads (refetched
-  // on every expand: the SSTM purge writes server-side, so a cached payload
-  // would go stale for the whole session — the view stays mounted)
+  // on every expand: the extraction pipeline writes server-side, so a cached
+  // payload would go stale for the whole session — the view stays mounted)
   let expandedEntities = $state<Record<number, boolean>>({})
   let expandedRelationships = $state<Record<number, boolean>>({})
   let entityDetails = $state<Record<number, EntityDetails>>({})
@@ -86,13 +86,13 @@
   }
 
   /**
-   * Background resync (30s + window focus, same cadence as the SSTM view):
-   * the SSTM purge pipeline writes to the ELTM server-side, so the view must
-   * refresh on its own. Silent on failure and replaces a list only when it
-   * actually changed, so an expanded card keeps its payload. The fetch
-   * covers the currently loaded window (`max(PAGE_SIZE, list length)`) plus
-   * the probe row, so pages appended via "load more" survive a resync — and
-   * a window that shrank server-side (merge/delete) shrinks here too.
+   * Background resync (30s + window focus): the extraction pipeline writes to
+   * the ELTM server-side, so the view must refresh on its own. Silent on
+   * failure and replaces a list only when it actually changed, so an expanded
+   * card keeps its payload. The fetch covers the currently loaded window
+   * (`max(PAGE_SIZE, list length)`) plus the probe row, so pages appended via
+   * "load more" survive a resync — and a window that shrank server-side
+   * (merge/delete) shrinks here too.
    */
   async function resync() {
     try {

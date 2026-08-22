@@ -20,8 +20,9 @@ import java.time.format.DateTimeParseException
  * one-to-one (entities and relationships are never mixed in one tool).
  *
  * The RW provider is the ONLY ELTM write path (the chat model never writes
- * the ELTM directly; the SSTM purge pipeline drives the writer agent); the
- * read-only provider serves the recall sub-session (Phase 4).
+ * the ELTM directly; the extraction pipeline drives the writer agent); the
+ * read-only provider serves the chat loop's tool set today and the recall
+ * sub-session (Phase 4) later.
  *
  * The optional [namespace] switches the provider between the two shapes:
  * blank (the default — one-shot services like the writer/recall agents use

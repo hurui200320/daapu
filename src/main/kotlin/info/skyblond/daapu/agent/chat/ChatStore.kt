@@ -9,9 +9,12 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ChatInfo(val id: String, val title: String)
 
+/**
+ * One chat row's content: the message history plus the ELTM version
+ * fingerprint of the last successful run.
+ */
 data class ChatContent(
     val messages: List<ChatMessage>,
-    val sstmVersion: String,
     val eltmVersion: String
 )
 
@@ -25,7 +28,7 @@ data class ChatEntry(
  * create, rename, delete, message load/store) lives here, so callers
  * (`server/ChatRunService.kt` and the turn loop) never touch Exposed
  * directly. The turn loop's store upsert writes only `id` + `chat_json` +
- * `sstm_version` — never the title.
+ * `eltm_version` — never the title.
  */
 interface ChatStore {
     /** All chat rows as `id` + `title`, newest first, capped. */

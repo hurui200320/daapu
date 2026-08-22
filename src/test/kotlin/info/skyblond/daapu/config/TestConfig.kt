@@ -25,13 +25,8 @@ fun testAppConfig() = AppConfig(
     mcp = McpConfig(servers = emptyList()),
     memory = MemoryConfig(
         compactModel = "bifrost/cerebras/gemma-4-31b",
-        sstm = SstmConfig(
-            extractModel = "bifrost/cerebras/gemma-4-31b",
-            mergeModel = "bifrost/cerebras/gemma-4-31b",
-            maxCapacity = 100,
-            purgeBatchSize = 10,
-        ),
         eltm = EltmConfig(
+            extractionModel = "bifrost/cerebras/gemma-4-31b",
             embeddingModel = "bifrost/zenmux sub/google/gemini-embedding-2",
             writerModel = "bifrost/cerebras/gemma-4-31b",
             recallModel = "bifrost/cerebras/gemma-4-31b",

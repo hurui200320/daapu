@@ -195,7 +195,7 @@ class ChatCompactionServiceTest {
         )
         assertTrue((newChat[1].parts.single() as ChatMessagePart.Text).text.startsWith("u3 "))
         assertTrue((newChat[5].parts.single() as ChatMessagePart.Text).text.startsWith("u5 "))
-        // the dropped raw messages feed the SSTM extraction
+        // the dropped raw messages feed the memory extraction
         assertEquals(4, result.droppedMessages.size, "two complete turns dropped")
         assertTrue(
             (result.droppedMessages[0].parts.single() as ChatMessagePart.Text).text.startsWith(
@@ -219,7 +219,7 @@ class ChatCompactionServiceTest {
         // set, never double-injected, and the preserved output stays clean.
         val contextInjection = ContextInjection()
         val injection = contextInjection.generateInjection(
-            java.time.ZonedDateTime.now(), false, false, emptyList()
+            java.time.ZonedDateTime.now(), false
         )
         val chat = listOf(
             stampedUser("u1 " + "x".repeat(200), "2026-08-16T09:00:00Z")

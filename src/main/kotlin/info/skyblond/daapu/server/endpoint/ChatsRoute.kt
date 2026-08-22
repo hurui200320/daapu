@@ -48,7 +48,7 @@ fun Route.registerChatsEndpoints(service: ChatRunService) {
             call.respond(HttpStatusCode.NoContent)
         }
         // drop the message at `index` (a user message) and everything
-        // after it; the tail is discarded WITHOUT SSTM extraction
+        // after it; the tail is discarded WITHOUT memory extraction
         delete("/{chatId}/messages/{index}") {
             val id = call.chatIdParam()
             val index = call.messageIndexParam()
@@ -97,7 +97,7 @@ private suspend fun handleChatMessage(call: ApplicationCall, service: ChatRunSer
             // responseWriteTimeoutSeconds (10s default) starts a timer on the
             // first (headers) write and kills the connection when it isn't
             // flushed within 10s. A run can stay silent for minutes during
-            // history compaction/SSTM extraction, which would trip that
+            // history compaction/memory extraction, which would trip that
             // timeout (502 at the proxy) — committing the stream up front
             // completes the write and cancels the timer. The frontend
             // ignores unknown events, so this is invisible to the client.

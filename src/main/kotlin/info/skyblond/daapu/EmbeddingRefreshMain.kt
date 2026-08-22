@@ -48,8 +48,8 @@ import org.koin.dsl.koinApplication
  * every chat's next run flags `eltm-updated` — the retrieval results are
  * different under the new model.
  *
- * Relationships, attributes, and SSTM memories carry no stored vectors, so
- * nothing else needs refreshing. The vector width never depends on the
+ * Relationships and attributes carry no stored vectors, so nothing else
+ * needs refreshing. The vector width never depends on the
  * model (zero-padded to [MAX_VECTOR_DIMENSIONS]), so no schema change is
  * ever needed.
  */

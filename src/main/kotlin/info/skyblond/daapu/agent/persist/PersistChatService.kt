@@ -4,8 +4,8 @@ import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
+import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
-import info.skyblond.daapu.agent.oneshot.sstm.SstmExtractionService
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
@@ -13,7 +13,6 @@ import info.skyblond.daapu.memory.eltm.EltmEntity
 import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EntityWithScore
-import info.skyblond.daapu.memory.sstm.SstmService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.ZonedDateTime
 
@@ -24,7 +23,7 @@ import java.time.ZonedDateTime
  * callback HTTP route back into this process), retries, and the
  * context-vs-output exhaustion classification. The brain keeps everything
  * content-related: the neutral history, the system prompt, injection,
- * compaction policy, and SSTM extraction.
+ * compaction policy, and memory extraction.
  *
  * The neutral chat ([ChatMessage]s) is the canonical in-loop structure:
  * it is loaded from [chatStore], extended with the injected user message
@@ -36,10 +35,10 @@ import java.time.ZonedDateTime
  * Reactive compaction: the hand reports `context_exhausted` when the
  * prompt overflows the window (a `length` finish near the window or a
  * gateway-side 400/413 rejection). The loop then discards the failed
- * attempt's messages, compacts, extracts SSTM from the dropped messages,
- * refreshes the injection in place, and starts a fresh hand run — with no
- * attempt cap, exactly like the old in-process loop (a second exhaustion
- * compacts again).
+ * attempt's messages, compacts, extracts memories from the dropped
+ * messages, refreshes the injection in place, and starts a fresh hand run —
+ * with no attempt cap, exactly like the old in-process loop (a second
+ * exhaustion compacts again).
  *
  * The harness context ([ContextInjection.injectContext]) is applied to the
  * in-loop chat once before the round — `<meta>` time anchors on the
@@ -52,19 +51,18 @@ import java.time.ZonedDateTime
  */
 class PersistChatService(
     private val chatStore: ChatStore,
-    private val sstmService: SstmService,
     private val eltmService: EltmService,
     private val queryRewriteService: QueryRewriteService,
     private val hand: HandService,
     private val compactionService: ChatCompactionService,
     /**
-     * SSTM extraction over the raw messages a compaction is about to discard
-     * (see `agent/oneshot/sstm/SstmExtractionService.kt`). No lock is held:
-     * a concurrent run's injection read may observe a half-merged SSTM, which
-     * is fine — the version digest comparison flags it and the next round
-     * reads the final state.
+     * Memory extraction over the raw messages a compaction is about to
+     * discard (see `agent/oneshot/eltm/MemoryExtractionService.kt`): the
+     * extractor summarizes them and the ELTM writer records the facts into
+     * the diary directly. No lock is held: concurrent writes are safe
+     * because the writer deduplicates against the store.
      */
-    private val sstmExtractionService: SstmExtractionService,
+    private val memoryExtractionService: MemoryExtractionService,
     /**
      * How many trailing user rounds of the chat feed the query rewrite
      * one-shot (config `memory.eltm.rewriteRounds`).
@@ -108,9 +106,8 @@ class PersistChatService(
 
         val loaded = chatStore.load(chatId) ?: ChatEntry(
             ChatInfo(chatId, DEFAULT_CHAT_TITLE),
-            ChatContent(emptyList(), "", "")
+            ChatContent(emptyList(), "")
         )
-        val chatSstmVersion = loaded.content.sstmVersion
         val chatEltmVersion = loaded.content.eltmVersion
         var chat = loaded.content.messages
 
@@ -120,21 +117,20 @@ class PersistChatService(
         // does, the hand reports context_exhausted, which compacts reactively
         // below). The not-yet-appended input is not counted; the trigger
         // headroom absorbs the difference.
-        // The raw dropped messages feed the SSTM extraction BEFORE they are
+        // The raw dropped messages feed the memory extraction BEFORE they are
         // discarded (see agent/persist/SystemPrompt.kt's memory architecture).
         if (model.compactionTriggerFraction > 0 &&
             currentPromptTokens(chat) > model.contextLength * model.compactionTriggerFraction
         ) {
             logger.info { "Compacting chat $chatId" }
             val result = compactionService.compactChat(chat, model.compactionKeepRounds)
-            sstmExtractionService.processDiscardedMessages(result.droppedMessages)
+            memoryExtractionService.processDiscardedMessages(result.droppedMessages)
             // the compacted history reaches the client via the post-run
             // resync; no dedicated event is emitted
             chat = result.newChat
             logger.info { "Finished compacting chat $chatId" }
         }
 
-        var sstm = sstmService.listMemories()
         var eltmVersion = eltmService.version()
         // the run's user message: stamped and injected by injectContext below
         chat = chat + ChatMessage(
@@ -180,9 +176,7 @@ class PersistChatService(
             chat,
             InjectionSpec(
                 time = ZonedDateTime.now(),
-                sstmUpdated = chatSstmVersion != sstm.version,
                 eltmUpdated = chatEltmVersion != eltmVersion,
-                memoryList = sstm.memories.map { it.content },
                 relatedEntities = relatedEntities,
                 relatedNotes = relatedNotes,
             )
@@ -216,7 +210,7 @@ class PersistChatService(
                     if (terminal.type == "context_exhausted") {
                         logger.info { "Hand reports context exhaustion, compacting chat $chatId" }
                         val result = compactionService.compactChat(chat, model.compactionKeepRounds)
-                        sstmExtractionService.processDiscardedMessages(result.droppedMessages)
+                        memoryExtractionService.processDiscardedMessages(result.droppedMessages)
                         // the compacted chat history does not contain injection
                         chat = result.newChat
                         // The compaction replaces the whole chat with the
@@ -234,23 +228,20 @@ class PersistChatService(
                                 parts = userParts,
                             )
                         }
-                        // the extraction may have changed the SSTM, so refresh
-                        // the injection with the fresh memory list and the
-                        // updated flag (injectContext replaces the stale
+                        // the extraction may have changed the ELTM, so refresh
+                        // the injection with the fresh version flag
+                        // (injectContext replaces the stale
                         // injection on the run's message in place). The
                         // related entities/notes were retrieved for THIS run's
                         // input, which the compaction never changes, so the
                         // pre-round search results stay valid — no re-search,
                         // no mid-loop rewrite/embed call.
-                        sstm = sstmService.listMemories()
                         eltmVersion = eltmService.version()
                         chat = contextInjection.injectContext(
                             chat,
                             InjectionSpec(
                                 time = ZonedDateTime.now(),
-                                sstmUpdated = chatSstmVersion != sstm.version,
                                 eltmUpdated = chatEltmVersion != eltmVersion,
-                                memoryList = sstm.memories.map { it.content },
                                 relatedEntities = relatedEntities,
                                 relatedNotes = relatedNotes,
                             )
@@ -266,7 +257,7 @@ class PersistChatService(
 
         // only the success path stores: a failed run never reaches here
         chat = contextInjection.removeInjection(chat)
-        chatStore.store(chatId, ChatContent(chat, sstm.version, eltmVersion))
+        chatStore.store(chatId, ChatContent(chat, eltmVersion))
     }
 
     private sealed interface HandTerminal {
