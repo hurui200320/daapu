@@ -29,7 +29,7 @@ import info.skyblond.daapu.config.validateToolNamespaceSyntax
  */
 class CombinedToolProvider(
     private val children: List<ToolProvider>,
-) : ToolProvider, AutoCloseable {
+) : ToolProvider {
 
     // the routing table: namespace -> owning child. Namespaces are validated
     // (charset + no `__`), non-blank and unique across children, so a tool
@@ -66,10 +66,6 @@ class CombinedToolProvider(
                 "tool '${request.name}' is not advertised by any combined tool provider"
             )
         return child.execute(request)
-    }
-
-    override fun close() {
-        children.filterIsInstance<AutoCloseable>().forEach { it.close() }
     }
 
     /**

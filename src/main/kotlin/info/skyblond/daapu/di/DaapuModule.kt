@@ -3,7 +3,6 @@ package info.skyblond.daapu.di
 import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.ChatStore
 import info.skyblond.daapu.agent.chat.PostgresChatStore
-import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.model.ModelProvider
@@ -14,7 +13,6 @@ import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.persist.PersistChatService
-import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.HandCallbackService
@@ -95,7 +93,9 @@ fun daapuModule(config: AppConfig): Module = module {
     // aborts startup instead of silently degrading every chat run. The
     // default (`McpToolProvider(emptyList())`) never appears here: the
     // container always wires the configured servers.
-    single<McpToolProvider> { McpToolProvider(config.mcp.servers) }
+    single<McpToolProvider> {
+        McpToolProvider(config.mcp.servers)
+    } withOptions { onClose { it?.close() } }
 
     // one-shot pipeline services: stateless across runs, so a single
     // instance is shared by every concurrent chat run. They talk to the
@@ -140,7 +140,7 @@ fun daapuModule(config: AppConfig): Module = module {
                 add(get<EltmToolProvider>())
             }
         )
-    } withOptions { onClose { it?.close() } }
+    }
     single<EltmWriterService> {
         EltmWriterService(
             writerModel = requiredLlm(
@@ -156,7 +156,10 @@ fun daapuModule(config: AppConfig): Module = module {
     }
     single<MemoryExtractionService> {
         MemoryExtractionService(
-            extractModel = requiredLlm("memory.eltm.extractionModel", config.memory.eltm.extractionModel),
+            extractModel = requiredLlm(
+                "memory.eltm.extractionModel",
+                config.memory.eltm.extractionModel
+            ),
             hand = get(),
             maxRetries = config.hand.maxRetries,
             streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
