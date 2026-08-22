@@ -56,6 +56,15 @@ extraction, tools, memory, persistence — and decides when and how the hand
 runs (every LLM call, chat loop or one-shot, goes through the same `/v1/run`
 round loop, see `AGENTS.md`).
 
+## Design Philosophy: One Topic Per Session
+
+Daapu is designed around a **"Micro-Session" (Task-Oriented)** philosophy, rather than a single, infinitely long conversation.
+
+- **One Topic Per Session:** A chat session should ideally focus on a single task, feature, or discussion topic. This prevents the LLM from accumulating attention decay, hallucination snowballing, and excessive token costs associated with very long contexts.
+- **Memory Isolation:** There is no global Short-Term Memory (SSTM, which has been removed) that forces recent conversational context across all active chats. Mixing contexts (e.g., discussing "what's for dinner" in one session and "quantum physics" or "code style" in another) pollutes the LLM's attention. Instead, each session is isolated.
+- **Task-Oriented & Extract:** Once a task or topic is completed, the session should be deleted or truncated. This is not just UI cleanup; it acts as a system trigger. Dropped messages are fed into the `MemoryExtractionService`, where facts and events are distilled and persisted into the global ELTM (External Long-Term Memory).
+- **On-Demand Context:** Future sessions retrieve these persisted facts dynamically via vector search (`QueryRewriteService`), ensuring the LLM only sees relevant, unpolluted context when it needs it.
+
 ## Development
 
 ### Prerequisites

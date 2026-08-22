@@ -7,6 +7,15 @@ Guidance for AI agents (and humans) working in this project.
 PoC of a chatbot with a memory system: Kotlin/JVM (Gradle) brain + Svelte
 frontend + Node/TS "hand-pi" service.
 
+### Behavioral Guidelines: Micro-Sessions & Memory Isolation
+
+Agents (and users) should adhere to the **Micro-Session** philosophy:
+- **One Topic Per Session:** Do not maintain a single, infinite chat session. Open a new chat for each specific task, feature implementation, or distinct topic. This prevents attention decay, hallucination snowballing, and reduces token costs.
+- **Task-Oriented & Extract:** When a task is completed, truncate or delete the chat. This actively triggers the memory extraction pipeline (`MemoryExtractionService`), writing distilled facts into the ELTM (External Long-Term Memory).
+- **Memory Isolation:** There is no global shared short-term memory (SSTM) injected into all active chats. Cross-polluting contexts (e.g., mixing code-style preferences with a discussion about literature) degrades reasoning. Context is pulled strictly on-demand via the ELTM and `QueryRewriteService`.
+
+### Architecture
+
 - **PostgreSQL + pgvector** — Exposed access, Flyway schema in
   `src/main/resources/db/migration/`.
 - **hand-pi** (`hand-pi/`, `@earendil-works/pi-ai` 0.84.1) — stateless,
