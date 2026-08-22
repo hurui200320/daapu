@@ -20,7 +20,10 @@ import kotlin.test.assertTrue
 class ModelCapabilityCheckTest {
 
     private val catalog = ModelCatalog(
-        mapOf("bifrost" to ModelProvider("bifrost", "http://gateway.example/v1", "test-key"))
+        mapOf(
+            "bifrost" to ModelProvider("bifrost", "http://gateway.example/v1", "test-key"),
+            "deepinfra" to ModelProvider("deepinfra", "http://gateway.example/v1", "test-key"),
+        )
     )
     private val gptOss = catalog.findModel("bifrost/cerebras/gpt-oss-120b")!!
     private val cerebrasGemma = catalog.findModel("bifrost/cerebras/gemma-4-31b")!!

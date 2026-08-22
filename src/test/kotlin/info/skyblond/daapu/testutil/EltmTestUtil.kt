@@ -487,7 +487,10 @@ fun testEltmWriterService(
     maxWriterRounds: Int = 150,
 ): EltmWriterService {
     val model = ModelCatalog(
-        mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"))
+        mapOf(
+            "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
+            "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test"),
+        )
     ).findModel("bifrost/cerebras/gemma-4-31b")!!
     return EltmWriterService(
         writerModel = model,

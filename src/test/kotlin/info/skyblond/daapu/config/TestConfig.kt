@@ -15,6 +15,10 @@ fun testAppConfig() = AppConfig(
         "bifrost" to LlmProviderConfig(
             apiKey = "test",
             baseUrl = "http://localhost:9"
+        ),
+        "deepinfra" to LlmProviderConfig(
+            apiKey = "test",
+            baseUrl = "http://localhost:9"
         )
     ),
     server = ServerConfig(port = 8080),

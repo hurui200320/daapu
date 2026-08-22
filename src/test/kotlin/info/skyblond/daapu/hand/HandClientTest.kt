@@ -215,6 +215,34 @@ class HandClientTest {
     }
 
     @Test
+    fun `embed survives a slow gateway longer than the CIO engine's default request cap`() {
+        // regression: the CIO engine caps every non-SSE request at
+        // `requestTimeout` (default 15s); a slow embedding gateway (e.g.
+        // deepinfra) exceeded it and the embed died with
+        // "Request timeout has expired". The client disables the cap, so
+        // a 20s answer must still succeed (the ~20s wall time is the price
+        // of pinning the fix).
+        val server = MockSseServer {
+            MockSseResponse(
+                200,
+                listOf(
+                    """{"vectors":[[1.5,-2.0]],"dimensions":2,"usage":{"promptTokens":3,"totalTokens":3}}"""
+                ),
+                delayMs = 20_000,
+            )
+        }
+        try {
+            val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
+            val result = runBlocking { client.embed(embedRequest(server.port)) }
+            assertEquals(listOf(listOf(1.5f, -2.0f)), result.vectors)
+            assertEquals(2, result.dimensions)
+            client.close()
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
     fun `embed surfaces the hand error taxonomy`() {
         val server = MockSseServer {
             MockSseResponse(

@@ -160,13 +160,14 @@ class ChatRunServiceTest {
     }
 
     @Test
-    fun `a config without the bifrost provider fails fast at construction`() {
-        // the catalog pins its models to the bifrost gateway (see
-        // ModelCatalog.kt); a config without it is a wiring bug
-        val e = assertIs<IllegalStateException>(
+    fun `a config without the providers fails fast at construction`() {
+        // the catalog pins its models to the bifrost gateway and the
+        // deepinfra embedding provider (see ModelCatalog.kt); a config
+        // without them is a wiring bug
+        val e = assertIs<IllegalArgumentException>(
             assertFailsFast { chatRunService(testAppConfig().copy(providers = emptyMap())) }
         )
-        assertEquals("Provider config 'bifrost' not found", e.message)
+        assertEquals("ModelCatalog requires a provider with id 'bifrost'", e.message)
     }
 
     @Test

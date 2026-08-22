@@ -66,6 +66,14 @@ class HttpHandClient(
 
     private val client = HttpClient(CIO) {
         expectSuccess = false
+        engine {
+            // the CIO engine caps every non-SSE request at `requestTimeout`
+            // (default 15_000 ms) — that would kill slow `/v1/embed` calls
+            // (e.g. a slow embedding gateway) long before the hand's own
+            // per-attempt budget; 0 disables the cap. SSE requests are
+            // exempt anyway, so the chat loop's stream is unaffected.
+            requestTimeout = 0
+        }
         // the SSE plugin is required for sseSession; reconnect stays off
         // (passed per request as `reconnectionTime = null`)
         install(SSE)

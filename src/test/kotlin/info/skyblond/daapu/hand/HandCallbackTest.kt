@@ -75,6 +75,11 @@ class HandCallbackTest {
                 id = "bifrost",
                 baseUrl = "http://127.0.0.1:9/v1",
                 apiKey = "test"
+            ),
+            "deepinfra" to ModelProvider(
+                id = "deepinfra",
+                baseUrl = "http://127.0.0.1:9/v1",
+                apiKey = "test"
             )
         )
     ).findModel("bifrost/cerebras/gpt-oss-120b")!!
@@ -283,6 +288,11 @@ class HandCallbackTest {
                 mapOf(
                     "bifrost" to ModelProvider(
                         id = "bifrost",
+                        baseUrl = "http://127.0.0.1:9/v1",
+                        apiKey = "test"
+                    ),
+                    "deepinfra" to ModelProvider(
+                        id = "deepinfra",
                         baseUrl = "http://127.0.0.1:9/v1",
                         apiKey = "test"
                     )

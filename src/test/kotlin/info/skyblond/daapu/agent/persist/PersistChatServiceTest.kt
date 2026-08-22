@@ -64,7 +64,10 @@ class PersistChatServiceTest {
         compactionKeepRounds: Int = 2,
     ): LLM {
         val catalog = ModelCatalog(
-            mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test-key"))
+            mapOf(
+                "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test-key"),
+                "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test-key"),
+            )
         ).findModel(id)!!
         return LLM(
             provider = catalog.provider,

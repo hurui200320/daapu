@@ -12,12 +12,15 @@ import kotlin.concurrent.thread
 
 /**
  * What the mock SSE server answers for one connection: an HTTP status (a
- * non-2xx exercises the retry policy's HTTP-error path) and the canned data
- * lines, framed as a `text/event-stream` response.
+ * non-2xx exercises the retry policy's HTTP-error path), the canned data
+ * lines (framed as a `text/event-stream` response), and an optional
+ * [delayMs] the server sleeps before answering (e.g. to prove a client
+ * request is not cut short by an engine-level timeout).
  */
 internal data class MockSseResponse(
     val status: Int = 200,
     val lines: List<String>,
+    val delayMs: Long = 0,
 )
 
 /**
@@ -95,6 +98,9 @@ internal class MockSseServer(private val respond: (attempt: Int) -> MockSseRespo
         }
 
         fun respond(response: MockSseResponse) {
+            if (response.delayMs > 0) {
+                Thread.sleep(response.delayMs)
+            }
             val reason = when (response.status) {
                 200 -> "OK"
                 500 -> "Internal Server Error"

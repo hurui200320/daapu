@@ -15,7 +15,10 @@ import kotlin.test.*
 class TitleGeneratorTest {
 
     private fun model(id: String = "bifrost/cerebras/gemma-4-31b") = ModelCatalog(
-        mapOf("bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"))
+        mapOf(
+            "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
+            "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test"),
+        )
     ).findModel(id)!!
 
     private fun generator(
