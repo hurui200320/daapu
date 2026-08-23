@@ -95,8 +95,30 @@ class HandService(
         toolProvider: ToolProvider,
         model: LLM,
     ): List<ChatMessage> {
+        val result = runCollectPartial(request, toolProvider, model)
+        result.exception?.let { throw it }
+        return result.result
+    }
+
+    /**
+     * Like [runCollect], but a hand `run_error` does not throw: the messages
+     * collected so far plus the terminal [HandRunException] come back in one
+     * [HandRunResult], so a caller can recover a partial history (e.g. a
+     * diagnostic action trace) from a failed run instead of losing it.
+     * [runCollect] delegates here and rethrows the captured exception.
+     *
+     * A dropped connection before a terminal event still throws
+     * [HandUpstreamException] — a dead transport carries no recoverable
+     * partial state worth distinguishing, the caller treats it as terminal.
+     */
+    suspend fun runCollectPartial(
+        request: HandRunRequest,
+        toolProvider: ToolProvider,
+        model: LLM,
+    ): HandRunResult {
         val messages = mutableListOf<ChatMessage>()
         var terminal: HandEvent.Done? = null
+        var error: HandRunException? = null
         run(request, toolProvider, model).collect { event ->
             when (event) {
                 // per-round authoritative message; the deltas are dropped
@@ -117,7 +139,10 @@ class HandService(
 
                 is HandEvent.Done -> terminal = event
                 is HandEvent.Retry -> logger.info { "one-shot retry: ${event.message}" }
-                is HandEvent.RunError -> throw HandRunException(event.type, event.message)
+                // RunError is terminal (the hand closes the stream on it), so
+                // capturing it instead of throwing keeps the partial history;
+                // the rest of the flow carries nothing more to collect
+                is HandEvent.RunError -> error = HandRunException(event.type, event.message)
                 // stream noise or display echoes: nothing to collect
                 is HandEvent.TextDelta,
                 is HandEvent.ReasoningDelta,
@@ -126,8 +151,8 @@ class HandService(
         }
         // defensive: [HandClient.run] already fails a stream that closes
         // without a terminal event, so this should not be reachable
-        check(terminal != null) { "one-shot run ended without a terminal event" }
-        return messages
+        check(terminal != null || error != null) { "one-shot run ended without a terminal event" }
+        return HandRunResult(messages.toList(), error)
     }
 
     /**

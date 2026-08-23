@@ -26,8 +26,11 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   over `hand/HandClient.kt`'s `/v1/run` SSE round loop. Every LLM call is a
   `/v1/run`: `run` streams `[HandEvent]` to the chat loop; `runCollect`
   (one-shots) consumes the same flow to a terminal `List<ChatMessage>` (text
-  one-shots take the last message) — ONE loop implementation, retry policy, and
-  classification system-wide.
+  one-shots take the last message); `runCollectPartial` runs the same loop but
+  returns the collected messages plus the terminal `HandRunException` instead
+  of throwing (a dropped transport still throws `HandUpstreamException`) — the
+  Phase 4 investigate agent's recovery hook. ONE loop implementation, retry
+  policy, and classification system-wide.
   - Per `/v1/run`: a fresh internal `runId` (never seen by the chat loop); the
     in-flight run registers under it before the request and is evicted when the
     stream ends (duplicate registration fails fast); the tool callback URL
@@ -79,8 +82,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     models resolve inline via `requiredLlm(...)` (fail-fast; the recall model is
     NOT resolved at boot — the recall sub-session is unwired until Phase 4).
     Resource cleanup is Koin's: `onClose` on `HandService`/
-    `CombinedToolProvider` fires when the JVM shutdown hook calls
-    `koinApp.close()`. `startWebServer` resolves the root
+    `McpToolProvider` fires when the JVM shutdown hook calls
+    `koinApp.close()` (the MCP provider closes its cached clients itself;
+    `CombinedToolProvider` owns no resources). `startWebServer` resolves the root
     (`koin.get<ChatRunService>()`) BEFORE the server starts, so fail-fast
     validation and the eager MCP connect run at startup; routes resolve
     `EltmService`/`HandCallbackService` from the same container
@@ -211,7 +215,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   serve at least one non-blank namespace, validated (`SAFE_ID_REGEX`, no `__`)
   and unique, fail fast at construction; routing splits at the first `__`
   (unknown prefix/bare name → `isError`), `executionTimeoutSeconds` delegates to
-  the owner, `close()` closes `AutoCloseable` children.
+  the owner (0 for unroutable names). Child cleanup is the DI container's job:
+  the MCP provider closes its cached clients through Koin's `onClose`
+  (`di/DaapuModule.kt`), not through this composite.
   `toolExecutionTimeoutSeconds` is REQUIRED per server (0 = none), resolved by
   the callback route from `ToolProvider.executionTimeoutSeconds`, enforced with
   `withTimeout` (overrun → `isError`, run survives). A transport failure

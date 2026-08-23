@@ -214,6 +214,18 @@ data class HandToolListResponse(
 class HandRunException(val type: String, message: String) : Exception(message)
 
 /**
+ * The outcome of a one-shot run that keeps its partial history on failure
+ * ([HandService.runCollectPartial]): the collected messages plus the
+ * terminal [HandRunException] when the run ended on a hand `error` event
+ * (null on success). A dropped connection before a terminal event is NOT
+ * captured here — it throws [HandUpstreamException] like the plain run.
+ */
+class HandRunResult(
+    val result: List<ChatMessage>,
+    val exception: HandRunException? = null,
+)
+
+/**
  * The hand could not serve the request at all (connection failure, HTTP
  * error response, dropped stream without a terminal event). A hand
  * connection drop is terminal: the stateless hand cannot resume a dead run.

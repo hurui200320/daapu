@@ -264,6 +264,102 @@ class HandServiceTest {
         assertTrue(e.message!!.contains("terminal event"), "message: ${e.message}")
     }
 
+    @Test
+    fun `runCollectPartial returns every message and no exception on success`() = runBlocking {
+        val hand = FakeHand(
+            runScript = {
+                val call = ChatMessagePart.ToolCall(
+                    id = "call_1",
+                    tool = "flag",
+                    args = JsonObject(emptyMap()),
+                )
+                listOf(
+                    HandEvent.AssistantMessage(
+                        assistantMessage(parts = listOf(call), finishReason = "tool_calls")
+                    ),
+                    HandEvent.ToolCall("call_1", "flag", call.args),
+                    HandEvent.ToolResult(
+                        "call_1",
+                        "flag",
+                        listOf(ChatMessagePart.Text("done")),
+                        false
+                    ),
+                    HandEvent.AssistantMessage(assistantMessage("finished")),
+                    HandEvent.Done("stop"),
+                )
+            }
+        )
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
+
+        val result = service.runCollectPartial(runRequest(), EmptyToolProvider, model())
+
+        assertNull(result.exception, "a successful run carries no exception")
+        assertEquals(3, result.result.size, "assistant + tool result + final assistant")
+        assertTrue(result.result[0].parts.single() is ChatMessagePart.ToolCall)
+        assertEquals(
+            "finished",
+            (result.result[2].parts.single() as ChatMessagePart.Text).text
+        )
+    }
+
+    @Test
+    fun `runCollectPartial keeps the partial history on a terminal hand error`() = runBlocking {
+        val hand = FakeHand(
+            runScript = {
+                val call = ChatMessagePart.ToolCall(
+                    id = "call_1",
+                    tool = "flag",
+                    args = JsonObject(emptyMap()),
+                )
+                listOf(
+                    HandEvent.AssistantMessage(
+                        assistantMessage(parts = listOf(call), finishReason = "tool_calls")
+                    ),
+                    HandEvent.ToolCall("call_1", "flag", call.args),
+                    HandEvent.ToolResult(
+                        "call_1",
+                        "flag",
+                        listOf(ChatMessagePart.Text("done")),
+                        false
+                    ),
+                    HandEvent.AssistantMessage(assistantMessage("partial")),
+                    HandEvent.RunError("round_limit", "maxRounds reached"),
+                )
+            }
+        )
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
+
+        val result = service.runCollectPartial(runRequest(), EmptyToolProvider, model())
+
+        assertEquals("round_limit", result.exception?.type)
+        assertEquals(3, result.result.size, "the messages before the error must survive")
+        assertTrue(result.result[0].parts.single() is ChatMessagePart.ToolCall)
+        val toolResult = assertIs<ChatMessagePart.ToolResult>(result.result[1].parts.single())
+        assertEquals("call_1", toolResult.id)
+        assertEquals("partial", (result.result[2].parts.single() as ChatMessagePart.Text).text)
+    }
+
+    @Test
+    fun `runCollect rethrows the exception captured by runCollectPartial`() = runBlocking {
+        val hand = FakeHand(
+            runScript = {
+                listOf(
+                    HandEvent.AssistantMessage(assistantMessage("partial")),
+                    HandEvent.RunError("context_exhausted", "window full"),
+                )
+            }
+        )
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
+
+        val e = assertFailsWith<HandRunException> {
+            service.runCollect(runRequest(), EmptyToolProvider, model())
+        }
+        assertEquals("context_exhausted", e.type)
+    }
+
     private fun embeddingModel(dimensions: Int = 1536) = EmbeddingModel(
         provider = ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
         modelId = "zenmux sub/google/gemini-embedding-2",

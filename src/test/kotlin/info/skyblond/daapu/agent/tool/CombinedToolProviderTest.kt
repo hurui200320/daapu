@@ -127,18 +127,6 @@ class CombinedToolProviderTest {
     }
 
     @Test
-    fun `close closes every AutoCloseable child`() {
-        var closedCalc = false
-        var closedSearch = false
-        val calc = FakeToolProvider(setOf("calc"), mapOf("calc__add" to "add")) { closedCalc = true }
-        val search = FakeToolProvider(setOf("search"), mapOf("search__web" to "web")) { closedSearch = true }
-        CombinedToolProvider(listOf(calc, search)).close()
-
-        assertTrue(closedCalc)
-        assertTrue(closedSearch)
-    }
-
-    @Test
     fun `a child without a namespace fails at construction`() {
         val bare = FakeToolProvider(emptySet(), mapOf("add" to "add"))
         assertFailsWith<IllegalArgumentException> {
