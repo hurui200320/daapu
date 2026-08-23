@@ -2,6 +2,7 @@ package info.skyblond.daapu.agent.tool
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
+import info.skyblond.daapu.mcp.errorResult
 
 /**
  * The tool set for the chat loop: one provider combining several
@@ -63,7 +64,7 @@ class CombinedToolProvider(
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val child = route(request.name)
             ?: return errorResult(
-                request,
+                request.id, request.name,
                 "tool '${request.name}' is not advertised by any combined tool provider"
             )
         return child.execute(request)
@@ -80,12 +81,4 @@ class CombinedToolProvider(
         if (separator < 0) return null
         return byNamespace[toolName.substring(0, separator)]
     }
-
-    private fun errorResult(request: ToolCallRequest, error: String): ChatMessagePart.ToolResult =
-        ChatMessagePart.ToolResult(
-            id = request.id,
-            tool = request.name,
-            parts = listOf(ChatMessagePart.Text("Error: $error")),
-            isError = true,
-        )
 }
