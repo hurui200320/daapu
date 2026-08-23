@@ -16,7 +16,8 @@ object Chats : Table("chats") {
     val chatJson = text("chat_json").default("[]")
     // the ELTM version fingerprint of the last successful run; "" means
     // "never compared yet", so the first run flags eltm-updated. Updated by
-    // the recall tool mid-run (a column-only UPDATE, never the store upsert).
+    // the persist loop's successful store (a column-only UPDATE, never the
+    // store upsert).
     val eltmVersion = text("eltm_version").default("")
 
     override val primaryKey = PrimaryKey(id)

@@ -117,6 +117,7 @@ cp config.example.jsonc config.jsonc
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
 | `memory`    | `compactModel` + `eltm` (required)                 | Compaction + external long-term memory (ELTM) settings, see below.   |
+| `agent`     | `investigator` (required): `model` (required), `allowedNamespaces` (required), `maxRounds` (default `150`) | The investigate sub-agent settings, see below. |
 | `title`     | `model` (required), `lastNRound` (default `0`)     | Session-title generation (`POST /api/chats/{id}/title`).             |
 | `hand`      | `baseUrl` (`http://127.0.0.1:3100`), `token` (`dev-token`), `maxRounds` (64), `maxRetries` (0), `streamIdleTimeoutMs` (300000) | The hand-pi execution service endpoint, the shared static token (`HAND_TOKEN`), and the run-policy knobs sent with every run (the hand holds no defaults). |
 
@@ -163,17 +164,16 @@ History compaction and memory extraction (see `AGENTS.md` and
 
 The external long-term memory (the diary model, see `AGENTS.md` and
 `memory/eltm/`). It is REQUIRED for every deployment: the extraction
-pipeline and the recall tool are unconditional system-prompt promises, so
-the `eltm` section must be present and complete.
+pipeline and the investigate agent's ELTM access depend on it, so the
+`eltm` section must be present and complete.
 
-- `extractionModel`, `embeddingModel`, `writerModel`, `recallModel`,
+- `extractionModel`, `embeddingModel`, `writerModel`,
   `rewriteModel` — REQUIRED catalog model ids for the memory extractor, the
-  ELTM embedding, the ELTM writer, the recall sub-session (Phase 4), and
-  the per-turn query rewrite one-shot; the writer and recall models must
+  ELTM embedding, the ELTM writer, and
+  the per-turn query rewrite one-shot; the writer model must
   support tool calls, and all are resolved once at startup (unknown ids
   fail fast). The writer's round cap is `maxWriterRounds` (default 150);
-  the recall sub-session's execution budget is `recallTimeoutSeconds`
-  (default 600); `rewriteRounds` (REQUIRED) caps the chat tail fed to the
+  `rewriteRounds` (REQUIRED) caps the chat tail fed to the
   query rewrite (the last N user rounds).
 - `relatedEntitiesLimit` / `relatedNotesLimit` — REQUIRED (the injected
   ELTM size is related to the main model's context, so they must be
@@ -189,6 +189,28 @@ the `eltm` section must be present and complete.
   and every vector/query is zero-padded to 2000 on write (cosine similarity
   is invariant under zero-padding), so switching embedding models never
   needs a schema change or DB reset.
+
+### Sub-agents (`agent`)
+
+The investigate agent (`agent/oneshot/investigate/InvestigatorService.kt`):
+a `runCollect` tool loop that gathers information from the ELTM (read-only)
+and the web (the MCP tools) on behalf of the main agent. It is not yet
+exposed to the chat loop; the sub-session is unwired.
+
+- `investigator.model` — REQUIRED catalog model id (must support tool calls),
+  resolved once at startup like the memory pipeline models (unknown ids and
+  incapable models fail fast).
+- `investigator.allowedNamespaces` — REQUIRED, non-empty: the namespaces the
+  investigate tool loop may execute, a whitelist over the shared tool set (the
+  read-only `eltm` tools plus the MCP servers; entries validated like any tool
+  namespace). Every entry must be a namespace the shared set serves — a typo
+  fails fast at boot via the `WhitelistedToolProvider` construction.
+- `investigator.maxRounds` (default `150`) — round cap for the investigate
+  tool loop (`0` = unlimited). A `round_limit` stop is recovered elastically:
+  the whole partial history is summarized by a no-tools one-shot on the same
+  model, and the summary (or the raw assistant texts when the summarization
+  fails) is returned to the caller instead of failing the run. A
+  `context_exhausted` stop is recovered the same way with a tool-call trace.
 
 ### Session titles (`title`)
 

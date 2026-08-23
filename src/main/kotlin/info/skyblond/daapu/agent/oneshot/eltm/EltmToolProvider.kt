@@ -21,12 +21,12 @@ import java.time.format.DateTimeParseException
  *
  * The RW provider is the ONLY ELTM write path (the chat model never writes
  * the ELTM directly; the extraction pipeline drives the writer agent); the
- * read-only provider serves the chat loop's tool set today and the recall
- * sub-session (Phase 4) later.
+ * read-only provider serves the chat loop's tool set today and the
+ * investigate sub-agent later.
  *
  * The optional [namespace] switches the provider between the two shapes:
- * blank (the default — one-shot services like the writer/recall agents use
- * it) advertises the bare tool names; a non-blank namespace (e.g. `eltm`,
+ * blank (the default — one-shot services like the writer/investigate agents
+ * use it) advertises the bare tool names; a non-blank namespace (e.g. `eltm`,
  * one of [TOOL_RESERVED_NAMESPACES]) advertises `"{namespace}__{tool}"` and
  * [execute] only accepts those prefixed names, so the provider can be
  * combined with others (MCP servers) into a

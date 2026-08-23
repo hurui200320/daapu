@@ -77,13 +77,13 @@ class ConfigTest {
                         "extractionModel": "bifrost/x",
                         "embeddingModel": "bifrost/embed",
                         "writerModel": "bifrost/w",
-                        "recallModel": "bifrost/r",
                         "rewriteModel": "bifrost/rw",
                         "rewriteRounds": 5,
                         "relatedEntitiesLimit": 5,
                         "relatedNotesLimit": 5
                     }
                 },
+                "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
                 "title": {
                     "model": "bifrost/t",
                 },
@@ -132,7 +132,8 @@ class ConfigTest {
                         "baseUrl": "http://host/x//y",
                     },
                 },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -149,7 +150,8 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -168,7 +170,8 @@ class ConfigTest {
                     "bifrost": { "apiKey": "k1", "baseUrl": "http://h1" },
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -190,7 +193,8 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -240,7 +244,8 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
             """.trimIndent()
@@ -264,7 +269,8 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -314,7 +320,8 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "server": { "port": 0 },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                 }
                 """.trimIndent()
@@ -440,7 +447,8 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                     "mcp": {
                         "servers": [
@@ -474,17 +482,16 @@ class ConfigTest {
                         "extractionModel": "bifrost/x",
                         "embeddingModel": "bifrost/embed",
                         "writerModel": "bifrost/w",
-                        "recallModel": "bifrost/r",
                         "rewriteModel": "bifrost/rw",
                         "rewriteRounds": 7,
                         "relatedEntitiesLimit": 3,
                         "relatedNotesLimit": 0,
                         "entityMatchThreshold": 0.3,
                         "noteSearchThreshold": 0.2,
-                        "recallTimeoutSeconds": 60,
                         "maxWriterRounds": 10
                     }
                 },
+                "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
@@ -493,14 +500,12 @@ class ConfigTest {
         assertEquals("bifrost/x", decoded.eltm.extractionModel)
         assertEquals("bifrost/embed", decoded.eltm.embeddingModel)
         assertEquals("bifrost/w", decoded.eltm.writerModel)
-        assertEquals("bifrost/r", decoded.eltm.recallModel)
         assertEquals("bifrost/rw", decoded.eltm.rewriteModel)
         assertEquals(7, decoded.eltm.rewriteRounds)
         assertEquals(3, decoded.eltm.relatedEntitiesLimit)
         assertEquals(0, decoded.eltm.relatedNotesLimit)
         assertEquals(0.3, decoded.eltm.entityMatchThreshold)
         assertEquals(0.2, decoded.eltm.noteSearchThreshold)
-        assertEquals(60L, decoded.eltm.recallTimeoutSeconds)
         assertEquals(10, decoded.eltm.maxWriterRounds)
     }
 
@@ -530,7 +535,7 @@ assertTrue(
                     "providers": {},
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "eltm": { "extractionModel": "x", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
+                        "eltm": { "extractionModel": "x", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -553,7 +558,7 @@ assertTrue(
                     "providers": {},
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5 }
+                        "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -578,7 +583,7 @@ assertTrue(
                     "providers": {},
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
+                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -594,7 +599,7 @@ assertTrue(
     @Test
     fun `memory config requires the eltm section`() {
         // the ELTM is REQUIRED for every deployment (the extraction pipeline
-        // and the recall tool are unconditional system-prompt promises): a
+        // and the investigate agent's ELTM access depend on it): a
         // config missing it must fail at decode
         val e = assertFailsWith<Exception> {
             decodeAppConfig(
@@ -622,7 +627,6 @@ assertTrue(
             extractionModel = "bifrost/x",
             embeddingModel = "bifrost/embed",
             writerModel = "w",
-            recallModel = "r",
             rewriteModel = "rw",
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
@@ -651,7 +655,6 @@ assertTrue(
             extractionModel = "bifrost/x",
             embeddingModel = "bifrost/embed",
             writerModel = "w",
-            recallModel = "r",
             rewriteModel = "rw",
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
@@ -689,12 +692,126 @@ assertTrue(
         assertFailsWith<IllegalArgumentException> { valid.copy(noteSearchThreshold = 2.0).validate() }
         valid.copy(entityMatchThreshold = 0.0, noteSearchThreshold = 1.0).validate()
 
-        // the recall timeout is an execution budget: 0 = none
-        assertFailsWith<IllegalArgumentException> { valid.copy(recallTimeoutSeconds = -1).validate() }
-        valid.copy(recallTimeoutSeconds = 0).validate()
-
         assertFailsWith<IllegalArgumentException> { valid.copy(maxWriterRounds = -1).validate() }
         valid.copy(maxWriterRounds = 0).validate()
+    }
+
+    @Test
+    fun `agent config decodes and defaults the round cap`() {
+        val decoded = decodeAppConfig(
+            """
+            {
+                "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                "providers": {},
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
+                "title": { "model": "bifrost/t" }
+            }
+            """.trimIndent()
+        ).agent
+        assertEquals("bifrost/i", decoded.investigator.model)
+        assertEquals(150, decoded.investigator.maxRounds, "maxRounds defaults to 150")
+    }
+
+    @Test
+    fun `agent config requires the investigator model and whitelist`() {
+        // the investigator section, its model, and the non-empty
+        // allowedNamespaces whitelist are REQUIRED (resolved once at
+        // startup): a config without them must fail at decode, not fall
+        // back to a default
+        assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": {},
+                    "title": { "model": "bifrost/t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "title": { "model": "bifrost/t" }
+                }
+                """.trimIndent()
+            )
+        }
+        // the investigator without the whitelist or the model id must fail
+        assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "bifrost/i" } },
+                    "title": { "model": "bifrost/t" }
+                }
+                """.trimIndent()
+            )
+        }
+        // an empty whitelist is a config error, not "no tools"
+        assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
+                    "providers": {},
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": [] } },
+                    "title": { "model": "bifrost/t" }
+                }
+                """.trimIndent()
+            )
+        }
+    }
+
+    @Test
+    fun `agent config validation`() {
+        val valid = AgentConfig(
+            investigator = InvestigatorConfig(model = "bifrost/i", allowedNamespaces = listOf("eltm"))
+        )
+        valid.validate()
+
+        val blank = assertFailsWith<IllegalArgumentException> {
+            AgentConfig(
+                investigator = InvestigatorConfig(model = "  ", allowedNamespaces = listOf("eltm"))
+            ).validate()
+        }
+        assertTrue(blank.message!!.contains("agent.investigator.model"))
+
+        // the round cap is a run budget: 0 = none
+        assertFailsWith<IllegalArgumentException> {
+            valid.copy(investigator = valid.investigator.copy(maxRounds = -1)).validate()
+        }
+        valid.copy(investigator = valid.investigator.copy(maxRounds = 0)).validate()
+
+        // the whitelist is REQUIRED non-empty and validated like any
+        // tool namespace
+        assertFailsWith<IllegalArgumentException> {
+            AgentConfig(
+                investigator = InvestigatorConfig(model = "bifrost/i", allowedNamespaces = emptyList())
+            ).validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            AgentConfig(
+                investigator = InvestigatorConfig(model = "bifrost/i", allowedNamespaces = listOf("  "))
+            ).validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            AgentConfig(
+                investigator = InvestigatorConfig(model = "bifrost/i", allowedNamespaces = listOf("bad__ns"))
+            ).validate()
+        }
+        valid.copy(investigator = valid.investigator.copy(allowedNamespaces = listOf("eltm", "exa"))).validate()
     }
 
     @Test
@@ -704,7 +821,8 @@ assertTrue(
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
@@ -720,7 +838,8 @@ assertTrue(
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t", "lastNRound": 3 }
             }
             """.trimIndent()
@@ -738,7 +857,8 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } }
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } }
                 }
                 """.trimIndent()
             )
@@ -749,7 +869,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "recallModel": "r", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": {}
                 }
                 """.trimIndent()

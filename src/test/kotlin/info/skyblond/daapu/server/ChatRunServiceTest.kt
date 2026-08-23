@@ -3,8 +3,11 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
 import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.config.AgentConfig
 import info.skyblond.daapu.config.EltmConfig
+import info.skyblond.daapu.config.InvestigatorConfig
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.config.MemoryConfig
@@ -179,7 +182,6 @@ class ChatRunServiceTest {
                 extractionModel = "bifrost/cerebras/gemma-4-31b",
                 embeddingModel = "bifrost/zenmux sub/google/gemini-embedding-2",
                 writerModel = "bifrost/cerebras/gemma-4-31b",
-                recallModel = "bifrost/cerebras/gemma-4-31b",
                 rewriteModel = "bifrost/cerebras/gemma-4-31b",
                 rewriteRounds = 5,
                 relatedEntitiesLimit = 5,
@@ -211,11 +213,7 @@ class ChatRunServiceTest {
     @Test
     fun `an unknown eltm model id fails fast at construction`() {
         // same as the memory pipeline models: the resolved ELTM models
-        // (REQUIRED config) are checked once at startup. The recall model
-        // is NOT resolved here: the recall sub-session is not wired into
-        // the graph yet (the chat loop queries the ELTM through the
-        // `eltm__*` tools instead), so its id is only validated at the
-        // Phase 4 definition site.
+        // (REQUIRED config) are checked once at startup.
         val base = testAppConfig().memory.eltm
         val e = assertIs<IllegalArgumentException>(
             assertFailsFast {
@@ -249,6 +247,60 @@ class ChatRunServiceTest {
                     )
                 )
             }
+        )
+    }
+
+    @Test
+    fun `an unknown investigate model id fails fast at construction`() {
+        // the investigate sub-agent's model is REQUIRED config, resolved
+        // once at startup like the memory pipeline models: a typo must fail
+        // at boot, not mid-run on the first gsg__investigate call. The
+        // service is standalone (unwired until the chat loop exposes it), so
+        // it resolves explicitly — the same eager `get` startWebServer runs.
+        val e = assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                testKoinApp(
+                    testAppConfig().copy(
+                        agent = AgentConfig(
+                            investigator = InvestigatorConfig(
+                                model = "bifrost/nope",
+                                allowedNamespaces = listOf("eltm"),
+                            )
+                        )
+                    )
+                ).koin.get<InvestigatorService>()
+            }
+        )
+        assertTrue(
+            e.message!!.contains("agent.investigator.model"),
+            "the error should name the config key: ${e.message}"
+        )
+    }
+
+    @Test
+    fun `an investigator whitelist the shared set does not serve fails fast at construction`() {
+        // the whitelist restricts the shared tool set (the read-only eltm
+        // tools plus the MCP servers): a listed namespace the shared set
+        // does not serve is a config typo, so the WhitelistedToolProvider
+        // construction must fail at boot, not surface as an error tool
+        // result mid-run
+        val e = assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                testKoinApp(
+                    testAppConfig().copy(
+                        agent = AgentConfig(
+                            investigator = InvestigatorConfig(
+                                model = "bifrost/cerebras/gemma-4-31b",
+                                allowedNamespaces = listOf("eltm", "nope"),
+                            )
+                        )
+                    )
+                ).koin.get<InvestigatorService>()
+            }
+        )
+        assertTrue(
+            e.message!!.contains("not served by the delegate"),
+            "the error should name the unserved namespace: ${e.message}"
         )
     }
 

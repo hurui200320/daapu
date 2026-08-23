@@ -29,11 +29,16 @@ fun testAppConfig() = AppConfig(
             extractionModel = "bifrost/cerebras/gemma-4-31b",
             embeddingModel = "bifrost/zenmux sub/google/gemini-embedding-2",
             writerModel = "bifrost/cerebras/gemma-4-31b",
-            recallModel = "bifrost/cerebras/gemma-4-31b",
             rewriteModel = "bifrost/cerebras/gemma-4-31b",
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
+        ),
+    ),
+    agent = AgentConfig(
+        investigator = InvestigatorConfig(
+            model = "bifrost/cerebras/gemma-4-31b",
+            allowedNamespaces = listOf("eltm"),
         ),
     ),
     title = TitleConfig(model = "bifrost/cerebras/gemma-4-31b"),

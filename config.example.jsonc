@@ -52,13 +52,13 @@
   // The memory pipeline: compaction + the ELTM. The model ids are REQUIRED
   // (resolved once at startup and reused for every run; a chat run's own
   // model is never used for these). They reference the catalog; the writer
-  // and recall models must support tool calls. The compaction trigger
-  // fraction and keep rounds are per-model (agent/model/LLM.kt).
+  // model must support tool calls. The compaction trigger fraction and keep
+  // rounds are per-model (agent/model/LLM.kt).
   "memory": {
     "compactModel": "bifrost/cerebras/gemma-4-31b",
     // The ELTM (external long-term memory, diary model): REQUIRED. The model
-    // ids are resolved once at startup; the writer and recall models must
-    // support tool calls. The embedding model's output dimensions must not
+    // ids are resolved once at startup; the writer model must support tool
+    // calls. The embedding model's output dimensions must not
     // exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed
     // at vector(2000) and shorter vectors are zero-padded on write (cosine is
     // invariant under zero-padding), so switching embedding models never
@@ -69,7 +69,6 @@
       "extractionModel": "bifrost/cerebras/gemma-4-31b",
       "embeddingModel": "bifrost/zenmux sub/google/gemini-embedding-2",
       "writerModel": "bifrost/cerebras/gemma-4-31b",
-      "recallModel": "bifrost/cerebras/gemma-4-31b",
       // Query rewrite one-shot (agent/oneshot/rewrite/QueryRewriteService.kt):
       // rewrites the run's latest input into standalone retrieval queries.
       "rewriteModel": "bifrost/cerebras/gemma-4-31b",
@@ -88,10 +87,26 @@
       "entityMatchThreshold": 0.5,
       // Cosine floor for search_notes (0..1).
       "noteSearchThreshold": 0.1,
-      // Execution budget of one recall tool call in seconds; 0 = none.
-      "recallTimeoutSeconds": 300,
       // Round cap for the ELTM writer tool loop; 0 = unlimited.
       "maxWriterRounds": 150
+    }
+  },
+  // The sub-agents: the investigate agent
+  // (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that
+  // gathers information from the ELTM (read-only) and the web (MCP tools)
+  // on behalf of the main agent. The model id is REQUIRED (resolved once at
+  // startup; must support tool calls); allowedNamespaces is the sub-agent's
+  // tool whitelist over the shared tool set (the read-only "eltm" tools
+  // plus the MCP servers): REQUIRED, non-empty, and every entry must be a
+  // namespace the shared set serves (a typo fails fast at boot).
+  "agent": {
+    "investigator": {
+      "model": "bifrost/cerebras/gemma-4-31b",
+      // Round cap for the investigate tool loop; 0 = unlimited.
+      "maxRounds": 150,
+      // The namespaces the sub-agent may execute; entries validated like any
+      // tool namespace (only [0-9a-z_-], no "__").
+      "allowedNamespaces": ["eltm", "exa"]
     }
   },
   // Session-title generation (agent/oneshot/TitleGenerator.kt): the model id

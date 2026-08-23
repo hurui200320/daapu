@@ -50,6 +50,8 @@ data class AppConfig(
     val server: ServerConfig = ServerConfig(),
     val mcp: McpConfig = McpConfig(),
     val memory: MemoryConfig,
+    /** The sub-agent settings (see `agent/oneshot/investigate/InvestigatorService.kt`). */
+    val agent: AgentConfig,
     /** Session-title generation (a one-shot pipeline service, see `agent/oneshot/TitleGenerator.kt`). */
     val title: TitleConfig,
     /** The hand-pi execution service. */
@@ -70,6 +72,7 @@ data class AppConfig(
         server.validate()
         mcp.validate()
         memory.validate()
+        agent.validate()
         title.validate()
         hand.validate()
     }
@@ -138,13 +141,11 @@ data class MemoryConfig(
 /**
  * The ELTM (external long-term memory) settings: the diary model
  * (entities/relationships/notes, see `memory/eltm/`), the models behind it,
- * and the recall tool's knobs. The model ids are
+ * and the writer's knobs. The model ids are
  * REQUIRED and reference the catalog (`agent/ModelCatalog.kt`); the
  * extraction, embedding, writer, and rewrite ids are resolved once at
  * startup by the DI container (`di/DaapuModule.kt`; unknown ids and a
- * writer model without tool-call support fail fast), while the recall id —
- * the sub-session is unwired until Phase 4 — is only validated at its future
- * definition site. The embedding
+ * writer model without tool-call support fail fast). The embedding
  * model's output dimensions must be at most
  * [MAX_VECTOR_DIMENSIONS] (pgvector's HNSW indexing limit): the ELTM
  * columns are fixed at that width and shorter vectors are zero-padded on
@@ -164,8 +165,6 @@ data class EltmConfig(
     val embeddingModel: String,
     /** Catalog LLM id of the ELTM writer (a tool loop); REQUIRED. */
     val writerModel: String,
-    /** Catalog LLM id of the recall sub-session (a tool loop); REQUIRED. */
-    val recallModel: String,
     /**
      * Catalog LLM id of the query rewrite one-shot (a no-tools `/v1/run`,
      * see `agent/oneshot/rewrite/QueryRewriteService.kt`): rewrites the
@@ -206,8 +205,6 @@ data class EltmConfig(
      * floor under which a diary entry is not surfaced.
      */
     val noteSearchThreshold: Double = 0.1,
-    /** Execution budget of one recall tool call in seconds; `0` = none. */
-    val recallTimeoutSeconds: Long = 600,
     /** Round cap for the ELTM writer tool loop; `0` = unlimited. */
     val maxWriterRounds: Int = 150,
 ) {
@@ -216,7 +213,6 @@ data class EltmConfig(
             "memory.eltm.extractionModel" to extractionModel,
             "memory.eltm.embeddingModel" to embeddingModel,
             "memory.eltm.writerModel" to writerModel,
-            "memory.eltm.recallModel" to recallModel,
             "memory.eltm.rewriteModel" to rewriteModel,
         ).forEach { (name, id) ->
             require(id.isNotBlank()) { "$name must not be blank" }
@@ -234,10 +230,64 @@ data class EltmConfig(
         require(noteSearchThreshold in 0.0..1.0) {
             "memory.eltm.noteSearchThreshold must be in [0, 1], got $noteSearchThreshold"
         }
-        require(recallTimeoutSeconds >= 0) {
-            "memory.eltm.recallTimeoutSeconds must be >= 0, got $recallTimeoutSeconds"
-        }
         require(maxWriterRounds >= 0) { "memory.eltm.maxWriterRounds must be >= 0, got $maxWriterRounds" }
+    }
+}
+
+/**
+ * The sub-agent settings: the investigate agent (`agent/oneshot/investigate/
+ * InvestigatorService.kt`), a `runCollect` tool loop that gathers
+ * information from the ELTM (read-only) and the web (MCP tools) on behalf
+ * of the main agent.
+ */
+@Serializable
+data class AgentConfig(
+    /** The investigate sub-agent settings. */
+    val investigator: InvestigatorConfig,
+) {
+    fun validate() {
+        investigator.validate()
+    }
+}
+
+/**
+ * The investigate sub-agent settings (see [AgentConfig]). The model id is
+ * REQUIRED and references the catalog (`agent/ModelCatalog.kt`); it is
+ * resolved once at startup by the DI container (`di/DaapuModule.kt`) like
+ * the memory pipeline models — unknown ids and a model without tool-call
+ * support fail fast. [allowedNamespaces] is the sub-agent's tool whitelist
+ * over the shared tool set (the read-only `eltm` tools plus the MCP
+ * servers): REQUIRED, non-empty, and every entry must be a namespace the
+ * shared set serves (a typo fails fast at boot via the
+ * `WhitelistedToolProvider` construction).
+ */
+@Serializable
+data class InvestigatorConfig(
+    /** Catalog LLM id of the investigate sub-agent (a tool loop); REQUIRED. */
+    val model: String,
+    /** Round cap for the investigate tool loop; `0` = unlimited. */
+    val maxRounds: Int = 150,
+    /**
+     * The namespaces the investigate sub-agent may execute (a whitelist
+     * over the shared tool set); REQUIRED, non-empty. Entries are validated
+     * like any tool namespace.
+     */
+    val allowedNamespaces: List<String>,
+) {
+    fun validate() {
+        require(model.isNotBlank()) { "agent.investigator.model must not be blank" }
+        require(maxRounds >= 0) {
+            "agent.investigator.maxRounds must be >= 0, got $maxRounds"
+        }
+        require(allowedNamespaces.isNotEmpty()) {
+            "agent.investigator.allowedNamespaces must not be empty"
+        }
+        allowedNamespaces.forEach {
+            require(it.isNotBlank()) {
+                "agent.investigator.allowedNamespaces entries must not be blank"
+            }
+            validateToolNamespaceSyntax(it, "agent.investigator.allowedNamespaces")
+        }
     }
 }
 

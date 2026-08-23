@@ -11,9 +11,11 @@ import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
+import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
+import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
@@ -121,8 +123,9 @@ fun daapuModule(config: AppConfig): Module = module {
 
     // the chat loop's tool set: the MCP servers plus the read-only ELTM
     // tools (`eltm__*`), so the main agent can query the external long-term
-    // memory directly (the `recall` sub-session tool that offloads this is
-    // deferred). The MCP child is only included when it serves namespaces:
+    // memory directly (the `gsg__investigate` sub-session tool that
+    // offloads this is deferred). The MCP child is only included when it
+    // serves namespaces:
     // a namespace-less provider advertises nothing, and CombinedToolProvider
     // fails fast on a namespace-less child.
     single<EltmToolProvider> {
@@ -139,6 +142,30 @@ fun daapuModule(config: AppConfig): Module = module {
                 if (mcp.namespaces().isNotEmpty()) add(mcp)
                 add(get<EltmToolProvider>())
             }
+        )
+    }
+    // the investigate sub-agent (`agent/oneshot/investigate/`): its tool
+    // set is the same combined provider the chat loop uses, restricted by
+    // the `agent.investigator.allowedNamespaces` whitelist — the sub-agent
+    // only executes the listed namespaces, never the loop's bare one-shot
+    // shape. Resolved at boot like the other one-shot models: an unknown
+    // id, a model without tool-call support, or a whitelisted namespace the
+    // shared set does not serve (the `WhitelistedToolProvider` construction
+    // invariant) fails fast at startup. The sub-session is unwired until
+    // the chat loop exposes it (`gsg__investigate`, deferred).
+    single<InvestigatorService> {
+        val combined = get<CombinedToolProvider>()
+        val investigator = config.agent.investigator
+        InvestigatorService(
+            model = requiredLlm(
+                "agent.investigator.model", investigator.model,
+                toolLoopNote = "the investigate agent runs a tool loop",
+            ),
+            hand = get(),
+            toolProvider = WhitelistedToolProvider(combined, investigator.allowedNamespaces.toSet()),
+            maxRounds = investigator.maxRounds,
+            maxRetries = config.hand.maxRetries,
+            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
         )
     }
     single<EltmWriterService> {

@@ -224,7 +224,7 @@ internal fun padVector(vector: List<Float>, width: Int): List<Float> {
  * relationships, and diary notes (the diary model, see `V1__init.sql`).
  * Written by the extraction pipeline only
  * (`agent/oneshot/eltm/EltmWriterService.kt`); read by the writer,
- * the context injection's searches and (Phase 4) the recall sub-session.
+ * the context injection's searches and the investigate sub-agent.
  *
  * All embeddings go through the hand (`hand/HandService.embed`), are
  * zero-padded to the fixed column width ([MAX_VECTOR_DIMENSIONS]) on write,
@@ -396,8 +396,8 @@ interface EltmService {
      * All entities (whatever their prominence), ordered by id ascending for
      * a stable page, each with its note and relationship counts and its
      * latest diary note inline. Paginated via [limit]/[offset] — the
-     * frontend ELTM view's browse-all surface (the recall sub-session uses
-     * [searchEntities] instead).
+     * frontend ELTM view's browse-all surface (the investigate sub-agent
+     * uses [searchEntities] instead).
      */
     suspend fun listEntities(limit: Int, offset: Int): List<EntityView>
 

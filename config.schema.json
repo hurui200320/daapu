@@ -9,6 +9,7 @@
     "database",
     "providers",
     "memory",
+    "agent",
     "title"
   ],
   "properties": {
@@ -100,13 +101,12 @@
             "extractionModel",
             "embeddingModel",
             "writerModel",
-            "recallModel",
             "rewriteModel",
             "rewriteRounds",
             "relatedEntitiesLimit",
             "relatedNotesLimit"
           ],
-          "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the extraction pipeline and the recall tool are unconditional system-prompt promises. The extraction, embedding, writer, and rewrite model ids are resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a writer without tool-call support fail fast); the recall id is only validated when the (unwired) recall sub-session gets its Phase 4 definition. The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
+          "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the extraction pipeline and the investigate agent's ELTM access depend on it. The extraction, embedding, writer, and rewrite model ids are resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a writer without tool-call support fail fast). The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
           "properties": {
             "extractionModel": {
               "type": "string",
@@ -122,11 +122,6 @@
               "type": "string",
               "minLength": 1,
               "description": "Required catalog LLM id of the ELTM writer (a tool loop; must support tool calls)."
-            },
-            "recallModel": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Required catalog LLM id of the recall sub-session (a tool loop; must support tool calls)."
             },
             "rewriteModel": {
               "type": "string",
@@ -162,17 +157,52 @@
               "default": 0.1,
               "description": "Cosine floor for search_notes (0..1)."
             },
-            "recallTimeoutSeconds": {
-              "type": "integer",
-              "minimum": 0,
-              "default": 600,
-              "description": "Execution budget of one recall tool call in seconds; 0 = none."
-            },
             "maxWriterRounds": {
               "type": "integer",
               "minimum": 0,
               "default": 150,
               "description": "Round cap for the ELTM writer tool loop; 0 = unlimited."
+            }
+          }
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "investigator"
+      ],
+      "description": "The sub-agent settings: the investigate agent (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that gathers information from the ELTM (read-only) and the web (MCP tools) on behalf of the main agent.",
+      "properties": {
+        "investigator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "allowedNamespaces"
+          ],
+          "description": "The investigate sub-agent: the model id is REQUIRED and resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a model without tool-call support fail fast). allowedNamespaces is the sub-agent's tool whitelist over the shared tool set (the read-only eltm tools plus the MCP servers): REQUIRED, non-empty, and every entry must be a namespace the shared set serves (a typo fails fast at boot via the WhitelistedToolProvider construction).",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required catalog LLM id of the investigate sub-agent (a tool loop; must support tool calls)."
+            },
+            "maxRounds": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 150,
+              "description": "Round cap for the investigate tool loop; 0 = unlimited."
+            },
+            "allowedNamespaces": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^(?!.*__)[0-9a-z_-]+$"
+              },
+              "description": "The namespaces the investigate sub-agent may execute (a whitelist over the shared tool set); required, non-empty, entries validated like any tool namespace (only [0-9a-z_-], no '__')."
             }
           }
         }

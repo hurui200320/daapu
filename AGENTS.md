@@ -79,8 +79,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     (classic builder DSL gone in Koin 4) — compile-time graph checks.
     `ChatRunService` is pure constructor injection holding only what its methods
     use (no config, no body-built pipeline, no pass-through stores). One-shot
-    models resolve inline via `requiredLlm(...)` (fail-fast; the recall model is
-    NOT resolved at boot — the recall sub-session is unwired until Phase 4).
+    models resolve inline via `requiredLlm(...)` (fail-fast; the investigate
+    agent's model is resolved at boot like the other one-shot models — the
+    sub-session itself is unwired until the chat loop exposes it).
     Resource cleanup is Koin's: `onClose` on `HandService`/
     `McpToolProvider` fires when the JVM shutdown hook calls
     `koinApp.close()` (the MCP provider closes its cached clients itself;
@@ -106,7 +107,7 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     facts go through the ELTM writer agent (`agent/oneshot/eltm/
     EltmWriterService.kt` + 13-tool `EltmToolProvider.kt`, RW mode; the same
     provider's `readOnly` mode = the 5 read tools for the chat loop and the
-    Phase 4 recall sub-session; `runCollect` tool loop, model
+    investigate sub-agent; `runCollect` tool loop, model
     `memory.eltm.writerModel`, cap `maxWriterRounds`). A writer failure fails
     the run; a retry re-extracts (the writer skips already-recorded content).
     Writer semantics: create exact-matches are pure reads (create-or-fetch;
@@ -133,8 +134,8 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     result. **Read
     path**: the provider's `readOnly` mode, namespaced `eltm`, is combined with
     the MCP provider into the chat loop's tool set
-    (`ChatRunService.chatToolProvider`) — interim until the Phase 4 `recall`
-    sub-session tool (planned under the `gsg` namespace). `chats.eltm_version`
+    (`ChatRunService.chatToolProvider`) — interim until the Phase 4
+    `gsg__investigate` sub-session tool (planned under the `gsg` namespace). `chats.eltm_version`
     ("" = first run flags) is the global write counter (`EltmService.version()`):
     every visible-state write (entity/relationship insert, revive,
     invalidation, merge, note append, attribute set/delete when the value
@@ -276,14 +277,24 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     (unknown ids fail fast — no tool-call requirement on the extractor); the
     one-shot services are constructed once and shared. A chat run's own model is
     never used for the pipeline. The ELTM models
-    (`memory.eltm.extractionModel/embeddingModel/writerModel/recallModel/
+    (`memory.eltm.extractionModel/embeddingModel/writerModel/
     rewriteModel`) are REQUIRED the same way — `memory.eltm` is mandatory for
-    every deployment; writer/recall must support tool calls; the embedding
+    every deployment; the writer must support tool calls; the embedding
     entry's `dimensions` must not exceed `MAX_VECTOR_DIMENSIONS`.
     `memory.eltm.rewriteRounds` (≥ 1) and `relatedEntitiesLimit`/
     `relatedNotesLimit` (≥ 0) are REQUIRED with no defaults. The
-    extraction/embedding/writer/rewrite ids fail fast at boot; the recall id is
-    only validated at its Phase 4 definition site. Writer/recall/embedding knobs
+    extraction/embedding/writer/rewrite ids fail fast at boot; the
+    investigate agent's model (`agent.investigator.model`,
+    `agent/oneshot/investigate/InvestigatorService.kt`, a tool loop) is
+    REQUIRED and fails fast at boot the same way (must support tool calls),
+    with its own round cap `agent.investigator.maxRounds` (`0` = unlimited;
+    a `round_limit` stop is recovered by a no-tools summarization one-shot on
+    the same model, a `context_exhausted` stop by a tool-call trace). The
+    sub-agent's tool set is the chat loop's combined set restricted by the
+    REQUIRED non-empty `agent.investigator.allowedNamespaces` whitelist
+    (validated like any tool namespace; an entry the shared set does not
+    serve fails fast at boot via the `WhitelistedToolProvider` construction).
+    Writer/embedding knobs
     come from `memory.eltm.*` + `hand.*` (the embed timeout is the hand's
     `streamIdleTimeoutMs`). `title.lastNRound` (default `0`) caps history fed to
     the title model; the title generator reads the chat row exactly once, never

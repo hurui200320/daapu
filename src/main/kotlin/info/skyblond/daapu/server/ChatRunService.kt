@@ -57,7 +57,7 @@ class ChatRunService(
      * The chat loop's tool set: the MCP servers plus the read-only ELTM
      * tools (`eltm__*`, see `agent/oneshot/eltm/EltmToolProvider.kt`), so
      * the main agent can query the external long-term memory directly (the
-     * `recall` sub-session tool that offloads this is deferred). The MCP
+     * `gsg__investigate` sub-session tool that offloads this is deferred). The MCP
      * child is only included when it serves namespaces. Exposed for tests.
      */
     internal val chatToolProvider: CombinedToolProvider,
