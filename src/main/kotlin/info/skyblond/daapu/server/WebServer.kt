@@ -1,7 +1,6 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.agent.model.ModelCapabilityException
-import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.di.daapuModule
 import info.skyblond.daapu.hand.HandCallbackService
@@ -38,11 +37,10 @@ data class ErrorResponse(val error: String)
  * The whole object graph lives in the Koin container (`di/DaapuModule.kt`);
  * resolving the graph eagerly before the server starts runs every
  * definition reachable from the root ([ChatRunService]) — the fail-fast
- * config validation and the MCP tool servers' eager connect (a server that
- * cannot be reached aborts startup instead of silently degrading every
- * chat run) fire at boot. The investigate sub-agent
- * ([InvestigatorService]) is standalone (unwired until the chat loop
- * exposes it), so it resolves explicitly like the root.
+ * config validation (including the investigate sub-agent's model and tool
+ * whitelist, reachable through the loop's `gsg__investigate` tool) and the
+ * MCP tool servers' eager connect (a server that cannot be reached aborts
+ * startup instead of silently degrading every chat run) fire at boot.
  * Resource cleanup is Koin's too: the shutdown hook closes the container,
  * which fires the `onClose` callbacks (hand client, MCP clients).
  */
@@ -51,7 +49,6 @@ fun startWebServer(config: AppConfig) {
     // eager resolution: every fail-fast validation above fires here, never
     // mid-run (the resolved service is what the module below serves)
     koinApp.koin.get<ChatRunService>()
-    koinApp.koin.get<InvestigatorService>()
     // graceful close of the hand client and the MCP clients (stdio
     // subprocesses, HTTP sessions) via the container's onClose callbacks
     Runtime.getRuntime().addShutdownHook(Thread { koinApp.close() })

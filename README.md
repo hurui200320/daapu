@@ -194,17 +194,21 @@ pipeline and the investigate agent's ELTM access depend on it, so the
 
 The investigate agent (`agent/oneshot/investigate/InvestigatorService.kt`):
 a `runCollect` tool loop that gathers information from the ELTM (read-only)
-and the web (the MCP tools) on behalf of the main agent. It is not yet
-exposed to the chat loop; the sub-session is unwired.
+and the web (the MCP tools) on behalf of the main agent. The main agent's
+tool set is the MCP servers plus the single `gsg__investigate` tool
+(`agent/persist/GsgToolProvider.kt`) — the granular ELTM read tools are not
+in the chat loop anymore; deep memory and web searches go through the
+sub-agent. The sub-agent runs on its OWN tool set (MCP + read-only `eltm`),
+so `gsg` is not whitelistable for it (recursion is ruled out at boot).
 
 - `investigator.model` — REQUIRED catalog model id (must support tool calls),
   resolved once at startup like the memory pipeline models (unknown ids and
   incapable models fail fast).
 - `investigator.allowedNamespaces` — REQUIRED, non-empty: the namespaces the
-  investigate tool loop may execute, a whitelist over the shared tool set (the
+  investigate tool loop may execute, a whitelist over its own tool set (the
   read-only `eltm` tools plus the MCP servers; entries validated like any tool
-  namespace). Every entry must be a namespace the shared set serves — a typo
-  fails fast at boot via the `WhitelistedToolProvider` construction.
+  namespace). Every entry must be a namespace that set serves — a typo fails
+  fast at boot via the `WhitelistedToolProvider` construction.
 - `investigator.maxRounds` (default `150`) — round cap for the investigate
   tool loop (`0` = unlimited). A `round_limit` stop is recovered elastically:
   the whole partial history is summarized by a no-tools one-shot on the same

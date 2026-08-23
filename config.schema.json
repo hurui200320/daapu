@@ -182,7 +182,7 @@
             "model",
             "allowedNamespaces"
           ],
-          "description": "The investigate sub-agent: the model id is REQUIRED and resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a model without tool-call support fail fast). allowedNamespaces is the sub-agent's tool whitelist over the shared tool set (the read-only eltm tools plus the MCP servers): REQUIRED, non-empty, and every entry must be a namespace the shared set serves (a typo fails fast at boot via the WhitelistedToolProvider construction).",
+          "description": "The investigate sub-agent: the model id is REQUIRED and resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a model without tool-call support fail fast). allowedNamespaces is the sub-agent's tool whitelist over its OWN tool set (the read-only eltm tools plus the MCP servers, built separately from the chat loop's set): REQUIRED, non-empty, and every entry must be a namespace that set serves (a typo — or an attempt to whitelist gsg itself, which would enable recursion — fails fast at boot via the WhitelistedToolProvider construction).",
           "properties": {
             "model": {
               "type": "string",
@@ -202,7 +202,7 @@
                 "type": "string",
                 "pattern": "^(?!.*__)[0-9a-z_-]+$"
               },
-              "description": "The namespaces the investigate sub-agent may execute (a whitelist over the shared tool set); required, non-empty, entries validated like any tool namespace (only [0-9a-z_-], no '__')."
+              "description": "The namespaces the investigate sub-agent may execute (a whitelist over its own tool set — the read-only eltm tools plus the MCP servers); required, non-empty, entries validated like any tool namespace (only [0-9a-z_-], no '__')."
             }
           }
         }

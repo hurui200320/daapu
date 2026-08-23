@@ -19,12 +19,13 @@ import java.time.format.DateTimeFormatter
 
 /**
  * The investigator agent: the one `/v1/run` tool loop the main agent
- * delegates deep memory and web searches to. The model executes the
+ * delegates deep memory and web searches to (via the `gsg__investigate`
+ * tool, `agent/persist/GsgToolProvider.kt`). The model executes the
  * read-only ELTM tools plus the MCP tools (the provider is a
- * [info.skyblond.daapu.agent.tool.WhitelistedToolProvider] over the shared
- * [info.skyblond.daapu.agent.tool.CombinedToolProvider]) back through the
- * hand's callback route; the model, round cap, retry budget and idle
- * timeout are the `agent.*` / `hand.*` config values.
+ * [info.skyblond.daapu.agent.tool.WhitelistedToolProvider] over the
+ * sub-agent's own [info.skyblond.daapu.agent.tool.CombinedToolProvider])
+ * back through the hand's callback route; the model, round cap, retry
+ * budget and idle timeout are the `agent.*` / `hand.*` config values.
  *
  * The run is *elastic*: a stopped run never crashes the caller. On a clean
  * stop the final assistant message is the report; on a `round_limit` stop
@@ -219,8 +220,8 @@ data class InvestigateOutcome(
      * keeps the final assistant message's text parts verbatim, the recovery
      * reports are single text parts), but attachments can travel later.
      * The shape mirrors a `ChatMessagePart.ToolResult`'s `parts`, so the
-     * step-2 `gsg__investigate` tool can package it without a lossy string
-     * round-trip.
+     * `gsg__investigate` tool (`agent/persist/GsgToolProvider.kt`) packages
+     * it without a lossy string round-trip.
      */
     val report: List<ChatMessagePart.ContentPart>,
     val isError: Boolean = false,

@@ -69,13 +69,12 @@ When external system has incoming events, like receiving an email, GSG will extr
 
 ## External long term memories (ELTM)
 
-External long term memories will NOT live in session context, thus, you will forget what's in there until you actively search and recall related stuff.
-However, you cannot directly access the ELTM with tools, usually the process involes multiple round of tool call and consume a lot of context window,
-causing the main session quickly being filling up. So you MUST call `recall` tool, which launch a temporary session to search and recall memories based
-on your prompt, then returns the final output to you. So you MUST write accurate prompt for it to find what you want to know from the ELTM.
+External long term memories will NOT live in session context, thus, you don't know what's in there until you actively search and recall related stuff.
+To access it, you MUST call `gsg__investigate` tool, which launches a temporary sub-agent to search the ELTM and the web on your behalf and returns ONE final report.
+So you MUST write accurate prompt for it to find what you want to know.
 
 The ELTM will also be managed and updated by GSG, but in a relatively slow rate. The real-time info will provide an indicator for you to check if the ELTM
-has been updated since your last call to `recall` tool.
+has been updated since user's last message.
 
 ## Context injection
 
@@ -115,7 +114,7 @@ These are real-time info that will be updated every request.
 
 Items:
 + `localtime`: current local time with timezone info.
-+ `eltm-updated`: true if the ELTM has been updated since the last call to `recall`.
++ `eltm-updated`: true if the ELTM has been updated since the user's last message.
 
 ### Memories injection (`memories`)
 
@@ -143,9 +142,6 @@ ${if (isDevelopment) {
 If you're seeing this, it means the GSG is running in developer mode. You may see missing tools, malformed user input message,
 mismatch between input XML and system prompt, or glitches. It's in develop after all.
 When this happens, in addition to fulfill user's request, now the user is developer, you should also report any issues to the user.
-
-The `recall` tool promised in the ELTM section is not wired up yet, so do NOT call it. For now you can access the ELTM directly
-with the read-only `eltm__` tools and search things by yourself.
 """.trimIndent().trim()
 } else ""}
 """.trimIndent().trim()

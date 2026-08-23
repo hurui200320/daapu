@@ -94,11 +94,14 @@
   // The sub-agents: the investigate agent
   // (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that
   // gathers information from the ELTM (read-only) and the web (MCP tools)
-  // on behalf of the main agent. The model id is REQUIRED (resolved once at
+  // on behalf of the main agent (which reaches it through the single
+  // `gsg__investigate` tool). The model id is REQUIRED (resolved once at
   // startup; must support tool calls); allowedNamespaces is the sub-agent's
-  // tool whitelist over the shared tool set (the read-only "eltm" tools
-  // plus the MCP servers): REQUIRED, non-empty, and every entry must be a
-  // namespace the shared set serves (a typo fails fast at boot).
+  // tool whitelist over its OWN tool set (the read-only "eltm" tools plus
+  // the MCP servers, built separately from the chat loop's set): REQUIRED,
+  // non-empty, and every entry must be a namespace that set serves (a typo
+  // — or whitelisting "gsg" itself, which would enable recursion — fails
+  // fast at boot).
   "agent": {
     "investigator": {
       "model": "bifrost/cerebras/gemma-4-31b",

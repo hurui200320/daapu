@@ -255,8 +255,9 @@ class ChatRunServiceTest {
         // the investigate sub-agent's model is REQUIRED config, resolved
         // once at startup like the memory pipeline models: a typo must fail
         // at boot, not mid-run on the first gsg__investigate call. The
-        // service is standalone (unwired until the chat loop exposes it), so
-        // it resolves explicitly — the same eager `get` startWebServer runs.
+        // service is wired into the graph root via the loop's
+        // GsgToolProvider, so resolving the root (the same eager `get`
+        // startWebServer runs) fires the fail-fast.
         val e = assertIs<IllegalArgumentException>(
             assertFailsFast {
                 testKoinApp(
@@ -278,10 +279,11 @@ class ChatRunServiceTest {
     }
 
     @Test
-    fun `an investigator whitelist the shared set does not serve fails fast at construction`() {
-        // the whitelist restricts the shared tool set (the read-only eltm
-        // tools plus the MCP servers): a listed namespace the shared set
-        // does not serve is a config typo, so the WhitelistedToolProvider
+    fun `an investigator whitelist its own set does not serve fails fast at construction`() {
+        // the whitelist restricts the investigator's OWN tool set (the
+        // read-only eltm tools plus the MCP servers — a separate combined
+        // provider, not the loop's set): a listed namespace the set does
+        // not serve is a config typo, so the WhitelistedToolProvider
         // construction must fail at boot, not surface as an error tool
         // result mid-run
         val e = assertIs<IllegalArgumentException>(
@@ -318,27 +320,22 @@ class ChatRunServiceTest {
     }
 
     @Test
-    fun `the chat tool set is the read-only eltm tools without MCP servers`() = runBlocking {
+    fun `the chat tool set is the gsg investigate tool without MCP servers`() = runBlocking {
         // the loop's combined set: the namespace-less empty MCP provider (the
         // default) is skipped — CombinedToolProvider fails fast on a
-        // namespace-less child — so the set is exactly the namespaced
-        // read-only ELTM tools
+        // namespace-less child — so the set is exactly the gsg tool; the
+        // granular ELTM read tools are NOT in the loop's set anymore (they
+        // live in the investigator's own set)
         val service = chatRunService(testAppConfig())
-        assertEquals(setOf("eltm"), service.chatToolProvider.namespaces())
+        assertEquals(setOf("gsg"), service.chatToolProvider.namespaces())
         assertEquals(
-            listOf(
-                "eltm__search_entities",
-                "eltm__get_relationships",
-                "eltm__get_entity_notes",
-                "eltm__get_relationship_notes",
-                "eltm__search_notes",
-            ),
+            listOf("gsg__investigate"),
             service.chatToolProvider.specifications().map { it.name },
-            "the loop sees only the five read tools, never a write tool"
+            "the loop sees exactly the investigate tool"
         )
         // a bare (unprefixed) name is unroutable in a combined set
         val result = service.chatToolProvider.execute(
-            ToolCallRequest("c1", "search_entities", buildJsonObject { put("query", "ali") }),
+            ToolCallRequest("c1", "investigate", buildJsonObject { put("query", "ali") }),
         )
         assertTrue(result.isError)
         assertTrue(
@@ -347,7 +344,7 @@ class ChatRunServiceTest {
     }
 
     @Test
-    fun `the chat tool set combines MCP tools with the read-only eltm tools`() = runBlocking {
+    fun `the chat tool set combines MCP tools with the gsg investigate tool`() = runBlocking {
         val server = MockMcpServer(listOf(addTool()))
         val mcp = McpToolProvider(
             listOf(
@@ -362,19 +359,11 @@ class ChatRunServiceTest {
         val koinApp = testKoinApp(testAppConfig(), mcpToolProvider = mcp)
         val service = koinApp.koin.get<ChatRunService>()
         try {
-            assertEquals(setOf("calc", "eltm"), service.chatToolProvider.namespaces())
+            assertEquals(setOf("calc", "gsg"), service.chatToolProvider.namespaces())
             val names = service.chatToolProvider.specifications().map { it.name }
             assertEquals("calc__add", names.first())
-            assertTrue(
-                names.containsAll(
-                    listOf(
-                        "eltm__search_entities",
-                        "eltm__search_notes",
-                    )
-                ),
-                "the combined set carries both children: $names"
-            )
-            // the MCP namespace routes to the server, not the ELTM provider
+            assertEquals("gsg__investigate", names.last())
+            // the MCP namespace routes to the server, not the gsg provider
             val add = service.chatToolProvider.execute(
                 ToolCallRequest("c1", "calc__add", buildJsonObject { put("a", 1); put("b", 2) }),
             )
@@ -386,6 +375,32 @@ class ChatRunServiceTest {
             koinApp.close()
             server.close()
         }
+    }
+
+    @Test
+    fun `the gsg namespace is not whitelistable for the investigator`() {
+        // the investigator's tool set is its OWN combined provider (MCP +
+        // read-only eltm), so `gsg` is not servable — a whitelist entry for
+        // it fails fast at boot, ruling out sub-agent recursion via the
+        // construction-time invariant
+        val e = assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                testKoinApp(
+                    testAppConfig().copy(
+                        agent = AgentConfig(
+                            investigator = InvestigatorConfig(
+                                model = "bifrost/cerebras/gemma-4-31b",
+                                allowedNamespaces = listOf("gsg"),
+                            )
+                        )
+                    )
+                ).koin.get<InvestigatorService>()
+            }
+        )
+        assertTrue(
+            e.message!!.contains("not served by the delegate"),
+            "the error should name the unserved namespace: ${e.message}"
+        )
     }
 
     private fun addTool(): MockTool = MockTool(

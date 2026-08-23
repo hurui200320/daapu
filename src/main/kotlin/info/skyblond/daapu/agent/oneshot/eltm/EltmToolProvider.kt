@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.tool.*
 import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
 import info.skyblond.daapu.hand.EmbeddingException
+import info.skyblond.daapu.mcp.errorResult
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.normalizeAttributeKey
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -21,8 +22,8 @@ import java.time.format.DateTimeParseException
  *
  * The RW provider is the ONLY ELTM write path (the chat model never writes
  * the ELTM directly; the extraction pipeline drives the writer agent); the
- * read-only provider serves the chat loop's tool set today and the
- * investigate sub-agent later.
+ * read-only provider serves the investigate sub-agent's own tool set
+ * (the main chat loop reaches the ELTM only through `gsg__investigate`).
  *
  * The optional [namespace] switches the provider between the two shapes:
  * blank (the default — one-shot services like the writer/investigate agents
@@ -608,12 +609,7 @@ class EltmToolProvider(
         )
 
     private fun errorResult(request: ToolCallRequest, error: String): ChatMessagePart.ToolResult =
-        ChatMessagePart.ToolResult(
-            id = request.id,
-            tool = request.name,
-            parts = listOf(ChatMessagePart.Text("Error: $error")),
-            isError = true,
-        )
+        errorResult(request.id, request.name, error)
 
     companion object {
         private val logger = KotlinLogging.logger {}

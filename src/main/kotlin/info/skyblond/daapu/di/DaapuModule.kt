@@ -13,6 +13,7 @@ import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
+import info.skyblond.daapu.agent.persist.GsgToolProvider
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
@@ -121,13 +122,13 @@ fun daapuModule(config: AppConfig): Module = module {
         )
     }
 
-    // the chat loop's tool set: the MCP servers plus the read-only ELTM
-    // tools (`eltm__*`), so the main agent can query the external long-term
-    // memory directly (the `gsg__investigate` sub-session tool that
-    // offloads this is deferred). The MCP child is only included when it
-    // serves namespaces:
-    // a namespace-less provider advertises nothing, and CombinedToolProvider
-    // fails fast on a namespace-less child.
+    // the chat loop's tool set: the MCP servers plus the `gsg__investigate`
+    // tool (see `agent/persist/GsgToolProvider.kt`) — the main agent no
+    // longer sees the granular ELTM read tools (`eltm__*`); deep memory and
+    // web searches go through the sub-agent. The MCP child is only included
+    // when it serves namespaces: a namespace-less provider advertises
+    // nothing, and CombinedToolProvider fails fast on a namespace-less
+    // child.
     single<EltmToolProvider> {
         EltmToolProvider(
             eltmService = get(),
@@ -135,27 +136,39 @@ fun daapuModule(config: AppConfig): Module = module {
             namespace = "eltm"
         )
     }
+    single<GsgToolProvider> {
+        GsgToolProvider(investigator = get())
+    }
     single<CombinedToolProvider> {
         CombinedToolProvider(
+            buildList {
+                val mcp = get<McpToolProvider>()
+                if (mcp.namespaces().isNotEmpty()) add(mcp)
+                add(get<GsgToolProvider>())
+            }
+        )
+    }
+    // the investigate sub-agent (`agent/oneshot/investigate/`): its tool
+    // set is its OWN combined provider — the MCP servers plus the read-only
+    // ELTM tools — restricted by the `agent.investigator.allowedNamespaces`
+    // whitelist. It is NOT the chat loop's set, deliberately: the loop no
+    // longer serves `eltm`, and a separate set means `gsg` is not
+    // whitelistable for the sub-agent, ruling out recursion automatically
+    // via the construction-time fail-fast. Resolved at boot like the other
+    // one-shot models (it is reachable from the graph root through
+    // `GsgToolProvider`): an unknown id, a model without tool-call support,
+    // or a whitelisted namespace this set does not serve (the
+    // `WhitelistedToolProvider` construction invariant) fails fast at
+    // startup.
+    single<InvestigatorService> {
+        val investigator = config.agent.investigator
+        val combined = CombinedToolProvider(
             buildList {
                 val mcp = get<McpToolProvider>()
                 if (mcp.namespaces().isNotEmpty()) add(mcp)
                 add(get<EltmToolProvider>())
             }
         )
-    }
-    // the investigate sub-agent (`agent/oneshot/investigate/`): its tool
-    // set is the same combined provider the chat loop uses, restricted by
-    // the `agent.investigator.allowedNamespaces` whitelist — the sub-agent
-    // only executes the listed namespaces, never the loop's bare one-shot
-    // shape. Resolved at boot like the other one-shot models: an unknown
-    // id, a model without tool-call support, or a whitelisted namespace the
-    // shared set does not serve (the `WhitelistedToolProvider` construction
-    // invariant) fails fast at startup. The sub-session is unwired until
-    // the chat loop exposes it (`gsg__investigate`, deferred).
-    single<InvestigatorService> {
-        val combined = get<CombinedToolProvider>()
-        val investigator = config.agent.investigator
         InvestigatorService(
             model = requiredLlm(
                 "agent.investigator.model", investigator.model,

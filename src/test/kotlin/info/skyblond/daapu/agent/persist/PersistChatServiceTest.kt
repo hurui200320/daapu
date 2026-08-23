@@ -745,10 +745,11 @@ class PersistChatServiceTest {
     @Test
     fun `tool round executes through the combined provider with the namespaced read-only eltm tools`() =
         runBlocking {
-            // the chat loop's real shape (ChatRunService composes it): the MCP
-            // servers plus the read-only ELTM tools, one namespaced set; a round
-            // where the model queries the ELTM routes to the local provider and
-            // stores the paired call/result like any other tool round
+            // the investigate sub-agent's real shape (the DI module builds
+            // it): the MCP servers plus the read-only ELTM tools, one
+            // namespaced set; a round where the model queries the ELTM
+            // routes to the local provider and stores the paired call/result
+            // like any other tool round
             val eltm = FakeEltmService()
             eltm.createEntity("Alice", "person")
             val eltmProvider = EltmToolProvider(eltm, readOnly = true, namespace = "eltm")

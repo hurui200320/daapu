@@ -81,7 +81,8 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     use (no config, no body-built pipeline, no pass-through stores). One-shot
     models resolve inline via `requiredLlm(...)` (fail-fast; the investigate
     agent's model is resolved at boot like the other one-shot models — the
-    sub-session itself is unwired until the chat loop exposes it).
+    sub-session is wired into the graph root through the loop's
+    `gsg__investigate` tool).
     Resource cleanup is Koin's: `onClose` on `HandService`/
     `McpToolProvider` fires when the JVM shutdown hook calls
     `koinApp.close()` (the MCP provider closes its cached clients itself;
@@ -106,8 +107,8 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     `EntityWithScore`). Write path = the extraction pipeline only: extractor
     facts go through the ELTM writer agent (`agent/oneshot/eltm/
     EltmWriterService.kt` + 13-tool `EltmToolProvider.kt`, RW mode; the same
-    provider's `readOnly` mode = the 5 read tools for the chat loop and the
-    investigate sub-agent; `runCollect` tool loop, model
+    provider's `readOnly` mode = the 5 read tools for the investigate
+    sub-agent's own tool set; `runCollect` tool loop, model
     `memory.eltm.writerModel`, cap `maxWriterRounds`). A writer failure fails
     the run; a retry re-extracts (the writer skips already-recorded content).
     Writer semantics: create exact-matches are pure reads (create-or-fetch;
@@ -133,9 +134,11 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     answers an `isError` "split it into several smaller notes and retry." tool
     result. **Read
     path**: the provider's `readOnly` mode, namespaced `eltm`, is combined with
-    the MCP provider into the chat loop's tool set
-    (`ChatRunService.chatToolProvider`) — interim until the Phase 4
-    `gsg__investigate` sub-session tool (planned under the `gsg` namespace). `chats.eltm_version`
+    the MCP provider into the investigate sub-agent's OWN tool set (a second
+    `CombinedToolProvider`, built in the DI module — NOT the chat loop's
+    set). The main chat loop reaches the ELTM only through the
+    `gsg__investigate` tool (`agent/persist/GsgToolProvider.kt`, namespace
+    `gsg`). `chats.eltm_version`
     ("" = first run flags) is the global write counter (`EltmService.version()`):
     every visible-state write (entity/relationship insert, revive,
     invalidation, merge, note append, attribute set/delete when the value
@@ -290,10 +293,13 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     with its own round cap `agent.investigator.maxRounds` (`0` = unlimited;
     a `round_limit` stop is recovered by a no-tools summarization one-shot on
     the same model, a `context_exhausted` stop by a tool-call trace). The
-    sub-agent's tool set is the chat loop's combined set restricted by the
-    REQUIRED non-empty `agent.investigator.allowedNamespaces` whitelist
-    (validated like any tool namespace; an entry the shared set does not
-    serve fails fast at boot via the `WhitelistedToolProvider` construction).
+    sub-agent's tool set is its OWN combined set (MCP + read-only `eltm`,
+    built separately in the DI module — NOT the loop's set, which serves
+    MCP + `gsg__investigate`) restricted by the REQUIRED non-empty
+    `agent.investigator.allowedNamespaces` whitelist
+    (validated like any tool namespace; an entry that set does not
+    serve — including `gsg` itself, ruling out recursion — fails fast at
+    boot via the `WhitelistedToolProvider` construction).
     Writer/embedding knobs
     come from `memory.eltm.*` + `hand.*` (the embed timeout is the hand's
     `streamIdleTimeoutMs`). `title.lastNRound` (default `0`) caps history fed to

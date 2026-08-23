@@ -41,7 +41,7 @@ class ChatRunSetup(
  * extraction pipeline (deletion) and the persist loop. The stores and the
  * hand callback service live in the container and are consumed directly by
  * the web server module; cleanup is Koin's job too (`onClose` on the
- * `HandService`/`CombinedToolProvider` definitions, triggered by
+ * `HandService`/`McpToolProvider` definitions, triggered by
  * `koinApp.close()` in the shutdown hook) — this service owns no resources
  * itself. The one-shot pipeline services are stateless across runs and are
  * constructed once as well; their models come from the REQUIRED
@@ -54,11 +54,13 @@ class ChatRunService(
     private val modelCatalog: ModelCatalog,
     private val titleGenerator: TitleGenerator,
     /**
-     * The chat loop's tool set: the MCP servers plus the read-only ELTM
-     * tools (`eltm__*`, see `agent/oneshot/eltm/EltmToolProvider.kt`), so
-     * the main agent can query the external long-term memory directly (the
-     * `gsg__investigate` sub-session tool that offloads this is deferred). The MCP
-     * child is only included when it serves namespaces. Exposed for tests.
+     * The chat loop's tool set: the MCP servers plus the
+     * `gsg__investigate` tool (`agent/persist/GsgToolProvider.kt`), the
+     * main agent's only access to the investigate sub-agent. The granular
+     * read-only ELTM tools (`eltm__*`, see
+     * `agent/oneshot/eltm/EltmToolProvider.kt`) live in the sub-agent's
+     * OWN tool set, not the loop's. The MCP child is only included when it
+     * serves namespaces. Exposed for tests.
      */
     internal val chatToolProvider: CombinedToolProvider,
     private val memoryExtractionService: MemoryExtractionService,
