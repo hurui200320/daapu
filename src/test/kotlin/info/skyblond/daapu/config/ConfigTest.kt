@@ -14,7 +14,6 @@ import kotlin.test.assertTrue
 class ConfigTest {
 
     private fun server(
-        namespace: String = "exa",
         type: McpTransportType = McpTransportType.Http,
         url: String? = "https://mcp.exa.ai/mcp",
         command: List<String> = emptyList(),
@@ -23,7 +22,7 @@ class ConfigTest {
         reconnectAttempts: Int = 3,
         reconnectDelayMs: Long = 1000L,
     ) = McpServerConfig(
-        namespace = namespace, type = type, url = url, command = command,
+        type = type, url = url, command = command,
         initializationTimeoutSeconds = initializationTimeoutSeconds,
         toolExecutionTimeoutSeconds = toolExecutionTimeoutSeconds,
         reconnectAttempts = reconnectAttempts, reconnectDelayMs = reconnectDelayMs,
@@ -54,22 +53,20 @@ class ConfigTest {
                     "port": 9090,
                 },
                 "mcp": {
-                    "servers": [
-                        {
-                            "namespace": "exa",
-                            "type": "http",
-                            "url": "https://mcp.exa.ai/mcp",
-                            "headers": { "Authorization": "Bearer sk-exa" },
-                            "toolExecutionTimeoutSeconds": 120,
-                        },
-                        {
-                            "namespace": "fs",
+                    "exa": {
+                        "type": "http",
+                        "url": "https://mcp.exa.ai/mcp",
+                        "headers": { "Authorization": "Bearer sk-exa" },
+                        "toolExecutionTimeoutSeconds": 120,
+                    },
+                    "customs": {
+                        "fs": {
                             "type": "stdio",
                             "command": ["npx", "-y", "some-server"],
                             "environment": { "FOO": "bar" },
                             "toolExecutionTimeoutSeconds": 0,
                         },
-                    ],
+                    },
                 },
                 "memory": {
                     "compactModel": "bifrost/x",
@@ -99,8 +96,9 @@ class ConfigTest {
         assertEquals("./config.schema.json", config.schema)
         assertEquals("bifrost/t", config.title.model)
 
-        val exa = config.mcp.servers[0]
-        assertEquals("exa", exa.namespace)
+        // allServers merges the dedicated exa server under its hardcoded
+        // namespace (getValue throws if the merge was lost)
+        val exa = config.mcp.allServers().getValue(EXA_NAMESPACE)
         assertEquals(McpTransportType.Http, exa.type)
         assertEquals("https://mcp.exa.ai/mcp", exa.url)
         assertEquals(mapOf("Authorization" to "Bearer sk-exa"), exa.headers)
@@ -108,7 +106,7 @@ class ConfigTest {
         assertEquals(3, exa.reconnectAttempts)
         assertEquals(1000L, exa.reconnectDelayMs)
 
-        val fs = config.mcp.servers[1]
+        val fs = config.mcp.customs.getValue("fs")
         assertEquals(McpTransportType.Stdio, fs.type)
         assertEquals(listOf("npx", "-y", "some-server"), fs.command)
         assertEquals(mapOf("FOO" to "bar"), fs.environment)
@@ -132,6 +130,7 @@ class ConfigTest {
                         "baseUrl": "http://host/x//y",
                     },
                 },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
@@ -150,6 +149,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
@@ -157,7 +157,8 @@ class ConfigTest {
             """.trimIndent()
         )
         assertEquals(8080, config.server.port)
-        assertTrue(config.mcp.servers.isEmpty())
+        assertTrue(config.mcp.customs.isEmpty())
+        assertEquals(setOf(EXA_NAMESPACE), config.mcp.allServers().keys, "only the dedicated exa server by default")
     }
 
     @Test
@@ -170,6 +171,7 @@ class ConfigTest {
                     "bifrost": { "apiKey": "k1", "baseUrl": "http://h1" },
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
@@ -193,6 +195,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
@@ -244,6 +247,7 @@ class ConfigTest {
             {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
@@ -269,6 +273,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
@@ -287,7 +292,10 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "mcp": { "servers": [ { "namespace": "exa", "type": "grpc" } ] },
+                    "mcp": {
+                        "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 },
+                        "customs": { "calc": { "type": "grpc" } },
+                    },
                 }
                 """.trimIndent()
             )
@@ -304,7 +312,10 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "mcp": { "servers": [ { "namespace": "exa", "type": "Http" } ] },
+                    "mcp": {
+                        "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 },
+                        "customs": { "calc": { "type": "Http" } },
+                    },
                 }
                 """.trimIndent()
             )
@@ -319,6 +330,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "server": { "port": 0 },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
@@ -336,13 +348,120 @@ class ConfigTest {
         val example = decodeAppConfig(java.io.File("./config.example.jsonc").readText())
         assertEquals(8080, example.server.port)
         assertTrue(example.providers.containsKey("bifrost"))
-        assertTrue(example.mcp.servers.isNotEmpty())
+        // the example must configure the dedicated exa server (getValue
+        // throws if the merge was lost)
+        example.mcp.allServers().getValue(EXA_NAMESPACE)
+        assertTrue(example.mcp.customs.isEmpty())
         assertTrue(example.title.model.isNotBlank())
     }
 
     @Test
+    fun `the dedicated exa server is required at decode`() {
+        // exa is REQUIRED (fail fast): a config without the mcp.exa section
+        // must fail at decode, not fall back to no exa server
+        val e = assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": {},
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("exa"),
+            "the error should name the missing field: ${e.message}"
+        )
+    }
+
+    @Test
+    fun `the mcp section itself is required at decode`() {
+        // mcp has no default: a config without the section at all must fail
+        // at decode too (config.schema.json requires "mcp" the same way)
+        val e = assertFailsWith<Exception> {
+            decodeAppConfig(
+                """
+                {
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("mcp"),
+            "the error should name the missing section: ${e.message}"
+        )
+    }
+
+    @Test
+    fun `the dedicated exa server validates like any MCP server`() {
+        // the exa entry is a plain McpServerConfig with its namespace
+        // hardcoded to EXA_NAMESPACE: its own validation must run (a config
+        // error in the exa section is a config error, fail fast)
+        McpConfig(
+            customs = emptyMap(),
+            exa = server(url = "https://mcp.exa.ai/mcp", toolExecutionTimeoutSeconds = 120),
+        ).validate()
+        assertFailsWith<IllegalArgumentException> {
+            McpConfig(customs = emptyMap(), exa = server(url = null)).validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            McpConfig(customs = emptyMap(), exa = server(toolExecutionTimeoutSeconds = -1)).validate()
+        }
+    }
+
+    @Test
+    fun `a customs entry colliding with the exa namespace fails fast`() {
+        // the dedicated exa server owns the namespace "exa": a user
+        // configured server claiming it would collide in the merged tool set
+        val e = assertFailsWith<IllegalArgumentException> {
+            McpConfig(
+                customs = mapOf(EXA_NAMESPACE to server()),
+                exa = server(url = "https://mcp.exa.ai/mcp", toolExecutionTimeoutSeconds = 120),
+            ).validate()
+        }
+        assertTrue(e.message!!.contains("exa"), e.message)
+        assertTrue(e.message!!.contains("mcp.customs"), e.message)
+    }
+
+    @Test
+    fun `customs map keys are validated as namespaces`() {
+        // the map key IS the namespace: McpConfig.validate must run the
+        // namespace checks (syntax, no '__', not reserved) on every key
+        val exa = server(url = "https://mcp.exa.ai/mcp", toolExecutionTimeoutSeconds = 120)
+        assertFailsWith<IllegalArgumentException> {
+            McpConfig(customs = mapOf("my server!" to server()), exa = exa).validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            McpConfig(customs = mapOf("my__server" to server()), exa = exa).validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            McpConfig(customs = mapOf("gsg" to server()), exa = exa).validate()
+        }
+        // a valid key passes
+        McpConfig(customs = mapOf("fs" to server(type = McpTransportType.Stdio, url = null, command = listOf("x"))), exa = exa).validate()
+    }
+
+    @Test
+    fun `allServers merges the exa server under its hardcoded namespace`() {
+        val exaConfig = server(url = "https://mcp.exa.ai/mcp", toolExecutionTimeoutSeconds = 120)
+        val fs = server(type = McpTransportType.Stdio, url = null, command = listOf("npx", "-y", "fs"))
+        val config = McpConfig(customs = mapOf("fs" to fs), exa = exaConfig)
+        assertEquals(mapOf("fs" to fs, EXA_NAMESPACE to exaConfig), config.allServers())
+    }
+
+    @Test
     fun `a valid http server passes validation`() {
-        server().validate()
+        server().validate(EXA_NAMESPACE)
     }
 
     @Test
@@ -351,44 +470,44 @@ class ConfigTest {
             type = McpTransportType.Stdio,
             url = null,
             command = listOf("npx", "-y", "some-server")
-        ).validate()
+        ).validate("calc")
     }
 
     @Test
     fun `http entry without a url fails fast`() {
-        val e = assertFailsWith<IllegalArgumentException> { server(url = null).validate() }
+        val e = assertFailsWith<IllegalArgumentException> { server(url = null).validate(EXA_NAMESPACE) }
         assertEquals("MCP server 'exa': type 'http' requires a url", e.message)
     }
 
     @Test
     fun `stdio entry without a command fails fast`() {
         val e = assertFailsWith<IllegalArgumentException> {
-            server(type = McpTransportType.Stdio, url = null).validate()
+            server(type = McpTransportType.Stdio, url = null).validate(EXA_NAMESPACE)
         }
         assertEquals("MCP server 'exa': type 'stdio' requires a command", e.message)
     }
 
     @Test
     fun `invalid url scheme fails fast`() {
-        assertFailsWith<IllegalArgumentException> { server(url = "ftp://host/mcp").validate() }
+        assertFailsWith<IllegalArgumentException> { server(url = "ftp://host/mcp").validate(EXA_NAMESPACE) }
     }
 
     @Test
     fun `blank or non-conforming namespace fails fast`() {
-        assertFailsWith<IllegalArgumentException> { server(namespace = "  ").validate() }
-        // the namespace becomes part of the advertised tool name, so only
-        // [0-9a-z_-] is acceptable
-        assertFailsWith<IllegalArgumentException> { server(namespace = "my server!").validate() }
+        // the namespace (the mcp.customs map key) becomes part of the
+        // advertised tool name, so only [0-9a-z_-] is acceptable
+        assertFailsWith<IllegalArgumentException> { server().validate("  ") }
+        assertFailsWith<IllegalArgumentException> { server().validate("my server!") }
         // uppercase is rejected too: the reserved-namespace check stays an
         // exact match on the lowercase reserved names
-        assertFailsWith<IllegalArgumentException> { server(namespace = "Exa").validate() }
+        assertFailsWith<IllegalArgumentException> { server().validate("Exa") }
     }
 
     @Test
     fun `a namespace containing the advertised-name separator fails fast`() {
         // `__` separates the parts of advertised tool names, so it cannot
         // appear inside a namespace
-        assertFailsWith<IllegalArgumentException> { server(namespace = "my__server").validate() }
+        assertFailsWith<IllegalArgumentException> { server().validate("my__server") }
     }
 
     @Test
@@ -397,7 +516,7 @@ class ConfigTest {
         // MCP server using one would collide with those tools' names
         for (reserved in TOOL_RESERVED_NAMESPACES) {
             val e =
-                assertFailsWith<IllegalArgumentException> { server(namespace = reserved).validate() }
+                assertFailsWith<IllegalArgumentException> { server().validate(reserved) }
             assertTrue(
                 e.message!!.contains("reserved"),
                 "reserved namespace '$reserved': ${e.message}"
@@ -410,10 +529,10 @@ class ConfigTest {
         // reconnectAttempts is the total number of connect attempts, the
         // first one included: 0 would mean "never connect at all"
         val e = assertFailsWith<IllegalArgumentException> {
-            server(reconnectAttempts = 0).validate()
+            server(reconnectAttempts = 0).validate(EXA_NAMESPACE)
         }
         assertTrue(e.message!!.contains("reconnectAttempts"))
-        assertFailsWith<IllegalArgumentException> { server(reconnectDelayMs = -1).validate() }
+        assertFailsWith<IllegalArgumentException> { server(reconnectDelayMs = -1).validate(EXA_NAMESPACE) }
     }
 
     @Test
@@ -421,20 +540,20 @@ class ConfigTest {
         // mirroring config.schema.json's minimum: 1 — 0/negative would reach
         // the SDK transport builders as a nonsense Duration
         val e = assertFailsWith<IllegalArgumentException> {
-            server(initializationTimeoutSeconds = 0).validate()
+            server(initializationTimeoutSeconds = 0).validate(EXA_NAMESPACE)
         }
         assertTrue(e.message!!.contains("initializationTimeoutSeconds"))
         assertFailsWith<IllegalArgumentException> {
-            server(initializationTimeoutSeconds = -1).validate()
+            server(initializationTimeoutSeconds = -1).validate(EXA_NAMESPACE)
         }
         // toolExecutionTimeoutSeconds is REQUIRED and 0 disables it
         assertFailsWith<IllegalArgumentException> {
-            server(toolExecutionTimeoutSeconds = -5).validate()
+            server(toolExecutionTimeoutSeconds = -5).validate(EXA_NAMESPACE)
         }
         // null means "use the SDK default": valid
-        server(initializationTimeoutSeconds = null).validate()
-        server(initializationTimeoutSeconds = 30, toolExecutionTimeoutSeconds = 60).validate()
-        server(toolExecutionTimeoutSeconds = 0).validate()
+        server(initializationTimeoutSeconds = null).validate(EXA_NAMESPACE)
+        server(initializationTimeoutSeconds = 30, toolExecutionTimeoutSeconds = 60).validate(EXA_NAMESPACE)
+        server(toolExecutionTimeoutSeconds = 0).validate(EXA_NAMESPACE)
     }
 
     @Test
@@ -451,13 +570,13 @@ class ConfigTest {
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                     "mcp": {
-                        "servers": [
-                            {
-                                "namespace": "exa",
+                        "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 },
+                        "customs": {
+                            "calc": {
                                 "type": "http",
                                 "url": "https://mcp.exa.ai/mcp"
                             }
-                        ]
+                        }
                     }
                 }
                 """.trimIndent()
@@ -476,6 +595,7 @@ class ConfigTest {
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": {
                     "compactModel": "bifrost/x",
                     "eltm": {
@@ -518,7 +638,8 @@ class ConfigTest {
                 """
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
-                    "providers": {}
+                    "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } }
                 }
                 """.trimIndent()
             )
@@ -533,6 +654,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": {
                         "compactModel": "bifrost/x",
                         "eltm": { "extractionModel": "x", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
@@ -556,6 +678,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": {
                         "compactModel": "bifrost/x",
                         "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5 }
@@ -581,6 +704,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": {
                         "compactModel": "bifrost/x",
                         "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
@@ -607,6 +731,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": {
                         "compactModel": "bifrost/x"
                     },
@@ -703,6 +828,7 @@ assertTrue(
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t" }
@@ -725,6 +851,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "agent": {},
                     "title": { "model": "bifrost/t" }
@@ -738,6 +865,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": { "model": "bifrost/t" }
                 }
@@ -751,6 +879,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "agent": { "investigator": { "model": "bifrost/i" } },
                     "title": { "model": "bifrost/t" }
@@ -765,6 +894,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": [] } },
                     "title": { "model": "bifrost/t" }
@@ -821,6 +951,7 @@ assertTrue(
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t" }
@@ -838,6 +969,7 @@ assertTrue(
             {
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t", "lastNRound": 3 }
@@ -857,6 +989,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } }
                 }
@@ -869,6 +1002,7 @@ assertTrue(
                 {
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
                     "title": {}
                 }

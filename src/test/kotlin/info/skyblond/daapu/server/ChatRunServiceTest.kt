@@ -347,9 +347,8 @@ class ChatRunServiceTest {
     fun `the chat tool set combines MCP tools with the gsg investigate tool`() = runBlocking {
         val server = MockMcpServer(listOf(addTool()))
         val mcp = McpToolProvider(
-            listOf(
-                McpServerConfig(
-                    namespace = "calc",
+            mapOf(
+                "calc" to McpServerConfig(
                     type = McpTransportType.Http,
                     url = server.baseUrl,
                     toolExecutionTimeoutSeconds = 30,

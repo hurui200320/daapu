@@ -48,7 +48,7 @@ data class AppConfig(
     val database: DatabaseConfig,
     val providers: Map<String, LlmProviderConfig>,
     val server: ServerConfig = ServerConfig(),
-    val mcp: McpConfig = McpConfig(),
+    val mcp: McpConfig,
     val memory: MemoryConfig,
     /** The sub-agent settings (see `agent/oneshot/investigate/InvestigatorService.kt`). */
     val agent: AgentConfig,
@@ -368,15 +368,41 @@ data class ServerConfig(
 
 /**
  * MCP tool servers, all tools advertised to every chat run ("one global tool
- * set" for the PoC). Empty by default: no MCP server configured means no
- * tools, matching the pre-config behavior without an EXA_API_KEY.
+ * set" for the PoC). [customs] holds the user-configured servers keyed by
+ * namespace (the key IS the namespace prefix of the advertised tool names,
+ * so it must match [SAFE_ID_REGEX], must not contain `__`, and must not be a
+ * reserved/harness namespace — [TOOL_RESERVED_NAMESPACES] or the dedicated
+ * exa namespace [EXA_NAMESPACE]). [exa] is the REQUIRED dedicated exa server:
+ * an ordinary [McpServerConfig] whose namespace is hardcoded to [EXA_NAMESPACE]
+ * — the user fills the rest (type/url/headers/knobs; http for the hosted
+ * `mcp.exa.ai`, stdio for a self-hosted server), and [allServers] merges it
+ * under that namespace.
  */
 @Serializable
 data class McpConfig(
-    val servers: List<McpServerConfig> = emptyList(),
+    /** The dedicated exa server, REQUIRED; namespace hardcoded to [EXA_NAMESPACE]. */
+    val exa: McpServerConfig,
+    val customs: Map<String, McpServerConfig> = emptyMap(),
 ) {
-    fun validate() = servers.forEach { it.validate() }
+    /**
+     * Every configured server, the dedicated exa merged under its hardcoded
+     * namespace. Used by the DI container (`di/DaapuModule.kt`) to build the
+     * MCP tool provider; [validate] guarantees no [customs] entry collides
+     * with the exa key.
+     */
+    fun allServers(): Map<String, McpServerConfig> = customs + (EXA_NAMESPACE to exa)
+
+    fun validate() {
+        require(!customs.containsKey(EXA_NAMESPACE)) {
+            "mcp.customs must not contain the namespace '$EXA_NAMESPACE': it is reserved for the dedicated mcp.exa server"
+        }
+        exa.validate(EXA_NAMESPACE)
+        customs.forEach { (namespace, config) -> config.validate(namespace) }
+    }
 }
+
+/** The hardcoded namespace of the dedicated exa server ([McpConfig.exa]). */
+const val EXA_NAMESPACE: String = "exa"
 
 @Serializable
 enum class McpTransportType {
@@ -388,23 +414,25 @@ enum class McpTransportType {
 }
 
 /**
- * One MCP tool server, configured in `config.jsonc` under `mcp.servers`
- * (before the config move the exa server was hardcoded in `Main.kt` with only
- * its API key in the environment/`.env`). Maps 1:1 to the MCP SDK
- * builders (see the #3 spike's config surface notes):
+ * One MCP tool server. In `config.jsonc` the servers live under
+ * `mcp.customs` as a map keyed by namespace (the key is the namespace, so
+ * this model carries no namespace field of its own; the dedicated exa server
+ * `mcp.exa` is the same model with its namespace hardcoded to
+ * [EXA_NAMESPACE]). Maps 1:1 to the MCP SDK builders (see the #3 spike's
+ * config surface notes):
  *
  * - `http`: a Streamable-HTTP server ([url], optional [headers]).
  * - `stdio`: a local subprocess ([command] list; [environment] extra
  *   variables merged onto the inherited environment).
  *
- * [namespace] namespaces the advertised tool names (`{namespace}__{tool}`),
- * so tools from different servers never collide in the model request.
- * Namespaces the harness reserves for its own internal/harness tools
- * ([TOOL_RESERVED_NAMESPACES]) must not be used.
+ * The namespace (the `mcp.customs` map key, or [EXA_NAMESPACE] for the
+ * dedicated exa server) prefixes the advertised tool names
+ * (`{namespace}__{tool}`), so tools from different servers never collide in
+ * the model request. Namespaces the harness reserves for its own
+ * internal/harness tools ([TOOL_RESERVED_NAMESPACES]) must not be used.
  */
 @Serializable
 data class McpServerConfig(
-    val namespace: String,
     val type: McpTransportType,
     val url: String? = null,
     val headers: Map<String, String> = emptyMap(),
@@ -423,14 +451,15 @@ data class McpServerConfig(
     val reconnectDelayMs: Long = 1000L
 ) {
     /**
-     * Fail fast on a config that cannot work: the namespace becomes part of
-     * the advertised tool name (`{namespace}__{tool}`, which
-     * OpenAI-compatible gateways only accept in `[0-9a-z_-]` and which must
-     * not contain the `__` separator), must not collide with the namespaces
-     * reserved for internal/harness tools, and each transport requires its
-     * own fields.
+     * Fail fast on a config that cannot work. [namespace] (the map key under
+     * which this server is configured — or [EXA_NAMESPACE] for the dedicated
+     * exa server) becomes part of the advertised tool name
+     * (`{namespace}__{tool}`, which OpenAI-compatible gateways only accept in
+     * `[0-9a-z_-]` and which must not contain the `__` separator), must not
+     * collide with the namespaces reserved for internal/harness tools, and
+     * each transport requires its own fields.
      */
-    fun validate() {
+    fun validate(namespace: String) {
         // MCP servers MUST have a namespace (their advertised names are
         // always prefixed); blank is only legal for the one-shot providers,
         // which never share a tool set

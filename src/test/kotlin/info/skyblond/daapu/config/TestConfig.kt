@@ -22,7 +22,16 @@ fun testAppConfig() = AppConfig(
         )
     ),
     server = ServerConfig(port = 8080),
-    mcp = McpConfig(servers = emptyList()),
+    // exa is REQUIRED; tests override the McpToolProvider with an empty
+    // provider (TestDi), so the placeholder URL is never connected
+    mcp = McpConfig(
+        customs = emptyMap(),
+        exa = McpServerConfig(
+            type = McpTransportType.Http,
+            url = "https://mcp.exa.ai/mcp",
+            toolExecutionTimeoutSeconds = 120,
+        ),
+    ),
     memory = MemoryConfig(
         compactModel = "bifrost/cerebras/gemma-4-31b",
         eltm = EltmConfig(

@@ -115,7 +115,7 @@ cp config.example.jsonc config.jsonc
 | `database`  | `url`, `user`, `password` (required)               | PostgreSQL JDBC URL, user and password.                              |
 | `providers` | `{<id>: {apiKey, baseUrl}}` (required)             | OpenAI-compatible providers, keyed by id (e.g. `bifrost`); `baseUrl` is used as-is and must carry the full `/v1` root. |
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
-| `mcp`       | `servers` (default none)                           | MCP tool servers, see below.                                         |
+| `mcp`       | `exa` (required) + `customs` (default none)       | MCP tool servers, see below.                                         |
 | `memory`    | `compactModel` + `eltm` (required)                 | Compaction + external long-term memory (ELTM) settings, see below.   |
 | `agent`     | `investigator` (required): `model` (required), `allowedNamespaces` (required), `maxRounds` (default `150`) | The investigate sub-agent settings, see below. |
 | `title`     | `model` (required), `lastNRound` (default `0`)     | Session-title generation (`POST /api/chats/{id}/title`).             |
@@ -234,21 +234,26 @@ the last N user rounds (a round is one user message plus the following
 assistant/tool messages), so long chats stay inside the title model's context
 window; `0` means the whole history.
 
-MCP tool servers are configured under `mcp.servers`. Both Streamable HTTP and
-stdio transports are supported — `config.example.jsonc` shows a working
-example (an exa HTTP server with an `Authorization` header, plus a
-commented-out stdio entry to adapt).
+MCP tool servers are configured under `mcp`. The dedicated exa server is
+REQUIRED at `mcp.exa`: an ordinary server entry whose namespace is hardcoded
+to `exa` (advertised tools become `exa__web_search_exa`, ...) — you fill the
+rest. Both Streamable HTTP and stdio transports are supported —
+`config.example.jsonc` shows a working example (an exa HTTP server with an
+`Authorization` header, plus a commented-out stdio entry to adapt; a
+self-hosted exa-mcp-server via `npx` with `EXA_API_KEY` in the environment
+works the same way).
 
-Each entry needs a `namespace` (used to namespace the advertised tool names,
-e.g. `exa__search` — the separator is `__`, so it must not contain it; only
+Every other server lives under `mcp.customs`, keyed by namespace (the key IS
+the namespace prefix of the advertised tool names, e.g. `fs__read` — the
+separator is `__`, so it must not contain it; only
 `[0-9a-z_-]` is allowed, and the reserved namespaces
-`system`/`inner`/`internal`/`gsg` are rejected because internal tools will
-use them), a `type` (`http` needs `url` + optional `headers`; `stdio` needs
-`command` + optional `environment`), and `toolExecutionTimeoutSeconds` (the
-execution budget of every advertised tool in seconds, 0 = no timeout —
-REQUIRED per server, enforced by the brain on the tool callback with
-`withTimeout`; the hand applies no deadline of its own and waits until the
-brain answers or the connection drops). It may also set
+`system`/`inner`/`internal`/`gsg`/`eltm`/`harness` — plus `exa`, owned by
+the dedicated server — are rejected). Each entry needs a `type` (`http` needs `url` +
+optional `headers`; `stdio` needs `command` + optional `environment`) and
+`toolExecutionTimeoutSeconds` (the execution budget of every advertised tool
+in seconds, 0 = no timeout — REQUIRED per server, enforced by the brain on
+the tool callback with `withTimeout`; the hand applies no deadline of its own
+and waits until the brain answers or the connection drops). It may also set
 `initializationTimeoutSeconds`, plus
 `reconnectAttempts` (total connect attempts including the first, default 3)
 and `reconnectDelayMs` (delay between attempts, default 1000). The provider

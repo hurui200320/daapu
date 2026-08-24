@@ -30,7 +30,7 @@ class McpToolProviderTest {
     @Test
     fun `clients connect eagerly at construction and are cached across runs`() {
         val server = MockMcpServer(listOf(addTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        val provider = McpToolProvider(mapOf("calc" to httpConfig(server)))
         try {
             assertEquals(1, server.initializeCount.get(), "the client connects at construction")
             val specs = runBlocking { provider.specifications() }
@@ -54,10 +54,9 @@ class McpToolProviderTest {
         try {
             assertFailsWith<McpTransportException> {
                 McpToolProvider(
-                    listOf(
-                        httpConfig("good", good),
-                        McpServerConfig(
-                            namespace = "dead",
+                    mapOf(
+                        "good" to httpConfig(good),
+                        "dead" to McpServerConfig(
                             type = McpTransportType.Http,
                             url = "http://127.0.0.1:1/mcp",
                             reconnectAttempts = 2,
@@ -80,7 +79,7 @@ class McpToolProviderTest {
         try {
             assertFailsWith<McpTransportException> {
                 McpToolProvider(
-                    listOf(httpConfig("calc", server, reconnectAttempts = 2, reconnectDelayMs = 50))
+                    mapOf("calc" to httpConfig(server, reconnectAttempts = 2, reconnectDelayMs = 50))
                 )
             }
             assertEquals(
@@ -97,7 +96,7 @@ class McpToolProviderTest {
     fun `advertised tool names are namespaced by namespace`() {
         val server = MockMcpServer(listOf(addTool(), echoTool()))
         val provider =
-            McpToolProvider(listOf(httpConfig("calc", server, toolExecutionTimeoutSeconds = 60)))
+            McpToolProvider(mapOf("calc" to httpConfig(server, toolExecutionTimeoutSeconds = 60)))
         try {
             val specs = runBlocking { provider.specifications() }
             assertEquals(listOf("calc__add", "calc__echo"), specs.map { it.name })
@@ -112,7 +111,7 @@ class McpToolProviderTest {
     fun `execution budgets are resolved from the server config by namespace`() {
         val server = MockMcpServer(listOf(addTool()))
         val provider =
-            McpToolProvider(listOf(httpConfig("calc", server, toolExecutionTimeoutSeconds = 60)))
+            McpToolProvider(mapOf("calc" to httpConfig(server, toolExecutionTimeoutSeconds = 60)))
         try {
             assertEquals(
                 60L,
@@ -140,7 +139,7 @@ class McpToolProviderTest {
             // see ConfigTest; here the provider fails fast at construction)
             for (reserved in TOOL_RESERVED_NAMESPACES) {
                 assertFailsWith<IllegalArgumentException> {
-                    McpToolProvider(listOf(httpConfig(reserved, server)))
+                    McpToolProvider(mapOf(reserved to httpConfig(server)))
                 }
             }
         } finally {
@@ -155,7 +154,7 @@ class McpToolProviderTest {
     @Test
     fun `execute routes the advertised name to the raw tool`() {
         val server = MockMcpServer(listOf(addTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        val provider = McpToolProvider(mapOf("calc" to httpConfig(server)))
         try {
             runBlocking { provider.specifications() }
             val result = runBlocking {
@@ -184,7 +183,7 @@ class McpToolProviderTest {
     @Test
     fun `server-side isError result becomes an error tool result without dropping the connection`() {
         val server = MockMcpServer(listOf(boomTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        val provider = McpToolProvider(mapOf("calc" to httpConfig(server)))
         try {
             runBlocking { provider.specifications() }
             val result = runBlocking {
@@ -225,7 +224,7 @@ class McpToolProviderTest {
     @Test
     fun `executing a name no server advertises returns an error result`() {
         val server = MockMcpServer(listOf(addTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        val provider = McpToolProvider(mapOf("calc" to httpConfig(server)))
         try {
             runBlocking { provider.specifications() }
             // a model hallucinating a tool name that is not advertised
@@ -250,7 +249,7 @@ class McpToolProviderTest {
     @Test
     fun `execute rejects malformed advertised names`() {
         val server = MockMcpServer(listOf(addTool()))
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        val provider = McpToolProvider(mapOf("calc" to httpConfig(server)))
         try {
             runBlocking { provider.specifications() }
             // a valid split with an unknown namespace: no entry owns it
@@ -298,7 +297,7 @@ class McpToolProviderTest {
                     handler = { MockToolReply("") })
             )
         )
-        val provider = McpToolProvider(listOf(httpConfig("calc", server)))
+        val provider = McpToolProvider(mapOf("calc" to httpConfig(server)))
         try {
             runBlocking { provider.specifications() }
             val result = runBlocking {
@@ -329,7 +328,7 @@ class McpToolProviderTest {
     fun `transport failure mid-execution answers an error result and the next run reconnects`() {
         val server = MockMcpServer(listOf(echoTool()))
         val provider = McpToolProvider(
-            listOf(httpConfig("calc", server, reconnectAttempts = 2, reconnectDelayMs = 50))
+            mapOf("calc" to httpConfig(server, reconnectAttempts = 2, reconnectDelayMs = 50))
         )
         val port = server.port
         try {
@@ -404,7 +403,7 @@ class McpToolProviderTest {
     fun `listTools on a dead server fails the run and the next run reconnects`() {
         val server = MockMcpServer(listOf(echoTool()))
         val provider = McpToolProvider(
-            listOf(httpConfig("calc", server, reconnectAttempts = 2, reconnectDelayMs = 50))
+            mapOf("calc" to httpConfig(server, reconnectAttempts = 2, reconnectDelayMs = 50))
         )
         val port = server.port
         try {
@@ -455,9 +454,8 @@ class McpToolProviderTest {
     fun `stdio server executes tools and a dead process answers an error result without a retry`() {
         val countFile = File.createTempFile("mcp-stdio-count", ".txt").apply { deleteOnExit() }
         val provider = McpToolProvider(
-            listOf(
-                McpServerConfig(
-                    namespace = "local",
+            mapOf(
+                "local" to McpServerConfig(
                     type = McpTransportType.Stdio,
                     command = stdioMockCommand(),
                     environment = mapOf("MCP_STDIO_COUNT_FILE" to countFile.absolutePath),
@@ -545,9 +543,8 @@ class McpToolProviderTest {
     fun `close shuts down the stdio subprocess`() {
         val countFile = File.createTempFile("mcp-stdio-count", ".txt").apply { deleteOnExit() }
         val provider = McpToolProvider(
-            listOf(
-                McpServerConfig(
-                    namespace = "local",
+            mapOf(
+                "local" to McpServerConfig(
                     type = McpTransportType.Stdio,
                     command = stdioMockCommand(),
                     environment = mapOf("MCP_STDIO_COUNT_FILE" to countFile.absolutePath),
@@ -585,13 +582,11 @@ class McpToolProviderTest {
     // ------------------------------------------------------------------
 
     private fun httpConfig(
-        namespace: String,
         server: MockMcpServer,
         reconnectAttempts: Int = 3,
         reconnectDelayMs: Long = 1000L,
         toolExecutionTimeoutSeconds: Long = 0,
     ) = McpServerConfig(
-        namespace = namespace,
         type = McpTransportType.Http,
         url = server.baseUrl,
         reconnectAttempts = reconnectAttempts,

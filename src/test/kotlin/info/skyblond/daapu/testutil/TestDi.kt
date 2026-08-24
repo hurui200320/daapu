@@ -28,6 +28,11 @@ import org.koin.plugin.module.dsl.single
  * Koin 4 allows overrides by default (`allowOverride = true`), so the
  * override module simply re-declares the seam types after the production
  * module — the later definition wins.
+ *
+ * [mcpToolProvider] defaults to an EMPTY provider: [testAppConfig] carries
+ * the REQUIRED exa server (a live `https://mcp.exa.ai/mcp` URL), and the
+ * production provider connects eagerly at construction — tests must never
+ * touch the network. Pass a provider explicitly to exercise MCP wiring.
  */
 fun testKoinApp(
     config: AppConfig = testAppConfig(),
@@ -38,7 +43,7 @@ fun testKoinApp(
 ): KoinApplication = koinApplication {
     modules(
         daapuModule(config),
-        testOverrides(hand, chatStore, eltmService, mcpToolProvider),
+        testOverrides(hand, chatStore, eltmService, mcpToolProvider ?: EMPTY_MCP_TOOL_PROVIDER),
     )
 }
 
@@ -53,10 +58,19 @@ fun chatRunService(
 ).koin.get<ChatRunService>()
 
 /**
+ * The empty MCP provider shared by every test that does not pass its own:
+ * no servers, so no eager connect, no tools. `McpToolProvider(emptyMap())`
+ * construction is a no-op.
+ */
+private val EMPTY_MCP_TOOL_PROVIDER: McpToolProvider = McpToolProvider(emptyMap())
+
+/**
  * Declare fake definitions over the production module. The override module
  * comes after `daapuModule(...)` and Koin 4 allows overrides by default, so
  * a definition here replaces the production one of the same type; anything
- * null stays on the production definition.
+ * null stays on the production definition. The MCP provider is always
+ * overridden ([testKoinApp] defaults it to an empty provider — never the
+ * production one, which connects to the live exa server eagerly).
  */
 fun testOverrides(
     hand: HandClient? = null,

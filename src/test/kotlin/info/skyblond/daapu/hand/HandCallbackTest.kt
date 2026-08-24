@@ -371,9 +371,8 @@ class HandCallbackTest {
                     )
                 )
                 val provider = McpToolProvider(
-                    listOf(
-                        McpServerConfig(
-                            namespace = "calc",
+                    mapOf(
+                        "calc" to McpServerConfig(
                             type = McpTransportType.Http,
                             url = server.baseUrl,
                             toolExecutionTimeoutSeconds = 1,

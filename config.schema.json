@@ -8,6 +8,7 @@
   "required": [
     "database",
     "providers",
+    "mcp",
     "memory",
     "agent",
     "title"
@@ -69,14 +70,36 @@
     "mcp": {
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "exa"
+      ],
+      "description": "MCP tool servers; all their tools are advertised to every chat run. exa is the REQUIRED dedicated exa server (an ordinary mcpServer entry whose namespace is hardcoded to 'exa' — the user fills the rest; http for the hosted mcp.exa.ai, stdio for a self-hosted server). customs holds every other server, keyed by namespace (the key IS the namespace prefix of the advertised tool names).",
       "properties": {
-        "servers": {
-          "type": "array",
-          "default": [],
-          "description": "MCP tool servers; all their tools are advertised to every chat run.",
-          "items": {
+        "customs": {
+          "type": "object",
+          "default": {},
+          "propertyNames": {
+            "pattern": "^(?!.*__)[0-9a-z_-]+$",
+            "not": {
+              "enum": [
+                "system",
+                "inner",
+                "internal",
+                "gsg",
+                "eltm",
+                "harness",
+                "exa"
+              ]
+            }
+          },
+          "description": "MCP tool servers keyed by namespace: the key is the namespace prefix of the advertised tool names ({namespace}__{tool}), so only [0-9a-z_-] is allowed, no '__', and it must not be a harness-reserved namespace or the dedicated exa namespace.",
+          "additionalProperties": {
             "$ref": "#/definitions/mcpServer"
           }
+        },
+        "exa": {
+          "$ref": "#/definitions/mcpServer",
+          "description": "The dedicated exa server, REQUIRED: an ordinary mcpServer entry whose namespace is hardcoded to 'exa'. The user fills the rest (type/url/headers/knobs); http for the hosted https://mcp.exa.ai/mcp, stdio for a self-hosted exa-mcp-server."
         }
       }
     },
@@ -292,25 +315,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "namespace",
         "type",
         "toolExecutionTimeoutSeconds"
       ],
       "properties": {
-        "namespace": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^(?!.*__)[0-9a-z_-]+$",
-          "not": {
-            "enum": [
-              "system",
-              "inner",
-              "internal",
-              "gsg"
-            ]
-          },
-          "description": "Prefix of the advertised tool names ({namespace}__{tool}): only [0-9a-z_-], no '__', and not a harness-reserved namespace."
-        },
         "type": {
           "enum": [
             "http",

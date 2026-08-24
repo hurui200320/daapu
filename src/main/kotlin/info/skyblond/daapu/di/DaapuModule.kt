@@ -91,13 +91,13 @@ fun daapuModule(config: AppConfig): Module = module {
         )
     }
 
-    // the MCP tool servers come from config (`mcp.servers`); the provider
-    // connects eagerly at construction, so a server that cannot be reached
-    // aborts startup instead of silently degrading every chat run. The
-    // default (`McpToolProvider(emptyList())`) never appears here: the
-    // container always wires the configured servers.
+    // the MCP tool servers come from config (`mcp.customs` keyed by
+    // namespace plus the dedicated `mcp.exa`, merged by
+    // `McpConfig.allServers`); the provider connects eagerly at
+    // construction, so a server that cannot be reached aborts startup
+    // instead of silently degrading every chat run.
     single<McpToolProvider> {
-        McpToolProvider(config.mcp.servers)
+        McpToolProvider(config.mcp.allServers())
     } withOptions { onClose { it?.close() } }
 
     // one-shot pipeline services: stateless across runs, so a single

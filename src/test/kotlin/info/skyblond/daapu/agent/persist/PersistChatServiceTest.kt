@@ -646,9 +646,8 @@ class PersistChatServiceTest {
         // id pairs with the call
         val mcpServer = MockMcpServer(listOf(mcpAddTool()))
         val mcpProvider = McpToolProvider(
-            listOf(
-                McpServerConfig(
-                    namespace = "calc",
+            mapOf(
+                "calc" to McpServerConfig(
                     type = McpTransportType.Http,
                     url = mcpServer.baseUrl,
                     toolExecutionTimeoutSeconds = 30,
@@ -755,9 +754,8 @@ class PersistChatServiceTest {
             val eltmProvider = EltmToolProvider(eltm, readOnly = true, namespace = "eltm")
             val mcpServer = MockMcpServer(listOf(mcpAddTool()))
             val mcpProvider = McpToolProvider(
-                listOf(
-                    McpServerConfig(
-                        namespace = "calc",
+                mapOf(
+                    "calc" to McpServerConfig(
                         type = McpTransportType.Http,
                         url = mcpServer.baseUrl,
                         toolExecutionTimeoutSeconds = 30,

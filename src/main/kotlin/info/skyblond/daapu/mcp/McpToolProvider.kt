@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
+import info.skyblond.daapu.config.McpConfig
 import info.skyblond.daapu.config.McpServerConfig
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.modelcontextprotocol.kotlin.sdk.types.McpException
@@ -14,8 +15,9 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * The MCP-backed [ToolProvider] (#8): one [ClientEntry] per configured server
- * (`config.jsonc` → `mcp.servers`, see [McpServerConfig]), all tools
- * advertised to every chat run ("one global tool set" for the PoC).
+ * (`config.jsonc` → `mcp.customs` keyed by namespace plus the dedicated
+ * `mcp.exa`, merged by [McpConfig.allServers] — see [McpServerConfig]), all
+ * tools advertised to every chat run ("one global tool set" for the PoC).
  *
  * Lifecycle:
  * - Clients are cached long-lived per server, and connected EAGERLY at
@@ -54,19 +56,13 @@ import kotlinx.coroutines.runBlocking
  * execution), so the concatenation always stays unambiguous and gateway-safe.
  */
 class McpToolProvider(
-    configs: List<McpServerConfig>,
+    configs: Map<String, McpServerConfig>,
 ) : ToolProvider, AutoCloseable {
 
     // built once, never mutated afterwards: safe for the concurrent reads
-    // from chat runs, and keeps the config-list advertisement order
-    private val entries: Map<String, ClientEntry> = buildMap {
-        for (config in configs) {
-            val entry = ClientEntry(config)
-            require(!containsKey(entry.namespace)) {
-                "MCP tool provider namespace '${entry.namespace}' is duplicated"
-            }
-            put(config.namespace, entry)
-        }
+    // from chat runs, and keeps the config-map's advertisement order
+    private val entries: Map<String, ClientEntry> = configs.mapValues { (namespace, config) ->
+        ClientEntry(namespace, config)
     }
 
     init {

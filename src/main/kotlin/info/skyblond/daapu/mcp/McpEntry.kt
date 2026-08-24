@@ -54,6 +54,7 @@ internal class ConnectedClient(val client: Client, val process: Process?)
  * than silently overwriting an earlier tool.
  */
 class ClientEntry(
+    val namespace: String,
     private val config: McpServerConfig,
 ) {
     private val clientRef: AtomicReference<ConnectedClient?> = AtomicReference(null)
@@ -64,11 +65,10 @@ class ClientEntry(
     // ktor HttpClient (auth headers go through the per-request builder)
     private val httpClient = HttpClient(CIO)
 
-    val namespace: String = config.namespace
     val timeout: Long = config.toolExecutionTimeoutSeconds
 
     init {
-        config.validate()
+        config.validate(namespace)
     }
 
     private suspend fun buildConnectedClient(): ConnectedClient = when (config.type) {
