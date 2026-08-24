@@ -5,8 +5,10 @@
     <scripts>
       <script value="dev" />
     </scripts>
-    <node-interpreter value="project" />
-    <envs />
+    <node-interpreter value="$USER_HOME$/.nvm/versions/node/v24.19.0/bin/node" />
+    <envs>
+      <env name="NODE_USE_ENV_PROXY" value="1" />
+    </envs>
     <method v="2" />
   </configuration>
 </component>

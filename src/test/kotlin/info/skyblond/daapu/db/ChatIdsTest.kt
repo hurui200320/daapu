@@ -16,22 +16,16 @@ class ChatIdsTest {
     @Test
     fun `chat id has the expected format`() {
         val before = System.currentTimeMillis()
-        val id = newChatId("42")
+        val id = newChatId()
         val after = System.currentTimeMillis()
 
         val parts = id.split("-")
-        assertEquals(3, parts.size, "Expected \$timeMillis-\$userId-\$randomInt, got: $id")
+        assertEquals(2, parts.size, "Expected \$timeMillis-\$randomInt, got: $id")
         val millis = parts[0].toLong()
         assertTrue(millis in before..after, "millis prefix out of range: $millis")
-        assertEquals("42", parts[1])
         val random =
-            assertNotNull(parts[2].toIntOrNull(), "random part should be an int: ${parts[2]}")
+            assertNotNull(parts[1].toIntOrNull(), "random part should be an int: ${parts[1]}")
         assertTrue(random >= 0, "random part should be non-negative: $random")
-    }
-
-    @Test
-    fun `chat id defaults to the placeholder user id`() {
-        assertTrue(newChatId().contains("-$DEFAULT_USER_ID-"))
     }
 
     @Test

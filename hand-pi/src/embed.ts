@@ -2,7 +2,8 @@
  * `/v1/embed`: one OpenAI-compatible embedding call through the hand. Like
  * `/v1/run`, the hand is stateless and opinionless — the brain describes
  * the embedding model, the expected output dimensionality, the
- * transient-retry budget, and the per-attempt timeout on every request.
+ * transient-retry budget, the per-attempt timeout, and any extra gateway
+ * request properties on every request.
  *
  * The hand POSTs `{baseUrl}/embeddings` with the request's `apiKey` as a
  * bearer token and maps upstream failures onto its standard
@@ -27,6 +28,9 @@ type EmbedOutcome =
   | { kind: "ok"; result: EmbedResult }
   | { kind: "failure"; error: HandFailure }
   | { kind: "abort" };
+
+/** The fields the hand itself puts into the `{baseUrl}/embeddings` request body. */
+const RESERVED_GATEWAY_FIELDS = ["model", "input", "dimensions"] as const;
 
 export function validateEmbedRequest(body: string): EmbedRequest {
   const raw = parseBody(body);
@@ -54,7 +58,22 @@ export function validateEmbedRequest(body: string): EmbedRequest {
   }
   const maxRetries = validateNonNegativeInt(raw.maxRetries, "maxRetries");
   const timeoutMs = validateNonNegativeInt(raw.timeoutMs, "timeoutMs");
-  return { model: { baseUrl, apiKey, modelId }, dimensions, input: texts, maxRetries, timeoutMs };
+  let additionalProperties: Record<string, unknown> | undefined;
+  if (raw.additionalProperties !== undefined) {
+    if (!isRecord(raw.additionalProperties)) {
+      failInvalid("additionalProperties must be an object");
+    }
+    // the hand manages these gateway body fields itself: an extra
+    // property with the same name would either silently override them or
+    // be overridden — a brain bug either way, so fail it loudly
+    for (const key of RESERVED_GATEWAY_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(raw.additionalProperties, key)) {
+        failInvalid(`additionalProperties must not override the '${key}' field`);
+      }
+    }
+    additionalProperties = raw.additionalProperties;
+  }
+  return { model: { baseUrl, apiKey, modelId }, dimensions, input: texts, maxRetries, timeoutMs, additionalProperties };
 }
 
 /** `/v1/embed` is plain JSON, so it maps statuses itself (the shared SSE mapper defaults to 200). */
@@ -174,6 +193,10 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
         model: request.model.modelId,
         input: request.input,
         dimensions: request.dimensions,
+        // extra gateway knobs ride the root level of the request body,
+        // exactly as the brain described them (collisions already rejected
+        // during validation)
+        ...request.additionalProperties,
       }),
       signal: AbortSignal.any([signal, timeoutController.signal]),
     });

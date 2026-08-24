@@ -50,7 +50,12 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   - **Embeddings** (`/v1/embed`, `hand-pi/src/embed.ts`): plain-JSON sibling of
     `/v1/run` — one OpenAI-compatible `{baseUrl}/embeddings` call, fully
     described per request (`model.baseUrl/apiKey/modelId`, `dimensions`, `input`,
-    `maxRetries`, `timeoutMs`; no hand defaults). Maps its OWN statuses:
+    `maxRetries`, `timeoutMs`, optional `additionalProperties` — extra
+    root-level fields merged into the gateway request body, e.g. deepinfra's
+    `service_tier: "priority"`, sourced from the catalog entry's
+    `EmbeddingModel.additionalProperties`; keys colliding with the
+    hand-managed `model`/`input`/`dimensions` are rejected `invalid_request`;
+    no hand defaults). Maps its OWN statuses:
     `invalid_request` → 400, `auth` → 401, `upstream` → 502 (5xx/429/network/
     timeout are transient `upstream`, retried with shared backoff; 404/405 =
     endpoint-level baseUrl misconfig, likewise retried; `maxRetries` 0 =

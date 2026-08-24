@@ -11,6 +11,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlin.test.*
 
 /**
@@ -384,6 +385,48 @@ class HandServiceTest {
         assertEquals(listOf("hello", "world"), request.input)
         assertEquals(2, request.maxRetries)
         assertEquals(30_000, request.timeoutMs)
+        assertEquals(null, request.additionalProperties, "no extra properties by default")
+    }
+
+    @Test
+    fun `embed passes the catalog entry's additionalProperties through`() = runBlocking {
+        val hand = FakeHand()
+        val service =
+            HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
+        val model = EmbeddingModel(
+            provider = ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
+            modelId = "zenmux sub/google/gemini-embedding-2",
+            dimensions = 1536,
+            additionalProperties = buildJsonObject { put("service_tier", "priority") },
+        )
+
+        service.embed(model, listOf("hello"), maxRetries = 2, timeoutMs = 30_000)
+
+        val request = hand.embedRequests.single()
+        assertEquals(
+            buildJsonObject { put("service_tier", "priority") },
+            request.additionalProperties,
+        )
+    }
+
+    @Test
+    fun `embedding model rejects additionalProperties colliding with the hand-managed fields`() {
+        // the catalog is authored once; a collision with the hand's own
+        // gateway body fields is a catalog bug, so it must fail at boot
+        for (key in listOf("model", "input", "dimensions")) {
+            val e = assertFailsWith<IllegalArgumentException> {
+                EmbeddingModel(
+                    provider = ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
+                    modelId = "zenmux sub/google/gemini-embedding-2",
+                    dimensions = 1536,
+                    additionalProperties = buildJsonObject { put(key, "sneaky") },
+                )
+            }
+            assertTrue(
+                e.message!!.contains(key),
+                "the error must name the colliding key '$key': ${e.message}",
+            )
+        }
     }
 
     @Test

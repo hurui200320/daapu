@@ -135,6 +135,68 @@ describe("POST /v1/embed", () => {
     }
   });
 
+  it("merges additionalProperties into the gateway request body", async () => {
+    const upstream = await startFakeUpstream(HAPPY);
+    try {
+      const { status, payload } = await embed(
+        embedRequest(upstream.port, { additionalProperties: { service_tier: "priority" } }),
+      );
+      expect(status).toBe(200);
+      expect(payload).toMatchObject({ dimensions: 2 });
+      // the extra knob rides the root level of the gateway request body,
+      // exactly as the brain described it
+      expect(upstream.captured()).toEqual({
+        model: "zenmux sub/google/gemini-embedding-2",
+        input: ["hello world"],
+        dimensions: 1536,
+        service_tier: "priority",
+      });
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("rejects a non-object additionalProperties", async () => {
+    const upstream = await startFakeUpstream(HAPPY);
+    try {
+      const base = embedRequest(upstream.port);
+      for (const additionalProperties of ["priority", [1, 2], null, 42, true]) {
+        const { status, payload } = await embed({ ...base, additionalProperties });
+        expect(status).toBe(400);
+        expect(payload).toMatchObject({ ok: false, error: { type: "invalid_request" } });
+      }
+      expect(upstream.connectionCount()).toBe(0);
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it("rejects additionalProperties colliding with the hand-managed fields", async () => {
+    // the hand must never let an extra property silently override (or be
+    // overridden by) the fields it manages itself
+    const upstream = await startFakeUpstream(HAPPY);
+    try {
+      const base = embedRequest(upstream.port);
+      for (const key of ["model", "input", "dimensions"]) {
+        const { status, payload } = await embed({
+          ...base,
+          additionalProperties: { [key]: "sneaky" },
+        });
+        expect(status).toBe(400);
+        expect(payload).toMatchObject({
+          ok: false,
+          error: {
+            type: "invalid_request",
+            message: expect.stringContaining(`'${key}'`),
+          },
+        });
+      }
+      expect(upstream.connectionCount()).toBe(0);
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("omits usage when the provider does not report it", async () => {
     const upstream = await startFakeUpstream(HAPPY_NO_USAGE);
     try {

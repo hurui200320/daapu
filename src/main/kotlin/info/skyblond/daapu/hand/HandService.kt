@@ -181,6 +181,7 @@ class HandService(
                     input = input,
                     maxRetries = maxRetries,
                     timeoutMs = timeoutMs,
+                    additionalProperties = model.additionalProperties,
                 )
             )
         } catch (e: CancellationException) {

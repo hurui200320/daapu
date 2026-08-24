@@ -161,6 +161,14 @@ export interface EmbedRequest {
   input: string[];
   maxRetries: number;
   timeoutMs: number;
+  /**
+   * Extra root-level fields merged into the `{baseUrl}/embeddings` request
+   * body (gateway-specific knobs the contract does not model, e.g.
+   * deepinfra's `service_tier: "priority"`). Must not collide with the
+   * hand-managed fields (`model`, `input`, `dimensions`). Omitted = no
+   * extra fields.
+   */
+  additionalProperties?: Record<string, unknown>;
 }
 
 export interface EmbedUsage {

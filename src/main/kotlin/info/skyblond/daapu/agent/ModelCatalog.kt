@@ -5,6 +5,8 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.config.SAFE_ID_REGEX
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * The model catalog: every model the API can serve, across all configured
@@ -91,6 +93,11 @@ class ModelCatalog(
             provider = deepinfraProvider,
             modelId = "Qwen/Qwen3-Embedding-8B",
             dimensions = 1536,
+            additionalProperties = buildJsonObject {
+                // enable this if deepinfra's default service tier is slow
+                // will billed at x1.5 price, but should be fast
+                // put("service_tier", "priority")
+            },
         ),
     )
 

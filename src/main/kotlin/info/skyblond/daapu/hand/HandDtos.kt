@@ -88,6 +88,12 @@ data class HandEmbedModelSpec(
  * disabled) are the caller's per-call budget, passed through as-is.
  * [dimensions] is the output size the catalog entry pins; the hand sends it
  * to the gateway and the caller verifies the response against it.
+ * [additionalProperties] are extra root-level fields the hand merges into
+ * the gateway request body ([EmbeddingModel.additionalProperties],
+ * gateway-specific knobs like deepinfra's `service_tier`); omitted = no
+ * extra fields. Keys must not collide with the hand-managed fields
+ * (`model`, `input`, `dimensions`) — the hand rejects them as
+ * `invalid_request`.
  */
 @Serializable
 data class HandEmbedRequest(
@@ -98,6 +104,8 @@ data class HandEmbedRequest(
     val maxRetries: Int,
     /** Per-attempt timeout in ms; 0 = disabled. */
     val timeoutMs: Long,
+    /** Extra root-level fields merged into the `{baseUrl}/embeddings` request body. */
+    val additionalProperties: JsonObject? = null,
 )
 
 @Serializable

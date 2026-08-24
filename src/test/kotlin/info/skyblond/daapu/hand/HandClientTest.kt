@@ -8,6 +8,8 @@ import info.skyblond.daapu.testutil.MockSseResponse
 import info.skyblond.daapu.testutil.MockSseServer
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -206,6 +208,38 @@ class HandClientTest {
             assertTrue(request.contains(""""timeoutMs":30000"""), "request: $request")
             assertTrue(
                 request.contains("x-daapu-token: test-token", ignoreCase = true),
+                "request: $request"
+            )
+            client.close()
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `embed carries the additionalProperties on the wire when set`() {
+        val server = MockSseServer {
+            MockSseResponse(
+                200,
+                listOf(
+                    """{"vectors":[[1.5,-2.0]],"dimensions":2,"usage":{"promptTokens":3,"totalTokens":3}}"""
+                )
+            )
+        }
+        try {
+            val client = HttpHandClient("http://127.0.0.1:${server.port}", "test-token")
+            val result = runBlocking {
+                client.embed(
+                    embedRequest(server.port).copy(
+                        additionalProperties = buildJsonObject { put("service_tier", "priority") },
+                    )
+                )
+            }
+            assertEquals(listOf(listOf(1.5f, -2.0f)), result.vectors)
+
+            val request = server.lastRequest()!!
+            assertTrue(
+                request.contains(""""additionalProperties":{"service_tier":"priority"}"""),
                 "request: $request"
             )
             client.close()
