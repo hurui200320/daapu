@@ -71,6 +71,9 @@ kotlin {
 
 application {
     mainClass.set("info.skyblond.daapu.MainKt")
+    // Netty probes native transports via System.loadLibrary (JEP 472): silence
+    // the restricted-native-access warning on JDK 24+ before it becomes an error
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
 tasks.test {
