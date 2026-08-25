@@ -16,14 +16,8 @@ import info.skyblond.daapu.agent.persona.Persona
  * gets a reduced `# Context` section explaining only what is actually
  * injected — the `<meta>` time anchors, `localtime` and the compaction
  * summaries it will still see in the chat — never the ELTM machinery.
- *
- * [isDevelopment] gates the developer note, which reports harness glitches
- * back to the user. Hardcoded `true` in the DI wiring for now; will be
- * sourced from config later.
  */
-class MainAgentSystemPromptService(
-    private val isDevelopment: Boolean,
-) {
+class MainAgentSystemPromptService {
 
     fun render(persona: Persona): String {
         // the persona text is user-authored and already trimmed at save time:
@@ -134,16 +128,6 @@ They are the results of an ELTM search seeded by the user's latest input.
 These entries are per-request retrieval results, not a memory dump: an absent entry means "nothing related was found
 in the long-term memory", not "this does not exist". The same "removed once user send next message" caveat applies:
 repeat any fact you use in your response or tool calls.
-
-${if (isDevelopment) {
-"""
-## Developer note
-
-If you're seeing this, it means the GSG is running in developer mode. You may see missing tools, malformed user input message,
-mismatch between input XML and system prompt, or glitches. It's in develop after all.
-When this happens, in addition to fulfill user's request, now the user is developer, you should also report any issues to the user.
-""".trimIndent().trim()
-} else ""}
 """.trimIndent().trim()
 
     /**
@@ -197,15 +181,5 @@ These are real-time info that will be updated every request.
 
 Items:
 + `localtime`: current local time with timezone info.
-
-${if (isDevelopment) {
-"""
-## Developer note
-
-If you're seeing this, it means the GSG is running in developer mode. You may see missing tools, malformed user input message,
-mismatch between input XML and system prompt, or glitches. It's in develop after all.
-When this happens, in addition to fulfill user's request, now the user is developer, you should also report any issues to the user.
-""".trimIndent().trim()
-} else ""}
 """.trimIndent().trim()
 }
