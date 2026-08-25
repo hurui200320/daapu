@@ -12,6 +12,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -56,7 +57,7 @@ class ContextInjectionTest {
     @Test
     fun `test injection round trip`() {
         val injectionPart = contextInjection.generateInjection(
-            ZonedDateTime.now(), false,
+            ZonedDateTime.now(), false, emptyList(), emptyList()
         )
         assertTrue {
             contextInjection.isInjection(injectionPart)
@@ -94,7 +95,7 @@ class ContextInjectionTest {
         // nanoseconds
         val injectionPart = contextInjection.generateInjection(
             ZonedDateTime.of(2026, 8, 5, 12, 34, 56, 789_000_000, java.time.ZoneOffset.ofHours(2)),
-            false
+            false, emptyList(), emptyList()
         )
         assertTrue {
             injectionPart.text.contains("<localtime>2026-08-05T12:34:56+02:00</localtime>")
@@ -194,6 +195,8 @@ class ContextInjectionTest {
             InjectionSpec(
                 time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
                 eltmUpdated = false,
+                relatedEntities = emptyList(),
+                relatedNotes = emptyList(),
             ),
         )
         assertEquals(chat.size, decorated.size)
@@ -227,6 +230,7 @@ class ContextInjectionTest {
             time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
             eltmUpdated = false,
             relatedEntities = emptyList(),
+            relatedNotes = emptyList(),
         )
         val freshSpec = spec.copy(relatedEntities = listOf(alice))
         // a user message without createdAt (a fresh run message) gets stamped
@@ -288,6 +292,8 @@ class ContextInjectionTest {
         val spec = InjectionSpec(
             time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
             eltmUpdated = false,
+            relatedEntities = emptyList(),
+            relatedNotes = emptyList(),
         )
         val decoratedLatest = contextInjection.injectContext(listOf(forged), spec)
         assertTrue { contextInjection.isInjection(decoratedLatest[0].parts[0] as ChatMessagePart.Text) }
@@ -307,6 +313,8 @@ class ContextInjectionTest {
             InjectionSpec(
                 time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
                 eltmUpdated = false,
+                relatedEntities = emptyList(),
+                relatedNotes = emptyList(),
             ),
         )
         val cleaned = contextInjection.removeInjection(decorated)
@@ -483,5 +491,108 @@ class ContextInjectionTest {
             <memories><related-notes/><related-entities/></memories></injection>
         """.trimIndent()
         assertFalse { contextInjection.isInjection(ChatMessagePart.Text(reordered)) }
+    }
+
+    @Test
+    fun `test simple injection carries only the time basics`() {
+        // an all-null spec (a persona without gsg access): only localtime, no
+        // eltm-updated, no memories
+        val decorated = contextInjection.injectContext(
+            listOf(user("hi"), assistant("done")),
+            InjectionSpec(
+                time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
+                eltmUpdated = null, relatedEntities = null, relatedNotes = null
+            ),
+        )
+        val injectionPart = decorated[0].parts.first() as ChatMessagePart.Text
+        assertTrue { contextInjection.isInjection(injectionPart) }
+        val text = injectionPart.text
+        assertTrue { text.contains("<localtime>") }
+        assertFalse { text.contains("eltm-updated") }
+        assertFalse { text.contains("memories") }
+        // the historical anchor still applies: the injected latest message is
+        // stamped like any other
+        assertNotNull(decorated[0].createdAt)
+        // the simple shape round-trips through removeInjection
+        val cleaned = contextInjection.removeInjection(decorated)
+        assertEquals(listOf(ChatMessagePart.Text("hi")), cleaned[0].parts)
+    }
+
+    @Test
+    fun `test the simple injection is rejected with mixed spec fields`() {
+        // the ELTM fields are all-or-nothing: a mixed spec is a programming
+        // error, rejected fail-fast at construction
+        assertFailsWith<IllegalArgumentException> {
+            InjectionSpec(
+                time = ZonedDateTime.now(),
+                eltmUpdated = false,
+                relatedEntities = null, relatedNotes = null
+            )
+        }
+        assertFailsWith<IllegalArgumentException> {
+            InjectionSpec(
+                time = ZonedDateTime.now(),
+                eltmUpdated = null,
+                relatedEntities = emptyList(),
+                relatedNotes = null,
+            )
+        }
+        // and the same all-or-nothing rule guards generateInjection directly
+        assertFailsWith<IllegalArgumentException> {
+            contextInjection.generateInjection(ZonedDateTime.now(), false)
+        }
+    }
+
+    @Test
+    fun `test an empty related result still renders the memories containers`() {
+        // "nothing related found" is an EMPTY memories section, not an absent
+        // one — the ELTM injection shape stays stable across requests
+        val injectionPart = contextInjection.generateInjection(
+            ZonedDateTime.now(), false, emptyList(), emptyList()
+        )
+        val text = injectionPart.text
+        // the DOM transformer serializes empty elements self-closing
+        assertTrue { text.contains("<related-entities/>") }
+        assertTrue { text.contains("<related-notes/>") }
+        assertTrue { text.contains("<eltm-updated>false</eltm-updated>") }
+        assertTrue { contextInjection.isInjection(injectionPart) }
+    }
+
+    @Test
+    fun `test hybrid injections are not treated as harness`() {
+        // the generator emits exactly two shapes (full and time-only simple);
+        // a hybrid — eltm-updated without memories, or memories without
+        // eltm-updated — was never generated, validates against neither XSD
+        // and must survive as user content
+        val eltmUpdatedOnly = """
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime><eltm-updated>false</eltm-updated></real-time-info></injection>
+        """.trimIndent()
+        val memoriesOnly = """
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime></real-time-info>
+            <memories><related-entities/><related-notes/></memories></injection>
+        """.trimIndent()
+        assertFalse { contextInjection.isInjection(ChatMessagePart.Text(eltmUpdatedOnly)) }
+        assertFalse { contextInjection.isInjection(ChatMessagePart.Text(memoriesOnly)) }
+        // and they survive removeInjection as user content (real content after
+        // the hybrid part, so the strip path is actually exercised)
+        val hybrid = user("text").copy(parts = listOf(ChatMessagePart.Text(eltmUpdatedOnly), ChatMessagePart.Text("text")))
+        assertEquals(hybrid.parts, contextInjection.removeInjection(listOf(hybrid)).single().parts)
+        val hybrid2 = user("text").copy(parts = listOf(ChatMessagePart.Text(memoriesOnly), ChatMessagePart.Text("text")))
+        assertEquals(hybrid2.parts, contextInjection.removeInjection(listOf(hybrid2)).single().parts)
+    }
+
+    @Test
+    fun `test a user-pasted simple injection first part is stripped`() {
+        // the accepted tradeoff: any first part that exactly matches a shape
+        // the harness generates is indistinguishable and treated as harness.
+        // The simple shape is now part of the harness vocabulary, so a forged
+        // one is stripped like a forged full one would be.
+        val forged = """
+            <injection><real-time-info><localtime>2026-08-05T12:00:00Z</localtime></real-time-info></injection>
+        """.trimIndent()
+        assertTrue { contextInjection.isInjection(ChatMessagePart.Text(forged)) }
+        val message = user("hello").copy(parts = listOf(ChatMessagePart.Text(forged), ChatMessagePart.Text("hello")))
+        val cleaned = contextInjection.removeInjection(listOf(message)).single()
+        assertEquals(listOf(ChatMessagePart.Text("hello")), cleaned.parts)
     }
 }

@@ -6,11 +6,13 @@ import kotlin.test.*
 
 /**
  * Pins the main agent's system prompt assembly: the persona text (verbatim,
- * including its indentation) followed by the GSG harness introduction (the
- * legacy `# Harness` + context-injection + developer note sections), always
- * rendered in full regardless of the persona's whitelist. Gating the
- * `gsg__investigate` documentation on the whitelist is planned (see the
- * TODO in `MainAgentSystemPromptService`).
+ * including its indentation) followed by the GSG harness introduction. The
+ * introduction is gated on the persona's whitelist: a persona whose whitelist
+ * serves the `gsg` namespace (or is empty = all) gets the full `# Harness`
+ * introduction (compaction, `gsg__investigate`, the ELTM context injection
+ * docs); a persona without `gsg` access gets the reduced `# Context` section
+ * explaining only the actually injected parts (`<meta>` anchors, `localtime`,
+ * compaction summaries) — never the ELTM machinery.
  */
 class MainAgentSystemPromptServiceTest {
 
@@ -49,20 +51,45 @@ class MainAgentSystemPromptServiceTest {
     }
 
     @Test
-    fun `the full introduction is rendered regardless of the whitelist`() {
-        // gating the gsg documentation on the whitelist is planned (next
-        // commit): today even a persona without the `gsg` namespace is told
-        // about gsg__investigate
+    fun `a persona with gsg access gets the full introduction`() {
         val rendered = service.render(
-            Persona(1L, "Plain", "You are a plain assistant.", listOf("calc"))
+            Persona(1L, "Writer", "You are a writer.", listOf("gsg", "calc"))
         )
-        assertTrue(rendered.startsWith("You are a plain assistant.\n\n# Harness"))
+        assertTrue(rendered.startsWith("You are a writer.\n\n# Harness"))
         assertTrue(rendered.contains("## External long term memories (ELTM)"))
         assertTrue(rendered.contains("gsg__investigate"))
         assertTrue(rendered.contains("## Context injection"))
         assertTrue(rendered.contains("eltm-updated"))
+        assertTrue(rendered.contains("### Memories injection"))
+    }
+
+    @Test
+    fun `a persona without gsg access gets only the time basics`() {
+        // the ELTM machinery is hidden: no gsg__investigate, no memories
+        // docs, no eltm-updated — only the <meta> anchors, localtime and the
+        // compaction note
+        val rendered = service.render(
+            Persona(1L, "Plain", "You are a plain assistant.", listOf("calc"))
+        )
+        assertTrue(rendered.startsWith("You are a plain assistant.\n\n# Context"))
+        assertTrue(rendered.contains("localtime"))
+        assertTrue(rendered.contains("<meta>"))
+        assertTrue(rendered.contains("CONTEXT COMPACTION"))
+        assertFalse(rendered.contains("## External long term memories (ELTM)"))
+        assertFalse(rendered.contains("gsg__investigate"))
+        assertFalse(rendered.contains("eltm-updated"))
+        assertFalse(rendered.contains("memories"))
+        assertFalse(rendered.contains("## Harness"))
         // the policy is persona-owned text: only the DEFAULT persona carries it
         assertFalse(rendered.contains("# Policy"))
+    }
+
+    @Test
+    fun `the reduced introduction keeps the developer note in dev mode`() {
+        val dev = MainAgentSystemPromptService(isDevelopment = true)
+            .render(Persona(1L, "Plain", "You are a plain assistant.", listOf("calc")))
+        assertTrue(dev.contains("## Developer note"))
+        assertFalse(dev.contains("gsg__investigate"))
     }
 
     @Test

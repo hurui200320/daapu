@@ -45,9 +45,14 @@ class QueryRewriteService(
         model.checkPromptContentCapabilities(historyClipped)
         val chat = contextInjection.injectContext(
             contextInjection.removeInjection(historyClipped),
+            // the rewrite's own injection is the time-only simple shape (all
+            // ELTM fields null): a stateless one-shot, there is no ELTM
+            // update flag or memories to report
             spec = InjectionSpec(
                 time = ZonedDateTime.now(),
-                eltmUpdated = false,
+                eltmUpdated = null,
+                relatedEntities = null,
+                relatedNotes = null,
             ),
         )
 

@@ -270,6 +270,70 @@ class PersistChatServiceTest {
     }
 
     @Test
+    fun `a persona without gsg access skips the rewrite and gets the time-only injection`() {
+        // the memories injection is hidden for such a persona, so the query
+        // rewrite (which exists only to feed the memories search) must not
+        // run: no LLM call, no embedding calls — only the chat round
+        val outcome = run(
+            persona = Persona(1L, "Plain", "You are a plain assistant.", listOf("calc")),
+            rewriteScript = { error("the rewrite must not run without gsg access: it only feeds the hidden memories") },
+        )
+        assertNull(outcome.error)
+        assertEquals(1, outcome.hand.requests.size, "no rewrite: only the chat round")
+        val request = outcome.hand.requests.single()
+        // the reduced system prompt documents only the time basics
+        val prompt = request.systemPrompt!!
+        assertTrue(prompt.startsWith("You are a plain assistant.\n\n# Context"))
+        assertFalse(prompt.contains("gsg__investigate"))
+        // the injection carries localtime and the meta anchors, but neither
+        // eltm-updated nor memories
+        val injection = injectionOf(request)
+        assertTrue(injection.contains("<localtime>"))
+        assertFalse(injection.contains("eltm-updated"))
+        assertFalse(injection.contains("memories"))
+        // the ELTM version is still persisted (harness behavior, persona-
+        // independent: the flag stays correct if the chat switches persona)
+        assertEquals("0", outcome.store.storedEltmVersion)
+    }
+
+    @Test
+    fun `a reactive compaction keeps the time-only injection for a persona without gsg access`() {
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            persona = Persona(1L, "Plain", "You are a plain assistant.", listOf("calc")),
+            rewriteScript = { error("the rewrite must not run without gsg access: it only feeds the hidden memories") },
+            chatScript = { request ->
+                if (request.messages.any { message ->
+                        message.parts.any { part ->
+                            part is ChatMessagePart.Text &&
+                                    part.text.startsWith("CONTEXT COMPACTION")
+                        }
+                    }) {
+                    stopEvents()
+                } else {
+                    listOf(
+                        HandEvent.RunError("context_exhausted", "input too big")
+                    )
+                }
+            },
+        )
+        assertNull(outcome.error)
+        assertEquals(
+            4,
+            outcome.hand.requests.size,
+            "exhausted run -> compactor -> extractor -> fresh run (no rewrite)",
+        )
+        // both the exhausted run and the compacted retry carry the same
+        // time-only injection: localtime, never eltm-updated or memories
+        for (request in listOf(outcome.hand.requests[0], outcome.hand.requests[3])) {
+            val injection = injectionOf(request)
+            assertTrue(injection.contains("<localtime>"))
+            assertFalse(injection.contains("eltm-updated"))
+            assertFalse(injection.contains("memories"))
+        }
+    }
+
+    @Test
     fun `eltm version is persisted on the chat and the eltm-updated flag tracks changes`() {
         val store = InMemoryChatStore()
         val eltm = FakeEltmService()
@@ -953,11 +1017,18 @@ class PersistChatServiceTest {
         assertTrue(userTexts.contains("topic 4"))
         assertTrue(userTexts.contains("hello"), "the run's own user message feeds the rewrite")
         // the rewrite received the loop's injected chat sanitized and
-        // re-injected with its own spec: the loop's flags are not in it
+        // re-injected with its own time-only spec: the loop's flags and
+        // memories are not in it
+        val rewriteInjection = injectionOf(rewrite)
         assertTrue(
-            injectionOf(rewrite).contains("<eltm-updated>false</eltm-updated>"),
-            "the rewrite sees its own injection, not the loop's",
+            rewriteInjection.contains("<localtime>"),
+            "the rewrite sees its own time-only injection",
         )
+        assertFalse(
+            rewriteInjection.contains("eltm-updated"),
+            "the rewrite's one-shot injection carries no ELTM update flag",
+        )
+        assertFalse(rewriteInjection.contains("memories"))
 
         // the chat round still carried the loop's real injection
         assertTrue(

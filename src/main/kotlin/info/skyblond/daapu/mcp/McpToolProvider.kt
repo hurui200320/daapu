@@ -74,6 +74,7 @@ class McpToolProvider(
         try {
             runBlocking {
                 entries.values.forEach { entry ->
+                    logger.info { "Initializing MCP server ${entry.namespace}" }
                     entry.getConnectedClient()
                     connected += entry
                 }

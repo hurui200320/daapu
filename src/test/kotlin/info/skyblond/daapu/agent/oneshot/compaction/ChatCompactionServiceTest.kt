@@ -219,7 +219,7 @@ class ChatCompactionServiceTest {
         // set, never double-injected, and the preserved output stays clean.
         val contextInjection = ContextInjection()
         val injection = contextInjection.generateInjection(
-            java.time.ZonedDateTime.now(), false
+            java.time.ZonedDateTime.now(), false, emptyList(), emptyList()
         )
         val chat = listOf(
             stampedUser("u1 " + "x".repeat(200), "2026-08-16T09:00:00Z")

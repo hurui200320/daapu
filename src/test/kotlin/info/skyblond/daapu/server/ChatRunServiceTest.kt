@@ -210,18 +210,18 @@ class ChatRunServiceTest {
             chatRequest.systemPrompt.contains("# Harness"),
             "the gsg harness introduction is appended to the persona text",
         )
-        // the introduction is always rendered in full (gating the
-        // gsg__investigate documentation on the whitelist is planned)
+        // the persona's whitelist serves `gsg`, so the full introduction
+        // (incl. the gsg__investigate documentation) is rendered
         assertTrue(chatRequest.systemPrompt.contains("gsg__investigate"))
         // the successful run stamps the chat's persona record
         assertEquals(1L, store.personaId("chat-1"))
     }
 
     @Test
-    fun `a persona whitelist restricts the tools but keeps the full introduction`() = runBlocking {
-        // the whitelist filters the loop's TOOL set only; the harness
-        // introduction (incl. the gsg__investigate documentation) is
-        // rendered in full for every persona — gating it is planned
+    fun `a persona whitelist restricts the tools and gates the introduction`() = runBlocking {
+        // the whitelist filters the loop's TOOL set; a persona WITHOUT the
+        // `gsg` namespace also gets the reduced introduction — no
+        // gsg__investigate documentation, only the time basics
         val server = MockMcpServer(listOf(addTool()))
         val mcp = McpToolProvider(
             mapOf(
@@ -260,11 +260,15 @@ class ChatRunServiceTest {
             service.runChat(setup, NoopStreamingCallback)
             val prompt = hand.requests.last().systemPrompt!!
             assertTrue(prompt.startsWith("You are a plain assistant."))
-            assertTrue(prompt.contains("# Harness"), "the harness introduction is still appended")
             assertTrue(
-                prompt.contains("gsg__investigate"),
-                "the introduction is currently rendered in full regardless of the whitelist",
+                prompt.contains("# Context"),
+                "the reduced introduction is appended for a persona without gsg access",
             )
+            assertFalse(
+                prompt.contains("gsg__investigate"),
+                "the gsg documentation is gated on the persona's whitelist",
+            )
+            assertFalse(prompt.contains("# Harness"))
             assertFalse(
                 prompt.contains("# Policy"),
                 "the policy is part of the DEFAULT persona's text only",

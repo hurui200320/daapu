@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <!-- root node: injection — the time-only SIMPLE shape (a persona without
+         `gsg` access; the query-rewrite one-shot): real-time-info with
+         localtime only, no eltm-updated, no memories. The FULL shape (a
+         persona whose whitelist serves `gsg`) lives in
+         injectionSchema.xsd. The two shapes are deliberately kept in
+         separate schemas: XSD 1.0 cannot express the pairing (both shapes
+         start with `real-time-info`, so a xs:choice of them would be
+         UPA-ambiguous), and the generator emits exactly these two shapes — a
+         hybrid (eltm-updated without memories, or memories without
+         eltm-updated) is invalid in BOTH schemas and survives as user
+         content. -->
+    <xs:element name="injection">
+        <xs:complexType>
+            <xs:sequence>
+                <!-- real-time-info -->
+                <xs:element name="real-time-info">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <!-- localtime, string -->
+                            <xs:element name="localtime" type="xs:string"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>

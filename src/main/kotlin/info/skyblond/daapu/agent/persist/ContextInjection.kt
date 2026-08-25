@@ -44,13 +44,27 @@ data class RelatedNoteView(
 /**
  * The context injection payload for the latest user message (see
  * [ContextInjection.generateInjection]).
+ *
+ * The three ELTM fields are null together (a simple injection: only the time
+ * basics — `localtime`, no `eltm-updated`, no `<memories>`) or non-null
+ * together (the full ELTM injection; the related lists are EMPTY when
+ * nothing related was found, never null). A mixed spec is rejected at
+ * construction.
  */
 data class InjectionSpec(
     val time: ZonedDateTime,
-    val eltmUpdated: Boolean,
-    val relatedEntities: List<EntityWithScore> = emptyList(),
-    val relatedNotes: List<RelatedNoteView> = emptyList(),
-)
+    val eltmUpdated: Boolean?,
+    val relatedEntities: List<EntityWithScore>?,
+    val relatedNotes: List<RelatedNoteView>?,
+) {
+    init {
+        val nulls = listOf(eltmUpdated, relatedEntities, relatedNotes).count { it == null }
+        require(nulls == 0 || nulls == 3) {
+            "InjectionSpec: eltmUpdated, relatedEntities and relatedNotes must be all null " +
+                    "(simple injection) or all non-null (ELTM injection)"
+        }
+    }
+}
 
 /**
  * Builds the harness-injected context parts and applies/removes them on a
@@ -61,8 +75,10 @@ data class InjectionSpec(
  *   (rendered in the server's CURRENT zone, so a server zone change
  *   re-renders every anchor consistently instead of freezing the old
  *   offset), and — when an [InjectionSpec] is given (the chat loop only) —
- *   prepends the full `<injection>` (real-time info + memories) to the
- *   latest user message, stamping its `createdAt` if missing. With a null
+ *   prepends the `<injection>` to the latest user message, stamping its
+ *   `createdAt` if missing. The injection is the full shape (real-time info
+ *   + memories) when the spec's ELTM fields are non-null, or the time-only
+ *   simple shape (just `localtime`) when they are all null. With a null
  *   spec (the one-shot services) it only anchors, adding no injection and
  *   never stamping.
  *
@@ -81,19 +97,31 @@ data class InjectionSpec(
  * deterministic rendering of the message's own `createdAt`
  * ([hasMetaPart]); a user message that happens to contain a valid
  * `<meta>` with different content is kept as user content. The full
- * injection is only recognized structurally (XSD) — a user message whose
+ * injection is only recognized structurally (the XSDs): a user message whose
  * FIRST part is a valid `<injection>` is indistinguishable, and is treated
  * as harness (the same accepted behavior as before this class existed).
+ * Only the two shapes the generator actually emits are recognized — the full
+ * shape (see [generateInjection] with non-null ELTM fields) and the
+ * time-only simple shape (all ELTM fields null); a hybrid (e.g.
+ * `eltm-updated` without `<memories>`) validates against neither schema and
+ * survives as user content.
  */
 class ContextInjection {
     companion object {
         private const val INJECTION_XSD_RESOURCE_PATH = "/agent/injectionSchema.xsd"
+        private const val INJECTION_SIMPLE_XSD_RESOURCE_PATH = "/agent/injectionSimpleSchema.xsd"
         private const val META_XSD_RESOURCE_PATH = "/agent/metaSchema.xsd"
 
         // Compiled once per JVM: a Schema is thread-safe for newValidator()
         // (only the Validator instances are single-threaded), so the
         // per-request ContextInjection instances don't each pay an XSD parse.
-        private val injectionSchema: Schema = loadSchema(INJECTION_XSD_RESOURCE_PATH)
+        // The generator emits exactly two injection shapes, each pinned by its
+        // own schema (a single minOccurs-loosened schema would also accept
+        // hybrids the generator never produces — see injectionSchema.xsd):
+        // the full shape (personas with `gsg` access) and the time-only
+        // simple shape (personas without it, the query-rewrite one-shot).
+        private val fullInjectionSchema: Schema = loadSchema(INJECTION_XSD_RESOURCE_PATH)
+        private val simpleInjectionSchema: Schema = loadSchema(INJECTION_SIMPLE_XSD_RESOURCE_PATH)
         private val metaSchema: Schema = loadSchema(META_XSD_RESOURCE_PATH)
 
         private fun loadSchema(resourcePath: String): Schema {
@@ -163,10 +191,16 @@ class ContextInjection {
     // making reusing risky if not properly handled
     fun generateInjection(
         time: ZonedDateTime,
-        eltmUpdated: Boolean,
-        relatedEntities: List<EntityWithScore> = emptyList(),
-        relatedNotes: List<RelatedNoteView> = emptyList(),
+        eltmUpdated: Boolean?,
+        relatedEntities: List<EntityWithScore>? = null,
+        relatedNotes: List<RelatedNoteView>? = null,
     ): ChatMessagePart.Text {
+        listOf(eltmUpdated, relatedEntities, relatedNotes).count { it == null }.let {
+            require(it == 0 || it == 3) {
+                "generateInjection: eltmUpdated, relatedEntities and relatedNotes must be all null " +
+                        "(simple injection) or all non-null (ELTM injection)"
+            }
+        }
         val documentBuilderFactory = DocumentBuilderFactory.newInstance()
         val documentBuilder = documentBuilderFactory.newDocumentBuilder()
         val document = documentBuilder.newDocument()
@@ -182,60 +216,70 @@ class ContextInjection {
                 textContent = timeFormatter.format(time)
             }
         )
-        realtimeInfo.appendChild(
-            document.createElement("eltm-updated").apply {
-                textContent = eltmUpdated.toString()
-            }
-        )
-
-        // the ELTM context injection: the entities and diary notes retrieved
-        // for the run's input, under <memories>. Both containers are always
-        // present (empty ones included), so the shape the model sees is
-        // stable across requests.
-        val memories = document.createElement("memories")
-        injection.appendChild(memories)
-
-        val relatedEntitiesElement = document.createElement("related-entities")
-        memories.appendChild(relatedEntitiesElement)
-        relatedEntities.forEach { hit ->
-            relatedEntitiesElement.appendChild(
-                document.createElement("entity").apply {
-                    setAttribute("id", hit.entity.id.toString())
-                    setAttribute("name", sanitizeForXml10(hit.entity.canonicalName))
-                    setAttribute("category", sanitizeForXml10(hit.entity.category))
-                    hit.attributes.forEach { (key, value) ->
-                        appendChild(
-                            document.createElement("attribute").apply {
-                                setAttribute("key", sanitizeForXml10(key))
-                                textContent = sanitizeForXml10(value)
-                            }
-                        )
-                    }
+        // a null eltmUpdated means the simple injection: no eltm-updated
+        // element, no memories — only the time basics
+        if (eltmUpdated != null) {
+            realtimeInfo.appendChild(
+                document.createElement("eltm-updated").apply {
+                    textContent = eltmUpdated.toString()
                 }
             )
         }
 
-        val relatedNotesElement = document.createElement("related-notes")
-        memories.appendChild(relatedNotesElement)
-        relatedNotes.forEach { view ->
-            relatedNotesElement.appendChild(
-                document.createElement("note").apply {
-                    setAttribute("id", view.id.toString())
-                    setAttribute("date", ISO_LOCAL_DATE.format(view.eventDate))
-                    setAttribute("subject-type", view.subjectType)
-                    view.subjectAttributes.forEach { (key, value) ->
-                        setAttribute(key, sanitizeForXml10(value))
+        // the ELTM context injection: the entities and diary notes retrieved
+        // for the run's input, under <memories>. Both containers are always
+        // present (empty ones included) when the ELTM is injected, so the
+        // shape the model sees is stable across requests. A simple injection
+        // (all null) omits the section entirely.
+        if (relatedEntities != null && relatedNotes != null) {
+            val memories = document.createElement("memories")
+            injection.appendChild(memories)
+
+            val relatedEntitiesElement = document.createElement("related-entities")
+            memories.appendChild(relatedEntitiesElement)
+            relatedEntities.forEach { hit ->
+                relatedEntitiesElement.appendChild(
+                    document.createElement("entity").apply {
+                        setAttribute("id", hit.entity.id.toString())
+                        setAttribute("name", sanitizeForXml10(hit.entity.canonicalName))
+                        setAttribute("category", sanitizeForXml10(hit.entity.category))
+                        hit.attributes.forEach { (key, value) ->
+                            appendChild(
+                                document.createElement("attribute").apply {
+                                    setAttribute("key", sanitizeForXml10(key))
+                                    textContent = sanitizeForXml10(value)
+                                }
+                            )
+                        }
                     }
-                    textContent = sanitizeForXml10(view.note)
-                }
-            )
+                )
+            }
+
+            val relatedNotesElement = document.createElement("related-notes")
+            memories.appendChild(relatedNotesElement)
+            relatedNotes.forEach { view ->
+                relatedNotesElement.appendChild(
+                    document.createElement("note").apply {
+                        setAttribute("id", view.id.toString())
+                        setAttribute("date", ISO_LOCAL_DATE.format(view.eventDate))
+                        setAttribute("subject-type", view.subjectType)
+                        view.subjectAttributes.forEach { (key, value) ->
+                            setAttribute(key, sanitizeForXml10(value))
+                        }
+                        textContent = sanitizeForXml10(view.note)
+                    }
+                )
+            }
         }
 
         return document.convertToText()
     }
 
     fun isInjection(part: ChatMessagePart.Text): Boolean =
-        validateAgainst(injectionSchema, part.text)
+        // only the two generator-emittable shapes count: the full ELTM shape
+        // or the time-only simple shape — a hybrid validates against neither
+        validateAgainst(fullInjectionSchema, part.text) ||
+            validateAgainst(simpleInjectionSchema, part.text)
 
     /**
      * The per-message time anchor: `<meta><sent-at>...</sent-at></meta>`,

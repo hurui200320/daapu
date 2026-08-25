@@ -3,10 +3,10 @@ package info.skyblond.daapu.agent.persist
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
-import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
+import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
@@ -43,8 +43,9 @@ import java.time.ZonedDateTime
  *
  * The harness context ([ContextInjection.injectContext]) is applied to the
  * in-loop chat once before the round — `<meta>` time anchors on the
- * historical user messages, the full `<injection>` on the run's user
- * message — and removed again before storing
+ * historical user messages, the `<injection>` on the run's user message
+ * (the full ELTM shape when the persona's whitelist serves `gsg`, the
+ * time-only simple shape otherwise) — and removed again before storing
  * ([ContextInjection.removeInjection]): the stored chat carries no harness
  * XML, only the per-message `createdAt` stamps the anchors are regenerated
  * from. Harness parts are identified by XSD validation plus an exact-match
@@ -146,6 +147,11 @@ class PersistChatService(
         }
 
         var eltmVersion = eltmService.version()
+        // a persona without `gsg` access never sees the ELTM: its system
+        // prompt documents only the time basics, and its injection carries
+        // neither `eltm-updated` nor `<memories>` (the simple injection
+        // shape — all ELTM spec fields null)
+        val gsgAccess = persona.serves("gsg")
         // the run's user message: stamped and injected by injectContext below
         chat = chat + ChatMessage(
             role = ChatMessageRole.User,
@@ -164,8 +170,12 @@ class PersistChatService(
         // for related entities and diary notes to inject under `<memories>`
         // (config `memory.eltm.relatedEntitiesLimit`/`relatedNotesLimit`).
         // With both limits 0 the whole chain is skipped: no rewrite call, no
-        // embedding calls, empty related sections.
-        val (relatedEntities, relatedNotes) = if (relatedEntitiesLimit == 0 && relatedNotesLimit == 0) {
+        // embedding calls, empty related sections. A persona WITHOUT `gsg`
+        // access skips it too: the retrieved memories would never be injected
+        // (its injection is the time-only simple shape), so the rewrite and
+        // embedding calls would be wasted work.
+        val skipEltmSearch = relatedEntitiesLimit == 0 && relatedNotesLimit == 0
+        val (relatedEntities, relatedNotes) = if (!gsgAccess || skipEltmSearch) {
             emptyList<EntityWithScore>() to emptyList<RelatedNoteView>()
         } else {
             queryRewriteService.rewriteQuery(chat, rewriteRounds)?.let { query ->
@@ -176,7 +186,9 @@ class PersistChatService(
                 }
                 val notes = if (relatedNotesLimit > 0) {
                     resolveRelatedNotes(
-                        notes = eltmService.searchNotes(query, null, null, null, null, relatedNotesLimit),
+                        notes = eltmService.searchNotes(
+                            query, null, null, null, null, relatedNotesLimit
+                        ),
                         knownEntities = entities,
                     )
                 } else {
@@ -190,9 +202,11 @@ class PersistChatService(
             chat,
             InjectionSpec(
                 time = ZonedDateTime.now(),
-                eltmUpdated = chatEltmVersion != eltmVersion,
-                relatedEntities = relatedEntities,
-                relatedNotes = relatedNotes,
+                // null for a persona without gsg access: the time-only
+                // simple injection, no ELTM content at all
+                eltmUpdated = if (gsgAccess) chatEltmVersion != eltmVersion else null,
+                relatedEntities = if (gsgAccess) relatedEntities else null,
+                relatedNotes = if (gsgAccess) relatedNotes else null,
             )
         )
 
@@ -255,9 +269,9 @@ class PersistChatService(
                             chat,
                             InjectionSpec(
                                 time = ZonedDateTime.now(),
-                                eltmUpdated = chatEltmVersion != eltmVersion,
-                                relatedEntities = relatedEntities,
-                                relatedNotes = relatedNotes,
+                                eltmUpdated = if (gsgAccess) chatEltmVersion != eltmVersion else null,
+                                relatedEntities = if (gsgAccess) relatedEntities else null,
+                                relatedNotes = if (gsgAccess) relatedNotes else null,
                             )
                         )
                         // fall through: the next loop iteration starts a fresh
@@ -301,7 +315,9 @@ class PersistChatService(
     ): List<RelatedNoteView> = notes.mapNotNull { note ->
         when {
             note.entityId != null -> {
-                val entity: EltmEntity = knownEntities.firstOrNull { it.entity.id == note.entityId }?.entity
+                val entity: EltmEntity = knownEntities.firstOrNull {
+                    it.entity.id == note.entityId
+                }?.entity
                     ?: eltmService.getEntity(note.entityId)?.entity
                     ?: return@mapNotNull null
                 RelatedNoteView(

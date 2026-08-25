@@ -84,8 +84,14 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     personality and the policy — a custom persona may write its own; plus a
     tool-namespace whitelist) and the code-owned GSG harness introduction
     (`agent/persist/MainAgentSystemPromptService.kt` — harness mechanics,
-    context injection docs; its `gsg__investigate` documentation is always
-    rendered — gating it on the persona's whitelist is planned). The DEFAULT
+    context injection docs). The harness introduction is gated on the
+    persona's whitelist serving `gsg`: WITH it (or empty = all) the full
+    introduction is rendered (`gsg__investigate` docs + ELTM context
+    injection docs); WITHOUT it a reduced `# Context` section documents only
+    the actually injected parts (`<meta>` anchors, `localtime`, compaction
+    summaries), and the run's injection is the time-only simple shape — no
+    `eltm-updated`, no `<memories>` — with the query rewrite + ELTM searches
+    skipped (they only feed the hidden memories). The DEFAULT
     persona (reserved id 0)
     lives ONLY in code (prompt updates need no data sync), is never a
     `personas` row (the API rejects create/update/delete on it) and has an
@@ -204,16 +210,26 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     `removeInjection` strips both before every store — stored chats never carry
     harness XML. Both are idempotent and guarded: a `<meta>` is only recognized
     when it byte-matches the deterministic render of the message's own
-    `createdAt`; the `<injection>` structurally via the XSD. The `<injection>`'s
+    `createdAt`; the `<injection>` structurally via two XSDs pinning the two
+    shapes the generator emits (the full ELTM shape in
+    `injectionSchema.xsd`, the time-only simple shape in
+    `injectionSimpleSchema.xsd` — a hybrid, e.g. `eltm-updated` without
+    `<memories>`, validates against neither and survives as user content). The `<injection>`'s
     `<memories>` carries the ELTM context injection (`<related-entities>`/
-    `<related-notes>`, always present, possibly empty; searched by the rewritten
+    `<related-notes>`, always present when the ELTM is injected, possibly
+    empty; searched by the rewritten
     query): `<entity id name category>` with `<attribute key>` facts, and
     `<note id date subject-type>` whose subject is identified by names (entity:
     `name`+`category`; relationship: `src-name`+`verb`+`dst-name`, resolved
     before rendering via `RelatedNoteView`). The XSD declares the note's subject
     attributes as the UNION of both shapes (XSD 1.0 can't express the XOR); the
     generator always emits exactly one set — everything else strict, so forged
-    injections are rejected. Harness parts never outlive the request. Compaction,
+    injections are rejected. The ELTM spec fields (`eltmUpdated`/`relatedEntities`/
+    `relatedNotes`) are all-null together (a persona without `gsg` access gets the
+    time-only simple injection — `localtime` only, no `eltm-updated`, no
+    `<memories>`) or all non-null together (the full ELTM injection, empty lists
+    when nothing related was found) — a mixed spec is rejected at construction.
+    Harness parts never outlive the request. Compaction,
     memory extraction, and query rewrite — the one-shots that may receive the
     loop's injected in-loop chat — sanitize (`removeInjection`) then re-anchor,
     never double-injecting; `TitleGenerator` needs neither (it reads the clean

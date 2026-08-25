@@ -23,7 +23,18 @@ data class Persona(
     val name: String,
     val systemPrompt: String,
     val allowedNamespaces: List<String>,
-)
+) {
+    /**
+     * True when this persona may use the tools of [namespace]: the whitelist
+     * is empty (ALL namespaces, the default persona's shape) or contains the
+     * namespace. Used to gate the harness's own behavior on the persona's
+     * tool access — e.g. the `gsg` namespace decides whether the prompt
+     * documents `gsg__investigate` and whether the ELTM context injection is
+     * rendered.
+     */
+    fun serves(namespace: String): Boolean =
+        allowedNamespaces.isEmpty() || namespace in allowedNamespaces
+}
 
 /**
  * The reserved id of the DEFAULT persona, which lives ONLY in code
