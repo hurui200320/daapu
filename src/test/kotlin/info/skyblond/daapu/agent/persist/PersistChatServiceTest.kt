@@ -10,6 +10,9 @@ import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
+import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
+import info.skyblond.daapu.agent.persona.Persona
+import info.skyblond.daapu.agent.persona.defaultPersona
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
@@ -55,7 +58,7 @@ import kotlin.test.*
  */
 class PersistChatServiceTest {
 
-    private val systemPrompt = "You are Raven."
+    private val mainAgentSystemPromptService = MainAgentSystemPromptService(isDevelopment = false)
 
     /**
      * Catalog model, optionally with compaction values different from the
@@ -109,6 +112,7 @@ class PersistChatServiceTest {
             { textRunFlow("done") },
         rewriteScript: suspend (HandRunRequest) -> List<HandEvent> =
             { textRunFlow("rewritten query") },
+        persona: Persona = defaultPersona(),
     ): TurnOutcome {
         val model = catalogModel(modelId, compactionKeepRounds = compactionKeepRounds)
         val hand = FakeHand(
@@ -155,6 +159,7 @@ class PersistChatServiceTest {
                     queryRewriteService = rewriteService,
                     hand = handService,
                     compactionService = compactionService,
+                    systemPromptService = mainAgentSystemPromptService,
                     // the default answers the extractor with the sentinel, so
                     // extraction is a no-op: compaction-focused tests neither
                     // accumulate calls nor run the writer
@@ -183,7 +188,7 @@ class PersistChatServiceTest {
                     chatId = "chat-1",
                     model = model,
                     userParts = userParts,
-                    systemPrompt = systemPrompt,
+                    persona = persona,
                     toolProvider = toolProvider,
                     callback = callback,
                 )
@@ -229,7 +234,11 @@ class PersistChatServiceTest {
                     "GET /api/hand/tools before every LLM request, so no static " +
                     "tool list travels in the request",
         )
-        assertEquals(systemPrompt, request.systemPrompt, "the system prompt travels out of band")
+        assertEquals(
+            mainAgentSystemPromptService.render(defaultPersona()),
+            request.systemPrompt,
+            "the system prompt travels out of band, rendered from the run's persona",
+        )
         assertTrue(injectionOf(request).contains("<eltm-updated>true</eltm-updated>"))
 
         // the model spec carries the reasoning effort from the model's
@@ -248,6 +257,16 @@ class PersistChatServiceTest {
         assertNotNull(stored[0].createdAt, "the stored user message must carry its send time")
         assertEquals(listOf(ChatMessagePart.Text("ok")), stored[1].parts)
         assertEquals("stop", stored[1].finishReason)
+    }
+
+    @Test
+    fun `the run's persona id is stamped on the stored chat record`() {
+        // the chats.persona_id column is a RECORD of the last successful
+        // run's persona (the UI pre-fills its picker from it) — the prompt
+        // and the tool set came from the resolved persona, not the column
+        val outcome = run(persona = Persona(1L, "Persona 1", "You are persona-1.", emptyList()))
+        assertNull(outcome.error)
+        assertEquals(1L, outcome.store.storedPersonaId)
     }
 
     @Test
@@ -1440,6 +1459,7 @@ class PersistChatServiceTest {
                     queryRewriteService = rewriteService,
                     hand = handService,
                     compactionService = compactionService,
+                    systemPromptService = mainAgentSystemPromptService,
                     memoryExtractionService = MemoryExtractionService(
                         extractModel = model,
                         hand = handService,
@@ -1464,7 +1484,7 @@ class PersistChatServiceTest {
                     chatId = "chat-1",
                     model = model,
                     userParts = listOf(ChatMessagePart.Text("hello")),
-                    systemPrompt = systemPrompt,
+                    persona = defaultPersona(),
                     toolProvider = EmptyToolProvider,
                     callback = callback,
                 )
@@ -1634,6 +1654,7 @@ class PersistChatServiceTest {
             ),
             hand = handService,
             compactionService = compactionService,
+            systemPromptService = mainAgentSystemPromptService,
             memoryExtractionService = extractionService,
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
@@ -1658,7 +1679,7 @@ class PersistChatServiceTest {
                             chatId = chatId,
                             model = model,
                             userParts = listOf(ChatMessagePart.Text("$prefix question")),
-                            systemPrompt = systemPrompt,
+                            persona = defaultPersona(),
                             toolProvider = EmptyToolProvider,
                             callback = RecordingCallback(),
                         )
@@ -1746,11 +1767,13 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
         private set
     var storedEltmVersion: String? = null
         private set
+    var storedPersonaId: Long? = null
+        private set
 
     override suspend fun load(chatId: String): ChatEntry? = stored?.let {
         ChatEntry(
-            ChatInfo(chatId, DEFAULT_CHAT_TITLE),
-            ChatContent(it, storedEltmVersion ?: "")
+            ChatInfo(chatId, DEFAULT_CHAT_TITLE, storedPersonaId ?: DEFAULT_PERSONA_ID),
+            ChatContent(it, storedEltmVersion ?: "", storedPersonaId ?: DEFAULT_PERSONA_ID)
         )
     }
 
@@ -1758,6 +1781,7 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
         storeCount++
         stored = chat.messages
         storedEltmVersion = chat.eltmVersion
+        storedPersonaId = chat.personaId
     }
 
     // the chat-row CRUD methods are not part of this fake's contract (the
@@ -1765,7 +1789,9 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
     override suspend fun listChats(): List<ChatInfo> =
         error("not exercised by the persist loop tests")
 
-    override suspend fun newChat(): ChatInfo = error("not exercised by the persist loop tests")
+    override suspend fun newChat(personaId: Long): ChatInfo =
+        error("not exercised by the persist loop tests")
+
     override suspend fun rename(chatId: String, title: String): ChatInfo =
         error("not exercised by the persist loop tests")
 
@@ -1782,13 +1808,13 @@ private class ConcurrentChatStore : ChatStore {
     private val chats = ConcurrentHashMap<String, ChatContent>()
 
     fun seed(chatId: String, chat: List<ChatMessage>, eltmVersion: String = "") {
-        chats[chatId] = ChatContent(chat, eltmVersion)
+        chats[chatId] = ChatContent(chat, eltmVersion, DEFAULT_PERSONA_ID)
     }
 
     override suspend fun load(chatId: String): ChatEntry? = chats[chatId]?.let {
         ChatEntry(
-            ChatInfo(chatId, DEFAULT_CHAT_TITLE),
-            ChatContent(it.messages, it.eltmVersion)
+            ChatInfo(chatId, DEFAULT_CHAT_TITLE, it.personaId),
+            ChatContent(it.messages, it.eltmVersion, it.personaId)
         )
     }
 
@@ -1801,7 +1827,9 @@ private class ConcurrentChatStore : ChatStore {
     override suspend fun listChats(): List<ChatInfo> =
         error("not exercised by the persist loop tests")
 
-    override suspend fun newChat(): ChatInfo = error("not exercised by the persist loop tests")
+    override suspend fun newChat(personaId: Long): ChatInfo =
+        error("not exercised by the persist loop tests")
+
     override suspend fun rename(chatId: String, title: String): ChatInfo =
         error("not exercised by the persist loop tests")
 

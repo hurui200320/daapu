@@ -11,7 +11,9 @@ import {
   truncateMessages as apiTruncateMessages,
 } from './api'
 import type { ChatInfo, ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
+import { DEFAULT_PERSONA_ID } from './types'
 import { chatHomePath, chatPath, navigate, replaceRoute, router } from './router.svelte'
+import { personaStore } from './persona-store.svelte'
 import { toastStore } from './toast-store.svelte'
 
 // mirrors the backend's data-URL handling (ChatRunService.parseImagePart:
@@ -48,6 +50,13 @@ class ChatStore {
   // here so the usage indicator can show the context of the model that will
   // process the next message
   selectedModel = $state('')
+
+  // the per-chat persona: a TRANSIENT picker override (cleared on chat
+  // switch) on top of the chat's recorded persona (knownChats' personaId,
+  // stamped by the backend on every successful run). The request always
+  // carries the effective id — the record is never the run's source. null =
+  // no override (0 is a real persona id: the code default).
+  personaOverride = $state<number | null>(null)
 
   streaming = $state(false)
   streamReasoning = $state('')
@@ -144,6 +153,26 @@ class ChatStore {
 
   usage = $derived(this.computeUsage())
 
+  /**
+   * The persona id the next send will carry: the transient picker override,
+   * else the chat's recorded persona. A persona that no longer exists in the
+   * loaded catalog (deleted here or in another tab) falls back to the other
+   * source, then to the code default — the backend keeps stale records and
+   * would 400 a stale id. An unloaded catalog (empty list) is still trusted:
+   * a loaded catalog is never empty (the code default always leads it), and
+   * the record was fetched together with the chats.
+   */
+  currentPersonaId = $derived(this.effectivePersonaId())
+
+  private effectivePersonaId(): number {
+    const exists = (id: number) =>
+      personaStore.personas.length === 0 || personaStore.personas.some((p) => p.id === id)
+    if (this.personaOverride != null && exists(this.personaOverride)) return this.personaOverride
+    const recorded = this.knownChats.find((c) => c.id === this.chatId)?.personaId
+    if (recorded != null && exists(recorded)) return recorded
+    return DEFAULT_PERSONA_ID
+  }
+
   /** Mirror of the backend's ChatMessagePart.Attachment, for display only. */
   private dataUrlToPart(dataUrl: string): ChatMessagePart | null {
     const match = DATA_URL_RE.exec(dataUrl.trim())
@@ -190,6 +219,8 @@ class ChatStore {
   pickChat(id: string) {
     if (id === this.chatId) return
     this.chatId = id
+    // the persona override is per-chat: the next chat starts from its record
+    this.personaOverride = null
     this.messages = []
     void this.loadMessages(id)
   }
@@ -197,6 +228,7 @@ class ChatStore {
   /** Close the open chat (the '#/chat' home route): nothing selected. */
   closeChat() {
     this.chatId = ''
+    this.personaOverride = null
     this.messages = []
     this.streamError = null
   }
@@ -205,8 +237,12 @@ class ChatStore {
     try {
       const id = await newChat()
       this.chatId = id
+      this.personaOverride = null
       // prepend to match the server's newest-first order
-      this.knownChats = [{ id, title: DEFAULT_CHAT_TITLE }, ...this.knownChats]
+      this.knownChats = [
+        { id, title: DEFAULT_CHAT_TITLE, personaId: DEFAULT_PERSONA_ID },
+        ...this.knownChats,
+      ]
       this.messages = []
       navigate(chatPath(id))
     } catch (e) {
@@ -322,12 +358,27 @@ class ChatStore {
     }
   }
 
-  async send(text: string, images: { dataUrl: string }[], model: string): Promise<boolean> {
+  async send(
+    text: string,
+    images: { dataUrl: string }[],
+    model: string,
+  ): Promise<boolean> {
     const id = this.chatId.trim()
     if (!id) {
       toastStore.push('Select a chat first')
       return false
     }
+    // a stale override (its persona was deleted here or in another tab) is a
+    // picker artifact: drop it so the effective id resolves from the chat's
+    // record, and so a future persona can never silently re-activate it
+    if (
+      this.personaOverride != null &&
+      personaStore.personas.length > 0 &&
+      !personaStore.personas.some((p) => p.id === this.personaOverride)
+    ) {
+      this.personaOverride = null
+    }
+    const personaId = this.currentPersonaId
     if (this.deletingIds.has(id)) {
       toastStore.push('This chat is being deleted')
       return false
@@ -351,7 +402,7 @@ class ChatStore {
     let failed = false
     let sawDone = false
     try {
-      for await (const ev of streamChat(id, { text, images, model })) {
+      for await (const ev of streamChat(id, { text, images, model, personaId })) {
         switch (ev.event) {
           case 'reasoning':
             this.retrying = false
@@ -426,8 +477,12 @@ class ChatStore {
             this.retrying = false
             // the server stores history only on success; reload it so the UI
             // always matches the DB (covers tool-call rounds too). Uses the
-            // captured id, not the mutable input state.
+            // captured id, not the mutable input state. The successful store
+            // also stamped the chat's persona record, so refresh the chat
+            // list too — the picker would otherwise show the pre-run record
+            // until the next 30s/focus resync.
             await this.reloadFromDb(id)
+            await this.resyncChats()
             break
           case 'error':
             failed = true
@@ -445,6 +500,7 @@ class ChatStore {
         // with whatever the DB actually has and restore the draft
         failed = true
         await this.reloadFromDb(id)
+        await this.resyncChats()
         this.streamError = 'connection closed before the run completed'
       }
     } catch (e) {
@@ -456,6 +512,7 @@ class ChatStore {
       // carries it, so don't stack a second toast on top
       if (!this.streamError) toastStore.push(String(e))
       await this.reloadFromDb(id)
+      await this.resyncChats()
     } finally {
       this.streaming = false
       // the pending route may close or switch the chat the moment the stream

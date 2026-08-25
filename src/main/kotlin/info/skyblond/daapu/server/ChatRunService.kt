@@ -6,10 +6,13 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.oneshot.TitleGenerator
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
+import info.skyblond.daapu.agent.persona.Persona
+import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
-import info.skyblond.daapu.agent.persist.renderMainAgentSystemPrompt
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
+import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentHashMap
@@ -17,11 +20,23 @@ import kotlin.io.encoding.Base64
 
 /**
  * One prepared chat run: everything validated and mapped, ready to execute.
+ * [persona] is resolved from the request's persona id (the frontend always
+ * sends one, like the model): it owns the system prompt text, and the
+ * persona's whitelist produced [toolProvider] — the loop's tool set
+ * restricted per the persona, built and validated in [ChatRunService.prepareRun]
+ * before any stream starts.
  */
 class ChatRunSetup(
     val chatId: String,
     val model: LLM,
     val parts: List<ChatMessagePart>,
+    val persona: Persona,
+    /**
+     * The run's tool set: the loop's combined set, restricted to the
+     * persona's namespace whitelist (`WhitelistedToolProvider`; an EMPTY
+     * whitelist = the whole set, unfiltered — no wrapper).
+     */
+    val toolProvider: ToolProvider,
 )
 
 /**
@@ -37,8 +52,8 @@ class ChatRunSetup(
  * `testutil/TestDi.kt`).
  *
  * The class only holds what it uses: the chat store, the model catalog,
- * the session-title generator, the chat loop's tool set, the memory
- * extraction pipeline (deletion) and the persist loop. The stores and the
+ * the session-title generator, the chat loop's tool set, the persona
+ * service, the memory extraction pipeline (deletion) and the persist loop. The stores and the
  * hand callback service live in the container and are consumed directly by
  * the web server module; cleanup is Koin's job too (`onClose` on the
  * `HandService`/`McpToolProvider` definitions, triggered by
@@ -60,9 +75,17 @@ class ChatRunService(
      * read-only ELTM tools (`eltm__*`, see
      * `agent/oneshot/eltm/EltmToolProvider.kt`) live in the sub-agent's
      * OWN tool set, not the loop's. The MCP child is only included when it
-     * serves namespaces. Exposed for tests.
+     * serves namespaces. Exposed for tests. The persona's whitelist wraps
+     * this set per request in [prepareRun] (`WhitelistedToolProvider`); an
+     * empty whitelist means the whole set, unfiltered.
      */
     internal val chatToolProvider: CombinedToolProvider,
+    /**
+     * Persona resolution (the code-only default + the `personas` table) and
+     * persona CRUD validation: every run's system prompt and tool whitelist
+     * come from the persona the request names.
+     */
+    private val personaService: PersonaService,
     private val memoryExtractionService: MemoryExtractionService,
     private val persistService: PersistChatService,
 ) {
@@ -195,7 +218,9 @@ class ChatRunService(
         // still validate defensively: a violating truncation would brick the
         // chat on load
         ChatCodec.validateChat(kept)
-        chatStore.store(chatId, ChatContent(kept, ""))
+        // the persona record survives the truncation untouched (the tail
+        // only dropped messages, not the chat's identity)
+        chatStore.store(chatId, ChatContent(kept, "", entry.info.personaId))
         true
     }
 
@@ -230,8 +255,12 @@ class ChatRunService(
         }
         val kept = messages.subList(0, index + 1).toList()
         ChatCodec.validateChat(kept)
-        val forked = chatStore.newChat()
-        chatStore.store(forked.id, ChatContent(kept, ""))
+        // the fork inherits the source chat's persona RECORD: a fork of a
+        // conversation continues that conversation's identity until the user
+        // switches it (the store upsert below would otherwise reset the
+        // record to the default)
+        val forked = chatStore.newChat(entry.info.personaId)
+        chatStore.store(forked.id, ChatContent(kept, "", entry.info.personaId))
         return forked
     }
 
@@ -241,8 +270,14 @@ class ChatRunService(
     /**
      * Validate and map an incoming message. Throws ktor's
      * [BadRequestException] on malformed input, before any stream has started.
+     * The persona id is REQUIRED like the model (the web UI always sends
+     * both); it resolves to the code default or a `personas` row, and an
+     * unknown id is a client error — never a silent fallback. The persona's
+     * whitelist is applied to the loop's tool set HERE (see
+     * [ChatRunSetup.toolProvider]): a whitelist entry the loop no longer
+     * serves fails the request with a clear 400 before any stream starts.
      */
-    fun prepareRun(chatId: String, request: SendMessageRequest): ChatRunSetup {
+    suspend fun prepareRun(chatId: String, request: SendMessageRequest): ChatRunSetup {
         val text = request.text?.trim().orEmpty()
         if (text.isBlank() && request.images.isEmpty()) {
             throw BadRequestException("Message must have text and/or images")
@@ -250,10 +285,26 @@ class ChatRunService(
         val model = request.model?.takeIf { it.isNotBlank() }?.let { id ->
             modelCatalog.findModel(id) ?: throw BadRequestException("Unknown model '$id'")
         } ?: throw BadRequestException("model is required")
+        val personaId = request.personaId
+            ?: throw BadRequestException("persona is required")
+        val persona = personaService.resolveForRequest(personaId)
+            ?: throw BadRequestException("Unknown persona '$personaId'")
+        // an EMPTY whitelist = all namespaces: the loop's set, unfiltered
+        val toolProvider = persona.allowedNamespaces.takeIf { it.isNotEmpty() }?.let { namespaces ->
+            try {
+                WhitelistedToolProvider(chatToolProvider, namespaces.toSet())
+            } catch (e: IllegalArgumentException) {
+                // a whitelist entry the loop's set no longer serves (an MCP
+                // server dropped from config after the persona was saved):
+                // fail the request here, before the lock and the stream, with
+                // the construction invariant's clear error
+                throw BadRequestException(e.message ?: "Persona whitelist no longer served by the chat loop")
+            }
+        } ?: chatToolProvider
         val parts = mutableListOf<ChatMessagePart>()
         if (text.isNotBlank()) parts += ChatMessagePart.Text(text)
         request.images.forEach { parts += parseImagePart(it) }
-        return ChatRunSetup(chatId, model, parts)
+        return ChatRunSetup(chatId, model, parts, persona, toolProvider)
     }
 
     /**
@@ -344,6 +395,13 @@ class ChatRunService(
      * stored by the turn loop when the run completes, so a failed or aborted
      * run leaves the chat untouched.
      *
+     * The run's system prompt comes from the setup's persona (the persona
+     * text plus the GSG harness introduction, rendered by the persist loop's
+     * `MainAgentSystemPromptService`); the run's tool set is the setup's
+     * [ChatRunSetup.toolProvider] — the loop's combined set restricted to
+     * the persona's whitelist, built (and validated) in [prepareRun], so a
+     * stale whitelist fails the request before any stream starts.
+     *
      * The tool callback wiring is handled by [HandService]: a fresh runId is
      * generated per hand `/v1/run` call, the in-flight run is registered
      * before the request goes out and evicted when the stream ends — the
@@ -361,8 +419,8 @@ class ChatRunService(
             chatId = setup.chatId,
             model = setup.model,
             userParts = setup.parts,
-            systemPrompt = renderMainAgentSystemPrompt(true),
-            toolProvider = chatToolProvider,
+            persona = setup.persona,
+            toolProvider = setup.toolProvider,
             callback = callback,
         )
     }

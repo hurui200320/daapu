@@ -1,6 +1,7 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.agent.model.ModelCapabilityException
+import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.di.daapuModule
 import info.skyblond.daapu.hand.HandCallbackService
@@ -68,6 +69,7 @@ internal fun Application.module(koin: Koin) {
     val service = koin.get<ChatRunService>()
     val eltmService = koin.get<EltmService>()
     val handCallback = koin.get<HandCallbackService>()
+    val personaService = koin.get<PersonaService>()
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
@@ -128,6 +130,7 @@ internal fun Application.module(koin: Koin) {
             registerHandEndpoints(handCallback)
             registerChatsEndpoints(service)
             registerEltmEndpoints(eltmService)
+            registerPersonasEndpoints(personaService)
         }
     }
 }

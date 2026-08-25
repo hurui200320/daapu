@@ -265,11 +265,26 @@ chat run with a clear `error` event when the server stays down. A tool that
 overruns its budget answers an error tool-result too (the execution is
 cancelled, the model can react in the next round).
 
-The system prompt and the model catalog are hardcoded in code:
-`agent/persist/SystemPrompt.kt` and `agent/ModelCatalog.kt` (each model
-needs an explicit capability list). The web UI can switch between the catalog
-models per message; the model is sent with every message (the UI defaults to
-the first catalog entry — the server has no default).
+The main agent's system prompt is split into two parts: a user-managed
+**persona** (identity/personality text plus a tool-namespace whitelist, see
+the Personas tab) and the **GSG harness introduction** (harness mechanics,
+memory and injection documentation, rendered by
+`agent/persist/MainAgentSystemPromptService.kt`). The
+DEFAULT persona lives only in code (prompt updates need no data sync; its
+text carries the legacy policy/jailbreak sections); each
+chat records its persona (`chats.persona_id`, stamped by successful runs),
+and every message carries the selected persona id alongside the model — the
+server resolves it per run and restricts the chat loop's tools (MCP +
+`gsg__investigate`) to the persona's whitelist. An empty whitelist means ALL
+namespaces, and it is the intended shape: this harness targets small
+open-weight models that are prone to mistakes, and information-providing
+tools (web search, ELTM recall) help them produce correct output — a persona
+that disables every tool defeats the harness's purpose (plain chat UIs like
+Open WebUI already exist for that). The model catalog is
+hardcoded in `agent/ModelCatalog.kt` (each model needs an explicit
+capability list). The web UI can switch between the catalog models per
+message; the model is sent with every message (the UI defaults to the first
+catalog entry — the server has no default).
 
 ### Verification
 
@@ -320,7 +335,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | Method & path                           | Purpose                                                      |
 |-----------------------------------------|--------------------------------------------------------------|
 | `GET /api/models`                       | Model catalog (`vision`, context, output limits).            |
-| `GET /api/chats`                        | Existing chats as `{"id", "title"}` (newest first, capped).  |
+| `GET /api/chats`                        | Existing chats as `{"id", "title", "personaId"}` (newest first, capped). |
 | `POST /api/chats`                       | Create a chat (empty history, title `New chat`).             |
 | `PUT /api/chats/{id}`                   | Rename a chat (`{"title": "..."}`).                          |
 | `POST /api/chats/{id}/title`            | Generate a title from the chat history (no-op on an empty chat, 400 on a capability mismatch). |
@@ -329,10 +344,13 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | `POST /api/chats/{id}/fork/{index}`     | Fork: copy history up to and including the assistant message at `index` (`finishReason` `"stop"` required) into a new chat. |
 | `GET /api/chats/{id}/chat`              | Full chat as neutral-format JSON (raw `chat_json`).         |
 | `POST /api/chats/{id}/messages`         | Run one agent turn; responds with an SSE stream.             |
+| `GET /api/personas`                     | All personas: the code-only default persona first, then the `personas` rows. |
+| `POST /api/personas`                    | Create a persona (`{"name", "systemPrompt", "allowedNamespaces"}`; `allowedNamespaces` `[]` = all loop namespaces). |
+| `PUT/DELETE /api/personas/{id}`         | Update/delete a persona row (400 on the reserved default persona id 0). |
 | `GET /api/hand/tools`                   | Internal: the hand's per-round tool advertisement (`?runId=...`). |
 | `POST /api/hand/tool`                   | Internal: the hand's tool-execution callback (`runId`-scoped). |
 
-`POST /api/chats/{id}/messages` accepts `{"text": "...", "images": [{"dataUrl": "data:image/png;base64,..."}], "model": "..."}` (text and/or images required, model required) and streams SSE events: `reasoning`, `text`, `tool_call`, `tool_result`, `retry` (transient hiccup, the run will be retried), `done`, or `error` (terminal). Validation errors are plain `400`/`409` responses before the stream starts. History compaction happens server-side with no dedicated event — the frontend's post-run resync (done/error) presents the compacted history.
+`POST /api/chats/{id}/messages` accepts `{"text": "...", "images": [{"dataUrl": "data:image/png;base64,..."}], "model": "...", "personaId": 0}` (text and/or images required, model and persona required — no server defaults) and streams SSE events: `reasoning`, `text`, `tool_call`, `tool_result`, `retry` (transient hiccup, the run will be retried), `done`, or `error` (terminal). Validation errors are plain `400`/`409` responses before the stream starts. History compaction happens server-side with no dedicated event — the frontend's post-run resync (done/error) presents the compacted history.
 
 ## References
 

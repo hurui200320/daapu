@@ -5,6 +5,8 @@ import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
+import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
@@ -21,10 +23,13 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -45,8 +50,14 @@ class WebServerTest {
         text: String = "hi",
         model: String = this.model,
         images: List<String> = emptyList(),
+        personaId: Long = DEFAULT_PERSONA_ID,
     ): String = json.encodeToString(
-        SendMessageRequest(text = text, model = model, images = images.map { ImagePart(it) })
+        SendMessageRequest(
+            text = text,
+            model = model,
+            images = images.map { ImagePart(it) },
+            personaId = personaId,
+        )
     )
 
     private fun user(text: String) = ChatMessage(
@@ -74,6 +85,23 @@ class WebServerTest {
             listOf(
                 """{"text":"hi"}""",
                 """{"text":"hi","model":"no/such-model"}"""
+            ).forEach { body ->
+                val response = client.post("/api/chats/chat-1/messages") {
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                assertEquals(HttpStatusCode.BadRequest, response.status, "body: $body")
+            }
+        }
+    }
+
+    @Test
+    fun `missing and unknown personas are rejected with 400`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            listOf(
+                """{"text":"hi","model":"bifrost/cerebras/gpt-oss-120b"}""",
+                """{"text":"hi","model":"bifrost/cerebras/gpt-oss-120b","personaId":999}"""
             ).forEach { body ->
                 val response = client.post("/api/chats/chat-1/messages") {
                     contentType(ContentType.Application.Json)
@@ -669,5 +697,154 @@ class WebServerTest {
             )
         }
         assertTrue(hand.requests.isEmpty(), "a capability mismatch must not call the LLM")
+    }
+
+    // ---- personas (`/api/personas`) ----
+
+    @Test
+    fun `personas list leads with the code default and includes the rows`() {
+        val personaStore = FakePersonaStore()
+        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        testApplication {
+            application {
+                module(testKoinApp(personaStore = personaStore).koin)
+            }
+            val response = client.get("/api/personas")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val personas = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(2, personas.size)
+            assertEquals(DEFAULT_PERSONA_ID, personas[0].jsonObject["id"]?.jsonPrimitive?.long)
+            assertEquals(
+                "Default (GSG)",
+                personas[0].jsonObject["name"]?.jsonPrimitive?.content,
+            )
+            assertEquals(1L, personas[1].jsonObject["id"]?.jsonPrimitive?.long)
+        }
+    }
+
+    @Test
+    fun `creating a persona validates and returns the row`() {
+        val personaStore = FakePersonaStore()
+        testApplication {
+            application {
+                module(testKoinApp(personaStore = personaStore).koin)
+            }
+            val created = client.post("/api/personas") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"Writer","systemPrompt":"You are a writer.","allowedNamespaces":["gsg"]}"""
+                )
+            }
+            assertEquals(HttpStatusCode.Created, created.status)
+            val body = json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val id = assertNotNull(body["id"]?.jsonPrimitive?.long)
+            assertEquals("Writer", body["name"]?.jsonPrimitive?.content)
+            assertEquals(1, personaStore.rows().size)
+            assertEquals(listOf("gsg"), personaStore.findById(id)?.allowedNamespaces)
+        }
+    }
+
+    @Test
+    fun `creating a persona with an unserved namespace is 400`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            // the test loop set serves only `gsg` (the MCP provider is empty)
+            val response = client.post("/api/personas") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"Bad","systemPrompt":"You are bad.","allowedNamespaces":["eltm"]}"""
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(
+                json.parseToJsonElement(response.bodyAsText()).jsonObject["error"]?.jsonPrimitive?.content
+                    ?.contains("not served") == true,
+                "the 400 must carry the validation reason",
+            )
+        }
+    }
+
+    @Test
+    fun `updating a persona persists the new text and whitelist`() {
+        val personaStore = FakePersonaStore()
+        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        testApplication {
+            application {
+                module(testKoinApp(personaStore = personaStore).koin)
+            }
+            val response = client.put("/api/personas/1") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"Poet","systemPrompt":"You are a poet.","allowedNamespaces":[]}"""
+                )
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val updated = assertNotNull(personaStore.findById(1L))
+            assertEquals("Poet", updated.name)
+            assertEquals("You are a poet.", updated.systemPrompt)
+            assertEquals(emptyList(), updated.allowedNamespaces, "[] = all namespaces")
+        }
+    }
+
+    @Test
+    fun `updating or deleting the default persona is 400`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            val put = client.put("/api/personas/$DEFAULT_PERSONA_ID") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"X","systemPrompt":"Y","allowedNamespaces":[]}"""
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, put.status)
+            val delete = client.delete("/api/personas/$DEFAULT_PERSONA_ID")
+            assertEquals(HttpStatusCode.BadRequest, delete.status)
+        }
+    }
+
+    @Test
+    fun `updating or deleting a non-numeric persona id is 400`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            val put = client.put("/api/personas/nope") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"X","systemPrompt":"Y","allowedNamespaces":[]}"""
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, put.status)
+            val delete = client.delete("/api/personas/nope")
+            assertEquals(HttpStatusCode.BadRequest, delete.status)
+        }
+    }
+
+    @Test
+    fun `updating or deleting an unknown numeric persona id is 404`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            val put = client.put("/api/personas/999") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"name":"X","systemPrompt":"Y","allowedNamespaces":[]}"""
+                )
+            }
+            assertEquals(HttpStatusCode.NotFound, put.status)
+            val delete = client.delete("/api/personas/999")
+            assertEquals(HttpStatusCode.NotFound, delete.status)
+        }
+    }
+
+    @Test
+    fun `deleting a persona answers 204 and removes the row`() {
+        val personaStore = FakePersonaStore()
+        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        testApplication {
+            application {
+                module(testKoinApp(personaStore = personaStore).koin)
+            }
+            val response = client.delete("/api/personas/1")
+            assertEquals(HttpStatusCode.NoContent, response.status)
+            assertNull(personaStore.findById(1L))
+        }
     }
 }

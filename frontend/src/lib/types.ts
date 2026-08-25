@@ -121,11 +121,29 @@ export interface RelationshipViewDto {
   latestNote: EltmNoteDto | null
 }
 
-/** One entry of `GET /api/chats`: the user-visible chat title. */
+/** One entry of `GET /api/chats`: id + title + the persona record. */
 export interface ChatInfo {
   id: string
   title: string
+  /** the persona id of the chat's last successful run; only pre-fills the picker */
+  personaId: number
 }
+
+/**
+ * One agent persona (`GET /api/personas`): the persona half of the system
+ * prompt plus a tool-namespace whitelist. The code-only default persona
+ * (id [DEFAULT_PERSONA_ID], read-only) leads the list.
+ */
+export interface Persona {
+  id: number
+  name: string
+  systemPrompt: string
+  /** namespace whitelist over the chat loop's tools; [] = all namespaces */
+  allowedNamespaces: string[]
+}
+
+/** mirrors the backend's reserved default persona id 0 (agent/persona/Persona.kt) */
+export const DEFAULT_PERSONA_ID = 0
 
 export interface StreamEvent {
   event: string

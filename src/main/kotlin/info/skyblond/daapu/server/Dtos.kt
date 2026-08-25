@@ -13,14 +13,30 @@ import kotlinx.serialization.Serializable
 /**
  * Request body of `POST /api/chats/{id}/messages`.
  *
- * At least one of [text] or [images] must be present. [model] is required
- * (the web UI picks one per message; there is no server-side default).
+ * At least one of [text] or [images] must be present. [model] and
+ * [personaId] are required (the web UI picks both per message; there is no
+ * server-side default — a chat's `persona_id` column is only a record, the
+ * run's persona always travels with the request). The reserved id 0 is the
+ * code-only default persona.
  */
 @Serializable
 data class SendMessageRequest(
     val text: String? = null,
     val images: List<ImagePart> = emptyList(),
     val model: String? = null,
+    val personaId: Long? = null,
+)
+
+/**
+ * Request body of `POST /api/personas` and `PUT /api/personas/{id}`.
+ * [allowedNamespaces] is a tool-namespace whitelist over the chat loop's
+ * tool set; an empty list means ALL namespaces the loop serves.
+ */
+@Serializable
+data class PersonaSaveRequest(
+    val name: String,
+    val systemPrompt: String,
+    val allowedNamespaces: List<String> = emptyList(),
 )
 
 /**

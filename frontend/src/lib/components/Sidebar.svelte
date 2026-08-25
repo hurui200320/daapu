@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, Loader2, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2 } from '@lucide/svelte'
+  import { Bot, Loader2, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2, UserRound } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
@@ -61,6 +61,13 @@
         <SquarePen class="size-5" />
       </button>
       <div class="flex-1"></div>
+      <a
+        title="personas"
+        href="#/personas"
+        class={cn(iconBtn, route.name === 'personas' && 'bg-accent text-accent-foreground')}
+      >
+        <UserRound class="size-5" />
+      </a>
       <a
         title="eltm"
         href="#/eltm"
@@ -180,6 +187,16 @@
       {/each}
     </div>
     <div class="border-t border-sidebar-border p-2">
+      <a
+        href="#/personas"
+        class={cn(
+          buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
+          route.name === 'personas' && 'bg-accent text-accent-foreground'
+        )}
+      >
+        <UserRound class="size-4" />
+        Personas
+      </a>
       <a
         href="#/eltm"
         class={cn(

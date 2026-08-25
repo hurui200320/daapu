@@ -4,6 +4,7 @@ import type {
   EntityViewDto,
   EltmNoteDto,
   ModelInfo,
+  Persona,
   RelationshipViewDto,
   StreamEvent,
 } from './types'
@@ -90,6 +91,52 @@ interface SendMessageRequest {
   images?: { dataUrl: string }[]
   /** required by the server: no default model exists (the UI picks one per message) */
   model: string
+  /** required by the server: the persona travels with the request like the model */
+  personaId: number
+}
+
+// ---- personas ----
+
+export interface PersonaSaveBody {
+  name: string
+  systemPrompt: string
+  /** namespace whitelist over the chat loop's tools; [] = all namespaces */
+  allowedNamespaces: string[]
+}
+
+/**
+ * All personas: the code-only default persona first (id
+ * [DEFAULT_PERSONA_ID], read-only), then the `personas` rows.
+ */
+export async function listPersonas(): Promise<Persona[]> {
+  const res = await fetch('/api/personas')
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
+export async function createPersona(body: PersonaSaveBody): Promise<Persona> {
+  const res = await fetch('/api/personas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
+export async function updatePersona(id: number, body: PersonaSaveBody): Promise<Persona> {
+  const res = await fetch(`/api/personas/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
+export async function deletePersona(id: number): Promise<void> {
+  const res = await fetch(`/api/personas/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await parseError(res))
 }
 
 /**

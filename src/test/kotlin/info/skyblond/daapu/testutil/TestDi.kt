@@ -1,6 +1,7 @@
 package info.skyblond.daapu.testutil
 
 import info.skyblond.daapu.agent.chat.ChatStore
+import info.skyblond.daapu.agent.persona.PersonaStore
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.di.daapuModule
@@ -8,6 +9,7 @@ import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.server.ChatRunService
+import info.skyblond.daapu.server.FakePersonaStore
 import kotlin.test.assertFails
 import org.koin.core.KoinApplication
 import org.koin.core.error.InstanceCreationException
@@ -33,6 +35,10 @@ import org.koin.plugin.module.dsl.single
  * the REQUIRED exa server (a live `https://mcp.exa.ai/mcp` URL), and the
  * production provider connects eagerly at construction — tests must never
  * touch the network. Pass a provider explicitly to exercise MCP wiring.
+ *
+ * [personaStore] defaults to a [FakePersonaStore]: the production
+ * [PostgresPersonaStore] would need a live database, and the persona
+ * service resolves eagerly with the graph root.
  */
 fun testKoinApp(
     config: AppConfig = testAppConfig(),
@@ -40,10 +46,17 @@ fun testKoinApp(
     chatStore: ChatStore? = null,
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
+    personaStore: PersonaStore? = null,
 ): KoinApplication = koinApplication {
     modules(
         daapuModule(config),
-        testOverrides(hand, chatStore, eltmService, mcpToolProvider ?: EMPTY_MCP_TOOL_PROVIDER),
+        testOverrides(
+            hand,
+            chatStore,
+            eltmService,
+            mcpToolProvider ?: EMPTY_MCP_TOOL_PROVIDER,
+            personaStore ?: FakePersonaStore(),
+        ),
     )
 }
 
@@ -53,8 +66,9 @@ fun chatRunService(
     chatStore: ChatStore? = null,
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
+    personaStore: PersonaStore? = null,
 ): ChatRunService = testKoinApp(
-    config, hand, chatStore, eltmService, mcpToolProvider,
+    config, hand, chatStore, eltmService, mcpToolProvider, personaStore,
 ).koin.get<ChatRunService>()
 
 /**
@@ -70,18 +84,22 @@ private val EMPTY_MCP_TOOL_PROVIDER: McpToolProvider = McpToolProvider(emptyMap(
  * a definition here replaces the production one of the same type; anything
  * null stays on the production definition. The MCP provider is always
  * overridden ([testKoinApp] defaults it to an empty provider — never the
- * production one, which connects to the live exa server eagerly).
+ * production one, which connects to the live exa server eagerly). The
+ * persona store defaults to an in-memory fake the same way (the production
+ * store needs a live database).
  */
 fun testOverrides(
     hand: HandClient? = null,
     chatStore: ChatStore? = null,
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
+    personaStore: PersonaStore? = null,
 ): Module = module {
     if (hand != null) single<HandClient> { hand }
     if (chatStore != null) single<ChatStore> { chatStore }
     if (eltmService != null) single<EltmService> { eltmService }
     if (mcpToolProvider != null) single<McpToolProvider> { mcpToolProvider }
+    if (personaStore != null) single<PersonaStore> { personaStore }
 }
 
 /**

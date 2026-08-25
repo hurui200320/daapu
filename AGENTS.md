@@ -70,14 +70,44 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     catalog entry).
 - **ktor HTTP API** (`server/`) — `Main.kt` loads `config.jsonc`
   (`config/Config.kt`), starts DB + API. One chat run per request:
-  `ChatRunService.prepareRun` validates (model REQUIRED per message, no server
-  default), `runChat` runs the turn loop (`agent/persist/PersistChatService.kt`).
+  `ChatRunService.prepareRun` validates (model AND personaId REQUIRED per
+  message, no server default), `runChat` runs the turn loop
+  (`agent/persist/PersistChatService.kt`).
   Catalog (`agent/ModelCatalog.kt`) and chat store are built once and shared;
   the system prompt is rendered per run and travels out of band (no `system`
   role; stored chats never contain it). SSE from `server/WebServer.kt` (incl.
   `tool_call`/`tool_result` echoes), flushed with a `comment` event before the
   run starts — ktor Netty's 10s `responseWriteTimeoutSeconds` would otherwise
   kill a run silent during compaction/memory extraction.
+  - **Personas** (`agent/persona/`): the main agent's prompt is split into a
+    user-managed persona (the DEFAULT persona's text covers identity,
+    personality and the policy — a custom persona may write its own; plus a
+    tool-namespace whitelist) and the code-owned GSG harness introduction
+    (`agent/persist/MainAgentSystemPromptService.kt` — harness mechanics,
+    context injection docs; its `gsg__investigate` documentation is always
+    rendered — gating it on the persona's whitelist is planned). The DEFAULT
+    persona (reserved id 0)
+    lives ONLY in code (prompt updates need no data sync), is never a
+    `personas` row (the API rejects create/update/delete on it) and has an
+    EMPTY whitelist = ALL namespaces the chat loop serves. Personas rows:
+    `(id, name, system_prompt, allowed_namespaces)` — the row id is a
+    BIGSERIAL DB identity carried by the wire types as the number itself
+    (the reserved code-only id 0 never collides: sequences start at 1). The
+    whitelist is a
+    JSON array validated at save time against the chat loop's boot-time
+    namespace snapshot (`PersonaService`; `[]` = all; a namespace the loop
+    does not serve — including `eltm` — is a 400). The request owns the
+    persona: `SendMessageRequest.personaId` is resolved in `prepareRun`
+    (unknown id → 400, no silent fallback), which also wraps the loop's tool
+    set in a `WhitelistedToolProvider` per request (an empty whitelist = the
+    set unfiltered; a whitelist entry the loop no longer serves after a
+    config change fails with a clear 400 before any stream starts); `runChat`
+    renders the prompt and runs. `chats.persona_id` is ONLY a record: it
+    starts at the reserved id 0, is inherited by forks, and is stamped by the
+    successful run's store upsert — never consulted for prompt/tool
+    resolution. Routes: `GET/POST /api/personas`, `PUT/DELETE
+    /api/personas/{id}` (400 on the reserved id 0), listed in `server/endpoint/
+    PersonasRoute.kt`.
   - **DI** (`di/DaapuModule.kt`, Koin 4.2 + the compiler plugin
     `io.insert-koin.compiler.plugin`): one `module { }` built by
     `daapuModule(config)`, every definition a `single` via the plugin DSL
@@ -97,7 +127,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     `EltmService`/`HandCallbackService` from the same container
     (`Application.module(koin)`). Tests: `testutil/TestDi.kt` —
     `testKoinApp(...)`/`chatRunService(...)` with overrides for `hand`/
-    `chatStore`/`eltmService`/`mcpToolProvider`; `assertFailsFast` unwraps
+    `chatStore`/`eltmService`/`mcpToolProvider`/`personaStore` (the persona
+    store defaults to an in-memory `FakePersonaStore` — the Postgres store
+    would need a live database); `assertFailsFast` unwraps
     Koin's `InstanceCreationException` wrappers.
   - **ELTM** (`memory/eltm/EltmService.kt` + `PostgresEltmService.kt`, the diary
     model): entities `(id, name, category)` + **attributes**
@@ -196,14 +228,16 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   - **ChatStore** (`agent/chat/ChatStore.kt`): all `chats`-table access
     (list/create/rename/delete + load/store) lives behind it — `ChatRunService`
     holds no raw DB calls. `load` → full `ChatEntry` (id/title/history + eltm
-    version or null); `ChatInfo` (id+title) is the wire shape only.
+    version + persona record or null); `ChatInfo` (id+title+persona record) is
+    the wire shape only.
     `renameChat`/`generateTitle` take no lock.
   - **History mutation is by message INDEX** (chat array is the wire format;
     frontend renders stored order — no message ids):
     - `DELETE /api/chats/{id}/messages/{index}` (`truncateChat`): drops the user
       message at `index` and everything after it — WITHOUT memory extraction (a
       typo'd turn must not leak into memories) — resets `eltm_version` to `""`
-      (the next run must re-flag), takes the per-chat lock, 400 on
+      (the next run must re-flag), leaves the persona record untouched, takes
+      the per-chat lock, 400 on
       non-user/out-of-bounds index or an index leaving the chat ending mid-turn.
     - `POST /api/chats/{id}/fork/{index}` (`forkChat`): copies history up to and
       including the assistant message at `index` (`finishReason` must be
@@ -333,13 +367,13 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   oklch "neutral" palette), bits-ui primitives, lucide icons, highlight.js.
   Proxies `/api` to ktor; ktor serves the API only.
   - Layout: collapsible glass sidebar (chat list + search filter + rename/delete
-    dialogs, generate-title, ELTM nav), centered `max-w-3xl` message column,
-    floating rounded composer with circular send button (disabled while
+    dialogs, generate-title, personas + ELTM nav), centered `max-w-3xl` message
+    column, floating rounded composer with circular send button (disabled while
     streaming).
   - Routing: hash-based (`src/lib/router.svelte.ts`, zero deps — the hash never
     reaches the server, so any static host works without SPA fallback; the same
     reason llama.cpp's webui uses `router: hash`). Routes: `#/chat` (home),
-    `#/chat/<id>`, `#/eltm`. The URL owns the active view and the open chat: an
+    `#/chat/<id>`, `#/eltm`, `#/personas`. The URL owns the active view and the open chat: an
     `App.svelte` `$effect` translates the route into `chatStore.pickChat`/
     `closeChat`; store actions that change the open chat navigate the hash
     (`navigate` updates the route state synchronously — the `hashchange` event
@@ -360,9 +394,18 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     tool-round commits, retry wipes, DB resync on done/error/abnormal close,
     optimistic user message; a send that never stores restores the composer
     draft. No client-side stop — the server only notices a disconnect on its next
-    event write. Chat list, model catalog, and the ELTM entity/relationship lists
-    re-fetch every 30s and on window focus; each replaces its list only when the
-    payload changed.
+    event write. Chat list, model catalog, the personas list and the ELTM
+    entity/relationship lists re-fetch every 30s and on window focus; each
+    replaces its list only when the payload changed.
+  - The persona picker (`PersonaDropdown.svelte`, next to the model picker in
+    the Composer) selects the CURRENT chat's persona: a transient per-chat
+    override on top of the chat's recorded `personaId`, always sent with the
+    message (`SendMessageRequest.personaId` — the record syncs via the chat
+    list resync after a successful run). Persona management lives in the
+    `PersonaView.svelte` (`#/personas` sidebar tab, before ELTM): rows of
+    id/name/namespaces (empty = all), per-row edit-prompt and edit-namespaces
+    dialogs (one text input per namespace item) plus delete; the built-in
+    `default` row is read-only.
   - The ELTM view (`EltmView.svelte`, route `#/eltm`) is browse-only (writes are
     LLM-driven): two sub-tabs — Entities (cards with attribute chips, counts +
     latest note, expandable to lazily fetch relationships and diary via the

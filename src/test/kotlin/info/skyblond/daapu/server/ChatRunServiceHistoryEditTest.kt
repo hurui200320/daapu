@@ -96,7 +96,7 @@ class ChatRunServiceHistoryEditTest {
     @Test
     fun `truncate at the first message empties the chat`() = runBlocking {
         val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds())
+        store.seed("chat-1", chat = threeRounds(), personaId = 1L)
         val srv = service(store)
 
         assertTrue(srv.truncateChat("chat-1", 0))
@@ -104,6 +104,9 @@ class ChatRunServiceHistoryEditTest {
         assertTrue(entry.content.messages.isEmpty())
         // the title survives (the upsert never touches it)
         assertEquals(DEFAULT_CHAT_TITLE, store.title("chat-1"))
+        // the persona record survives too: truncation drops messages, not
+        // the chat's identity
+        assertEquals(1L, entry.info.personaId)
     }
 
     @Test
@@ -226,6 +229,21 @@ class ChatRunServiceHistoryEditTest {
             assertEquals(threeRounds(), store.load("chat-1")!!.content.messages)
             assertEquals("e1", store.load("chat-1")!!.content.eltmVersion)
         }
+
+    @Test
+    fun `fork inherits the source chat's persona record`() = runBlocking {
+        // the persona record is part of the chat's identity: a fork of a
+        // conversation continues that conversation's persona (the user can
+        // switch it later — the record is never authoritative for runs)
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = threeRounds(), personaId = 1L)
+        val srv = service(store)
+
+        val forked = srv.forkChat("chat-1", 3)!!
+        assertEquals(1L, forked.personaId)
+        assertEquals(1L, store.load(forked.id)!!.info.personaId)
+        assertEquals(1L, store.load("chat-1")!!.info.personaId, "the source is untouched")
+    }
 
     @Test
     fun `fork of a missing chat returns null without calling the LLM`() = runBlocking {

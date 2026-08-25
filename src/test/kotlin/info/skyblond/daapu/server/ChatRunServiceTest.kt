@@ -2,8 +2,14 @@ package info.skyblond.daapu.server
 
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
+import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
+import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
+import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_SYSTEM_PROMPT
+import info.skyblond.daapu.agent.persona.Persona
+import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.config.AgentConfig
 import info.skyblond.daapu.config.EltmConfig
@@ -13,15 +19,20 @@ import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.config.MemoryConfig
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.hand.FakeHand
+import info.skyblond.daapu.hand.assistantMessage
+import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
 import info.skyblond.daapu.mcp.MockToolReply
+import info.skyblond.daapu.testutil.FakeEltmService
 import info.skyblond.daapu.testutil.assertFailsFast
 import info.skyblond.daapu.testutil.chatRunService
 import info.skyblond.daapu.testutil.testKoinApp
 import io.ktor.server.plugins.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -38,11 +49,21 @@ class ChatRunServiceTest {
         text: String? = null,
         images: List<String> = emptyList(),
         model: String = "bifrost/cerebras/gpt-oss-120b",
-    ) = SendMessageRequest(text = text, images = images.map { ImagePart(it) }, model = model)
+        personaId: Long = DEFAULT_PERSONA_ID,
+    ) = SendMessageRequest(
+        text = text,
+        images = images.map { ImagePart(it) },
+        model = model,
+        personaId = personaId,
+    )
+
+    /** The suspend validation call, runBlocking so the sync tests stay sync. */
+    private fun prepare(chatId: String, request: SendMessageRequest): ChatRunSetup =
+        runBlocking { service.prepareRun(chatId, request) }
 
     @Test
     fun `text only maps to a text part`() {
-        val setup = service.prepareRun("chat-1", request(text = "hello"))
+        val setup = prepare("chat-1", request(text = "hello"))
         assertEquals(listOf(ChatMessagePart.Text("hello")), setup.parts)
         assertEquals("bifrost/cerebras/gpt-oss-120b", setup.model.id)
     }
@@ -50,7 +71,7 @@ class ChatRunServiceTest {
     @Test
     fun `text and image map to text plus attachment`() {
         val dataUrl = "data:image/png;base64,AAAA"
-        val setup = service.prepareRun("chat-1", request(text = "look", images = listOf(dataUrl)))
+        val setup = prepare("chat-1", request(text = "look", images = listOf(dataUrl)))
         assertEquals(2, setup.parts.size)
         val attachment = assertIs<ChatMessagePart.Attachment>(setup.parts[1])
         assertEquals(AttachmentKind.Image, attachment.kind)
@@ -63,7 +84,7 @@ class ChatRunServiceTest {
         // an image-only message is valid; the turn loop's capability check
         // (not the API) decides whether the model can handle it
         val setup =
-            service.prepareRun("chat-1", request(images = listOf("data:image/jpeg;base64,BBBB")))
+            prepare("chat-1", request(images = listOf("data:image/jpeg;base64,BBBB")))
         assertEquals(1, setup.parts.size)
         assertIs<ChatMessagePart.Attachment>(setup.parts[0])
     }
@@ -73,7 +94,7 @@ class ChatRunServiceTest {
         // deliberate: capability enforcement lives in the turn loop's pre-send
         // step, so history-sourced images are covered too. Pinned here so the
         // API layer doesn't grow a partial validation that misses history.
-        val setup = service.prepareRun(
+        val setup = prepare(
             "chat-1",
             request(
                 images = listOf("data:image/png;base64,AAAA"),
@@ -86,20 +107,202 @@ class ChatRunServiceTest {
 
     @Test
     fun `blank message is rejected`() {
-        assertFailsWith<BadRequestException> { service.prepareRun("chat-1", request(text = "   ")) }
-        assertFailsWith<BadRequestException> { service.prepareRun("chat-1", request(text = "")) }
-        assertFailsWith<BadRequestException> { service.prepareRun("chat-1", request()) }
+        assertFailsWith<BadRequestException> { prepare("chat-1", request(text = "   ")) }
+        assertFailsWith<BadRequestException> { prepare("chat-1", request(text = "")) }
+        assertFailsWith<BadRequestException> { prepare("chat-1", request()) }
     }
 
     @Test
     fun `missing model is rejected`() {
         // the server has no default model; the web UI always sends one
         assertFailsWith<BadRequestException> {
-            service.prepareRun("chat-1", SendMessageRequest(text = "hi"))
+            prepare("chat-1", SendMessageRequest(text = "hi"))
         }
         assertFailsWith<BadRequestException> {
-            service.prepareRun("chat-1", SendMessageRequest(text = "hi", model = "  "))
+            prepare("chat-1", SendMessageRequest(text = "hi", model = "  "))
         }
+    }
+
+    @Test
+    fun `missing persona is rejected`() {
+        // the server has no default persona for the REQUEST either: the
+        // frontend always sends the persona id along with the model (the
+        // chat's persona_id column is only a record, never the run's source)
+        assertFailsWith<BadRequestException> {
+            prepare("chat-1", SendMessageRequest(text = "hi", model = "bifrost/cerebras/gpt-oss-120b"))
+        }
+        assertFailsWith<BadRequestException> {
+            prepare("chat-1", SendMessageRequest(text = "hi", model = "bifrost/cerebras/gpt-oss-120b", personaId = null))
+        }
+    }
+
+    @Test
+    fun `unknown persona is rejected`() {
+        // fail fast like the unknown model: a stale id is a client error,
+        // not a silent fallback to the default persona
+        val e = assertFailsWith<BadRequestException> {
+            prepare("chat-1", request(text = "hi", personaId = 999L))
+        }
+        assertTrue(e.message!!.contains("Unknown persona"))
+    }
+
+    @Test
+    fun `the default persona resolves from code`() {
+        // the default persona lives ONLY in code (never a personas row); the
+        // request carries its reserved id
+        val setup = prepare("chat-1", request(text = "hi"))
+        assertEquals(DEFAULT_PERSONA_ID, setup.persona.id)
+        assertEquals(
+            DEFAULT_PERSONA_SYSTEM_PROMPT,
+            setup.persona.systemPrompt,
+            "the default persona text is the code constant",
+        )
+        assertTrue(setup.persona.allowedNamespaces.isEmpty(), "empty whitelist = all namespaces")
+    }
+
+    @Test
+    fun `a stored persona resolves from the store`() {
+        val personaStore = FakePersonaStore()
+        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        val service = chatRunService(testAppConfig(), personaStore = personaStore)
+        val setup = runBlocking {
+            service.prepareRun("chat-1", request(text = "hi", personaId = 1L))
+        }
+        assertEquals(1L, setup.persona.id)
+        assertEquals("You are a writer.", setup.persona.systemPrompt)
+    }
+
+    @Test
+    fun `a chat run renders the persona prompt and stamps the chat record`() = runBlocking {
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        val personaStore = FakePersonaStore()
+        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        val hand = FakeHand(
+            runScript = { request ->
+                when {
+                    // the query-rewrite one-shot runs before the chat round
+                    request.systemPrompt?.startsWith("You're rewriting") == true ->
+                        textRunFlow("rewritten query")
+
+                    else -> textRunFlow("written")
+                }
+            },
+        )
+        val service = chatRunService(
+            testAppConfig(),
+            hand = hand,
+            chatStore = store,
+            eltmService = FakeEltmService(),
+            personaStore = personaStore,
+        )
+        val setup = service.prepareRun(
+            "chat-1",
+            request(text = "write something", personaId = 1L),
+        )
+        service.runChat(setup, NoopStreamingCallback)
+        val chatRequest = hand.requests.last()
+        assertTrue(
+            chatRequest.systemPrompt!!.startsWith("You are a writer."),
+            "the system prompt is the persona text plus the gsg introduction",
+        )
+        assertTrue(
+            chatRequest.systemPrompt.contains("# Harness"),
+            "the gsg harness introduction is appended to the persona text",
+        )
+        // the introduction is always rendered in full (gating the
+        // gsg__investigate documentation on the whitelist is planned)
+        assertTrue(chatRequest.systemPrompt.contains("gsg__investigate"))
+        // the successful run stamps the chat's persona record
+        assertEquals(1L, store.personaId("chat-1"))
+    }
+
+    @Test
+    fun `a persona whitelist restricts the tools but keeps the full introduction`() = runBlocking {
+        // the whitelist filters the loop's TOOL set only; the harness
+        // introduction (incl. the gsg__investigate documentation) is
+        // rendered in full for every persona — gating it is planned
+        val server = MockMcpServer(listOf(addTool()))
+        val mcp = McpToolProvider(
+            mapOf(
+                "calc" to McpServerConfig(
+                    type = McpTransportType.Http,
+                    url = server.baseUrl,
+                    toolExecutionTimeoutSeconds = 30,
+                )
+            )
+        )
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        val personaStore = FakePersonaStore()
+        personaStore.seed(Persona(1L, "Plain", "You are a plain assistant.", listOf("calc")))
+        val hand = FakeHand(
+            runScript = { request ->
+                when {
+                    request.systemPrompt?.startsWith("You're rewriting") == true ->
+                        textRunFlow("rewritten query")
+
+                    else -> textRunFlow("plain")
+                }
+            },
+        )
+        val koinApp = testKoinApp(
+            testAppConfig(),
+            hand = hand,
+            chatStore = store,
+            eltmService = FakeEltmService(),
+            personaStore = personaStore,
+            mcpToolProvider = mcp,
+        )
+        val service = koinApp.koin.get<ChatRunService>()
+        try {
+            val setup = service.prepareRun("chat-1", request(text = "hi", personaId = 1L))
+            service.runChat(setup, NoopStreamingCallback)
+            val prompt = hand.requests.last().systemPrompt!!
+            assertTrue(prompt.startsWith("You are a plain assistant."))
+            assertTrue(prompt.contains("# Harness"), "the harness introduction is still appended")
+            assertTrue(
+                prompt.contains("gsg__investigate"),
+                "the introduction is currently rendered in full regardless of the whitelist",
+            )
+            assertFalse(
+                prompt.contains("# Policy"),
+                "the policy is part of the DEFAULT persona's text only",
+            )
+            assertEquals(1L, store.personaId("chat-1"))
+        } finally {
+            koinApp.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun `a stale persona whitelist fails prepareRun with a clear error`() = runBlocking {
+        // seeded directly (the service would reject the unknown namespace at
+        // save time): an MCP server dropped from config after the persona was
+        // saved leaves a whitelist entry the loop's set does not serve — the
+        // WhitelistedToolProvider construction invariant fails the REQUEST in
+        // prepareRun (before the lock, before any stream) with a clear error
+        // instead of silently dropping the namespace
+        val store = FakeChatStore()
+        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        val personaStore = FakePersonaStore()
+        personaStore.seed(Persona(1L, "Stale", "You are stale.", listOf("gsg", "web")))
+        val hand = FakeHand(runScript = { error("the request must fail before the hand is called") })
+        val service = chatRunService(
+            testAppConfig(),
+            hand = hand,
+            chatStore = store,
+            eltmService = FakeEltmService(),
+            personaStore = personaStore,
+        )
+        val e = assertFailsWith<BadRequestException> {
+            runBlocking { service.prepareRun("chat-1", request(text = "hi", personaId = 1L)) }
+        }
+        assertTrue(
+            e.message!!.contains("not served by the delegate"),
+            "the error names the unserved namespace: ${e.message}",
+        )
     }
 
     @Test
@@ -112,7 +315,7 @@ class ChatRunServiceTest {
             "not even a url",
         ).forEach { url ->
             val e = assertFailsWith<BadRequestException>("url: $url") {
-                service.prepareRun("chat-1", request(images = listOf(url)))
+                prepare("chat-1", request(images = listOf(url)))
             }
             assertNotNull(e.message)
         }
@@ -122,7 +325,7 @@ class ChatRunServiceTest {
     fun `invalid base64 payload is rejected`() {
         // decodes to garbage, not valid base64
         val e = assertFailsWith<BadRequestException> {
-            service.prepareRun(
+            prepare(
                 "chat-1",
                 request(images = listOf("data:image/png;base64,@@@not-base64@@@"))
             )
@@ -135,7 +338,7 @@ class ChatRunServiceTest {
         // data URLs produced by FileReader are single-line, but folded base64
         // (whitespace-separated) is legal; whitespace must be stripped
         val setup =
-            service.prepareRun("chat-1", request(images = listOf("data:image/png;base64,AAA\nA")))
+            prepare("chat-1", request(images = listOf("data:image/png;base64,AAA\nA")))
         val attachment = assertIs<ChatMessagePart.Attachment>(setup.parts[0])
         assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
     }
@@ -143,7 +346,7 @@ class ChatRunServiceTest {
     @Test
     fun `unknown model is rejected`() {
         val e = assertFailsWith<BadRequestException> {
-            service.prepareRun("chat-1", request(text = "hi", model = "no/such-model"))
+            prepare("chat-1", request(text = "hi", model = "no/such-model"))
         }
         assertNotNull(e.message)
     }
@@ -156,7 +359,7 @@ class ChatRunServiceTest {
             "bifrost/novita/google/gemma-4-31b-it"
         )
             .forEach { id ->
-                val setup = service.prepareRun("chat-1", request(text = "hi", model = id))
+                val setup = prepare("chat-1", request(text = "hi", model = id))
                 assertEquals(id, setup.model.id)
             }
     }
@@ -410,4 +613,19 @@ class ChatRunServiceTest {
             MockToolReply("${num("a")} + ${num("b")} = ${num("a") + num("b")}")
         },
     )
+
+    private fun user(text: String) = ChatMessage(
+        ChatMessageRole.User,
+        listOf(ChatMessagePart.Text(text)),
+        createdAt = java.time.Instant.parse("2026-08-17T09:00:00Z"),
+    )
+}
+
+/** A callback that drops everything: persona-run tests assert on the hand. */
+private object NoopStreamingCallback : StreamingExecutionCallback {
+    override suspend fun onTextDelta(text: String) {}
+    override suspend fun onReasoningDelta(text: String) {}
+    override suspend fun onToolCall(name: String, args: JsonObject) {}
+    override suspend fun onToolResults(results: List<ChatMessagePart.ToolResult>) {}
+    override suspend fun onStreamError(error: String) {}
 }

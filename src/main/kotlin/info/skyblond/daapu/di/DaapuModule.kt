@@ -13,7 +13,11 @@ import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
+import info.skyblond.daapu.agent.persona.PersonaService
+import info.skyblond.daapu.agent.persona.PersonaStore
+import info.skyblond.daapu.agent.persona.PostgresPersonaStore
 import info.skyblond.daapu.agent.persist.GsgToolProvider
+import info.skyblond.daapu.agent.persist.MainAgentSystemPromptService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
@@ -77,6 +81,18 @@ fun daapuModule(config: AppConfig): Module = module {
     // the stores: all chats-table access and the ELTM tables live
     // behind these seams, so tests override them with fakes
     single<ChatStore> { PostgresChatStore() }
+    single<PersonaStore> { PostgresPersonaStore() }
+    // the persona seam: the code default + the `personas` rows; the
+    // servable namespaces are snapshotted from the chat loop's tool set at
+    // boot, so persona whitelists validate against exactly what a run would
+    // serve (a config change needs a restart anyway — MCP servers connect
+    // eagerly at boot)
+    single<PersonaService> {
+        PersonaService(
+            store = get(),
+            servedNamespaces = get<CombinedToolProvider>().namespaces(),
+        )
+    }
     single<EltmService> {
         PostgresEltmService(
             embeddingModel = get<ModelCatalog>().findEmbeddingModel(config.memory.eltm.embeddingModel)
@@ -216,6 +232,13 @@ fun daapuModule(config: AppConfig): Module = module {
         )
     }
 
+    // the main agent's system prompt renderer: stateless across runs, a
+    // single shared instance. The developer note is hardcoded on for now
+    // (a config flag for it comes later).
+    single<MainAgentSystemPromptService> {
+        MainAgentSystemPromptService(isDevelopment = true)
+    }
+
     single<PersistChatService> {
         PersistChatService(
             chatStore = get(),
@@ -223,6 +246,7 @@ fun daapuModule(config: AppConfig): Module = module {
             queryRewriteService = get(),
             hand = get(),
             compactionService = get(),
+            systemPromptService = get(),
             memoryExtractionService = get(),
             rewriteRounds = config.memory.eltm.rewriteRounds,
             relatedEntitiesLimit = config.memory.eltm.relatedEntitiesLimit,

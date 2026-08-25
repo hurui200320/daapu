@@ -20,16 +20,19 @@ class PostgresChatStore : ChatStore {
             .orderBy(Chats.id to SortOrder.DESC)
             // TODO: pagination?
             .limit(200)
-            .map { row -> ChatInfo(row[Chats.id], row[Chats.title]) }
+            .map { row ->
+                ChatInfo(row[Chats.id], row[Chats.title], row[Chats.personaId])
+            }
     }
 
-    override suspend fun newChat(): ChatInfo = withTransaction {
+    override suspend fun newChat(personaId: Long): ChatInfo = withTransaction {
         val id = newChatId()
         Chats.insert {
             it[Chats.id] = id
             it[Chats.title] = DEFAULT_CHAT_TITLE
+            it[Chats.personaId] = personaId
         }
-        ChatInfo(id, DEFAULT_CHAT_TITLE)
+        ChatInfo(id, DEFAULT_CHAT_TITLE, personaId)
     }
 
     override suspend fun load(chatId: String): ChatEntry? = withTransaction {
@@ -38,10 +41,11 @@ class PostgresChatStore : ChatStore {
             .singleOrNull()
             ?: return@withTransaction null
         ChatEntry(
-            info = ChatInfo(entry[Chats.id], entry[Chats.title]),
+            info = ChatInfo(entry[Chats.id], entry[Chats.title], entry[Chats.personaId]),
             content = ChatContent(
                 messages = ChatCodec.decodeChat(chatId, entry[Chats.chatJson]),
-                eltmVersion = entry[Chats.eltmVersion]
+                eltmVersion = entry[Chats.eltmVersion],
+                personaId = entry[Chats.personaId],
             )
         )
     }
@@ -57,15 +61,23 @@ class PostgresChatStore : ChatStore {
                 it[Chats.id] = chatId
                 it[Chats.chatJson] = chatJson
                 it[Chats.eltmVersion] = chat.eltmVersion
+                it[Chats.personaId] = chat.personaId
             }
         }
     }
 
     override suspend fun rename(chatId: String, title: String): ChatInfo? = withTransaction {
-        val updated = Chats.update({ Chats.id eq chatId }) {
+        // read the row first: the returned ChatInfo must carry the row's
+        // ACTUAL persona record (a defaulted personaId would silently report
+        // the reserved default 0 for a chat whose record is a custom persona)
+        val row = Chats.selectAll()
+            .where { Chats.id eq chatId }
+            .singleOrNull()
+            ?: return@withTransaction null
+        Chats.update({ Chats.id eq chatId }) {
             it[Chats.title] = title
         }
-        if (updated == 0) null else ChatInfo(chatId, title)
+        ChatInfo(chatId, title, row[Chats.personaId])
     }
 
     override suspend fun delete(chatId: String): Boolean = withTransaction {

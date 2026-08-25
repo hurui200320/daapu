@@ -3,6 +3,7 @@ package info.skyblond.daapu.agent.persist
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
 import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
@@ -56,6 +57,12 @@ class PersistChatService(
     private val hand: HandService,
     private val compactionService: ChatCompactionService,
     /**
+     * Renders the run's system prompt from the run's persona
+     * ([MainAgentSystemPromptService.render]): the
+     * persona text plus the GSG harness introduction.
+     */
+    private val systemPromptService: MainAgentSystemPromptService,
+    /**
      * Memory extraction over the raw messages a compaction is about to
      * discard (see `agent/oneshot/eltm/MemoryExtractionService.kt`): the
      * extractor summarizes them and the ELTM writer records the facts into
@@ -92,10 +99,16 @@ class PersistChatService(
         chatId: String,
         model: LLM,
         userParts: List<ChatMessagePart>,
-        systemPrompt: String,
+        /**
+         * The run's persona: owns the system prompt (rendered once per run by
+         * [systemPromptService], never stored) and is stamped on the
+         * successful store's `chats.persona_id` record.
+         */
+        persona: Persona,
         toolProvider: ToolProvider,
         callback: StreamingExecutionCallback,
     ) {
+        val systemPrompt = systemPromptService.render(persona)
         val contextInjection = ContextInjection()
 
         // empty user input would leave a part-less user message: injectContext
@@ -105,8 +118,8 @@ class PersistChatService(
         require(userParts.isNotEmpty()) { "Empty user message is not allowed" }
 
         val loaded = chatStore.load(chatId) ?: ChatEntry(
-            ChatInfo(chatId, DEFAULT_CHAT_TITLE),
-            ChatContent(emptyList(), "")
+            ChatInfo(chatId, DEFAULT_CHAT_TITLE, persona.id),
+            ChatContent(emptyList(), "", persona.id)
         )
         val chatEltmVersion = loaded.content.eltmVersion
         var chat = loaded.content.messages
@@ -118,7 +131,8 @@ class PersistChatService(
         // below). The not-yet-appended input is not counted; the trigger
         // headroom absorbs the difference.
         // The raw dropped messages feed the memory extraction BEFORE they are
-        // discarded (see agent/persist/SystemPrompt.kt's memory architecture).
+        // discarded (see agent/persist/MainAgentSystemPromptService.kt's
+        // memory architecture).
         if (model.compactionTriggerFraction > 0 &&
             currentPromptTokens(chat) > model.contextLength * model.compactionTriggerFraction
         ) {
@@ -255,9 +269,14 @@ class PersistChatService(
             }
         }
 
-        // only the success path stores: a failed run never reaches here
+        // only the success path stores: a failed run never reaches here.
+        // The persona record is stamped from the run's persona, so
+        // `chats.persona_id` always reflects the last successful run (the
+        // column is a record for the UI's picker, never the run's source of
+        // truth — the prompt and the tool whitelist came from the resolved
+        // persona, not from this column).
         chat = contextInjection.removeInjection(chat)
-        chatStore.store(chatId, ChatContent(chat, eltmVersion))
+        chatStore.store(chatId, ChatContent(chat, eltmVersion, persona.id))
     }
 
     private sealed interface HandTerminal {

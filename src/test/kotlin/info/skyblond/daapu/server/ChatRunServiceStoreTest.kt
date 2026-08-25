@@ -1,6 +1,7 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
@@ -47,7 +48,7 @@ class ChatRunServiceStoreTest {
 
         val result = runBlocking { service().generateTitle("chat-1") }
 
-        assertEquals(ChatInfo("chat-1", "My custom title"), result)
+        assertEquals(ChatInfo("chat-1", "My custom title", DEFAULT_PERSONA_ID), result)
         assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
         assertEquals(
             "My custom title",
@@ -62,7 +63,7 @@ class ChatRunServiceStoreTest {
 
         val result = runBlocking { service().generateTitle("chat-1") }
 
-        assertEquals(ChatInfo("chat-1", "Generated title"), result)
+        assertEquals(ChatInfo("chat-1", "Generated title", DEFAULT_PERSONA_ID), result)
         assertEquals("Generated title", store.title("chat-1"))
         assertEquals(1, hand.requests.size)
     }
@@ -94,7 +95,7 @@ class ChatRunServiceStoreTest {
         store.seed("chat-1")
 
         assertEquals(
-            ChatInfo("chat-1", "renamed"),
+            ChatInfo("chat-1", "renamed", DEFAULT_PERSONA_ID),
             runBlocking { service().renameChat("chat-1", "renamed") })
         assertEquals("renamed", store.title("chat-1"))
         assertNull(runBlocking { service().renameChat("nope", "x") })
@@ -118,7 +119,7 @@ class ChatRunServiceStoreTest {
         store.seed("a", title = "A")
         store.seed("b", title = "B")
         assertEquals(
-            listOf(ChatInfo("a", "A"), ChatInfo("b", "B")),
+            listOf(ChatInfo("a", "A", DEFAULT_PERSONA_ID), ChatInfo("b", "B", DEFAULT_PERSONA_ID)),
             runBlocking { service().listChats() }
         )
     }

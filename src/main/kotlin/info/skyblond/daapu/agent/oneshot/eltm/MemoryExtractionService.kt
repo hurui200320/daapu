@@ -15,8 +15,8 @@ import kotlinx.coroutines.CancellationException
 import java.time.LocalDate
 
 /**
- * The memory extraction pipeline (see `agent/persist/SystemPrompt.kt`: when
- * messages are removed from context, extract info from the raw messages and
+ * The memory extraction pipeline (see `agent/persist/MainAgentSystemPromptService.kt`:
+ * when messages are removed from context, extract info from the raw messages and
  * write it into the ELTM before discarding them):
  *
  * 1. **Extractor** — one hand `/v1/run` call (no tools) with the raw dropped

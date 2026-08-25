@@ -1,5 +1,6 @@
 package info.skyblond.daapu.db
 
+import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
 import org.jetbrains.exposed.v1.core.ReferenceOption
 import org.jetbrains.exposed.v1.core.Table
@@ -15,10 +16,32 @@ object Chats : Table("chats") {
     val title = text("title")
     val chatJson = text("chat_json").default("[]")
     // the ELTM version fingerprint of the last successful run; "" means
-    // "never compared yet", so the first run flags eltm-updated. Updated by
-    // the persist loop's successful store (a column-only UPDATE, never the
-    // store upsert).
+    // "never compared yet", so the first run flags eltm-updated. Stamped by
+    // the persist loop's successful store upsert.
     val eltmVersion = text("eltm_version").default("")
+    // the per-chat persona RECORD: the persona id of the chat's last
+    // successful run (stamped by the store upsert). Not authoritative for
+    // runs — every run carries its persona id in the request. The default
+    // mirrors DEFAULT_PERSONA_ID (agent/persona/Persona.kt): the reserved
+    // code default is the sentinel 0, a BIGSERIAL identity never produces.
+    val personaId = long("persona_id").default(DEFAULT_PERSONA_ID)
+
+    override val primaryKey = PrimaryKey(id)
+}
+
+/**
+ * User-defined agent personas: the persona text plus a tool-namespace
+ * whitelist over the chat loop's tool set (see `V2__personas.sql`). The
+ * DEFAULT persona is NOT a row here — it lives in code
+ * (`agent/persona/DefaultPersona.kt`), so prompt updates need no sync.
+ */
+object Personas : Table("personas") {
+    val id = long("id").autoIncrement()
+    val name = text("name")
+    val systemPrompt = text("system_prompt")
+    // a JSON array of tool namespace strings; `[]` = all namespaces served
+    // by the chat loop
+    val allowedNamespaces = text("allowed_namespaces").default("[]")
 
     override val primaryKey = PrimaryKey(id)
 }

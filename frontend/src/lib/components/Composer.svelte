@@ -2,6 +2,7 @@
   import { ArrowUp, Paperclip, X } from '@lucide/svelte'
   import { chatStore as store } from '../chat-store.svelte'
   import ModelDropdown from './ModelDropdown.svelte'
+  import PersonaDropdown from './PersonaDropdown.svelte'
 
   let text = $state('')
   let images = $state<{ dataUrl: string }[]>([])
@@ -127,6 +128,7 @@
           onchange={(e) => addFiles((e.currentTarget as HTMLInputElement).files)}
         />
         <ModelDropdown />
+        <PersonaDropdown />
         {#if usage.used != null && usage.context != null}
           <span
             class="hidden truncate whitespace-nowrap text-xs text-muted-foreground tabular-nums sm:inline {usagePct != null && usagePct >= 80 ? 'text-destructive' : ''}"
