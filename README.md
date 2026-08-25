@@ -268,8 +268,8 @@ cancelled, the model can react in the next round).
 An optional `mcp.proxy` (`host` + `port`) routes every http-type server's
 requests through an HTTP proxy (CONNECT tunneling for http and https
 endpoints; stdio servers are unaffected). Explicit only — no
-`HTTP_PROXY`-style env-var pickup, and the CIO engine supports no proxy
-authentication.
+`HTTP_PROXY`-style env-var pickup, and the proxy config model has no
+authentication fields.
 
 The main agent's system prompt is split into two parts: a user-managed
 **persona** (identity/personality text plus a tool-namespace whitelist, see

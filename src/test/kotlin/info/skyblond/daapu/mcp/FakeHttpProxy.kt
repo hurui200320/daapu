@@ -16,7 +16,7 @@ import java.util.concurrent.Executors
  * the request line to learn the target, records it, connects upstream, and
  * relays raw bytes both ways — everything else (headers, bodies, keep-alive,
  * long-lived streams) is transparent at the TCP level. Handles the two
- * shapes ktor/CIO sends behind an HTTP proxy:
+ * shapes the Java engine (JDK HttpClient) sends behind an HTTP proxy:
  *
  * - `CONNECT host:port HTTP/1.1` (HTTPS targets) — answers
  *   `200 Connection Established` then tunnels;

@@ -437,7 +437,7 @@
           "description": "HTTP proxy port."
         }
       },
-      "description": "An HTTP proxy (CONNECT tunneling for both http and https MCP endpoints) used by every http-type MCP server. Applied engine-wide in mcp/McpEntry.kt, so initialize POST, tool POST, SSE GET and session DELETE all tunnel through it. The CIO engine supports no proxy authentication."
+      "description": "An HTTP proxy (CONNECT tunneling for both http and https MCP endpoints) used by every http-type MCP server. Applied engine-wide in mcp/McpEntry.kt, so initialize POST, tool POST, SSE GET and session DELETE all tunnel through it. The proxy config model has no authentication fields."
     }
   }
 }

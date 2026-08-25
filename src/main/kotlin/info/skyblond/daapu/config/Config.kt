@@ -386,9 +386,9 @@ data class McpConfig(
     /**
      * Optional HTTP proxy applied to every http-type server's requests
      * (stdio servers never touch HTTP). Explicit only — no env-var pickup:
-     * ktor/CIO never reads `HTTP_PROXY`-style variables, and the JVM
-     * `ProxySelector` fallback (which CIO consults only when no explicit
-     * proxy is set here) honors system properties, not environment
+     * ktor never reads `HTTP_PROXY`-style variables, and the JVM
+     * `ProxySelector` fallback (which the engines consult only when no
+     * explicit proxy is set here) honors system properties, not environment
      * variables. The configured proxy replaces that fallback entirely.
      */
     val proxy: McpProxyConfig? = null,
@@ -428,9 +428,9 @@ enum class McpTransportType {
  * http and https MCP endpoints) used by every http-type MCP server
  * ([McpServerConfig]). Applied as the ktor engine's `proxy` in
  * `mcp/McpEntry.kt`, which routes ALL transport traffic (initialize POST,
- * tool POST, SSE GET, session DELETE) through it. The CIO engine supports no
- * proxy authentication (no username/password fields), so credentials must
- * not be configured here — an authenticated proxy is not supported.
+ * tool POST, SSE GET, session DELETE) through it. The config model has no
+ * username/password fields, so credentials must not be configured here —
+ * an authenticated proxy is not supported.
  */
 @Serializable
 data class McpProxyConfig(

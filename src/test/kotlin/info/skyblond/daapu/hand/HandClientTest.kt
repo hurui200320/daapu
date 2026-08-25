@@ -249,13 +249,13 @@ class HandClientTest {
     }
 
     @Test
-    fun `embed survives a slow gateway longer than the CIO engine's default request cap`() {
-        // regression: the CIO engine caps every non-SSE request at
-        // `requestTimeout` (default 15s); a slow embedding gateway (e.g.
-        // deepinfra) exceeded it and the embed died with
-        // "Request timeout has expired". The client disables the cap, so
-        // a 20s answer must still succeed (the ~20s wall time is the price
-        // of pinning the fix).
+    fun `embed survives a slow gateway without any client-side timeout cap`() {
+        // regression: engines with default timeouts (CIO's `requestTimeout`
+        // 15s, OkHttp's read timeout 10s) killed slow embedding gateways
+        // (e.g. deepinfra) with "Request timeout has expired". The Java
+        // engine (JDK HttpClient) imposes no request/read timeout by
+        // default, so a 20s answer must still succeed (the ~20s wall time
+        // is the price of pinning the fix).
         val server = MockSseServer {
             MockSseResponse(
                 200,

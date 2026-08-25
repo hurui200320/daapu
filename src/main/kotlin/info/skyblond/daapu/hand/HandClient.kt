@@ -2,7 +2,7 @@ package info.skyblond.daapu.hand
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
-import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.java.*
 import io.ktor.client.plugins.sse.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -45,9 +45,10 @@ interface HandClient : AutoCloseable {
 }
 
 /**
- * HTTP implementation over ktor-client CIO with the SSE plugin. The SSE
- * auto-reconnect is disabled (`reconnectionTime = null`): a dropped hand
- * connection is terminal, never silently re-dialed.
+ * HTTP implementation over ktor-client's Java engine (the JDK HttpClient)
+ * with the SSE plugin. The SSE auto-reconnect is disabled
+ * (`reconnectionTime = null`): a dropped hand connection is terminal,
+ * never silently re-dialed.
  */
 class HttpHandClient(
     private val baseUrl: String,
@@ -64,16 +65,11 @@ class HttpHandClient(
         encodeDefaults = true
     }
 
-    private val client = HttpClient(CIO) {
+    // the JDK HttpClient imposes no request/read timeout by default, so slow
+    // `/v1/embed` calls (e.g. a slow embedding gateway) and idle SSE streams
+    // survive on their own — no timeout config needed
+    private val client = HttpClient(Java) {
         expectSuccess = false
-        engine {
-            // the CIO engine caps every non-SSE request at `requestTimeout`
-            // (default 15_000 ms) — that would kill slow `/v1/embed` calls
-            // (e.g. a slow embedding gateway) long before the hand's own
-            // per-attempt budget; 0 disables the cap. SSE requests are
-            // exempt anyway, so the chat loop's stream is unaffected.
-            requestTimeout = 0
-        }
         // the SSE plugin is required for sseSession; reconnect stays off
         // (passed per request as `reconnectionTime = null`)
         install(SSE)

@@ -10,8 +10,8 @@ import info.skyblond.daapu.config.McpTransportType
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.engine.ProxyBuilder
-import io.ktor.client.engine.cio.*
 import io.ktor.client.engine.http
+import io.ktor.client.engine.java.*
 import io.ktor.client.request.*
 import io.modelcontextprotocol.kotlin.sdk.LIB_VERSION
 import io.modelcontextprotocol.kotlin.sdk.client.Client
@@ -68,8 +68,10 @@ class ClientEntry(
     // one HTTP engine per entry: transports in the official SDK take a
     // ktor HttpClient (auth headers go through the per-request builder);
     // the optional mcp.proxy applies engine-wide, so POST, SSE GET and
-    // DELETE all tunnel through it (CONNECT). CIO has no proxy auth.
-    private val httpClient = HttpClient(CIO) {
+    // DELETE all tunnel through it (CONNECT). The Java engine (JDK
+    // HttpClient) speaks TLS 1.3 and imposes no read timeout, so long
+    // idle SSE tool streams survive.
+    private val httpClient = HttpClient(Java) {
         proxy?.let {
             engine {
                 this.proxy = ProxyBuilder.http("http://${it.host}:${it.port}")

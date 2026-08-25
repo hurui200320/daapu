@@ -53,10 +53,11 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktorVersion")
 
-    // hand-pi client: CIO engine + the SSE plugin (the
-    // plugin lives in ktor-client-core; the shared SSE protocol in ktor-sse)
+    // hand-pi client + MCP transport: Java engine (JDK HttpClient, TLS 1.3
+    // via JSSE, no read timeout by default) + the SSE plugin (the plugin
+    // lives in ktor-client-core; the shared SSE protocol in ktor-sse)
     implementation("io.ktor:ktor-client-core-jvm:$ktorVersion")
-    implementation("io.ktor:ktor-client-cio-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-client-java-jvm:$ktorVersion")
 
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host-jvm:$ktorVersion")
