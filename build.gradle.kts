@@ -79,3 +79,7 @@ application {
 tasks.test {
     useJUnitPlatform()
 }
+
+koinCompiler {
+    aiAssist = false
+}
