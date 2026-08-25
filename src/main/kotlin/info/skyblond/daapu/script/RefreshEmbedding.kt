@@ -1,4 +1,4 @@
-package info.skyblond.daapu
+package info.skyblond.daapu.script
 
 import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.model.EmbeddingModel
@@ -30,7 +30,7 @@ import org.koin.dsl.koinApplication
  * Run it after switching embedding models — the old vectors are useless to
  * the new model, and cosine similarities across models are not comparable.
  *
- * Run via `./gradlew reembed` (uses `./config.jsonc` like the server).
+ * Uses the same `./config.jsonc` like the server.
  *
  * The text shapes are the SAME functions the write path uses —
  * [entityEmbeddingText] (name + category + `key: value` attribute lines)

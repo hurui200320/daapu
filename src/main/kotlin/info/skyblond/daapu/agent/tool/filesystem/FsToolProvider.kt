@@ -130,7 +130,7 @@ class FsToolProvider(
                 request, "tool '${request.name}' is not advertised by this filesystem provider"
             )
         }
-        logger.info { "Executing tool ${request.name}" }
+        logger.info { "Executing tool ${request.name} with args ${request.args}" }
         return try {
             when (name) {
                 "read_text_file" -> readTextFile(request)
