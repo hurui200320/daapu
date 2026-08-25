@@ -4,11 +4,14 @@ import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolSpec
+import info.skyblond.daapu.config.McpProxyConfig
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
+import io.ktor.client.engine.ProxyBuilder
 import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.http
 import io.ktor.client.request.*
 import io.modelcontextprotocol.kotlin.sdk.LIB_VERSION
 import io.modelcontextprotocol.kotlin.sdk.client.Client
@@ -56,14 +59,23 @@ internal class ConnectedClient(val client: Client, val process: Process?)
 class ClientEntry(
     val namespace: String,
     private val config: McpServerConfig,
+    private val proxy: McpProxyConfig? = null,
 ) {
     private val clientRef: AtomicReference<ConnectedClient?> = AtomicReference(null)
     private val connectLock: Mutex = Mutex()
     private val toolNameMapping: ConcurrentHashMap<String, String> = ConcurrentHashMap()
 
     // one HTTP engine per entry: transports in the official SDK take a
-    // ktor HttpClient (auth headers go through the per-request builder)
-    private val httpClient = HttpClient(CIO)
+    // ktor HttpClient (auth headers go through the per-request builder);
+    // the optional mcp.proxy applies engine-wide, so POST, SSE GET and
+    // DELETE all tunnel through it (CONNECT). CIO has no proxy auth.
+    private val httpClient = HttpClient(CIO) {
+        proxy?.let {
+            engine {
+                this.proxy = ProxyBuilder.http("http://${it.host}:${it.port}")
+            }
+        }
+    }
 
     val timeout: Long = config.toolExecutionTimeoutSeconds
 

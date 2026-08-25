@@ -100,6 +100,10 @@
         "exa": {
           "$ref": "#/definitions/mcpServer",
           "description": "The dedicated exa server, REQUIRED: an ordinary mcpServer entry whose namespace is hardcoded to 'exa'. The user fills the rest (type/url/headers/knobs); http for the hosted https://mcp.exa.ai/mcp, stdio for a self-hosted exa-mcp-server."
+        },
+        "proxy": {
+          "$ref": "#/definitions/mcpProxy",
+          "description": "Optional HTTP proxy applied to every http-type server's requests (stdio servers never touch HTTP). Explicit only — no env-var pickup. No proxy authentication support."
         }
       }
     },
@@ -412,6 +416,28 @@
           }
         }
       ]
+    },
+    "mcpProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "description": "HTTP proxy host (IPv6 literals in brackets work too)."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "HTTP proxy port."
+        }
+      },
+      "description": "An HTTP proxy (CONNECT tunneling for both http and https MCP endpoints) used by every http-type MCP server. Applied engine-wide in mcp/McpEntry.kt, so initialize POST, tool POST, SSE GET and session DELETE all tunnel through it. The CIO engine supports no proxy authentication."
     }
   }
 }

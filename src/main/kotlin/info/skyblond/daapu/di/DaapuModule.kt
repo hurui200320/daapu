@@ -113,7 +113,7 @@ fun daapuModule(config: AppConfig): Module = module {
     // construction, so a server that cannot be reached aborts startup
     // instead of silently degrading every chat run.
     single<McpToolProvider> {
-        McpToolProvider(config.mcp.allServers())
+        McpToolProvider(config.mcp.allServers(), config.mcp.proxy)
     } withOptions { onClose { it?.close() } }
 
     // one-shot pipeline services: stateless across runs, so a single

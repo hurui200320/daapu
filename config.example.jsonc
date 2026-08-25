@@ -51,7 +51,16 @@
       //     "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
       //     "toolExecutionTimeoutSeconds": 60
       // }
-    }
+    },
+    // Optional HTTP proxy for ALL http-type MCP servers (stdio is
+    // unaffected): every request (initialize, tool POST, SSE GET, DELETE)
+    // tunnels through it via CONNECT. Explicit only — HTTP_PROXY-style env
+    // vars are NOT picked up. The CIO engine supports no proxy
+    // authentication. Uncomment and adapt to use it:
+    // "proxy": {
+    //   "host": "127.0.0.1",
+    //   "port": 7890
+    // }
   },
   // The memory pipeline: compaction + the ELTM. The model ids are REQUIRED
   // (resolved once at startup and reused for every run; a chat run's own

@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.config.McpConfig
+import info.skyblond.daapu.config.McpProxyConfig
 import info.skyblond.daapu.config.McpServerConfig
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.modelcontextprotocol.kotlin.sdk.types.McpException
@@ -57,12 +58,13 @@ import kotlinx.coroutines.runBlocking
  */
 class McpToolProvider(
     configs: Map<String, McpServerConfig>,
+    proxy: McpProxyConfig? = null,
 ) : ToolProvider, AutoCloseable {
 
     // built once, never mutated afterwards: safe for the concurrent reads
     // from chat runs, and keeps the config-map's advertisement order
     private val entries: Map<String, ClientEntry> = configs.mapValues { (namespace, config) ->
-        ClientEntry(namespace, config)
+        ClientEntry(namespace, config, proxy)
     }
 
     init {

@@ -67,6 +67,10 @@ class ConfigTest {
                             "toolExecutionTimeoutSeconds": 0,
                         },
                     },
+                    "proxy": {
+                        "host": "127.0.0.1",
+                        "port": 7890,
+                    },
                 },
                 "memory": {
                     "compactModel": "bifrost/x",
@@ -111,6 +115,10 @@ class ConfigTest {
         assertEquals(listOf("npx", "-y", "some-server"), fs.command)
         assertEquals(mapOf("FOO" to "bar"), fs.environment)
         assertEquals(0L, fs.toolExecutionTimeoutSeconds)
+
+        // the optional proxy section decodes into McpProxyConfig
+        assertEquals(McpProxyConfig("127.0.0.1", 7890), config.mcp.proxy)
+        config.mcp.validate()
     }
 
     @Test
@@ -159,6 +167,7 @@ class ConfigTest {
         assertEquals(8080, config.server.port)
         assertTrue(config.mcp.customs.isEmpty())
         assertEquals(setOf(EXA_NAMESPACE), config.mcp.allServers().keys, "only the dedicated exa server by default")
+        assertEquals(null, config.mcp.proxy, "no proxy by default")
     }
 
     @Test
@@ -586,6 +595,41 @@ class ConfigTest {
             e.message!!.contains("toolExecutionTimeoutSeconds"),
             "the error should name the missing field: ${e.message}"
         )
+    }
+
+    @Test
+    fun `a valid mcp proxy passes validation`() {
+        McpProxyConfig("127.0.0.1", 7890).validate()
+        McpProxyConfig("proxy.example.com", 8080).validate()
+    }
+
+    @Test
+    fun `an mcp proxy without a host fails validation`() {
+        val e = assertFailsWith<IllegalArgumentException> { McpProxyConfig("  ", 7890).validate() }
+        assertTrue(e.message!!.contains("mcp.proxy"), e.message)
+        assertTrue(e.message!!.contains("host"), e.message)
+    }
+
+    @Test
+    fun `an mcp proxy with an out-of-range port fails validation`() {
+        // mirroring config.schema.json's minimum/maximum: 1..65535
+        for (port in listOf(0, -1, 65536, 70000)) {
+            val e = assertFailsWith<IllegalArgumentException> { McpProxyConfig("127.0.0.1", port).validate() }
+            assertTrue(e.message!!.contains("port"), e.message)
+        }
+    }
+
+    @Test
+    fun `the mcp proxy is validated on the mcp config`() {
+        // validate() walks the whole tree: a bad proxy fails even though the
+        // servers themselves are fine
+        val config = McpConfig(
+            exa = server(),
+            customs = emptyMap(),
+            proxy = McpProxyConfig("127.0.0.1", 0),
+        )
+        val e = assertFailsWith<IllegalArgumentException> { config.validate() }
+        assertTrue(e.message!!.contains("mcp.proxy"), e.message)
     }
 
     @Test

@@ -383,6 +383,15 @@ data class McpConfig(
     /** The dedicated exa server, REQUIRED; namespace hardcoded to [EXA_NAMESPACE]. */
     val exa: McpServerConfig,
     val customs: Map<String, McpServerConfig> = emptyMap(),
+    /**
+     * Optional HTTP proxy applied to every http-type server's requests
+     * (stdio servers never touch HTTP). Explicit only — no env-var pickup:
+     * ktor/CIO never reads `HTTP_PROXY`-style variables, and the JVM
+     * `ProxySelector` fallback (which CIO consults only when no explicit
+     * proxy is set here) honors system properties, not environment
+     * variables. The configured proxy replaces that fallback entirely.
+     */
+    val proxy: McpProxyConfig? = null,
 ) {
     /**
      * Every configured server, the dedicated exa merged under its hardcoded
@@ -398,6 +407,7 @@ data class McpConfig(
         }
         exa.validate(EXA_NAMESPACE)
         customs.forEach { (namespace, config) -> config.validate(namespace) }
+        proxy?.validate()
     }
 }
 
@@ -411,6 +421,26 @@ enum class McpTransportType {
 
     @SerialName("stdio")
     Stdio,
+}
+
+/**
+ * The optional `mcp.proxy` section: an HTTP proxy (CONNECT tunneling for both
+ * http and https MCP endpoints) used by every http-type MCP server
+ * ([McpServerConfig]). Applied as the ktor engine's `proxy` in
+ * `mcp/McpEntry.kt`, which routes ALL transport traffic (initialize POST,
+ * tool POST, SSE GET, session DELETE) through it. The CIO engine supports no
+ * proxy authentication (no username/password fields), so credentials must
+ * not be configured here — an authenticated proxy is not supported.
+ */
+@Serializable
+data class McpProxyConfig(
+    val host: String,
+    val port: Int,
+) {
+    fun validate() {
+        require(host.isNotBlank()) { "mcp.proxy: host must not be blank, got '$host'" }
+        require(port in 1..65535) { "mcp.proxy: port must be between 1 and 65535, got $port" }
+    }
 }
 
 /**

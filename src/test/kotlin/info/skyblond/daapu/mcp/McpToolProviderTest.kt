@@ -2,6 +2,7 @@ package info.skyblond.daapu.mcp
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.config.McpProxyConfig
 import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
@@ -11,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
+import java.net.ServerSocket
 import kotlin.test.*
 
 /**
@@ -574,6 +576,59 @@ class McpToolProviderTest {
         } finally {
             provider.close()
             countFile.delete()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // proxy
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `http servers route their traffic through the configured proxy`() {
+        val server = MockMcpServer(listOf(addTool()))
+        val proxy = FakeHttpProxy()
+        try {
+            val provider = McpToolProvider(
+                mapOf("calc" to httpConfig(server)),
+                proxy = McpProxyConfig("127.0.0.1", proxy.port),
+            )
+            try {
+                val specs = runBlocking { provider.specifications() }
+                assertEquals(listOf("calc__add"), specs.map { it.name })
+                assertTrue(
+                    proxy.requestLines.isNotEmpty(),
+                    "the MCP traffic must flow through the proxy"
+                )
+                assertTrue(
+                    proxy.requestLines.all { it.contains(":${server.port}") },
+                    "every proxied request targets the MCP server: ${proxy.requestLines}"
+                )
+            } finally {
+                provider.close()
+            }
+        } finally {
+            proxy.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun `a dead proxy fails startup even though the server is reachable directly`() {
+        val server = MockMcpServer(listOf(addTool()))
+        // a port that is guaranteed to have no listener: bind and free it
+        val deadProxyPort = ServerSocket(0).use { it.localPort }
+        try {
+            // without the proxy the eager connect would succeed (the mock
+            // server is up); a failure proves the client routed through the
+            // dead proxy instead
+            assertFailsWith<McpTransportException> {
+                McpToolProvider(
+                    mapOf("calc" to httpConfig(server, reconnectAttempts = 1)),
+                    proxy = McpProxyConfig("127.0.0.1", deadProxyPort),
+                )
+            }
+        } finally {
+            server.close()
         }
     }
 
