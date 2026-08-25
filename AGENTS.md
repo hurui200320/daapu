@@ -114,9 +114,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     resolution. Routes: `GET/POST /api/personas`, `PUT/DELETE
     /api/personas/{id}` (400 on the reserved id 0), listed in `server/endpoint/
     PersonasRoute.kt`.
-  - **DI** (`di/DaapuModule.kt`, Koin 4.2 + the compiler plugin
+  - **DI** (`di/AppModule.kt`, Koin 4.2 + the compiler plugin
     `io.insert-koin.compiler.plugin`): one `module { }` built by
-    `daapuModule(config)`, every definition a `single` via the plugin DSL
+    `AppModule(config)`, every definition a `single` via the plugin DSL
     (classic builder DSL gone in Koin 4) — compile-time graph checks.
     `ChatRunService` is pure constructor injection holding only what its methods
     use (no config, no body-built pipeline, no pass-through stores). One-shot
@@ -276,7 +276,7 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   (unknown prefix/bare name → `isError`), `executionTimeoutSeconds` delegates to
   the owner (0 for unroutable names). Child cleanup is the DI container's job:
   the MCP provider closes its cached clients through Koin's `onClose`
-  (`di/DaapuModule.kt`), not through this composite.
+  (`di/AppModule.kt`), not through this composite.
   `toolExecutionTimeoutSeconds` is REQUIRED per server (0 = none), resolved by
   the callback route from `ToolProvider.executionTimeoutSeconds`, enforced with
   `withTimeout` (overrun → `isError`, run survives). A transport failure

@@ -44,7 +44,7 @@ class ChatRunSetup(
  *
  * Pure constructor injection: the whole object graph — the hand seam, the
  * stores, the one-shot pipeline services, the models — is assembled by the
- * Koin container (`di/DaapuModule.kt`) and injected here. Resolving this
+ * Koin container (`di/AppModule.kt`) and injected here. Resolving this
  * root (eagerly, in `WebServer.startWebServer`) runs every definition, so
  * the fail-fast config validation (REQUIRED `memory.*`/`title.model` ids,
  * tool-call capability, the eager MCP connect) fires at startup, never

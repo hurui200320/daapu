@@ -181,7 +181,7 @@
         "compactModel",
         "eltm"
       ],
-      "description": "The memory pipeline settings: compaction (agent/oneshot/compaction/) and the ELTM (external long-term memory, memory/eltm/). The model ids are REQUIRED, resolved once at startup by the DI container (di/DaapuModule.kt) and reused for every run (never the run's model). The compaction trigger fraction and keep rounds are per-model (agent/model/LLM.kt), depending on the model's context size.",
+      "description": "The memory pipeline settings: compaction (agent/oneshot/compaction/) and the ELTM (external long-term memory, memory/eltm/). The model ids are REQUIRED, resolved once at startup by the DI container (di/AppModule.kt) and reused for every run (never the run's model). The compaction trigger fraction and keep rounds are per-model (agent/model/LLM.kt), depending on the model's context size.",
       "properties": {
         "compactModel": {
           "type": "string",
@@ -200,7 +200,7 @@
             "relatedEntitiesLimit",
             "relatedNotesLimit"
           ],
-          "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the extraction pipeline and the investigate agent's ELTM access depend on it. The extraction, embedding, writer, and rewrite model ids are resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a writer without tool-call support fail fast). The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
+          "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the extraction pipeline and the investigate agent's ELTM access depend on it. The extraction, embedding, writer, and rewrite model ids are resolved once at startup by the DI container (di/AppModule.kt; unknown ids and a writer without tool-call support fail fast). The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
           "properties": {
             "extractionModel": {
               "type": "string",
@@ -276,7 +276,7 @@
             "model",
             "allowedNamespaces"
           ],
-          "description": "The investigate sub-agent: the model id is REQUIRED and resolved once at startup by the DI container (di/DaapuModule.kt; unknown ids and a model without tool-call support fail fast). allowedNamespaces is the sub-agent's tool whitelist over its OWN tool set (the read-only eltm tools plus the MCP servers, built separately from the chat loop's set): REQUIRED, non-empty, and every entry must be a namespace that set serves (a typo — or an attempt to whitelist gsg itself, which would enable recursion — fails fast at boot via the WhitelistedToolProvider construction).",
+          "description": "The investigate sub-agent: the model id is REQUIRED and resolved once at startup by the DI container (di/AppModule.kt; unknown ids and a model without tool-call support fail fast). allowedNamespaces is the sub-agent's tool whitelist over its OWN tool set (the read-only eltm tools plus the MCP servers, built separately from the chat loop's set): REQUIRED, non-empty, and every entry must be a namespace that set serves (a typo — or an attempt to whitelist gsg itself, which would enable recursion — fails fast at boot via the WhitelistedToolProvider construction).",
           "properties": {
             "model": {
               "type": "string",
@@ -308,7 +308,7 @@
       "required": [
         "model"
       ],
-      "description": "Session-title generation settings (agent/oneshot/TitleGenerator.kt): the model id is REQUIRED, resolved once at startup by the DI container (di/DaapuModule.kt) like the memory pipeline models (never the run's model).",
+      "description": "Session-title generation settings (agent/oneshot/TitleGenerator.kt): the model id is REQUIRED, resolved once at startup by the DI container (di/AppModule.kt) like the memory pipeline models (never the run's model).",
       "properties": {
         "model": {
           "type": "string",

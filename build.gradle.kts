@@ -21,7 +21,7 @@ val mcpSdkVersion = "0.15.0"
 // ktor-client-core 3.5.1, so the server artifacts follow the same version
 val ktorVersion = "3.5.1"
 // dependency injection: the container + the compiler plugin DSL
-// (org.koin.plugin.module.dsl.*), see di/DaapuModule.kt
+// (org.koin.plugin.module.dsl.*), see di/AppModule.kt
 val koinVersion = "4.2.2"
 
 dependencies {

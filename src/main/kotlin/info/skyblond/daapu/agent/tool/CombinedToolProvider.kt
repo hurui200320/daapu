@@ -27,7 +27,7 @@ import info.skyblond.daapu.mcp.errorResult
  * order; [executionTimeoutSeconds] routes the same way and delegates to the
  * owning child (0 for unroutable names). Child cleanup is the DI container's
  * job: the MCP provider closes its cached clients through Koin's `onClose`
- * (`di/DaapuModule.kt`), not through this composite.
+ * (`di/AppModule.kt`), not through this composite.
  */
 class CombinedToolProvider(
     private val children: List<ToolProvider>,

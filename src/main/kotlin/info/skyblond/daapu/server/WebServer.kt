@@ -3,7 +3,7 @@ package info.skyblond.daapu.server
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.config.AppConfig
-import info.skyblond.daapu.di.daapuModule
+import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.server.endpoint.*
@@ -35,7 +35,7 @@ data class ErrorResponse(val error: String)
  * Start the HTTP API server (the frontend is a separate dev server that
  * proxies `/api` here; this process only serves the API).
  *
- * The whole object graph lives in the Koin container (`di/DaapuModule.kt`);
+ * The whole object graph lives in the Koin container (`di/AppModule.kt`);
  * resolving the graph eagerly before the server starts runs every
  * definition reachable from the root ([ChatRunService]) — the fail-fast
  * config validation (including the investigate sub-agent's model and tool
@@ -46,7 +46,7 @@ data class ErrorResponse(val error: String)
  * which fires the `onClose` callbacks (hand client, MCP clients).
  */
 fun startWebServer(config: AppConfig) {
-    val koinApp = koinApplication { modules(daapuModule(config)) }
+    val koinApp = koinApplication { modules(appModule(config)) }
     // eager resolution: every fail-fast validation above fires here, never
     // mid-run (the resolved service is what the module below serves)
     koinApp.koin.get<ChatRunService>()

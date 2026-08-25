@@ -50,7 +50,7 @@ import org.koin.plugin.module.dsl.single
  * tests build it with `testAppConfig()` and override the store/client
  * seams with fakes (see `testutil/TestDi.kt`).
  */
-fun daapuModule(config: AppConfig): Module = module {
+fun appModule(config: AppConfig): Module = module {
     // the hand-pi client plus the callback wiring (the in-flight run
     // registry the hand's tool callbacks resolve through); the callback and
     // tool-list URLs are loopback PoC values derived from the server port

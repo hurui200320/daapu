@@ -11,7 +11,7 @@ import info.skyblond.daapu.db.EltmNotes
 import info.skyblond.daapu.db.MemoryMetaNumber
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.db.withTransaction
-import info.skyblond.daapu.di.daapuModule
+import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.memory.eltm.PostgresEltmService
 import info.skyblond.daapu.memory.eltm.entityEmbeddingText
@@ -59,7 +59,7 @@ fun main() {
     // the same container the server uses: only HandService and ModelCatalog
     // are resolved, so the eagerly-connecting MCP tool servers are never
     // constructed; closing the app closes the hand client (onClose)
-    val koin = koinApplication { modules(daapuModule(config)) }
+    val koin = koinApplication { modules(appModule(config)) }
     try {
         runBlocking {
             reembedAll(

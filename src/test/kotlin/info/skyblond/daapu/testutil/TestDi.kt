@@ -4,7 +4,7 @@ import info.skyblond.daapu.agent.chat.ChatStore
 import info.skyblond.daapu.agent.persona.PersonaStore
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.config.testAppConfig
-import info.skyblond.daapu.di.daapuModule
+import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
@@ -16,10 +16,9 @@ import org.koin.core.error.InstanceCreationException
 import org.koin.core.module.Module
 import org.koin.dsl.koinApplication
 import org.koin.dsl.module
-import org.koin.plugin.module.dsl.single
 
 /**
- * The test seam for the Koin container ([daapuModule]): override the
+ * The test seam for the Koin container ([appModule]): override the
  * store/client definitions with fakes, then resolve the graph root.
  *
  * The overrides mirror the pre-Koin `ChatRunService(...)` constructor
@@ -49,7 +48,7 @@ fun testKoinApp(
     personaStore: PersonaStore? = null,
 ): KoinApplication = koinApplication {
     modules(
-        daapuModule(config),
+        appModule(config),
         testOverrides(
             hand,
             chatStore,
@@ -80,7 +79,7 @@ private val EMPTY_MCP_TOOL_PROVIDER: McpToolProvider = McpToolProvider(emptyMap(
 
 /**
  * Declare fake definitions over the production module. The override module
- * comes after `daapuModule(...)` and Koin 4 allows overrides by default, so
+ * comes after `AppModule(...)` and Koin 4 allows overrides by default, so
  * a definition here replaces the production one of the same type; anything
  * null stays on the production definition. The MCP provider is always
  * overridden ([testKoinApp] defaults it to an empty provider — never the

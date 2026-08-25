@@ -121,7 +121,7 @@ data class HandConfig(
  * trigger fraction and keep rounds are per-model (`agent/model/LLM.kt`),
  * since they depend on the model's context size. All model ids are REQUIRED
  * and reference the catalog (`agent/ModelCatalog.kt`); they are resolved
- * once at startup by the DI container (`di/DaapuModule.kt`) and reused for
+ * once at startup by the DI container (`di/AppModule.kt`) and reused for
  * every run — a chat run's own model is never used for the one-shot
  * pipeline. Catalog membership is validated at startup (the config layer
  * does not know the catalog).
@@ -147,7 +147,7 @@ data class MemoryConfig(
  * and the writer's knobs. The model ids are
  * REQUIRED and reference the catalog (`agent/ModelCatalog.kt`); the
  * extraction, embedding, writer, and rewrite ids are resolved once at
- * startup by the DI container (`di/DaapuModule.kt`; unknown ids and a
+ * startup by the DI container (`di/AppModule.kt`; unknown ids and a
  * writer model without tool-call support fail fast). The embedding
  * model's output dimensions must be at most
  * [MAX_VECTOR_DIMENSIONS] (pgvector's HNSW indexing limit): the ELTM
@@ -256,7 +256,7 @@ data class AgentConfig(
 /**
  * The investigate sub-agent settings (see [AgentConfig]). The model id is
  * REQUIRED and references the catalog (`agent/ModelCatalog.kt`); it is
- * resolved once at startup by the DI container (`di/DaapuModule.kt`) like
+ * resolved once at startup by the DI container (`di/AppModule.kt`) like
  * the memory pipeline models — unknown ids and a model without tool-call
  * support fail fast. [allowedNamespaces] is the sub-agent's tool whitelist
  * over its OWN tool set (the read-only `eltm` tools plus the MCP servers,
@@ -300,7 +300,7 @@ data class InvestigatorConfig(
  * The session-title generation settings (see `agent/oneshot/TitleGenerator.kt`).
  * The model id is REQUIRED and references the catalog
  * (`agent/ModelCatalog.kt`); it is resolved once at startup by the DI
- * container (`di/DaapuModule.kt`), like the memory pipeline models — a
+ * container (`di/AppModule.kt`), like the memory pipeline models — a
  * chat run's own model is never used for it.
  */
 @Serializable
@@ -398,7 +398,7 @@ data class McpConfig(
 ) {
     /**
      * Every configured server, the dedicated exa merged under its hardcoded
-     * namespace. Used by the DI container (`di/DaapuModule.kt`) to build the
+     * namespace. Used by the DI container (`di/AppModule.kt`) to build the
      * MCP tool provider; [validate] guarantees no [customs] entry collides
      * with the exa key.
      */
