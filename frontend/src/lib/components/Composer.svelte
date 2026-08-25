@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ArrowUp, Paperclip, X } from '@lucide/svelte'
   import { chatStore as store } from '../chat-store.svelte'
+  import { router } from '../router.svelte'
   import ModelDropdown from './ModelDropdown.svelte'
   import PersonaDropdown from './PersonaDropdown.svelte'
 
@@ -20,9 +21,14 @@
       : null
   )
 
-  // auto-resize (llama's two-liner, run on every keystroke and on draft restore)
+  // auto-resize (llama's two-liner, run on every keystroke and on draft restore).
+  // The chat view stays mounted but CSS-hidden on the ELTM/personas routes, so
+  // the initial run can measure a display:none textarea (scrollHeight 0 → height
+  // 0px, clipping the placeholder); depending on the route re-runs the
+  // measurement once the view is visible again.
   $effect(() => {
     void text
+    void router.current
     if (!textarea) return
     textarea.style.height = 'auto'
     textarea.style.height = `${textarea.scrollHeight}px`
