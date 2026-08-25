@@ -4,6 +4,7 @@ import kotlinx.serialization.SerializationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -531,6 +532,87 @@ class ConfigTest {
                 "reserved namespace '$reserved': ${e.message}"
             )
         }
+    }
+
+    @Test
+    fun `the tool section defaults to a disabled filesystem provider`() {
+        // tool has a default: a config without the section at all is valid,
+        // and the fs provider stays disabled
+        val config = decodeAppConfig(
+            """
+            {
+                "database": { "url": "u", "user": "p", "password": "p" },
+                "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                "title": { "model": "t" },
+            }
+            """.trimIndent()
+        )
+        assertFalse(config.tool.fs.enabled)
+        assertTrue(config.tool.fs.allowedDirs.isEmpty())
+        assertTrue(config.tool.fs.blacklists.isEmpty())
+    }
+
+    @Test
+    fun `an enabled tool fs section decodes with its fields`() {
+        val config = decodeAppConfig(
+            """
+            {
+                "database": { "url": "u", "user": "p", "password": "p" },
+                "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                "tool": {
+                    "fs": {
+                        "enabled": true,
+                        "allowedDirs": ["~/Documents", "/tmp/other"],
+                        "blacklists": ["**/.env", "**/*.env", "secrets/**"]
+                    }
+                },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                "title": { "model": "t" },
+            }
+            """.trimIndent()
+        )
+        assertTrue(config.tool.fs.enabled)
+        assertEquals(listOf("~/Documents", "/tmp/other"), config.tool.fs.allowedDirs)
+        assertEquals(listOf("**/.env", "**/*.env", "secrets/**"), config.tool.fs.blacklists)
+    }
+
+    @Test
+    fun `tool fs validation only applies while enabled`() {
+        // all fields are ignored when disabled: garbage passes
+        FsToolConfig(enabled = false).validate()
+        FsToolConfig(
+            enabled = false,
+            allowedDirs = emptyList(),
+            blacklists = listOf("  "),
+        ).validate()
+        ToolConfig().validate()
+        assertFailsWith<IllegalArgumentException> {
+            ToolConfig(fs = FsToolConfig(enabled = true)).validate()
+        }
+    }
+
+    @Test
+    fun `enabled tool fs requires non-empty non-blank allowed dirs`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            FsToolConfig(enabled = true).validate()
+        }
+        assertTrue(e.message!!.contains("allowedDirs"), e.message)
+        assertFailsWith<IllegalArgumentException> {
+            FsToolConfig(enabled = true, allowedDirs = listOf("  ")).validate()
+        }
+    }
+
+    @Test
+    fun `enabled tool fs rejects blank blacklist patterns`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            FsToolConfig(enabled = true, allowedDirs = listOf("/tmp"), blacklists = listOf("x", "  ")).validate()
+        }
+        assertTrue(e.message!!.contains("blacklists"), e.message)
     }
 
     @Test

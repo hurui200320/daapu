@@ -16,7 +16,7 @@ import kotlin.test.*
  */
 class MainAgentSystemPromptServiceTest {
 
-    private val service = MainAgentSystemPromptService(isDevelopment = false)
+    private val service = MainAgentSystemPromptService()
 
     @Test
     fun `the assembly is persona text, a blank line, then the gsg introduction`() {
@@ -27,7 +27,7 @@ class MainAgentSystemPromptServiceTest {
             "the persona text is followed verbatim by the harness introduction",
         )
         // legacy section order preserved for the default persona
-        val legacy = MainAgentSystemPromptService(isDevelopment = true)
+        val legacy = MainAgentSystemPromptService()
             .render(defaultPersona())
         listOf(
             "# Core instruction",
@@ -38,7 +38,6 @@ class MainAgentSystemPromptServiceTest {
             "## Context injection",
             "### Real-time info",
             "### Memories injection",
-            "## Developer note",
         ).forEach { section ->
             assertTrue(
                 legacy.contains(section),
@@ -82,14 +81,6 @@ class MainAgentSystemPromptServiceTest {
         assertFalse(rendered.contains("## Harness"))
         // the policy is persona-owned text: only the DEFAULT persona carries it
         assertFalse(rendered.contains("# Policy"))
-    }
-
-    @Test
-    fun `the reduced introduction keeps the developer note in dev mode`() {
-        val dev = MainAgentSystemPromptService(isDevelopment = true)
-            .render(Persona(1L, "Plain", "You are a plain assistant.", listOf("calc")))
-        assertTrue(dev.contains("## Developer note"))
-        assertFalse(dev.contains("gsg__investigate"))
     }
 
     @Test

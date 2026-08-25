@@ -5,7 +5,7 @@ import info.skyblond.daapu.agent.persona.Persona
 /**
  * Renders the main agent's system prompt: the persona's own text followed by
  * the GSG harness introduction (the harness's memory/compaction mechanics,
- * the XML context injection documentation, the optional developer note). The
+ * the XML context injection documentation). The
  * persona half comes from [Persona.systemPrompt]; everything else is
  * harness-owned and rendered here.
  *

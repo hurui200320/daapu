@@ -58,7 +58,7 @@ import kotlin.test.*
  */
 class PersistChatServiceTest {
 
-    private val mainAgentSystemPromptService = MainAgentSystemPromptService(isDevelopment = false)
+    private val mainAgentSystemPromptService = MainAgentSystemPromptService()
 
     /**
      * Catalog model, optionally with compaction values different from the

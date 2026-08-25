@@ -285,6 +285,34 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   point — it reconnects, or throws `McpTransportException` → `fatal` →
   `tool_transport` when the server stays down. Result attachments are
   capability-checked against the run's model.
+- **Filesystem tools** (`agent/tool/filesystem/FsToolProvider.kt`, config
+  `tool.fs`): a native READ-ONLY mock of the vanilla filesystem MCP server's
+  read tools (that server has no read-only mode — a user who wants RW access
+  uses that MCP server instead and keeps `tool.fs.enabled` false; enabling
+  both fails fast at boot on the duplicate namespace). Namespace hardcoded to
+  `fs` (no config field; advertised names `fs__read_text_file`,
+  `fs__read_media_file`, `fs__read_multiple_files`, `fs__list_directory`,
+  `fs__list_directory_with_sizes`, `fs__directory_tree`, `fs__search_files`,
+  `fs__get_file_info`, `fs__list_allowed_directories` — output formats mirror
+  the server's). Wired into BOTH combined tool sets (the chat loop's and the
+  investigate sub-agent's, whitelistable via `agent.investigator.
+  allowedNamespaces`), registered only when enabled (DI) so construction —
+  canonicalizing `allowedDirs` (fail fast on missing/not-a-dir, `~`
+  expanded) and compiling the `blacklists` globs — is eager at boot. Access
+  control: every tool's TARGET path is canonicalized (symlink/`..`-safe) and
+  checked against the canonical allowed roots + the blacklist patterns
+  ([`GlobMatcher`](agent/tool/filesystem/GlobMatcher.kt), JDK
+  `getPathMatcher("glob:...")` with alternates restoring minimatch's
+  `**/`-matches-zero-directories rule); a refused target answers `isError`.
+  Listings/search results are NOT filtered — blacklisted entries are
+  returned as-is — but traversal skips entries whose canonical path leaves
+  the roots (symlink-escape protection; the listings hide them, where the
+  server's plain `list_directory` would show the raw link entry). An
+  unreadable subtree is skipped by `search_files` but fails
+  `directory_tree`, like the server. `directory_tree` is deliberately
+  stricter than the server on escaping entries: one fails the whole tree —
+  the server never descends a symlink and would just list it as a file
+  entry. No execution budget (0).
 - **Compaction & memory extraction** (`agent/oneshot/compaction/`,
   `agent/oneshot/eltm/MemoryExtractionService.kt`, wired in
   `agent/persist/PersistChatService.kt`, config under `memory.*`):

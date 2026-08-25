@@ -21,6 +21,7 @@ import info.skyblond.daapu.agent.persist.MainAgentSystemPromptService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
+import info.skyblond.daapu.agent.tool.filesystem.FsToolProvider
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
@@ -116,6 +117,18 @@ fun daapuModule(config: AppConfig): Module = module {
         McpToolProvider(config.mcp.allServers(), config.mcp.proxy)
     } withOptions { onClose { it?.close() } }
 
+    // the read-only filesystem provider (`agent/tool/filesystem/`), only
+    // when enabled: construction canonicalizes the allowed dirs and compiles
+    // the blacklist globs, so a bad `tool.fs` config (missing directory,
+    // invalid glob) fails fast at boot. When disabled it is not registered
+    // at all — the namespace `fs` is hardcoded and would collide with an MCP
+    // server under the same namespace (fail fast in CombinedToolProvider).
+    if (config.tool.fs.enabled) {
+        single<FsToolProvider> {
+            FsToolProvider(config.tool.fs.allowedDirs, config.tool.fs.blacklists)
+        }
+    }
+
     // one-shot pipeline services: stateless across runs, so a single
     // instance is shared by every concurrent chat run. They talk to the
     // hand through the same `/v1/run` seam as the chat loop, carrying the
@@ -160,6 +173,7 @@ fun daapuModule(config: AppConfig): Module = module {
             buildList {
                 val mcp = get<McpToolProvider>()
                 if (mcp.namespaces().isNotEmpty()) add(mcp)
+                if (config.tool.fs.enabled) add(get<FsToolProvider>())
                 add(get<GsgToolProvider>())
             }
         )
@@ -182,6 +196,7 @@ fun daapuModule(config: AppConfig): Module = module {
             buildList {
                 val mcp = get<McpToolProvider>()
                 if (mcp.namespaces().isNotEmpty()) add(mcp)
+                if (config.tool.fs.enabled) add(get<FsToolProvider>())
                 add(get<EltmToolProvider>())
             }
         )
@@ -233,10 +248,9 @@ fun daapuModule(config: AppConfig): Module = module {
     }
 
     // the main agent's system prompt renderer: stateless across runs, a
-    // single shared instance. The developer note is hardcoded on for now
-    // (a config flag for it comes later).
+    // single shared instance.
     single<MainAgentSystemPromptService> {
-        MainAgentSystemPromptService(isDevelopment = true)
+        MainAgentSystemPromptService()
     }
 
     single<PersistChatService> {

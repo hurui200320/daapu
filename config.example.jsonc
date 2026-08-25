@@ -62,6 +62,30 @@
     //   "port": 7890
     // }
   },
+  // The harness-owned tool providers (agent/tool/filesystem/FsToolProvider.kt):
+  // the read-only filesystem provider, a local mock of the read-only tools of
+  // the vanilla filesystem MCP server (which has no read-only mode). The
+  // namespace is hardcoded to "fs" (advertised tool names fs__read_text_file,
+  // ...), so it CANNOT coexist with an MCP server under the same "fs"
+  // namespace (enabling both fails fast at boot on the duplicate namespace):
+  // for read-WRITE filesystem access, use the vanilla filesystem MCP server
+  // instead and keep this disabled. All fields are ignored while disabled.
+  "tool": {
+    "fs": {
+      "enabled": false,
+      // The directories the LLM may access; REQUIRED non-empty when enabled.
+      // "~" is expanded; each directory must exist at boot (a typo'd path
+      // aborts startup).
+      "allowedDirs": ["~/Documents"],
+      // Glob patterns (blob/gitignore syntax) matched against paths relative
+      // to the allowed dirs: a blocked path is refused as the TARGET of a
+      // tool call (reading a blocked file, listing a blocked folder, ...);
+      // listing/search results that merely contain blocked entries are
+      // returned as-is. The investigate sub-agent can whitelist this
+      // namespace via agent.investigator.allowedNamespaces.
+      "blacklists": ["**/.env", "**/*.env", "secrets/**"]
+    }
+  },
   // The memory pipeline: compaction + the ELTM. The model ids are REQUIRED
   // (resolved once at startup and reused for every run; a chat run's own
   // model is never used for these). They reference the catalog; the writer

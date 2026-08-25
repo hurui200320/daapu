@@ -107,6 +107,73 @@
         }
       }
     },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The harness-owned tool providers (not MCP servers): today only the read-only filesystem provider (agent/tool/filesystem/FsToolProvider.kt), a local mock of the read-only tools of the vanilla filesystem MCP server. Its namespace is hardcoded to 'fs' (advertised names fs__read_text_file, ...), so it cannot coexist with an MCP server under the same namespace — use the vanilla filesystem MCP server for read-write access instead (enabling both fails fast at boot on the duplicate namespace).",
+      "properties": {
+        "fs": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The read-only filesystem tool provider: the LLM may access files under allowedDirs, except paths matching the blacklists glob patterns (blob/gitignore syntax, e.g. **/.env, **/*.env, secrets/**). A blacklisted path is refused as the TARGET of a tool call (reading a blocked file, listing a blocked folder, ...); listing and search results that merely contain blacklisted entries are returned as-is. All fields are ignored while enabled is false.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether the provider is built into the chat loop's (and the investigate sub-agent's) tool set."
+            },
+            "allowedDirs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The directories the LLM may access; required non-empty with non-blank entries when enabled. '~' is expanded; each directory must exist and be a directory at boot (the provider canonicalizes them and fails fast otherwise)."
+            },
+            "blacklists": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Glob patterns (blob/gitignore syntax) matched against paths relative to the allowed directories; non-blank entries only. A blacklisted path is refused as the TARGET of a tool call (reading a blocked file, listing a blocked folder, ...); listing and search results that merely contain blacklisted entries are returned as-is."
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              },
+              "then": {
+                "required": [
+                  "allowedDirs"
+                ],
+                "properties": {
+                  "allowedDirs": {
+                    "minItems": 1,
+                    "items": {
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  },
+                  "blacklists": {
+                    "items": {
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
     "memory": {
       "type": "object",
       "additionalProperties": false,
