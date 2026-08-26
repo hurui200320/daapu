@@ -22,11 +22,11 @@
 <DropdownMenu.Root>
   <DropdownMenu.Trigger
     disabled={store.streaming}
-    class="inline-flex h-8 max-w-44 items-center gap-1.5 rounded-md bg-muted px-2 text-xs text-foreground transition-colors hover:bg-muted-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+    class="inline-flex h-8 min-w-0 max-w-28 items-center gap-1.5 rounded-md bg-muted px-2 text-xs text-foreground transition-colors hover:bg-muted-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 sm:max-w-44"
     title="persona of this chat"
   >
     <UserRound class="size-3.5 shrink-0 text-muted-foreground" />
-    <span class="truncate">{personaName}</span>
+    <span class="min-w-0 truncate">{personaName}</span>
     <ChevronDown class="size-3.5 shrink-0 text-muted-foreground" />
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>

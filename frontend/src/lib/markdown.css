@@ -6,6 +6,8 @@
 
 .md-content {
   line-height: 1.75;
+  /* long unbroken strings (URLs, ids) wrap instead of scrolling the pane */
+  overflow-wrap: break-word;
 }
 
 .md-content :where(p, ul, ol, blockquote, pre, table) {
@@ -75,6 +77,8 @@
   border-radius: 0.375rem;
   font-size: 0.875rem;
   font-family: var(--font-mono-value);
+  /* inline code gets no horizontal scroll container: wrap hard */
+  overflow-wrap: anywhere;
 }
 
 .md-content table {

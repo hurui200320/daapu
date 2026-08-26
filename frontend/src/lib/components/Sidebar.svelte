@@ -5,12 +5,20 @@
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
   import { chatHref, router } from '../router.svelte'
+  import { uiStore } from '../ui-store.svelte'
   import type { ChatInfo } from '../types'
   import DeleteChatDialog from './DeleteChatDialog.svelte'
   import RenameChatDialog from './RenameChatDialog.svelte'
   import { buttonVariants } from './ui/button.svelte'
 
-  let collapsed = $state(localStorage.getItem('daapu.sidebar-collapsed') === 'true')
+  // the inline collapse is a ≥ md concern (below md the sidebar is an overlay
+  // drawer that always shows the full content); a first visit on a small
+  // screen still defaults to collapsed, so a later resize to desktop never
+  // springs a 288px column on the user
+  let collapsed = $state(
+    localStorage.getItem('daapu.sidebar-collapsed') === 'true' ||
+      (localStorage.getItem('daapu.sidebar-collapsed') === null && window.innerWidth < 768)
+  )
   let query = $state('')
   let renameTarget = $state<ChatInfo | null>(null)
   let deleteTarget = $state<ChatInfo | null>(null)
@@ -51,10 +59,23 @@
   }
 </script>
 
+<!-- Below md the sidebar is an overlay drawer (fixed, translated off-screen
+     until uiStore.mobileNavOpen opens it; the scrim and the hamburger live in
+     App.svelte): an inline 288px column would leave a phone ~60px of chat.
+     The collapsed rail is a ≥ md affordance only — the drawer always shows
+     the full content. Tailwind v4's translate-* uses the CSS `translate`
+     property, hence transition-[width,translate,visibility]. -->
 <aside
-  class="flex h-full shrink-0 flex-col overflow-hidden rounded-2xl border border-sidebar-border bg-sidebar/60 shadow-md backdrop-blur-xl transition-[width] duration-200 {collapsed ? 'w-12' : 'w-72'}"
+  class="flex h-full shrink-0 flex-col overflow-hidden rounded-2xl border border-sidebar-border bg-sidebar/60 shadow-md backdrop-blur-xl transition-[width,translate,visibility] duration-200 {collapsed
+    ? 'md:w-12'
+    : 'md:w-72'} max-md:fixed max-md:inset-y-2 max-md:left-2 max-md:z-40 max-md:h-auto max-md:w-72 max-md:bg-sidebar {uiStore.mobileNavOpen
+    ? 'max-md:translate-x-0'
+    : // invisible: a translated-off drawer must leave the tab order too;
+      // the visibility transition is discrete, so it flips at the END of
+      // the close slide and at the START of the open slide
+      'max-md:invisible max-md:-translate-x-[calc(100%_+_1rem)]'}"
 >
-  {#if collapsed}
+  {#if collapsed && !uiStore.isMobile}
     <div class="flex h-full flex-col items-center gap-1 py-3">
       <button title="expand sidebar" class={iconBtn} onclick={() => (collapsed = false)}>
         <PanelLeftOpen class="size-5" />
@@ -82,7 +103,16 @@
     <div class="flex items-center gap-2 px-3 py-3">
       <Bot class="size-5 shrink-0" />
       <span class="truncate text-sm font-semibold tracking-tight">daapu</span>
-      <button title="collapse sidebar" class={cn(iconBtn, 'ml-auto')} onclick={() => (collapsed = true)}>
+      <button
+        title="close sidebar"
+        class={cn(iconBtn, 'ml-auto')}
+        onclick={() => {
+          // one button, two meanings: closes the mobile drawer, collapses
+          // the desktop rail (the drawer ignores `collapsed`)
+          if (uiStore.isMobile) uiStore.mobileNavOpen = false
+          else collapsed = true
+        }}
+      >
         <PanelLeftClose class="size-4" />
       </button>
     </div>
@@ -100,7 +130,7 @@
         <input
           bind:value={query}
           placeholder="Search conversations…"
-          class="h-8 w-full rounded-md border border-transparent bg-transparent pl-8 pr-2 text-sm outline-none transition placeholder:text-muted-foreground hover:bg-foreground/10 focus:border-border"
+          class="h-8 w-full rounded-md border border-transparent bg-transparent pl-8 pr-2 text-sm outline-none transition placeholder:text-muted-foreground hover:bg-foreground/10 focus:border-border no-hover:text-base"
         />
       </div>
     </div>
@@ -122,19 +152,33 @@
                streams, the chat switch stays locked (pointer + keyboard):
                the stream's committed rounds render into store.messages.
                aria-hidden keeps the dead link out of the accessibility tree
-               (aria-disabled is not valid on links) -->
-          <a
-            href={chatHref(chat.id)}
-            class={cn(
-              'min-w-0 flex-1 rounded-lg py-1.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-              store.streaming && 'pointer-events-none opacity-40'
-            )}
-            aria-hidden={store.streaming}
-            tabindex={store.streaming ? -1 : undefined}
-            title={chat.title}
-          >
-            <span class="block truncate text-sm font-medium">{chat.title}</span>
-          </a>
+               (aria-disabled is not valid on links). The link closes the
+               mobile drawer on tap; the streaming-only overlay owns the tap
+               the dead link passes through, so a tap on a locked chat still
+               closes the drawer. The overlay's aria-hidden is safe: it sits
+               over a dead link that is already out of the tab order -->
+          <div class="relative min-w-0 flex-1">
+            <a
+              href={chatHref(chat.id)}
+              class={cn(
+                'block rounded-lg py-1.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                store.streaming && 'pointer-events-none opacity-40'
+              )}
+              aria-hidden={store.streaming}
+              tabindex={store.streaming ? -1 : undefined}
+              title={chat.title}
+              onclick={() => (uiStore.mobileNavOpen = false)}
+            >
+              <span class="block truncate text-sm font-medium">{chat.title}</span>
+            </a>
+            {#if store.streaming}
+              <div
+                aria-hidden="true"
+                class="absolute inset-0"
+                onclick={() => (uiStore.mobileNavOpen = false)}
+              ></div>
+            {/if}
+          </div>
           <DropdownMenu.Root>
             <!-- the menu stays live while a run streams: only the chat
                  SWITCH needs the lock (the stream renders into
@@ -203,6 +247,7 @@
           buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
           !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground'
         )}
+        onclick={() => (uiStore.mobileNavOpen = false)}
       >
         <UserRound class="size-4" />
         Personas
@@ -213,6 +258,7 @@
           buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
           !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground'
         )}
+        onclick={() => (uiStore.mobileNavOpen = false)}
       >
         <Network class="size-4" />
         ELTM

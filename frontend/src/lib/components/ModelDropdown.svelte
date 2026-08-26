@@ -19,11 +19,11 @@
 <DropdownMenu.Root onOpenChange={(open: boolean) => open && (query = '')}>
   <DropdownMenu.Trigger
     disabled={store.streaming}
-    class="inline-flex h-8 max-w-52 items-center gap-1.5 rounded-md bg-muted px-2 text-xs text-foreground transition-colors hover:bg-muted-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+    class="inline-flex h-8 min-w-0 max-w-36 items-center gap-1.5 rounded-md bg-muted px-2 text-xs text-foreground transition-colors hover:bg-muted-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 sm:max-w-52"
     title="model"
   >
     <Package class="size-3.5 shrink-0 text-muted-foreground" />
-    <span class="truncate">{store.selectedModel || 'model'}</span>
+    <span class="min-w-0 truncate">{store.selectedModel || 'model'}</span>
     <ChevronDown class="size-3.5 shrink-0 text-muted-foreground" />
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>
@@ -37,7 +37,7 @@
         <input
           bind:value={query}
           placeholder="Search models…"
-          class="h-8 w-full rounded-md border border-transparent bg-muted pl-8 pr-2 text-sm outline-none transition placeholder:text-muted-foreground focus:border-border"
+          class="h-8 w-full rounded-md border border-transparent bg-muted pl-8 pr-2 text-sm outline-none transition placeholder:text-muted-foreground focus:border-border no-hover:text-base"
         />
       </div>
       <div class="max-h-72 overflow-y-auto">

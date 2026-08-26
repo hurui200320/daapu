@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- interactive-widget=resizes-content: browsers that honor it (Chrome)
+         shrink the layout viewport for the on-screen keyboard, so the h-dvh
+         shell's composer stays above it; iOS Safari ignores it and is covered
+         by the visualViewport inset in App.svelte -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="dark" />
     <!-- sRGB of --background: oklch(0.16 0 0) -->
     <meta name="theme-color" content="#0d0d0d" />

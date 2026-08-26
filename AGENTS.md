@@ -444,6 +444,21 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     dialogs, generate-title, personas + ELTM nav), centered `max-w-3xl` message
     column, floating rounded composer with circular send button (disabled while
     streaming, while the history loads, or without a selected model).
+  - Mobile (below `md` = 768px, `src/lib/ui-store.svelte.ts`): the sidebar
+    becomes an overlay drawer (`mobileNavOpen`, translated off-screen, scrim +
+    auto-close on every navigation in `App.svelte`) opened from a mobile top
+    bar above the views; the inline collapse rail is desktop-only and a first
+    visit on a small screen defaults to collapsed. The composer row's
+    model/persona chips shrink (`min-w-0` + tighter `max-sm:` caps) and the
+    app shell is `overflow-x-hidden`. The composer's Enter inserts a newline
+    on coarse pointers (soft keyboards have no Shift; `enterkeyhint` follows)
+    and all interactive text fields are ≥ 16px on touch (`no-hover:text-base`)
+    to defeat iOS's focus auto-zoom. The viewport meta carries
+    `interactive-widget=resizes-content`; `App.svelte` additionally mirrors
+    the `visualViewport` keyboard inset as a bottom padding for iOS (a no-op
+    where the meta is honored). Dialog content scrolls
+    (`max-h-[calc(100dvh-2rem)]`), and `.md-content` wraps unbroken strings
+    (`overflow-wrap`).
   - Routing: hash-based (`src/lib/router.svelte.ts`, zero deps — the hash never
     reaches the server, so any static host works without SPA fallback; the same
     reason llama.cpp's webui uses `router: hash`). Routes: `#/chat` (home),

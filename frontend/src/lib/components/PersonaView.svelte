@@ -225,7 +225,7 @@
           id="persona-name"
           bind:value={editorName}
           placeholder="e.g. Writer"
-          class="h-9 w-full rounded-md border border-border bg-transparent px-3 text-sm outline-none transition focus:border-border"
+          class="h-9 w-full rounded-md border border-border bg-transparent px-3 text-sm outline-none transition focus:border-border no-hover:text-base"
         />
       </div>
       <div class="space-y-1.5">
@@ -235,7 +235,7 @@
           bind:value={editorPrompt}
           rows="12"
           placeholder="You are a writer…"
-          class="w-full resize-y rounded-md border border-border bg-transparent px-3 py-2 font-mono text-xs leading-5 outline-none transition focus:border-border"
+          class="w-full resize-y rounded-md border border-border bg-transparent px-3 py-2 font-mono text-xs leading-5 outline-none transition focus:border-border no-hover:text-base"
         ></textarea>
       </div>
     </div>
@@ -273,7 +273,7 @@
           <input
             bind:value={item.value}
             placeholder="e.g. gsg"
-            class="h-9 w-full rounded-md border border-border bg-transparent px-3 font-mono text-sm outline-none transition focus:border-border"
+            class="h-9 w-full rounded-md border border-border bg-transparent px-3 font-mono text-sm outline-none transition focus:border-border no-hover:text-base"
           />
           <button
             class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"

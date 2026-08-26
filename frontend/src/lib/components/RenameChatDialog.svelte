@@ -57,7 +57,7 @@
           void save()
         }
       }}
-      class="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/50"
+      class="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/50 no-hover:text-base"
     />
     {#if localError}<p class="text-sm text-destructive">{localError}</p>{/if}
     <DialogFooter>

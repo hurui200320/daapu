@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { PanelLeftOpen } from '@lucide/svelte'
   import { MODEL_STORAGE_KEY, chatStore } from './lib/chat-store.svelte'
   import { personaStore } from './lib/persona-store.svelte'
   import ChatView from './lib/components/ChatView.svelte'
@@ -8,11 +9,44 @@
   import Sidebar from './lib/components/Sidebar.svelte'
   import { chatHomePath, replaceRoute, router } from './lib/router.svelte'
   import { toastStore } from './lib/toast-store.svelte'
+  import { uiStore } from './lib/ui-store.svelte'
 
   onMount(() => {
     router.init()
+    uiStore.init()
     void chatStore.init()
     void personaStore.init()
+  })
+
+  // the mobile navigation drawer closes on every navigation (a chat pick, a
+  // personas/ELTM link, back/forward); a tap that changes NO route (the
+  // already-open chat/personas/eltm link, or a streaming-locked chat link)
+  // gets no effect run, so the sidebar closes the drawer itself there
+  $effect(() => {
+    void router.current
+    uiStore.mobileNavOpen = false
+  })
+
+  // on-screen keyboard vs. the fixed h-dvh shell: the layout viewport does
+  // not shrink for the keyboard and the document has no scroll range, so the
+  // composer would sit behind it. `interactive-widget=resizes-content`
+  // (index.html) fixes browsers that honor it by shrinking the layout
+  // viewport; for the rest (iOS Safari) mirror the keyboard inset as a
+  // bottom padding on the shell. Where the meta is honored innerHeight
+  // already shrank, so the inset computes to 0 and this is a no-op.
+  let kbInset = $state(0)
+  onMount(() => {
+    const vv = window.visualViewport
+    if (!vv) return
+    const update = () => {
+      kbInset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+    }
+    vv.addEventListener('resize', update)
+    vv.addEventListener('scroll', update)
+    return () => {
+      vv.removeEventListener('resize', update)
+      vv.removeEventListener('scroll', update)
+    }
   })
 
   // The URL owns the active view and the open chat: translate the route into
@@ -57,10 +91,28 @@
   })
 </script>
 
-<div class="flex h-dvh gap-2 p-2">
+<!-- overflow-x-hidden: nothing may ever push the fixed-height shell sideways
+     (e.g. the composer's control row on a very narrow screen) -->
+<div
+  class="flex h-dvh gap-2 overflow-x-hidden p-2"
+  style:padding-bottom={kbInset > 0 ? `${kbInset + 8}px` : undefined}
+>
   <Sidebar />
   <main class="flex min-w-0 flex-1 flex-col">
-    <!-- both views stay mounted so the chat view (messages, live stream,
+    <!-- mobile top bar: the sidebar is an overlay drawer below md, so every
+         view needs the button that opens it (there is no other way back to
+         the chat list from the ELTM/personas views) -->
+    <div class="flex items-center pb-2 md:hidden">
+      <button
+        title="open sidebar"
+        aria-label="open sidebar"
+        class="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        onclick={() => (uiStore.mobileNavOpen = true)}
+      >
+        <PanelLeftOpen class="size-5" />
+      </button>
+    </div>
+    <!-- all views stay mounted so the chat view (messages, live stream,
          composer draft) survives tab switches; visibility is CSS-only,
          driven by the route -->
     <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'chat'}>
@@ -75,9 +127,19 @@
   </main>
 </div>
 
-<!-- global notifications (top-right stack; click to dismiss) -->
+<!-- mobile drawer scrim: tap outside the drawer to close it -->
+{#if uiStore.mobileNavOpen}
+  <button
+    aria-label="close sidebar"
+    class="fixed inset-0 z-30 bg-black/50 md:hidden"
+    onclick={() => (uiStore.mobileNavOpen = false)}
+  ></button>
+{/if}
+
+<!-- global notifications (top-right stack; click to dismiss; full-width on
+     phones where a fixed 20rem box would crowd the screen edge) -->
 <div
-  class="pointer-events-none fixed right-4 top-4 z-50 flex w-80 flex-col gap-2"
+  class="pointer-events-none fixed right-4 top-4 z-50 flex w-80 flex-col gap-2 max-sm:left-4 max-sm:w-auto"
   role="status"
   aria-live="polite"
 >

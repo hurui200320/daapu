@@ -3,6 +3,7 @@
   import { ArrowUp, Paperclip, X } from '@lucide/svelte'
   import { chatStore as store } from '../chat-store.svelte'
   import { router } from '../router.svelte'
+  import { uiStore } from '../ui-store.svelte'
   import ModelDropdown from './ModelDropdown.svelte'
   import PersonaDropdown from './PersonaDropdown.svelte'
 
@@ -93,7 +94,11 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    // touch devices: the soft keyboard has no Shift, so Enter must insert a
+    // newline (mobile messaging convention) and the send button is the only
+    // send path — otherwise multi-line messages are impossible and every
+    // return-key tap fires an accidental send
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !uiStore.coarse) {
       e.preventDefault()
       void submit()
     }
@@ -165,7 +170,8 @@
       bind:value={text}
       rows="1"
       placeholder="Message…"
-      class="max-h-[var(--max-message-height)] w-full resize-none overflow-y-auto border-0 bg-transparent px-5 pb-2 pt-3.5 text-[15px] leading-6 outline-none placeholder:text-muted-foreground"
+      enterkeyhint={uiStore.coarse ? 'enter' : 'send'}
+      class="max-h-[var(--max-message-height)] w-full resize-none overflow-y-auto border-0 bg-transparent px-5 pb-2 pt-3.5 text-base leading-6 outline-none placeholder:text-muted-foreground"
       onkeydown={onKeydown}
       onpaste={onPaste}
     ></textarea>
