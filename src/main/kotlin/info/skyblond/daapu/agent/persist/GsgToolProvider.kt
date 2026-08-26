@@ -46,7 +46,9 @@ class GsgToolProvider(
     override suspend fun specifications(): List<ToolSpec> = listOf(
         ToolSpec(
             name = "gsg__investigate",
-            description = "Investigate a query by launching a temporary sub-agent that searches the long-term memory (ELTM), the web (MCP tools) and other configured sources in a multi-step tool loop, returning ONE self-contained report. Use this for anything needing memory recall or current web information; write a self-contained and specific query, which will be used as the first user message for the sub-agent.",
+            description = "Investigate a query by launching a temporary sub-agent that searches the long-term memory (ELTM), the web (MCP tools) and other configured sources (for example, fs) in a multi-step tool loop, returning ONE self-contained report. " +
+                    "Use this for anything needing memory recall or current web information; write a self-contained and specific query, which will be used as the first user message for the sub-agent. " +
+                    "The current context is NOT shared with the sub-agent. You MUST provide everything (path of related files, or description of related contents, etc.) in your query.",
             schema = buildJsonObject {
                 put("type", "object")
                 put("properties", buildJsonObject {
