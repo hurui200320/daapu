@@ -23,7 +23,7 @@
     if (target == null) return
     // fast operation (no memory extraction): fire-and-forget, errors surface as
     // a toast; on success the store slices the message list locally
-    store.truncateMessages(target.chatId, target.index)
+    void store.truncateMessages(target.chatId, target.index)
     onClose()
   }
 </script>

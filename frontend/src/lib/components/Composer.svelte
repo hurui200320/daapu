@@ -53,7 +53,15 @@
   }
 
   function onPaste(e: ClipboardEvent) {
-    addFiles(e.clipboardData?.files ?? null)
+    const files = e.clipboardData?.files
+    if (!files || files.length === 0) return
+    // same gate as the paperclip button: no attachments while a run streams
+    // or the chat is being deleted; the paste falls through to plain text
+    if (store.streaming || deleting) return
+    // consume the paste: a clipboard carrying both files and text would
+    // otherwise also insert the text into the textarea
+    e.preventDefault()
+    addFiles(files)
   }
 
   function removeImage(index: number) {

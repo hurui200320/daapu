@@ -1,6 +1,10 @@
 import { marked, type Tokens, type TokenizerAndRendererExtension } from 'marked'
 import DOMPurify from 'dompurify'
-import hljs from 'highlight.js'
+// the common bundle registers ~40 languages (kotlin, python, java, bash,
+// json, yaml, …) instead of all ~190 — a ~1MB saving in the shipped bundle;
+// unregistered languages fall back to the escaped plain-text path in
+// `highlight`
+import hljs from 'highlight.js/lib/common'
 import katex from 'katex'
 import 'highlight.js/styles/github-dark.css'
 import 'katex/dist/katex.min.css'

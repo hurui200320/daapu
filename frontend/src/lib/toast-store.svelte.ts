@@ -1,3 +1,5 @@
+import { errMsg } from './utils'
+
 /**
  * Global transient error notifications, rendered as a fixed top-right stack
  * in App.svelte. Action errors from anywhere (sidebar CRUD, chat load, send
@@ -13,6 +15,11 @@ class ToastStore {
     const id = this.nextId++
     this.toasts = [...this.toasts, { id, message }]
     setTimeout(() => this.dismiss(id), timeoutMs)
+  }
+
+  /** Push a caught error's message (any Error shape, no "Error: " prefix). */
+  pushError(e: unknown, timeoutMs = 5000) {
+    this.push(errMsg(e), timeoutMs)
   }
 
   dismiss(id: number) {

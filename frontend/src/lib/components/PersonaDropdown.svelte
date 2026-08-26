@@ -13,7 +13,9 @@
   const current = $derived(store.currentPersonaId)
 
   const personaName = $derived(
-    personaStore.personas.find((p) => p.id === current)?.name ?? current
+    // fall back to a label while the catalog is empty (initial load or a
+    // down backend) — the raw id "0" must not show in the chip
+    personaStore.personas.find((p) => p.id === current)?.name ?? 'persona'
   )
 </script>
 

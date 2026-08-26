@@ -1,7 +1,7 @@
 <script lang="ts">
   import { CheckCircle2, GitFork, Lightbulb, Trash2, Wrench, XCircle } from '@lucide/svelte'
   import { chatStore as store, roundSignature } from '../chat-store.svelte'
-  import type { ChatAttachmentPart, ChatMessage, ChatMessagePart, ChatToolResultPart } from '../types'
+  import type { ChatAttachmentPart, ChatMessage, ChatMessagePart, ChatToolResultPart, TextPart } from '../types'
   import CollapsibleBlock from './CollapsibleBlock.svelte'
   import ImageLightbox from './ImageLightbox.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
@@ -146,11 +146,11 @@
         </button>
       {/if}
     {/each}
-    {#each message.parts.filter((p) => p.type === 'text') as part}
+    {#each message.parts.filter((p): p is TextPart => p.type === 'text') as part}
       <div
         class="max-w-[80%] whitespace-pre-wrap break-words rounded-[1.125rem] bg-primary/15 px-4 py-2 text-foreground backdrop-blur-md"
         style="overflow-wrap: anywhere"
-      >{(part as { type: 'text'; text: string }).text}</div>
+      >{part.text}</div>
     {/each}
     <button
       title="delete this message and everything after"

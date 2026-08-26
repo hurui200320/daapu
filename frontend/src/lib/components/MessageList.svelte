@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from 'svelte'
   import { ArrowDown, Lightbulb, Wrench } from '@lucide/svelte'
   import { chatStore as store } from '../chat-store.svelte'
   import type { ChatMessage } from '../types'
@@ -55,22 +54,9 @@
   })
 
   // follow the stream: keep pinned to the bottom while the user hasn't
-  // scrolled up. State changes (messages/stream buffers) and non-reactive
-  // growth (markdown reflow, image loads) both land on the next frame.
-  $effect(() => {
-    const el = scrollEl
-    if (!el || !atBottom) return
-    void store.messages
-    void store.streamText
-    void store.streamReasoning
-    void store.streamToolCalls
-    void store.streaming
-    void store.retrying
-    void tick().then(() => {
-      if (atBottom) el.scrollTop = el.scrollHeight
-    })
-  })
-
+  // scrolled up. The MutationObserver below covers every reactive DOM change
+  // (streamed text, committed rounds, collapsibles) plus non-reactive growth
+  // (markdown reflow, image loads via the capture-phase load listener).
   $effect(() => {
     const el = scrollEl
     if (!el) return
@@ -82,12 +68,19 @@
       })
     })
     observer.observe(el, { childList: true, subtree: true, characterData: true })
+    // the initial render precedes observe(), so a freshly-mounted chat
+    // (content already in the DOM) must pin to the bottom explicitly; the
+    // capture-phase load listener below still covers images that load later
+    rafId = requestAnimationFrame(() => {
+      if (atBottom) el.scrollTop = el.scrollHeight
+    })
     // images inside markdown grow the content without mutating the DOM
     const onImageLoad = () => {
       if (atBottom) el.scrollTop = el.scrollHeight
     }
     el.addEventListener('load', onImageLoad, true)
     return () => {
+      cancelAnimationFrame(rafId)
       observer.disconnect()
       el.removeEventListener('load', onImageLoad, true)
     }

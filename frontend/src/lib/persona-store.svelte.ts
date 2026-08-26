@@ -1,6 +1,7 @@
 import { createPersona, deletePersona, listPersonas, updatePersona } from './api'
 import type { Persona } from './types'
 import { toastStore } from './toast-store.svelte'
+import { onIntervalAndFocus } from './resync'
 
 /**
  * The persona catalog (the code default + the `personas` rows), shared by
@@ -17,8 +18,8 @@ class PersonaStore {
     if (this.started) return
     this.started = true
     await this.resync()
-    setInterval(() => void this.resync(), 30_000)
-    window.addEventListener('focus', () => void this.resync())
+    // app-lifetime store: the disposer is intentionally ignored
+    onIntervalAndFocus(30_000, () => void this.resync())
   }
 
   /** Silent refresh; replaces the list only when it changed. */
@@ -39,7 +40,7 @@ class PersonaStore {
       this.personas = [...this.personas, persona]
       return true
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
       return false
     }
   }
@@ -55,7 +56,7 @@ class PersonaStore {
       this.personas = this.personas.map((p) => (p.id === id ? persona : p))
       return true
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
       return false
     }
   }
@@ -65,7 +66,7 @@ class PersonaStore {
       await deletePersona(id)
       this.personas = this.personas.filter((p) => p.id !== id)
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
     }
   }
 }

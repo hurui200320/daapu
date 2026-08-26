@@ -109,7 +109,7 @@
           {store.knownChats.length === 0 ? 'no chats yet' : 'no matches'}
         </div>
       {/if}
-      {#each filtered as chat}
+      {#each filtered as chat (chat.id)}
         <div
           class={cn(
             'group flex items-center rounded-lg transition-colors',

@@ -15,12 +15,17 @@
    * would leak). "Copied!" feedback resets after 1.5s; a re-render restores
    * the default label anyway.
    */
-  function onCopyClick(e: MouseEvent) {
+  async function onCopyClick(e: MouseEvent) {
     const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.code-copy-btn')
     if (!btn) return
     const pre = btn.closest('.code-block-wrapper')?.querySelector('pre')
     if (!pre) return
-    void navigator.clipboard.writeText(pre.textContent ?? '')
+    try {
+      await navigator.clipboard.writeText(pre.textContent ?? '')
+    } catch {
+      // clipboard permission denied; leave the button label untouched
+      return
+    }
     btn.textContent = 'Copied!'
     setTimeout(() => {
       if (btn.isConnected) btn.textContent = 'Copy'

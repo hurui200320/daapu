@@ -28,7 +28,7 @@ export interface ChatMessage {
 
 export type ChatMessagePart = TextPart | ReasoningPart | ToolCallPart | ChatToolResultPart | ChatAttachmentPart
 
-interface TextPart {
+export interface TextPart {
   type: 'text'
   text: string
 }
@@ -56,7 +56,7 @@ export interface ChatToolResultPart {
 }
 
 /** Text and attachments may also appear nested inside a tool_result. */
-type ChatContentPart = TextPart | ChatAttachmentPart
+export type ChatContentPart = TextPart | ChatAttachmentPart
 
 type AttachmentKind = 'image' | 'video' | 'audio' | 'file'
 

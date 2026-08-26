@@ -9,6 +9,8 @@
     listRelationships,
   } from '../api'
   import type { EltmNoteDto, EntityViewDto, RelationshipViewDto } from '../types'
+  import { onIntervalAndFocus } from '../resync'
+  import { errMsg } from '../utils'
   import Button from './ui/button.svelte'
 
   type Tab = 'entities' | 'relationships'
@@ -41,9 +43,10 @@
   // server side is already known to be the last page — no no-op "load more"
   let entitiesFull = $state(false)
   let relationshipsFull = $state(false)
-  // per-card expand flags and lazily fetched drill-down payloads (refetched
-  // on every expand: the extraction pipeline writes server-side, so a cached
-  // payload would go stale for the whole session — the view stays mounted)
+  // per-card expand flags and lazily fetched drill-down payloads. Details are
+  // refetched on every expand AND on every background resync while a card
+  // stays expanded: the extraction pipeline writes server-side, so a cached
+  // payload must not go stale for as long as it is on screen
   let expandedEntities = $state<Record<number, boolean>>({})
   let expandedRelationships = $state<Record<number, boolean>>({})
   let entityDetails = $state<Record<number, EntityDetails>>({})
@@ -54,13 +57,16 @@
     // doesn't leave a permanent banner after later successes
     error = null
     try {
-      const [e, r] = await Promise.all([listEntities(PAGE_SIZE + 1), listRelationships(PAGE_SIZE + 1)])
-      entities = e.slice(0, PAGE_SIZE)
-      relationships = r.slice(0, PAGE_SIZE)
-      entitiesFull = e.length <= PAGE_SIZE
-      relationshipsFull = r.length <= PAGE_SIZE
+      const [e, r] = await Promise.all([
+        fetchWindow(listEntities, PAGE_SIZE),
+        fetchWindow(listRelationships, PAGE_SIZE),
+      ])
+      entities = e.rows
+      relationships = r.rows
+      entitiesFull = e.full
+      relationshipsFull = r.full
     } catch (e) {
-      error = String(e)
+      error = errMsg(e)
     }
   }
 
@@ -77,12 +83,21 @@
     const rows: T[] = []
     const probe = windowSize + 1
     while (rows.length < probe) {
-      const limit = Math.min(PAGE_SIZE, LIST_LIMIT_CAP, probe - rows.length)
+      const limit = Math.min(LIST_LIMIT_CAP, probe - rows.length)
       const page = await fetchPage(limit, rows.length)
       rows.push(...page)
       if (page.length < limit) break
     }
     return { rows: rows.slice(0, windowSize), full: rows.length <= windowSize }
+  }
+
+  /** One "load more" page of [PAGE_SIZE] rows plus the probe row. */
+  async function fetchMore<T>(
+    fetchPage: (limit: number, offset: number) => Promise<T[]>,
+    offset: number,
+  ): Promise<{ rows: T[]; full: boolean }> {
+    const more = await fetchPage(PAGE_SIZE + 1, offset)
+    return { rows: more.slice(0, PAGE_SIZE), full: more.length <= PAGE_SIZE }
   }
 
   /**
@@ -113,9 +128,40 @@
       if (JSON.stringify(r.rows) !== JSON.stringify(relationships)) {
         relationships = r.rows
       }
+      // refresh the drill-down payloads of the cards currently expanded (the
+      // extraction pipeline may have appended notes/ended relationships); a
+      // failed fetch keeps the previous payload
+      await refreshExpandedDetails()
     } catch {
       // transient backend hiccup: keep the current lists
     }
+  }
+
+  async function refreshExpandedDetails() {
+    const entityIds = Object.keys(expandedEntities).filter((k) => expandedEntities[Number(k)])
+    const relationshipIds = Object.keys(expandedRelationships).filter(
+      (k) => expandedRelationships[Number(k)],
+    )
+    await Promise.all([
+      ...entityIds.map(async (k) => {
+        const id = Number(k)
+        try {
+          const [rels, notes] = await Promise.all([getEntityRelationships(id), getEntityNotes(id)])
+          entityDetails = { ...entityDetails, [id]: { relationships: rels, notes } }
+        } catch {
+          // keep the previous payload
+        }
+      }),
+      ...relationshipIds.map(async (k) => {
+        const id = Number(k)
+        try {
+          const notes = await getRelationshipNotes(id)
+          relationshipDetails = { ...relationshipDetails, [id]: { notes } }
+        } catch {
+          // keep the previous payload
+        }
+      }),
+    ])
   }
 
   async function loadMoreEntities() {
@@ -123,33 +169,28 @@
     // source of truth
     error = null
     try {
-      const more = await listEntities(PAGE_SIZE + 1, entities.length)
-      entities = [...entities, ...more.slice(0, PAGE_SIZE)]
-      if (more.length <= PAGE_SIZE) entitiesFull = true
+      const { rows, full } = await fetchMore(listEntities, entities.length)
+      entities = [...entities, ...rows]
+      if (full) entitiesFull = true
     } catch (e) {
-      error = String(e)
+      error = errMsg(e)
     }
   }
 
   async function loadMoreRelationships() {
     error = null
     try {
-      const more = await listRelationships(PAGE_SIZE + 1, relationships.length)
-      relationships = [...relationships, ...more.slice(0, PAGE_SIZE)]
-      if (more.length <= PAGE_SIZE) relationshipsFull = true
+      const { rows, full } = await fetchMore(listRelationships, relationships.length)
+      relationships = [...relationships, ...rows]
+      if (full) relationshipsFull = true
     } catch (e) {
-      error = String(e)
+      error = errMsg(e)
     }
   }
 
   onMount(() => {
     void refresh()
-    const interval = setInterval(() => void resync(), 30_000)
-    window.addEventListener('focus', resync)
-    return () => {
-      clearInterval(interval)
-      window.removeEventListener('focus', resync)
-    }
+    return onIntervalAndFocus(30_000, () => void resync())
   })
 
   async function toggleEntity(id: number) {
@@ -164,7 +205,7 @@
     } catch (e) {
       entityDetails = {
         ...entityDetails,
-        [id]: { relationships: [], notes: [], error: String(e) },
+        [id]: { relationships: [], notes: [], error: errMsg(e) },
       }
     }
   }
@@ -179,7 +220,7 @@
       const notes = await getRelationshipNotes(id)
       relationshipDetails = { ...relationshipDetails, [id]: { notes } }
     } catch (e) {
-      relationshipDetails = { ...relationshipDetails, [id]: { notes: [], error: String(e) } }
+      relationshipDetails = { ...relationshipDetails, [id]: { notes: [], error: errMsg(e) } }
     }
   }
 </script>

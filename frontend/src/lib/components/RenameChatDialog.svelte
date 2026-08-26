@@ -35,8 +35,9 @@
       return
     }
     localError = null
-    await store.renameChat(target.id, trimmed)
-    onClose()
+    // close only on success: a failed rename keeps the dialog open so the
+    // user can retry (the error itself surfaces as a toast)
+    if (await store.renameChat(target.id, trimmed)) onClose()
   }
 </script>
 

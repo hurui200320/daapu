@@ -14,6 +14,7 @@ import type { ChatInfo, ChatMessage, ChatMessagePart, ChatToolResultPart, ModelI
 import { DEFAULT_PERSONA_ID } from './types'
 import { chatHomePath, chatPath, navigate, replaceRoute, router } from './router.svelte'
 import { personaStore } from './persona-store.svelte'
+import { onIntervalAndFocus } from './resync'
 import { toastStore } from './toast-store.svelte'
 
 // mirrors the backend's data-URL handling (ChatRunService.parseImagePart:
@@ -173,10 +174,10 @@ class ChatStore {
       this.models = await listModels()
       this.knownChats = await listChats()
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
     }
-    setInterval(() => void this.resyncChats(), 30_000)
-    window.addEventListener('focus', () => void this.resyncChats())
+    // app-lifetime store: the disposer is intentionally ignored
+    onIntervalAndFocus(30_000, () => void this.resyncChats())
   }
 
   /**
@@ -394,7 +395,7 @@ class ChatStore {
       // another id — or under none at all)
       if (this.chatId === id) this.messages = messages
     } catch (e) {
-      if (this.chatId === id) toastStore.push(String(e))
+      if (this.chatId === id) toastStore.pushError(e)
     } finally {
       if (this.chatId === id) this.chatLoading = false
     }
@@ -451,17 +452,19 @@ class ChatStore {
       this.chatLoading = false
       navigate(chatPath(id))
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
     }
   }
 
-  async renameChat(id: string, title: string): Promise<void> {
-    if (this.deletingIds.has(id)) return
+  async renameChat(id: string, title: string): Promise<boolean> {
+    if (this.deletingIds.has(id)) return false
     try {
       await renameChat(id, title)
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title } : c))
+      return true
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
+      return false
     }
   }
 
@@ -477,7 +480,7 @@ class ChatStore {
       const chat = await generateTitle(id)
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title: chat.title } : c))
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
     }
   }
 
@@ -505,7 +508,7 @@ class ChatStore {
         if (router.current.name === 'chat') replaceRoute(chatHomePath())
       }
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
     } finally {
       this.deletingIds.delete(id)
     }
@@ -535,7 +538,7 @@ class ChatStore {
         this.streamError = null
       }
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
     }
   }
 
@@ -570,7 +573,7 @@ class ChatStore {
         navigate(chatPath(chat.id))
       }
     } catch (e) {
-      toastStore.push(String(e))
+      toastStore.pushError(e)
     } finally {
       this.forkingIds.delete(id)
     }
@@ -714,9 +717,6 @@ class ChatStore {
               // (the buffers hold the only copy of the answer) so the view
               // still shows the full run; the next resync or run replaces it
               this.commitRound()
-              this.streamReasoning = ''
-              this.streamText = ''
-              this.streamToolCalls = []
             } else if (markerTarget != null) {
               // The successful store also stamped the chat's persona record,
               // so refresh the chat list too — the picker would otherwise
@@ -734,6 +734,16 @@ class ChatStore {
                 this.committedRoundIndex = idx
               }
             }
+            // The run's streaming buffers are stale in every path (the
+            // display is the stored history now; the committed round's
+            // collapsibles keep their open states via [committedPartOpen]).
+            // Wipe them so a future render path can never resurrect the
+            // last run's partials.
+            this.streamReasoning = ''
+            this.streamText = ''
+            this.streamToolCalls = []
+            this.streamReasoningOpen = true
+            this.streamToolCallsOpen = []
             await this.resyncChats()
             break
           }
@@ -746,7 +756,22 @@ class ChatStore {
             this.streamReasoning = ''
             this.streamText = ''
             this.streamToolCalls = []
-            this.streamError = JSON.parse(ev.data).message ?? ev.data
+            {
+              // the server sends {"message": ...} — anything else (a
+              // malformed payload, a missing message field) falls back to
+              // the raw data instead of throwing a SyntaxError up the stack
+              let message: string
+              try {
+                const parsed = JSON.parse(ev.data) as { message?: unknown }
+                message =
+                  typeof parsed.message === 'string'
+                    ? parsed.message
+                    : ev.data
+              } catch {
+                message = ev.data
+              }
+              this.streamError = message
+            }
             // the run failed before storing, so the optimistic user message
             // and any committed tool rounds are not in the DB: reload to match
             await this.reloadFromDb(id)
@@ -777,7 +802,7 @@ class ChatStore {
       // If the stream already surfaced a run error (streamError), that is
       // the more specific message — the banner or the finally fallback toast
       // carries it, so don't stack a second toast on top
-      if (!this.streamError) toastStore.push(String(e))
+      if (!this.streamError) toastStore.pushError(e)
       this.runEnding = true
       this.clearCommitted()
       await this.reloadFromDb(id)
@@ -789,8 +814,10 @@ class ChatStore {
       // ends (back/forward or URL edit mid-run): the error banner would be
       // wiped with the view (closeChat / loadMessages clear streamError), so
       // surface the failure as a toast instead of losing it. Same-route runs
-      // keep the banner (the chat stays open).
-      if (failed && this.streamError && this.chatId === id) {
+      // keep the banner (the chat stays open). Chat switches are locked
+      // while streaming, so `this.chatId` is always `id` here — only the
+      // route check below is meaningful.
+      if (failed && this.streamError) {
         const route = router.current
         if (route.name === 'chat' && route.chatId !== id) {
           toastStore.push('run failed: ' + this.streamError)

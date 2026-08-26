@@ -36,14 +36,15 @@
   let editorPrompt = $state('')
   let editorBusy = $state(false)
 
-  // form state of the namespaces editor: one text input per item
-  let namespaceItems = $state<string[]>([])
+  // form state of the namespaces editor: one text input per item. Items carry
+  // a stable row id (not the array index), so removing a middle row cannot
+  // shift the two-way bindings onto the wrong inputs
+  let namespaceItems = $state<{ id: number; value: string }[]>([])
+  let namespaceRowId = 0
   let namespacesBusy = $state(false)
 
   const namespacesText = (p: Persona): string =>
-    p.allowedNamespaces.length === 0
-      ? 'all (gsg + MCP servers)'
-      : p.allowedNamespaces.join(', ')
+    p.allowedNamespaces.length === 0 ? 'all namespaces' : p.allowedNamespaces.join(', ')
 
   function openPromptEditor(persona: Persona | 'new') {
     promptEditor = persona
@@ -64,14 +65,14 @@
 
   function openNamespacesEditor(persona: Persona) {
     namespacesTarget = persona
-    namespaceItems = [...persona.allowedNamespaces]
+    namespaceItems = persona.allowedNamespaces.map((value) => ({ id: namespaceRowId++, value }))
   }
 
   async function saveNamespacesEditor() {
     const target = namespacesTarget
     if (!target || namespacesBusy) return
     namespacesBusy = true
-    const items = namespaceItems.map((i) => i.trim()).filter((i) => i.length > 0)
+    const items = namespaceItems.map((i) => i.value.trim()).filter((i) => i.length > 0)
     const ok = await personaStore.update(
       target.id,
       target.name,
@@ -85,7 +86,7 @@
   function confirmDelete() {
     const target = deleteTarget
     if (!target) return
-    personaStore.delete(target.id)
+    void personaStore.delete(target.id)
     deleteTarget = null
   }
 
@@ -93,8 +94,13 @@
     previewExpanded = { ...previewExpanded, [id]: !previewExpanded[id] }
   }
 
-  function copyRaw(id: number, text: string) {
-    void navigator.clipboard.writeText(text)
+  async function copyRaw(id: number, text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // clipboard permission denied; no "Copied!" feedback
+      return
+    }
     copiedId = id
     setTimeout(() => {
       if (copiedId === id) copiedId = ''
@@ -258,17 +264,17 @@
       </DialogDescription>
     </DialogHeader>
     <div class="space-y-2">
-      {#each namespaceItems as _, i (i)}
+      {#each namespaceItems as item (item.id)}
         <div class="flex items-center gap-2">
           <input
-            bind:value={namespaceItems[i]}
+            bind:value={item.value}
             placeholder="e.g. gsg"
             class="h-9 w-full rounded-md border border-border bg-transparent px-3 font-mono text-sm outline-none transition focus:border-border"
           />
           <button
             class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             title="remove namespace"
-            onclick={() => (namespaceItems = namespaceItems.filter((_, j) => j !== i))}
+            onclick={() => (namespaceItems = namespaceItems.filter((row) => row.id !== item.id))}
           >
             <Trash2 class="size-4" />
           </button>
@@ -277,7 +283,7 @@
       <Button
         variant="ghost"
         size="sm"
-        onclick={() => (namespaceItems = [...namespaceItems, ''])}
+        onclick={() => (namespaceItems = [...namespaceItems, { id: namespaceRowId++, value: '' }])}
       >
         <Plus class="size-4" />
         Add namespace

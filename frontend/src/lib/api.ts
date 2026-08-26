@@ -171,6 +171,14 @@ export async function* streamChat(
       }
     }
   } finally {
+    // cancel aborts the response when the loop exits early (a parse error
+    // or a future consumer break); a normally-completed stream is already
+    // closed, so the cancel is a no-op there
+    try {
+      await reader.cancel()
+    } catch {
+      // the connection died on its own; nothing to abort
+    }
     reader.releaseLock()
   }
 }
