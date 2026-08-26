@@ -33,32 +33,6 @@
   let atBottom = $state(true)
   let rafId = 0
 
-  // the live round's collapsibles start open, but the user may collapse them
-  // mid-stream: a literal `open={true}` would re-open them on every streamed
-  // delta, so the open state lives here. A fresh round — the buffer going
-  // empty->non-empty (new round after a tool commit, or a retry wipe) —
-  // re-opens them; within a round the user's toggle wins.
-  let reasoningOpen = $state(true)
-  let toolCallOpen: boolean[] = $state([])
-  let prevReasoning = ''
-  let prevToolCalls = 0
-
-  $effect(() => {
-    const cur = store.streamReasoning
-    if (prevReasoning === '' && cur !== '') reasoningOpen = true
-    prevReasoning = cur
-  })
-
-  $effect(() => {
-    const cur = store.streamToolCalls.length
-    if (prevToolCalls === 0 && cur > 0) {
-      toolCallOpen = [true]
-    } else if (cur > prevToolCalls) {
-      toolCallOpen = [...toolCallOpen, true]
-    }
-    prevToolCalls = cur
-  })
-
   // switching chats always starts pinned to the bottom (fresh-mount
   // behavior), instead of inheriting the previous chat's scroll state
   $effect(() => {
@@ -133,11 +107,16 @@
     <div class="mx-auto flex w-full max-w-3xl flex-col px-4 pt-6 pb-10">
       {#each store.messages as message, i}
         <div class={messageSpacing(store.messages, i)}>
-          <MessageItem {message} index={i} onTruncate={(idx) => (truncateTarget = { chatId: store.chatId, index: idx })} />
+          <MessageItem
+            {message}
+            index={i}
+            committedOpen={i === store.committedRoundIndex ? store.committedPartOpen : null}
+            onTruncate={(idx) => (truncateTarget = { chatId: store.chatId, index: idx })}
+          />
         </div>
       {/each}
 
-      {#if store.streaming}
+      {#if store.streaming && !store.runEnding}
         <!-- the live round follows a tool chain without the big gap; the
              final stored form re-applies the spacing rules after reload -->
         <div class="w-full" class:mt-8={store.messages.at(-1)?.role !== 'tool_result'}>
@@ -146,8 +125,8 @@
               icon={Lightbulb}
               title="Reasoning"
               shimmer
-              open={reasoningOpen}
-              onOpenChange={(v) => (reasoningOpen = v)}
+              open={store.streamReasoningOpen}
+              onOpenChange={(v) => (store.streamReasoningOpen = v)}
             >
               <div class="text-sm text-muted-foreground">
                 <MarkdownContent text={store.streamReasoning} />
@@ -159,8 +138,8 @@
               icon={Wrench}
               title={call.name}
               shimmer
-              open={toolCallOpen[i] ?? true}
-              onOpenChange={(v) => (toolCallOpen[i] = v)}
+              open={store.streamToolCallsOpen[i] ?? true}
+              onOpenChange={(v) => (store.streamToolCallsOpen[i] = v)}
             >
               <pre
                 class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground"

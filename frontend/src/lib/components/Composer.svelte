@@ -46,6 +46,10 @@
       }
       reader.readAsDataURL(file)
     }
+    // a stale input value fires no change event for a re-pick of the same
+    // file (also after a failed send restores the draft): reset it so the
+    // picker always works
+    fileInput.value = ''
   }
 
   function onPaste(e: ClipboardEvent) {

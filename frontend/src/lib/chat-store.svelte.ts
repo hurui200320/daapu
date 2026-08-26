@@ -26,6 +26,30 @@ const DEFAULT_CHAT_TITLE = 'New chat'
 const STORAGE_KEY = 'daapu.model'
 
 /**
+ * Stable per-message identity for collapsible open-state tracking: role +
+ * the tool calls (name + args, in order; ids ignored — the display commit
+ * has none) + the joined text parts. Content-based because the `done` reload
+ * replaces every message object wholesale and a mid-run compaction shifts
+ * positions: the same round must keep its signature wherever it lands, and
+ * a different round must never inherit another's. The text join is
+ * coalescing-invariant (the display commit's single text part vs. the stored
+ * form's provider blocks join to the same string). Approximate identity,
+ * like [ChatStore.sameToolCalls] — identical content is indistinguishable
+ * by design (and visually too).
+ */
+export function roundSignature(m: ChatMessage): string {
+  if (m.role !== 'assistant') return `role:${m.role}`
+  const calls = m.parts
+    .filter((p): p is Extract<ChatMessagePart, { type: 'tool_call' }> => p.type === 'tool_call')
+    .map((c) => [c.tool, c.args])
+  const text = m.parts
+    .filter((p): p is Extract<ChatMessagePart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('')
+  return `assistant:${JSON.stringify(calls)}:${text}`
+}
+
+/**
  * All chat state + actions, shared by the sidebar (chat list CRUD), the chat
  * view (streaming) and the composer (model picker). The SSE event semantics
  * of the run loop are preserved verbatim from the previous ChatView
@@ -46,6 +70,42 @@ class ChatStore {
   models = $state<ModelInfo[]>([])
   messages = $state<ChatMessage[]>([])
 
+  // true while the open chat's history is being fetched: the chat view shows
+  // a loading placeholder instead of the empty state, so a chat with history
+  // never flashes "No messages yet" during the load
+  chatLoading = $state(false)
+
+  // display index of the just-committed round's assistant message: its
+  // collapsible blocks render per [committedPartOpen] (the live blocks they
+  // replace kept those states — a mid-stream collapse stays collapsed) until
+  // the next commit re-targets them or the next send settles the run. The
+  // index survives the done-reload by RELOCATING to the last committed round
+  // (an assistant message followed by a tool_result — compaction only ever
+  // shortens the history's prefix, never its tail) and is confirmed against
+  // the captured round via [sameToolCalls]; any doubt drops the marker
+  // instead of opening a different message's blocks. Reset on chat switches;
+  // a failed run never stores, so its reload drops the marker anyway.
+  committedRoundIndex = $state<number | null>(null)
+
+  // per-part open states of the marked round (see [committedRoundIndex]):
+  // each collapsible part starts at the open state its live block had at
+  // commit time, keyed by part type + ordinal within the type (`reasoning:0`,
+  // `tool_call:2`) — the stored form's part layout can differ from the
+  // display commit's coalesced one, so raw part indices would land on the
+  // wrong parts after the done-reload; the user's own toggle
+  // ([partOverridesBySignature]) wins over it
+  committedPartOpen = $state<Record<string, boolean> | null>(null)
+
+  // the user's own collapsible toggles per round, keyed by the round's
+  // identity signature ([roundSignature] — tool calls + text): a toggle wins
+  // over [committedPartOpen] and over the closed default. Store-level (not
+  // MessageItem-local) so the toggles follow the round across the
+  // done-reload and the marker's relocation — a compaction-shifted message
+  // at the same position never inherits another round's states. Cleared on
+  // chat switches only (NOT on send: toggles persist across runs, matching
+  // the old per-instance behavior).
+  partOverridesBySignature = $state<Record<string, Record<string, boolean>>>({})
+
   // the per-message model picker lives in the Composer; the state is lifted
   // here so the usage indicator can show the context of the model that will
   // process the next message
@@ -59,6 +119,19 @@ class ChatStore {
   personaOverride = $state<number | null>(null)
 
   streaming = $state(false)
+  // true once a terminal event (done/error) was received and the view is
+  // resyncing with the DB: the live round's buffers are stale/empty, so the
+  // live block must not render ("Processing…" shimmer after the run
+  // completed, or the failed round's partials) — but `streaming` stays true
+  // until the resync finishes so a pending route change cannot apply
+  // mid-reload (reloadFromDb's unconditional assignment would then render
+  // the wrong chat's messages under the new id)
+  runEnding = $state(false)
+  // the live round's collapsible open states (lifted from MessageList so the
+  // commit can carry them over to the stored blocks): a fresh round opens
+  // them, the user's mid-stream collapse stays collapsed until the round ends
+  streamReasoningOpen = $state(true)
+  streamToolCallsOpen = $state<boolean[]>([])
   streamReasoning = $state('')
   streamText = $state('')
   // tool calls of the round currently being streamed (uncommitted: wiped on retry)
@@ -188,17 +261,132 @@ class ChatStore {
   /**
    * Sync the view with whatever the DB actually holds. A failed reload must
    * not mask the run's own error, so keep the current display on failure.
+   * Returns whether the reload succeeded.
    */
-  private async reloadFromDb(id: string) {
+  private async reloadFromDb(id: string): Promise<boolean> {
     try {
       this.messages = await loadChat(id)
+      return true
     } catch {
       // keep the optimistic display; nothing better to show
+      return false
     }
+  }
+
+  /**
+   * The open state each collapsible part of the committed assistant message
+   * had as a live block: the commit must not snap them. Keyed by part type +
+   * ordinal within the type (not the raw part index): the display commit
+   * coalesces reasoning/text while the stored form keeps the provider's
+   * blocks, so raw indices would land on the wrong parts after the `done`
+   * reload. Must be read BEFORE wiping the streaming buffers.
+   */
+  private committedOpenFor(parts: ChatMessagePart[]): Record<string, boolean> {
+    const open: Record<string, boolean> = {}
+    let toolIndex = 0
+    for (const part of parts) {
+      if (part.type === 'reasoning') open['reasoning:0'] = this.streamReasoningOpen
+      else if (part.type === 'tool_call') {
+        open[`tool_call:${toolIndex}`] = this.streamToolCallsOpen[toolIndex] ?? true
+        toolIndex++
+      }
+    }
+    return open
+  }
+
+  /**
+   * Move the live round into the history as an assistant message, targeting
+   * the committed-round marker at it (its collapsibles keep their live open
+   * states). Returns the message's index, or null when the buffers hold
+   * nothing to commit. Callers wipe the streaming buffers afterwards.
+   */
+  private commitRound(): number | null {
+    const parts: ChatMessagePart[] = []
+    if (this.streamReasoning) parts.push({ type: 'reasoning', content: this.streamReasoning })
+    if (this.streamText) parts.push({ type: 'text', text: this.streamText })
+    for (const call of this.streamToolCalls) {
+      parts.push({ type: 'tool_call', id: '', tool: call.name, args: call.args })
+    }
+    if (parts.length === 0) return null
+    const assistantIndex = this.messages.length
+    this.messages = [...this.messages, { role: 'assistant', parts }]
+    this.committedRoundIndex = assistantIndex
+    this.committedPartOpen = this.committedOpenFor(parts)
+    return assistantIndex
+  }
+
+  /** Drop the committed-round marker and its open map (chat switches,
+   * truncation, forks, failed runs, a new send). */
+  private clearCommitted() {
+    this.committedRoundIndex = null
+    this.committedPartOpen = null
+  }
+
+  /** Record the user's toggle for a collapsible of the round with the given
+   * signature (see [partOverridesBySignature]). */
+  setPartOverride(signature: string, partKey: string, open: boolean) {
+    this.partOverridesBySignature = {
+      ...this.partOverridesBySignature,
+      [signature]: { ...this.partOverridesBySignature[signature], [partKey]: open },
+    }
+  }
+
+  /** Drop every user open-state toggle (chat switches): the map is keyed by
+   * round signature, not chat id, so a different chat's toggles must not
+   * leak in. */
+  private clearPartOverrides() {
+    this.partOverridesBySignature = {}
+  }
+
+  /**
+   * Approximate identity check for the committed-round marker after a
+   * successful `done` reload (there are no message ids). The display commit
+   * and the stored form keep the same tool calls (name + parsed args) in the
+   * same order — the strongest signal without ids; the args were both parsed
+   * from the same JSON text (the round's SSE event vs. the stored message),
+   * so stringify equality holds. Rounds WITHOUT tool calls never match: the
+   * marker is only ever set on committed rounds (which always carry at least
+   * one call), so a bare both-sides-zero match would prove nothing. The
+   * residual ambiguity — two different rounds with identical calls landing
+   * at the same position — only "wrongly keeps" a marker on a round that is
+   * visually indistinguishable from the real target; any other doubt drops
+   * the marker (the blocks fall back to their defaults).
+   */
+  private sameToolCalls(a: ChatMessage, b: ChatMessage): boolean {
+    const callsOf = (m: ChatMessage) =>
+      m.parts.filter((p): p is Extract<ChatMessagePart, { type: 'tool_call' }> => p.type === 'tool_call')
+    const ac = callsOf(a)
+    const bc = callsOf(b)
+    if (ac.length === 0 || bc.length === 0) return false
+    if (ac.length !== bc.length) return false
+    for (let i = 0; i < ac.length; i++) {
+      if (ac[i].tool !== bc[i].tool || JSON.stringify(ac[i].args) !== JSON.stringify(bc[i].args)) {
+        return false
+      }
+    }
+    return true
+  }
+
+  /**
+   * Structural position of the just-committed round in a stored chat: the
+   * LAST assistant message that is followed by a tool_result. A stored
+   * history's round structure pins the committed round exactly — a mid-run
+   * compaction only ever removes a PREFIX (the run's own rounds are appended
+   * after the server's last stored round and are stored whole at `done`), so
+   * the round's tail position is stable while its index is not.
+   */
+  private lastCommittedRoundIndex(): number | null {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i].role === 'assistant' && this.messages[i + 1]?.role === 'tool_result') {
+        return i
+      }
+    }
+    return null
   }
 
   private async loadMessages(id: string) {
     this.streamError = null
+    this.chatLoading = true
     try {
       const messages = await loadChat(id)
       // discard the response if the open chat changed mid-flight (a close or
@@ -207,6 +395,8 @@ class ChatStore {
       if (this.chatId === id) this.messages = messages
     } catch (e) {
       if (this.chatId === id) toastStore.push(String(e))
+    } finally {
+      if (this.chatId === id) this.chatLoading = false
     }
   }
 
@@ -222,6 +412,9 @@ class ChatStore {
     // the persona override is per-chat: the next chat starts from its record
     this.personaOverride = null
     this.messages = []
+    // the committed-round marker belongs to the previous chat's history
+    this.clearCommitted()
+    this.clearPartOverrides()
     void this.loadMessages(id)
   }
 
@@ -231,6 +424,11 @@ class ChatStore {
     this.personaOverride = null
     this.messages = []
     this.streamError = null
+    this.clearCommitted()
+    this.clearPartOverrides()
+    // a history load in flight for the closed chat must not leave the flag
+    // stuck (its finally skips the clear once the chat id no longer matches)
+    this.chatLoading = false
   }
 
   async createNewChat(): Promise<void> {
@@ -244,6 +442,13 @@ class ChatStore {
         ...this.knownChats,
       ]
       this.messages = []
+      this.clearCommitted()
+      this.clearPartOverrides()
+      // the new chat is empty by construction: no history fetch starts (the
+      // loading placeholder must not stay up for it), and an in-flight load
+      // for the previously open chat skips its finally-clear once the id no
+      // longer matches
+      this.chatLoading = false
       navigate(chatPath(id))
     } catch (e) {
       toastStore.push(String(e))
@@ -321,6 +526,11 @@ class ChatStore {
       await apiTruncateMessages(chatId, index)
       if (this.chatId === chatId) {
         this.messages = this.messages.slice(0, index)
+        // a committed round past the cut is gone; the marker must not point
+        // into the surviving history (or past its end)
+        if (this.committedRoundIndex != null && this.committedRoundIndex >= index) {
+          this.clearCommitted()
+        }
         // the failed turn is gone, so the run-failure banner goes with it
         this.streamError = null
       }
@@ -347,8 +557,16 @@ class ChatStore {
       this.knownChats = [chat, ...this.knownChats]
       if (this.chatId === id) {
         this.chatId = chat.id
+        this.personaOverride = null
         this.messages = this.messages.slice(0, index + 1)
         this.streamError = null
+        // the fork is a fresh chat: no committed-round marker or user
+        // open-state toggles carry over, and no history fetch starts (the
+        // slice IS the history), so the loading placeholder must not stay up
+        // for it
+        this.clearCommitted()
+        this.clearPartOverrides()
+        this.chatLoading = false
         navigate(chatPath(chat.id))
       }
     } catch (e) {
@@ -388,6 +606,11 @@ class ChatStore {
     this.streamReasoning = ''
     this.streamText = ''
     this.streamToolCalls = []
+    this.streamReasoningOpen = true
+    this.streamToolCallsOpen = []
+    // a new run settles the previous run's committed-round marker (its
+    // blocks fall back to closed unless the user opened them)
+    this.clearCommitted()
     this.streaming = true
     // optimistic: show the sent message right away; the final reload replaces
     // it with the stored form (and a failed run never reaches the store, so
@@ -415,6 +638,9 @@ class ChatStore {
           case 'tool_call':
             this.retrying = false
             this.streamToolCalls = [...this.streamToolCalls, JSON.parse(ev.data)]
+            // a new live tool block starts open (the committed round later
+            // inherits this state)
+            this.streamToolCallsOpen = [...this.streamToolCallsOpen, true]
             break
           case 'tool_result':
             // a tool result commits the current round: its assistant message
@@ -446,20 +672,16 @@ class ChatStore {
                   { ...last, parts: [...last.parts, resultPart] },
                 ]
               } else {
-                const parts: ChatMessagePart[] = []
-                if (this.streamReasoning) parts.push({ type: 'reasoning', content: this.streamReasoning })
-                if (this.streamText) parts.push({ type: 'text', text: this.streamText })
-                for (const call of this.streamToolCalls) {
-                  parts.push({ type: 'tool_call', id: '', tool: call.name, args: call.args })
-                }
-                this.messages = [
-                  ...this.messages,
-                  { role: 'assistant', parts },
-                  { role: 'tool_result', parts: [resultPart] },
-                ]
+                // commit the round's assistant message (its collapsibles keep
+                // their live open states), then attach the result; the next
+                // commit re-targets the marker, settling this round closed
+                this.commitRound()
+                this.messages = [...this.messages, { role: 'tool_result', parts: [resultPart] }]
                 this.streamReasoning = ''
                 this.streamText = ''
                 this.streamToolCalls = []
+                this.streamReasoningOpen = true
+                this.streamToolCallsOpen = []
               }
             }
             break
@@ -471,26 +693,66 @@ class ChatStore {
             this.streamReasoning = ''
             this.streamText = ''
             this.streamToolCalls = []
+            // the retried round's blocks start open again
+            this.streamReasoningOpen = true
+            this.streamToolCallsOpen = []
             break
-          case 'done':
+          case 'done': {
             sawDone = true
             this.retrying = false
-            // the server stores history only on success; reload it so the UI
-            // always matches the DB (covers tool-call rounds too). Uses the
-            // captured id, not the mutable input state. The successful store
-            // also stamped the chat's persona record, so refresh the chat
-            // list too — the picker would otherwise show the pre-run record
-            // until the next 30s/focus resync.
-            await this.reloadFromDb(id)
+            // hide the live block for the resync: the run is over, and the
+            // empty buffers would otherwise render a "Processing…" shimmer
+            // while the DB reload + chat-list refresh are in flight
+            this.runEnding = true
+            // capture the marker's target before the reload replaces the
+            // display: after a successful reload the round must still be
+            // findable, else the marker is dropped (see below)
+            const markerTarget =
+              this.committedRoundIndex != null ? this.messages[this.committedRoundIndex] : null
+            if (!(await this.reloadFromDb(id))) {
+              // the reload failed: commit the final round into the display
+              // (the buffers hold the only copy of the answer) so the view
+              // still shows the full run; the next resync or run replaces it
+              this.commitRound()
+              this.streamReasoning = ''
+              this.streamText = ''
+              this.streamToolCalls = []
+            } else if (markerTarget != null) {
+              // The successful store also stamped the chat's persona record,
+              // so refresh the chat list too — the picker would otherwise
+              // show the pre-run record until the next 30s/focus resync. The
+              // committed-round marker survives the reload by RELOCATING: a
+              // mid-run compaction shortens the stored history and shifts
+              // indices, so the captured round is re-located structurally
+              // (the last assistant message followed by a tool_result) and
+              // confirmed by its tool calls — the marker must never open a
+              // different message's blocks.
+              const idx = this.lastCommittedRoundIndex()
+              if (idx === null || !this.sameToolCalls(markerTarget, this.messages[idx])) {
+                this.clearCommitted()
+              } else {
+                this.committedRoundIndex = idx
+              }
+            }
             await this.resyncChats()
             break
+          }
           case 'error':
             failed = true
             this.retrying = false
+            this.runEnding = true
+            // the failed round's partials must not flash under the error
+            // banner while the reload below is in flight
+            this.streamReasoning = ''
+            this.streamText = ''
+            this.streamToolCalls = []
             this.streamError = JSON.parse(ev.data).message ?? ev.data
             // the run failed before storing, so the optimistic user message
             // and any committed tool rounds are not in the DB: reload to match
             await this.reloadFromDb(id)
+            // ... and the committed rounds are gone with it — the marker
+            // must not point into the reloaded (shorter) history
+            this.clearCommitted()
             break
         }
       }
@@ -499,6 +761,11 @@ class ChatStore {
         // server restarted mid-run): the run's outcome is unknown, so sync
         // with whatever the DB actually has and restore the draft
         failed = true
+        this.runEnding = true
+        this.streamReasoning = ''
+        this.streamText = ''
+        this.streamToolCalls = []
+        this.clearCommitted()
         await this.reloadFromDb(id)
         await this.resyncChats()
         this.streamError = 'connection closed before the run completed'
@@ -511,10 +778,13 @@ class ChatStore {
       // the more specific message — the banner or the finally fallback toast
       // carries it, so don't stack a second toast on top
       if (!this.streamError) toastStore.push(String(e))
+      this.runEnding = true
+      this.clearCommitted()
       await this.reloadFromDb(id)
       await this.resyncChats()
     } finally {
       this.streaming = false
+      this.runEnding = false
       // the pending route may close or switch the chat the moment the stream
       // ends (back/forward or URL edit mid-run): the error banner would be
       // wiped with the view (closeChat / loadMessages clear streamError), so

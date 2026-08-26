@@ -64,14 +64,14 @@
       <a
         title="personas"
         href="#/personas"
-        class={cn(iconBtn, route.name === 'personas' && 'bg-accent text-accent-foreground')}
+        class={cn(iconBtn, !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground')}
       >
         <UserRound class="size-5" />
       </a>
       <a
         title="eltm"
         href="#/eltm"
-        class={cn(iconBtn, route.name === 'eltm' && 'bg-accent text-accent-foreground')}
+        class={cn(iconBtn, !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground')}
       >
         <Network class="size-5" />
       </a>
@@ -187,11 +187,16 @@
       {/each}
     </div>
     <div class="border-t border-sidebar-border p-2">
+      <!-- while a run streams, the highlights stay with the stream: mid-run
+           chat-route changes are deferred until the run ends, so the chat
+           row follows store.chatId; the ELTM/personas links stay unmarked
+           even though their views can be opened mid-run (the chat view
+           stays mounted, CSS-hidden) -->
       <a
         href="#/personas"
         class={cn(
           buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
-          route.name === 'personas' && 'bg-accent text-accent-foreground'
+          !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground'
         )}
       >
         <UserRound class="size-4" />
@@ -201,7 +206,7 @@
         href="#/eltm"
         class={cn(
           buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
-          route.name === 'eltm' && 'bg-accent text-accent-foreground'
+          !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground'
         )}
       >
         <Network class="size-4" />

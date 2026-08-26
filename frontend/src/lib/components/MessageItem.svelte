@@ -1,6 +1,6 @@
 <script lang="ts">
   import { CheckCircle2, GitFork, Lightbulb, Trash2, Wrench, XCircle } from '@lucide/svelte'
-  import { chatStore as store } from '../chat-store.svelte'
+  import { chatStore as store, roundSignature } from '../chat-store.svelte'
   import type { ChatAttachmentPart, ChatMessage, ChatMessagePart, ChatToolResultPart } from '../types'
   import CollapsibleBlock from './CollapsibleBlock.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
@@ -9,7 +9,34 @@
     message,
     index,
     onTruncate,
-  }: { message: ChatMessage; index: number; onTruncate: (index: number) => void } = $props()
+    // open states of this message's collapsibles while it is the
+    // just-committed round ([chatStore.committedPartOpen]): the stored
+    // blocks keep the open states their live counterparts had at commit
+    // time (a mid-stream collapse stays collapsed); null when this message
+    // is not the marked round. Keyed by part type + ordinal within the
+    // type, like the store's override keys.
+    committedOpen = null,
+  }: {
+    message: ChatMessage
+    index: number
+    onTruncate: (index: number) => void
+    committedOpen?: Record<string, boolean> | null
+  } = $props()
+
+  // per-part open overrides for this message's collapsibles: the user's own
+  // toggle wins over [committedOpen] — the override records it so a re-render
+  // with the prop still set (e.g. a streamed delta elsewhere in the list)
+  // cannot force the block back open. The overrides live in the store, keyed
+  // by the message's round signature ([roundSignature]) and by part type +
+  // ordinal within the type (not the raw part index): the stored form's part
+  // layout can differ from the display commit's coalesced one, and the
+  // toggles must keep pointing at the same collapsible across the done-reload
+  // — and at the same ROUND, wherever a mid-run compaction relocates it to
+  // (a different round at the same position never inherits the toggles).
+  // Overrides are inert once the message no longer has the part: the blocks
+  // stay open only while the user keeps them open.
+  const signature = $derived(roundSignature(message))
+  const partOverrides = $derived(store.partOverridesBySignature[signature] ?? {})
 
   // history edits must never race the streaming buffers (the optimistic
   // user message / uncommitted tool rounds are not in the DB, so indices
@@ -46,6 +73,21 @@
 
   function argsText(args: Record<string, unknown>): string {
     return JSON.stringify(args, null, 2)
+  }
+
+  /**
+   * Stable identity of a part for open-state tracking: type + ordinal within
+   * the type. The display commit coalesces reasoning/text while the stored
+   * form keeps the provider's blocks, so a raw part index would lose track
+   * of a collapsible across the done-reload.
+   */
+  function partOrdinalKey(parts: ChatMessagePart[], pi: number): string {
+    const type = parts[pi].type
+    let ordinal = 0
+    for (let j = 0; j < pi; j++) {
+      if (parts[j].type === type) ordinal++
+    }
+    return `${type}:${ordinal}`
   }
 
   /**
@@ -86,11 +128,17 @@
   </div>
 {:else}
   <div class="group relative w-full">
-    {#each message.parts as part}
+    {#each message.parts as part, pi}
+      {@const partKey = partOrdinalKey(message.parts, pi)}
       {#if part.type === 'text' && part.text}
         <MarkdownContent text={part.text} />
       {:else if part.type === 'reasoning'}
-        <CollapsibleBlock icon={Lightbulb} title="Reasoning">
+        <CollapsibleBlock
+          icon={Lightbulb}
+          title="Reasoning"
+          open={partOverrides[partKey] ?? committedOpen?.[partKey] ?? false}
+          onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
+        >
           <div class="text-sm text-muted-foreground">
             <MarkdownContent text={part.content} />
           </div>
@@ -101,7 +149,12 @@
           <img class="max-h-80 max-w-full rounded-lg" src={src} alt="attachment" />
         {/if}
       {:else if part.type === 'tool_call'}
-        <CollapsibleBlock icon={Wrench} title={part.tool}>
+        <CollapsibleBlock
+          icon={Wrench}
+          title={part.tool}
+          open={partOverrides[partKey] ?? committedOpen?.[partKey] ?? false}
+          onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
+        >
           <pre
             class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground"
           >{argsText(part.args)}</pre>

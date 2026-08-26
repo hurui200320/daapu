@@ -13,9 +13,17 @@
       <p class="text-sm text-muted-foreground">Select a conversation or start a new one</p>
     </div>
   {:else if !showList}
-    <div class="flex flex-1 items-center justify-center px-4">
-      <p class="text-sm text-muted-foreground">No messages yet — say hello</p>
-    </div>
+    {#if store.chatLoading}
+      <!-- history still loading: a chat with messages must not flash the
+           empty state during the fetch -->
+      <div class="flex flex-1 items-center justify-center px-4">
+        <p class="text-sm text-muted-foreground">loading…</p>
+      </div>
+    {:else}
+      <div class="flex flex-1 items-center justify-center px-4">
+        <p class="text-sm text-muted-foreground">No messages yet — say hello</p>
+      </div>
+    {/if}
   {:else}
     <div class="min-h-0 flex-1">
       <MessageList />

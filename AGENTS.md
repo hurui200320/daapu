@@ -426,7 +426,14 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     Chat-route changes are ignored while a run streams; the pending route applies
     when the run ends — a run that failed after the route left the chat surfaces
     its error as a toast. Views stay mounted, CSS-hidden by route, so a live
-    stream and the composer draft survive tab switches.
+    stream and the composer draft survive tab switches. Sidebar highlights (chat
+    row, ELTM/personas links) follow the route EXCEPT while a run streams: the
+    streamed chat stays highlighted (mid-run chat-route changes are deferred
+    until the run ends) and the ELTM/personas links stay unmarked while the
+    stream is in flight, even though their views can be opened mid-run (the
+    chat view stays mounted, CSS-hidden). A chat switch shows a loading
+    placeholder (`chatLoading`) until the history arrives — a chat with
+    messages never flashes the empty state.
   - State in `src/lib/chat-store.svelte.ts` (module-scope singleton — `$effect`
     runes NOT usable there; model-picker persistence in `App.svelte`). An
     in-flight delete locks the chat read-only via `deletingIds` (backend memory
@@ -437,7 +444,26 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     `streamError`, ELTM view inline error). SSE semantics preserved verbatim:
     tool-round commits, retry wipes, DB resync on done/error/abnormal close,
     optimistic user message; a send that never stores restores the composer
-    draft. No client-side stop — the server only notices a disconnect on its next
+    draft. The just-committed round's collapsible blocks keep their live open
+    states (`committedRoundIndex` + `committedPartOpen` — keyed by part
+    type+ordinal, since the stored form's part layout can differ from the
+    display commit's coalesced one; a mid-stream collapse stays collapsed),
+    re-targeted by the next commit and settled by the next send; the marker
+    survives the `done` reload by RELOCATING to the last committed round (an
+    assistant message followed by a `tool_result` — a mid-run compaction
+    shortens the history but never reorders its tail) and is confirmed by
+    the captured round's tool calls, so it never opens a different message's
+    blocks. The user's own toggles live in `partOverridesBySignature`, keyed
+    by round identity (`roundSignature`: tool calls + joined text), so they
+    follow the round across reloads and relocations and are cleared on chat
+    switches. A failed reload commits the
+    final round into the display, and a failed run's reload drops the
+    uncommitted rounds and clears the marker. Terminal events
+    (`done`/`error`/abnormal
+    close) set `runEnding`, hiding the live block during the DB resync — no
+    "Processing…" shimmer after the run completed, no failed-round partials
+    flashing under the error banner. No client-side stop — the server only
+    notices a disconnect on its next
     event write. Chat list, model catalog, the personas list and the ELTM
     entity/relationship lists re-fetch every 30s and on window focus; each
     replaces its list only when the payload changed.
