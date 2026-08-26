@@ -267,8 +267,21 @@
       "required": [
         "investigator"
       ],
-      "description": "The sub-agent settings: the investigate agent (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that gathers information from the ELTM (read-only) and the web (MCP tools) on behalf of the main agent.",
+      "description": "The agent settings: the main (chat loop) agent and the investigate agent (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that gathers information from the ELTM (read-only) and the web (MCP tools) on behalf of the main agent.",
       "properties": {
+        "main": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The main (chat loop) agent settings. Today only the tool-result truncation cap that the loop's LengthSafeToolProvider (agent/tool/LengthSafeToolProvider.kt) enforces on every successful tool result.",
+          "properties": {
+            "toolResultLimit": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 40000,
+              "description": "The tool-result truncation cap in chars for the MAIN chat loop's LengthSafeToolProvider: a successful tool result whose merged text exceeds it is merged into one part, truncated to the cap (the truncation marker is budgeted INSIDE the cap; a cap smaller than the marker itself — a few tens of chars, unusable for real tool results anyway — yields the marker alone) and handed to the model as-is. Chars, not tokens, by design (token estimation is unreliable across providers/models); error results are never truncated (they are short failure descriptions the model needs verbatim to recover)."
+            }
+          }
+        },
         "investigator": {
           "type": "object",
           "additionalProperties": false,
@@ -297,6 +310,12 @@
                 "pattern": "^(?!.*__)[0-9a-z_-]+$"
               },
               "description": "The namespaces the investigate sub-agent may execute (a whitelist over its own tool set — the read-only eltm tools plus the MCP servers); required, non-empty, entries validated like any tool namespace (only [0-9a-z_-], no '__')."
+            },
+            "toolResultLimit": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 40000,
+              "description": "The tool-result truncation cap in chars for the sub-agent's own LengthSafeToolProvider (agent/tool/LengthSafeToolProvider.kt), wrapping its whitelisted tool set: a successful tool result whose merged text exceeds it is truncated to the cap (the truncation marker is budgeted INSIDE the cap; a cap smaller than the marker itself — a few tens of chars, unusable for real tool results anyway — yields the marker alone). Chars, not tokens, by design (token estimation is unreliable across providers/models); error results are never truncated (they are short failure descriptions the model needs verbatim to recover)."
             }
           }
         }

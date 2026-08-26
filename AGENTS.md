@@ -313,6 +313,33 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   stricter than the server on escaping entries: one fails the whole tree —
   the server never descends a symlink and would just list it as a file
   entry. No execution budget (0).
+- **Length-safe tool results** (`agent/tool/LengthSafeToolProvider.kt`,
+  config `agent.main.toolResultLimit` + `agent.investigator.toolResultLimit`):
+  a `ToolProvider` decorator capping the merged text of every SUCCESSFUL
+  tool result (a safety net against a server dumping megabytes into the
+  model's context — MCP servers rarely enforce their own output budgets).
+  The cap is in CHARS, not tokens, by design: token estimation is
+  unreliable across providers/models (tokenizers differ; no server-side
+  tokenizer in the hand), a char count is deterministic and cheap.
+  A result that fits the cap passes through untouched (no copy, no
+  reordering); one that exceeds it has its text parts merged into a single
+  part (in order, joined by newlines) and truncated, with the truncation
+  marker budgeted INSIDE the cap so the merged text fits it whenever the
+  cap is larger than the marker itself — a cap smaller than the marker
+  (a few tens of chars, unusable for real tool results anyway) returns the
+  marker alone. The cut never splits a UTF-16 surrogate pair (a dangling
+  high half is dropped, leaving the prefix one unit short of the cap).
+  Error results are never truncated, by design (a tool error
+  is a short, concise failure description — never a content dump, servers
+  return those as successful results — and the model needs it verbatim to
+  recover in the next round); attachments survive in their original order,
+  ahead of the merged text; `namespaces`/`specifications`/
+  `executionTimeoutSeconds` and the result's `id`/`tool`/`isError`
+  delegate untouched. Wired in the DI
+  module around the chat loop's combined set (the persona's per-request
+  `WhitelistedToolProvider` wraps the length-safe set) and around the
+  investigator's whitelisted set; the `toolResultLimit` caps are REQUIRED
+  positive (default 40000), fail fast at boot.
 - **Compaction & memory extraction** (`agent/oneshot/compaction/`,
   `agent/oneshot/eltm/MemoryExtractionService.kt`, wired in
   `agent/persist/PersistChatService.kt`, config under `memory.*`):
@@ -375,14 +402,17 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     REQUIRED and fails fast at boot the same way (must support tool calls),
     with its own round cap `agent.investigator.maxRounds` (`0` = unlimited;
     a `round_limit` stop is recovered by a no-tools summarization one-shot on
-    the same model, a `context_exhausted` stop by a tool-call trace). The
+    the same model, a `context_exhausted` stop by a tool-call trace) and its
+    own tool-result cap `agent.investigator.toolResultLimit`. The
     sub-agent's tool set is its OWN combined set (MCP + read-only `eltm`,
     built separately in the DI module — NOT the loop's set, which serves
     MCP + `gsg__investigate`) restricted by the REQUIRED non-empty
     `agent.investigator.allowedNamespaces` whitelist
     (validated like any tool namespace; an entry that set does not
     serve — including `gsg` itself, ruling out recursion — fails fast at
-    boot via the `WhitelistedToolProvider` construction).
+    boot via the `WhitelistedToolProvider` construction) and wrapped in
+    the length-safe provider (see the tools section above for
+    `LengthSafeToolProvider`).
     Writer/embedding knobs
     come from `memory.eltm.*` + `hand.*` (the embed timeout is the hand's
     `streamIdleTimeoutMs`). `title.lastNRound` (default `0`) caps history fed to

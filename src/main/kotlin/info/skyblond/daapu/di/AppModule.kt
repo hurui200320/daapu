@@ -20,6 +20,7 @@ import info.skyblond.daapu.agent.persist.GsgToolProvider
 import info.skyblond.daapu.agent.persist.MainAgentSystemPromptService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
+import info.skyblond.daapu.agent.tool.LengthSafeToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
 import info.skyblond.daapu.agent.tool.filesystem.FsToolProvider
 import info.skyblond.daapu.config.AppConfig
@@ -178,17 +179,27 @@ fun appModule(config: AppConfig): Module = module {
             }
         )
     }
+    // the chat loop's actual tool set: the combined set wrapped in the
+    // length-safe provider (`agent/tool/LengthSafeToolProvider.kt`), so
+    // every tool result the loop's model sees is capped at
+    // `agent.main.toolResultLimit` chars regardless of what the MCP
+    // servers return. The raw combined set stays registered for the
+    // persona service's servable-namespace snapshot.
+    single<LengthSafeToolProvider> {
+        LengthSafeToolProvider(get<CombinedToolProvider>(), config.agent.main.toolResultLimit)
+    }
     // the investigate sub-agent (`agent/oneshot/investigate/`): its tool
     // set is its OWN combined provider — the MCP servers plus the read-only
     // ELTM tools — restricted by the `agent.investigator.allowedNamespaces`
-    // whitelist. It is NOT the chat loop's set, deliberately: the loop no
-    // longer serves `eltm`, and a separate set means `gsg` is not
-    // whitelistable for the sub-agent, ruling out recursion automatically
-    // via the construction-time fail-fast. Resolved at boot like the other
-    // one-shot models (it is reachable from the graph root through
-    // `GsgToolProvider`): an unknown id, a model without tool-call support,
-    // or a whitelisted namespace this set does not serve (the
-    // `WhitelistedToolProvider` construction invariant) fails fast at
+    // whitelist and capped by the length-safe provider
+    // (`agent.investigator.toolResultLimit`). It is NOT the chat loop's set,
+    // deliberately: the loop no longer serves `eltm`, and a separate set
+    // means `gsg` is not whitelistable for the sub-agent, ruling out
+    // recursion automatically via the construction-time fail-fast. Resolved
+    // at boot like the other one-shot models (it is reachable from the graph
+    // root through `GsgToolProvider`): an unknown id, a model without
+    // tool-call support, or a whitelisted namespace this set does not serve
+    // (the `WhitelistedToolProvider` construction invariant) fails fast at
     // startup.
     single<InvestigatorService> {
         val investigator = config.agent.investigator
@@ -200,13 +211,15 @@ fun appModule(config: AppConfig): Module = module {
                 add(get<EltmToolProvider>())
             }
         )
+        val whitelist = WhitelistedToolProvider(combined, investigator.allowedNamespaces.toSet())
+        val toolProvider = LengthSafeToolProvider(whitelist, investigator.toolResultLimit)
         InvestigatorService(
             model = requiredLlm(
                 "agent.investigator.model", investigator.model,
                 toolLoopNote = "the investigate agent runs a tool loop",
             ),
             hand = get(),
-            toolProvider = WhitelistedToolProvider(combined, investigator.allowedNamespaces.toSet()),
+            toolProvider = toolProvider,
             maxRounds = investigator.maxRounds,
             maxRetries = config.hand.maxRetries,
             streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,

@@ -948,7 +948,7 @@ assertTrue(
     }
 
     @Test
-    fun `agent config decodes and defaults the round cap`() {
+    fun `agent config decodes and defaults the round cap and result limits`() {
         val decoded = decodeAppConfig(
             """
             {
@@ -956,13 +956,18 @@ assertTrue(
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                 "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
-                "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
+                "agent": { "main": { "toolResultLimit": 12345 }, "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t" }
             }
             """.trimIndent()
         ).agent
         assertEquals("bifrost/i", decoded.investigator.model)
         assertEquals(150, decoded.investigator.maxRounds, "maxRounds defaults to 150")
+        assertEquals(12345, decoded.main.toolResultLimit, "agent.main.toolResultLimit decodes")
+        assertEquals(
+            40000, decoded.investigator.toolResultLimit,
+            "agent.investigator.toolResultLimit defaults to 40000",
+        )
     }
 
     @Test
@@ -1068,6 +1073,19 @@ assertTrue(
             ).validate()
         }
         valid.copy(investigator = valid.investigator.copy(allowedNamespaces = listOf("eltm", "exa"))).validate()
+
+        // the tool-result truncation caps are REQUIRED positive (0 would
+        // break the LengthSafeToolProvider construction)
+        assertFailsWith<IllegalArgumentException> {
+            valid.copy(main = valid.main.copy(toolResultLimit = 0)).validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            valid.copy(investigator = valid.investigator.copy(toolResultLimit = -1)).validate()
+        }
+        valid.copy(
+            main = valid.main.copy(toolResultLimit = 1),
+            investigator = valid.investigator.copy(toolResultLimit = 1),
+        ).validate()
     }
 
     @Test

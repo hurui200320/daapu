@@ -128,7 +128,7 @@
       "maxWriterRounds": 150
     }
   },
-  // The sub-agents: the investigate agent
+  // The agents: the main (chat loop) agent and the investigate agent
   // (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that
   // gathers information from the ELTM (read-only) and the web (MCP tools)
   // on behalf of the main agent (which reaches it through the single
@@ -140,13 +140,28 @@
   // — or whitelisting "gsg" itself, which would enable recursion — fails
   // fast at boot).
   "agent": {
+    // The main (chat loop) agent: every successful tool result the loop's
+    // model sees is capped at toolResultLimit chars (merged text truncated
+    // to the cap, marker budgeted inside it — a cap too small to hold the
+    // marker, unusable for real tool results anyway, yields the marker
+    // alone). Chars, not tokens, by design (token estimation is
+    // unreliable across providers/models); error results are never
+    // truncated (they are short failure descriptions the model needs
+    // verbatim to recover). Must be positive.
+    "main": {
+      "toolResultLimit": 40000
+    },
     "investigator": {
       "model": "bifrost/cerebras/gemma-4-31b",
       // Round cap for the investigate tool loop; 0 = unlimited.
       "maxRounds": 150,
       // The namespaces the sub-agent may execute; entries validated like any
       // tool namespace (only [0-9a-z_-], no "__").
-      "allowedNamespaces": ["eltm", "exa"]
+      "allowedNamespaces": ["eltm", "exa"],
+      // The sub-agent's own tool-result truncation cap, like
+      // agent.main.toolResultLimit (chars, not tokens, by design; error
+      // results are never truncated). Must be positive.
+      "toolResultLimit": 40000
     }
   },
   // Session-title generation (agent/oneshot/TitleGenerator.kt): the model id

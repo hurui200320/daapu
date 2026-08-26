@@ -3,18 +3,48 @@ package info.skyblond.daapu.config
 import kotlinx.serialization.Serializable
 
 /**
- * The sub-agent settings: the investigate agent (`agent/oneshot/investigate/
- * InvestigatorService.kt`), a `runCollect` tool loop that gathers
- * information from the ELTM (read-only) and the web (MCP tools) on behalf
- * of the main agent.
+ * The agent settings: the main (chat loop) agent and the investigate
+ * sub-agent (`agent/oneshot/investigate/InvestigatorService.kt`, a
+ * `runCollect` tool loop that gathers information from the ELTM (read-only)
+ * and the web (MCP tools) on behalf of the main agent).
  */
 @Serializable
 data class AgentConfig(
+    /** The main (chat loop) agent settings. */
+    val main: MainAgentConfig = MainAgentConfig(),
     /** The investigate sub-agent settings. */
     val investigator: InvestigatorConfig,
 ) {
     fun validate() {
+        main.validate()
         investigator.validate()
+    }
+}
+
+/**
+ * The main (chat loop) agent settings. Today only the tool-result
+ * truncation cap that the loop's `LengthSafeToolProvider` (see
+ * `agent/tool/LengthSafeToolProvider.kt`) enforces on every successful
+ * tool result.
+ */
+@Serializable
+data class MainAgentConfig(
+    /**
+     * The tool-result truncation cap in chars for the MAIN chat loop's
+     * `LengthSafeToolProvider`: a successful tool result whose merged text
+     * exceeds it is merged into one part, truncated to the cap (the
+     * truncation marker is budgeted INSIDE the cap) and handed to the
+     * model as-is. Chars, not tokens, by design (token estimation is
+     * unreliable across providers/models); error results are never
+     * truncated (they are short failure descriptions the model needs
+     * verbatim to recover). Must be positive.
+     */
+    val toolResultLimit: Int = 40000,
+) {
+    fun validate() {
+        require(toolResultLimit > 0) {
+            "agent.main.toolResultLimit must be > 0, got $toolResultLimit"
+        }
     }
 }
 
@@ -43,6 +73,17 @@ data class InvestigatorConfig(
      * namespace.
      */
     val allowedNamespaces: List<String>,
+    /**
+     * The tool-result truncation cap in chars for the sub-agent's own
+     * `LengthSafeToolProvider` (see `agent/tool/LengthSafeToolProvider.kt`),
+     * wrapping its whitelisted tool set: a successful tool result whose
+     * merged text exceeds it is truncated to the cap. Chars, not tokens,
+     * by design (token estimation is unreliable across
+     * providers/models); error results are never truncated (they are
+     * short failure descriptions the model needs verbatim to recover).
+     * Must be positive.
+     */
+    val toolResultLimit: Int = 40000,
 ) {
     fun validate() {
         require(model.isNotBlank()) { "agent.investigator.model must not be blank" }
@@ -57,6 +98,9 @@ data class InvestigatorConfig(
                 "agent.investigator.allowedNamespaces entries must not be blank"
             }
             validateToolNamespaceSyntax(it, "agent.investigator.allowedNamespaces")
+        }
+        require(toolResultLimit > 0) {
+            "agent.investigator.toolResultLimit must be > 0, got $toolResultLimit"
         }
     }
 }

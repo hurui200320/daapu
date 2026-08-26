@@ -10,7 +10,7 @@ import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
-import info.skyblond.daapu.agent.tool.CombinedToolProvider
+import info.skyblond.daapu.agent.tool.LengthSafeToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
 import io.ktor.server.plugins.*
@@ -69,9 +69,12 @@ class ChatRunService(
     private val modelCatalog: ModelCatalog,
     private val titleGenerator: TitleGenerator,
     /**
-     * The chat loop's tool set: the MCP servers plus the
-     * `gsg__investigate` tool (`agent/persist/GsgToolProvider.kt`), the
-     * main agent's only access to the investigate sub-agent. The granular
+     * The chat loop's tool set: the combined set (the MCP servers plus the
+     * `gsg__investigate` tool, `agent/persist/GsgToolProvider.kt` — the
+     * main agent's only access to the investigate sub-agent) wrapped in
+     * the length-safe provider (`agent/tool/LengthSafeToolProvider.kt`,
+     * cap `agent.main.toolResultLimit`), so no tool result can blow the
+     * model's context no matter what the servers return. The granular
      * read-only ELTM tools (`eltm__*`, see
      * `agent/oneshot/eltm/EltmToolProvider.kt`) live in the sub-agent's
      * OWN tool set, not the loop's. The MCP child is only included when it
@@ -79,7 +82,7 @@ class ChatRunService(
      * this set per request in [prepareRun] (`WhitelistedToolProvider`); an
      * empty whitelist means the whole set, unfiltered.
      */
-    internal val chatToolProvider: CombinedToolProvider,
+    internal val chatToolProvider: LengthSafeToolProvider,
     /**
      * Persona resolution (the code-only default + the `personas` table) and
      * persona CRUD validation: every run's system prompt and tool whitelist
