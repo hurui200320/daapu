@@ -1,5 +1,6 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import kotlinx.serialization.json.JsonObject
@@ -46,8 +47,13 @@ internal fun streamEventCallback(
                         when (it) {
                             is ChatMessagePart.Text -> it.text
 
-                            // TODO: non-text content?
-                            is ChatMessagePart.Attachment -> "Show attachment is not supported yet"
+                            // the live SSE carries no attachment payload — the frontend
+                            // can only render it after the round's end (the `done` history
+                            // reload); images are the only kind the frontend renders
+                            is ChatMessagePart.Attachment -> when (it.kind) {
+                                AttachmentKind.Image -> "Image appears once the round finishes."
+                                else -> "Attachment is not displayed."
+                            }
                         }
                     })
                     put("isError", result.isError)

@@ -3,6 +3,7 @@
   import { chatStore as store, roundSignature } from '../chat-store.svelte'
   import type { ChatAttachmentPart, ChatMessage, ChatMessagePart, ChatToolResultPart } from '../types'
   import CollapsibleBlock from './CollapsibleBlock.svelte'
+  import ImageLightbox from './ImageLightbox.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
 
   let {
@@ -37,6 +38,32 @@
   // stay open only while the user keeps them open.
   const signature = $derived(roundSignature(message))
   const partOverrides = $derived(store.partOverridesBySignature[signature] ?? {})
+
+  // the image currently open in the fullscreen viewer, or null while closed;
+  // the trigger button is remembered so closing can return focus to it
+  let lightboxSrc = $state<string | null>(null)
+  let lightboxTrigger: HTMLButtonElement | null = null
+
+  // the viewer must never show an image that no longer belongs to this
+  // message: MessageItem is reconciled by index (unkeyed each in
+  // MessageList), so a history edit while the viewer is open — a mid-run
+  // compaction, a truncate, the done-reload — can re-target this component
+  // at a different message. Same-image-at-same-index reloads stay open.
+  $effect(() => {
+    const src = lightboxSrc
+    if (src === null) return
+    const stillThere = message.parts.some((p) => {
+      if (isImage(p)) return imageSrc(p) === src
+      if (p.type === 'tool_result') return p.parts.some((q) => isImage(q) && imageSrc(q) === src)
+      return false
+    })
+    if (!stillThere) lightboxSrc = null
+  })
+
+  function openLightbox(e: MouseEvent, src: string) {
+    lightboxTrigger = e.currentTarget as HTMLButtonElement | null
+    lightboxSrc = src
+  }
 
   // history edits must never race the streaming buffers (the optimistic
   // user message / uncommitted tool rounds are not in the DB, so indices
@@ -108,7 +135,15 @@
     {#each message.parts.filter(isImage) as img}
       {@const src = imageSrc(img)}
       {#if src}
-        <img class="h-40 max-w-full rounded-lg object-cover" src={src} alt="attachment" />
+        <button
+          type="button"
+          title="view fullscreen"
+          aria-label="view fullscreen"
+          class="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          onclick={(e) => openLightbox(e, src)}
+        >
+          <img class="block h-40 max-w-full rounded-lg object-cover" src={src} alt="attachment" />
+        </button>
       {/if}
     {/each}
     {#each message.parts.filter((p) => p.type === 'text') as part}
@@ -146,7 +181,15 @@
       {:else if isImage(part)}
         {@const src = imageSrc(part)}
         {#if src}
-          <img class="max-h-80 max-w-full rounded-lg" src={src} alt="attachment" />
+          <button
+            type="button"
+            title="view fullscreen"
+            aria-label="view fullscreen"
+            class="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            onclick={(e) => openLightbox(e, src)}
+          >
+            <img class="block max-h-80 max-w-full rounded-lg" src={src} alt="attachment" />
+          </button>
         {/if}
       {:else if part.type === 'tool_call'}
         <CollapsibleBlock
@@ -173,7 +216,15 @@
           {#each part.parts.filter(isImage) as img}
             {@const src = imageSrc(img)}
             {#if src}
-              <img class="mt-2 max-h-80 max-w-full rounded-lg" src={src} alt="attachment" />
+              <button
+                type="button"
+                title="view fullscreen"
+                aria-label="view fullscreen"
+                class="mt-2 inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                onclick={(e) => openLightbox(e, src)}
+              >
+                <img class="block max-h-80 max-w-full rounded-lg" src={src} alt="attachment" />
+              </button>
             {/if}
           {/each}
         </CollapsibleBlock>
@@ -197,4 +248,18 @@
       </button>
     {/if}
   </div>
+{/if}
+
+{#if lightboxSrc}
+  <ImageLightbox
+    src={lightboxSrc}
+    alt="attachment"
+    onClose={() => {
+      lightboxSrc = null
+      // the trigger may have been removed by a history edit while the
+      // viewer was open; focusing a detached element is a safe no-op
+      lightboxTrigger?.focus()
+      lightboxTrigger = null
+    }}
+  />
 {/if}

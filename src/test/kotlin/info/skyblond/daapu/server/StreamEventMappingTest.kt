@@ -1,5 +1,7 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.AttachmentContent
+import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import kotlinx.coroutines.runBlocking
@@ -96,6 +98,53 @@ class StreamEventMappingTest {
         val second = payload(events[1].second)
         assertEquals("search", str(second, "name"))
         assertEquals("true", str(second, "isError"))
+    }
+
+    @Test
+    fun `attachment results map to placeholder text`() {
+        val events = runBlocking {
+            eventsFor { cb ->
+                cb.onToolResults(
+                    listOf(
+                        ChatMessagePart.ToolResult(
+                            id = "call_img",
+                            tool = "read_image",
+                            parts = listOf(
+                                ChatMessagePart.Attachment(
+                                    kind = AttachmentKind.Image,
+                                    content = AttachmentContent.Base64("AAAA"),
+                                    mimeType = "image/png",
+                                ),
+                            ),
+                        ),
+                        ChatMessagePart.ToolResult(
+                            id = "call_audio",
+                            tool = "read_audio",
+                            parts = listOf(
+                                ChatMessagePart.Attachment(
+                                    kind = AttachmentKind.Audio,
+                                    content = AttachmentContent.Base64("BBBB"),
+                                    mimeType = "audio/mpeg",
+                                ),
+                            ),
+                        ),
+                    )
+                )
+            }
+        }
+        assertEquals(listOf("tool_result", "tool_result"), events.map { it.first })
+        // the live SSE carries no attachment payload — the frontend must wait for
+        // the round's end (the `done` history reload) to see the image
+        assertEquals(
+            "Image appears once the round finishes.",
+            str(payload(events[0].second), "content"),
+        )
+        // images are the only attachment kind the frontend renders; others are
+        // never shown, so the placeholder must not promise anything
+        assertEquals(
+            "Attachment is not displayed.",
+            str(payload(events[1].second), "content"),
+        )
     }
 
     @Test
