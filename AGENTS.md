@@ -443,7 +443,7 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   - Layout: collapsible glass sidebar (chat list + search filter + rename/delete
     dialogs, generate-title, personas + ELTM nav), centered `max-w-3xl` message
     column, floating rounded composer with circular send button (disabled while
-    streaming).
+    streaming, while the history loads, or without a selected model).
   - Routing: hash-based (`src/lib/router.svelte.ts`, zero deps — the hash never
     reaches the server, so any static host works without SPA fallback; the same
     reason llama.cpp's webui uses `router: hash`). Routes: `#/chat` (home),
@@ -463,7 +463,8 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     stream is in flight, even though their views can be opened mid-run (the
     chat view stays mounted, CSS-hidden). A chat switch shows a loading
     placeholder (`chatLoading`) until the history arrives — a chat with
-    messages never flashes the empty state.
+    messages never flashes the empty state, and the composer blocks sends
+    while the placeholder is up.
   - State in `src/lib/chat-store.svelte.ts` (module-scope singleton — `$effect`
     runes NOT usable there; model-picker persistence in `App.svelte`). An
     in-flight delete locks the chat read-only via `deletingIds` (backend memory
@@ -474,29 +475,26 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     `streamError`, ELTM view inline error). SSE semantics preserved verbatim:
     tool-round commits, retry wipes, DB resync on done/error/abnormal close,
     optimistic user message; a send that never stores restores the composer
-    draft. The just-committed round's collapsible blocks keep their live open
-    states (`committedRoundIndex` + `committedPartOpen` — keyed by part
-    type+ordinal, since the stored form's part layout can differ from the
-    display commit's coalesced one; a mid-stream collapse stays collapsed),
-    re-targeted by the next commit and settled by the next send; the marker
-    survives the `done` reload by RELOCATING to the last committed round (an
-    assistant message followed by a `tool_result` — a mid-run compaction
-    shortens the history but never reorders its tail) and is confirmed by
-    the captured round's tool calls, so it never opens a different message's
-    blocks. The user's own toggles live in `partOverridesBySignature`, keyed
+    draft (prepended to anything typed in the composer during the run).
+    Composer drafts are per-chat (`chatStore.drafts`, keyed by chat id —
+    the composer is one always-mounted component, so without the swap a
+    draft would leak across chat switches). The user's collapsible toggles
+    live in `partOverridesBySignature`, keyed
     by round identity (`roundSignature`: tool calls + joined text), so they
-    follow the round across reloads and relocations and are cleared on chat
-    switches. A failed reload commits the
+    follow the round across the done reload and mid-run compaction shifts,
+    and are cleared on chat switches. A failed reload commits the
     final round into the display, and a failed run's reload drops the
-    uncommitted rounds and clears the marker. Terminal events
+    uncommitted rounds. Terminal events
     (`done`/`error`/abnormal
     close) set `runEnding`, hiding the live block during the DB resync — no
     "Processing…" shimmer after the run completed, no failed-round partials
     flashing under the error banner. No client-side stop — the server only
     notices a disconnect on its next
-    event write. Chat list, model catalog, the personas list and the ELTM
-    entity/relationship lists re-fetch every 30s and on window focus; each
-    replaces its list only when the payload changed.
+    event write. Chat list, model catalog and the personas list re-fetch every
+    30s and on window focus; the ELTM entity/relationship lists re-fetch on the
+    same cadence only while the `#/eltm` view is visible (it stays mounted but
+    CSS-hidden elsewhere — polling starts on first visit and stops when the
+    view hides). Each list replaces itself only when the payload changed.
   - The persona picker (`PersonaDropdown.svelte`, next to the model picker in
     the Composer) selects the CURRENT chat's persona: a transient per-chat
     override on top of the chat's recorded `personaId`, always sent with the

@@ -75,12 +75,18 @@
   </main>
 </div>
 
-<!-- global error notifications (top-right stack; click to dismiss) -->
-<div class="pointer-events-none fixed right-4 top-4 z-50 flex w-80 flex-col gap-2">
+<!-- global notifications (top-right stack; click to dismiss) -->
+<div
+  class="pointer-events-none fixed right-4 top-4 z-50 flex w-80 flex-col gap-2"
+  role="status"
+  aria-live="polite"
+>
   {#each toastStore.toasts as toast (toast.id)}
     <button
       onclick={() => toastStore.dismiss(toast.id)}
-      class="pointer-events-auto w-full break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-left text-sm text-destructive shadow-md backdrop-blur-xl"
+      class="pointer-events-auto w-full break-words rounded-lg border px-3 py-2 text-left text-sm shadow-md backdrop-blur-xl {toast.kind === 'error'
+        ? 'border-destructive/50 bg-destructive/10 text-destructive'
+        : 'border-border/50 bg-muted/80 text-foreground'}"
     >
       {toast.message}
     </button>

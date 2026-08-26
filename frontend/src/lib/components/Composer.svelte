@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { ArrowUp, Paperclip, X } from '@lucide/svelte'
   import { chatStore as store } from '../chat-store.svelte'
   import { router } from '../router.svelte'
@@ -9,6 +10,29 @@
   let images = $state<{ dataUrl: string }[]>([])
   let fileInput: HTMLInputElement
   let textarea: HTMLTextAreaElement
+
+  // the chat the composer's current draft belongs to (null = not yet synced)
+  let draftChatId: string | null = null
+
+  // per-chat drafts: the composer stays mounted across chat switches, so the
+  // draft is swapped out of / into the store — otherwise text typed in one
+  // chat would leak into the next. Only the chat id is a dependency: the
+  // save/load reads run untracked, or every keystroke would re-run the swap.
+  $effect(() => {
+    const id = store.chatId
+    untrack(() => {
+      if (draftChatId === id) return
+      // a deleted chat's draft was dropped with it (chatStore.deleteChat):
+      // the switch-away save must not resurrect it
+      if (draftChatId !== null && !store.deletedChatIds.has(draftChatId)) {
+        store.drafts[draftChatId] = { text, images }
+      }
+      const draft = store.drafts[id]
+      text = draft?.text ?? ''
+      images = draft?.images ?? []
+      draftChatId = id
+    })
+  })
 
   // the active chat is being deleted (the backend extracts memories first,
   // which can take minutes): no message may be sent to it until it is gone
@@ -77,7 +101,19 @@
 
   async function submit() {
     const trimmed = text.trim()
-    if ((!trimmed && images.length === 0) || store.streaming || deleting) return
+    // no send while the history is still loading (an optimistic message sent
+    // before it arrives would be clobbered by the load), nor without a model
+    // (the server requires one — an empty id is a guaranteed 400)
+    if (
+      (!trimmed && images.length === 0) ||
+      store.streaming ||
+      deleting ||
+      store.chatLoading ||
+      !store.selectedModel
+    ) {
+      return
+    }
+    const chatId = store.chatId
     const draft = { text, images: [...images] }
     text = ''
     images = []
@@ -86,10 +122,17 @@
       stored = await store.send(trimmed, draft.images, store.selectedModel)
     } finally {
       // a rejected or failed send means the message wasn't stored: restore
-      // the draft instead of silently losing it
+      // the draft instead of silently losing it. The composer stays editable
+      // during the run, so prepend the restored draft to anything typed
+      // meanwhile instead of clobbering it; if the pending route switched
+      // the chat as the run ended, restore into that chat's draft slot
       if (!stored) {
-        text = draft.text
-        images = draft.images
+        if (store.chatId === chatId) {
+          text = text ? draft.text + '\n' + text : draft.text
+          images = draft.images
+        } else {
+          store.drafts[chatId] = draft
+        }
       }
     }
   }
@@ -159,7 +202,13 @@
       <button
         type="button"
         onclick={() => void submit()}
-        disabled={store.streaming || deleting || (!text.trim() && images.length === 0)}
+        disabled={
+          store.streaming ||
+          deleting ||
+          store.chatLoading ||
+          !store.selectedModel ||
+          (!text.trim() && images.length === 0)
+        }
         title="send"
         class="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
       >

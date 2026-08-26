@@ -10,32 +10,25 @@
     message,
     index,
     onTruncate,
-    // open states of this message's collapsibles while it is the
-    // just-committed round ([chatStore.committedPartOpen]): the stored
-    // blocks keep the open states their live counterparts had at commit
-    // time (a mid-stream collapse stays collapsed); null when this message
-    // is not the marked round. Keyed by part type + ordinal within the
-    // type, like the store's override keys.
-    committedOpen = null,
   }: {
     message: ChatMessage
     index: number
     onTruncate: (index: number) => void
-    committedOpen?: Record<string, boolean> | null
   } = $props()
 
   // per-part open overrides for this message's collapsibles: the user's own
-  // toggle wins over [committedOpen] — the override records it so a re-render
-  // with the prop still set (e.g. a streamed delta elsewhere in the list)
-  // cannot force the block back open. The overrides live in the store, keyed
-  // by the message's round signature ([roundSignature]) and by part type +
-  // ordinal within the type (not the raw part index): the stored form's part
-  // layout can differ from the display commit's coalesced one, and the
-  // toggles must keep pointing at the same collapsible across the done-reload
-  // — and at the same ROUND, wherever a mid-run compaction relocates it to
-  // (a different round at the same position never inherits the toggles).
-  // Overrides are inert once the message no longer has the part: the blocks
-  // stay open only while the user keeps them open.
+  // toggle wins over the closed default — the override records it so a
+  // re-render (e.g. a streamed delta elsewhere in the list) cannot force the
+  // block back open. The overrides live in the store, keyed by the message's
+  // round signature ([roundSignature]) and by part type + ordinal within the
+  // type (tool results key on their result id instead — see [partOrdinalKey];
+  // not the raw part index): the stored form's part layout can differ
+  // from the display commit's coalesced one, and the toggles must keep
+  // pointing at the same collapsible across the done-reload — and at the
+  // same ROUND, wherever a mid-run compaction relocates it to (a different
+  // round at the same position never inherits the toggles). Overrides are
+  // inert once the message no longer has the part: the blocks stay open only
+  // while the user keeps them open.
   const signature = $derived(roundSignature(message))
   const partOverrides = $derived(store.partOverridesBySignature[signature] ?? {})
 
@@ -104,12 +97,20 @@
 
   /**
    * Stable identity of a part for open-state tracking: type + ordinal within
-   * the type. The display commit coalesces reasoning/text while the stored
-   * form keeps the provider's blocks, so a raw part index would lose track
-   * of a collapsible across the done-reload.
+   * the type — except tool_result parts, which key on their result id. The
+   * display commit coalesces reasoning/text while the stored form keeps the
+   * provider's blocks, so a raw part index would lose track of a collapsible
+   * across the done-reload. A tool result's id is stable across the reload
+   * AND across the display's batching (a round's results share ONE display
+   * tool_result message but are stored one message per result — no
+   * message-level signature could reconcile that), so the id-keyed part
+   * lives under the shared `role:tool_result` signature bucket and the
+   * override follows the result wherever it lands.
    */
   function partOrdinalKey(parts: ChatMessagePart[], pi: number): string {
-    const type = parts[pi].type
+    const part = parts[pi]
+    if (part.type === 'tool_result') return `tool_result:${part.id}`
+    const type = part.type
     let ordinal = 0
     for (let j = 0; j < pi; j++) {
       if (parts[j].type === type) ordinal++
@@ -171,7 +172,7 @@
         <CollapsibleBlock
           icon={Lightbulb}
           title="Reasoning"
-          open={partOverrides[partKey] ?? committedOpen?.[partKey] ?? false}
+          open={partOverrides[partKey] ?? false}
           onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
         >
           <div class="text-sm text-muted-foreground">
@@ -195,7 +196,7 @@
         <CollapsibleBlock
           icon={Wrench}
           title={part.tool}
-          open={partOverrides[partKey] ?? committedOpen?.[partKey] ?? false}
+          open={partOverrides[partKey] ?? false}
           onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
         >
           <pre
@@ -207,6 +208,8 @@
           icon={part.isError ? XCircle : CheckCircle2}
           title={part.tool}
           subtitle={part.isError ? '(error)' : ''}
+          open={partOverrides[partKey] ?? false}
+          onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
         >
           {#if toolResultText(part)}
             <pre

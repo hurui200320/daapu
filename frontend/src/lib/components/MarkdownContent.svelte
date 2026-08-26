@@ -1,13 +1,45 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { cn } from '../utils'
   import { renderMarkdown } from '../markdown'
   import '../markdown.css'
 
-  type Props = { text: string; class?: string; [key: string]: unknown }
+  type Props = { text: string; live?: boolean; class?: string; [key: string]: unknown }
 
-  let { text, class: className = '', ...rest }: Props = $props()
+  let { text, live = false, class: className = '', ...rest }: Props = $props()
 
-  const html = $derived(renderMarkdown(text))
+  // Live mode (the streaming buffers): the pipeline below re-processes the
+  // WHOLE text per render (marked + highlight.js + KaTeX + DOMPurify), so
+  // re-rendering per streamed token is O(n^2) over a stream. Throttle to one
+  // render per interval, with a trailing render so the tail of a chunk burst
+  // still shows; the full final text always renders via the committed/stored
+  // message's non-live MarkdownContent once the round commits.
+  const LIVE_RENDER_INTERVAL_MS = 100
+  // the initial value is a deliberate one-time snapshot (the effect below
+  // owns all later updates) — untrack keeps that explicit
+  let rendered = $state(untrack(() => text))
+  let lastRender = 0
+
+  $effect(() => {
+    const latest = text
+    if (!live) {
+      rendered = latest
+      return
+    }
+    const elapsed = Date.now() - lastRender
+    if (elapsed >= LIVE_RENDER_INTERVAL_MS) {
+      lastRender = Date.now()
+      rendered = latest
+      return
+    }
+    const timer = setTimeout(() => {
+      lastRender = Date.now()
+      rendered = latest
+    }, LIVE_RENDER_INTERVAL_MS - elapsed)
+    return () => clearTimeout(timer)
+  })
+
+  const html = $derived(renderMarkdown(rendered))
 
   /**
    * The copy buttons inside the injected HTML are wired via event delegation

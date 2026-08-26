@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { untrack } from 'svelte'
   import { ChevronDown, ChevronRight } from '@lucide/svelte'
   import {
     getEntityNotes,
@@ -10,6 +10,7 @@
   } from '../api'
   import type { EltmNoteDto, EntityViewDto, RelationshipViewDto } from '../types'
   import { onIntervalAndFocus } from '../resync'
+  import { router } from '../router.svelte'
   import { errMsg } from '../utils'
   import Button from './ui/button.svelte'
 
@@ -38,11 +39,21 @@
   let entities = $state<EntityViewDto[]>([])
   let relationships = $state<RelationshipViewDto[]>([])
   let error = $state<string | null>(null)
+  // true until the FIRST list fetch settles: the empty states must not flash
+  // "no entities yet" while that first load is in flight
+  let initialLoading = $state(true)
+  // false until the view's first visit: the first visit loads the browse
+  // window, later visits resync (keeping the loaded pages)
+  let loadedOnce = false
   // true once the last fetch of a list came back short: no more pages. Lists
   // are fetched with a one-row probe (PAGE_SIZE + 1), so an exact PAGE_SIZE
   // server side is already known to be the last page — no no-op "load more"
   let entitiesFull = $state(false)
   let relationshipsFull = $state(false)
+  // true while a "load more" request is in flight: without the guard a
+  // double-click fires two requests at the same offset and appends both
+  // page copies
+  let loadingMore = $state(false)
   // per-card expand flags and lazily fetched drill-down payloads. Details are
   // refetched on every expand AND on every background resync while a card
   // stays expanded: the extraction pipeline writes server-side, so a cached
@@ -67,6 +78,8 @@
       relationshipsFull = r.full
     } catch (e) {
       error = errMsg(e)
+    } finally {
+      initialLoading = false
     }
   }
 
@@ -117,6 +130,10 @@
         fetchWindow(listEntities, entityLimit),
         fetchWindow(listRelationships, relationshipLimit),
       ])
+      // the fetch succeeded: a stale banner (e.g. the first visit's failed
+      // load) is resolved; a failed fetch keeps the current lists and any
+      // existing banner
+      error = null
       // the probe fetch always settles the full flag: a server that grew
       // past the loaded window leaves the window itself unchanged, so the
       // equality gates below would skip it (stale flag = no "load more")
@@ -167,6 +184,8 @@
   async function loadMoreEntities() {
     // like refresh(): clear stale errors so the list state stays the banner's
     // source of truth
+    if (loadingMore) return
+    loadingMore = true
     error = null
     try {
       const { rows, full } = await fetchMore(listEntities, entities.length)
@@ -174,10 +193,14 @@
       if (full) entitiesFull = true
     } catch (e) {
       error = errMsg(e)
+    } finally {
+      loadingMore = false
     }
   }
 
   async function loadMoreRelationships() {
+    if (loadingMore) return
+    loadingMore = true
     error = null
     try {
       const { rows, full } = await fetchMore(listRelationships, relationships.length)
@@ -185,12 +208,33 @@
       if (full) relationshipsFull = true
     } catch (e) {
       error = errMsg(e)
+    } finally {
+      loadingMore = false
     }
   }
 
-  onMount(() => {
-    void refresh()
-    return onIntervalAndFocus(30_000, () => void resync())
+  // Fetch + poll only while the view is visible (it stays mounted, CSS-hidden
+  // on the other routes): the first visit loads the browse window, later
+  // visits resync — and the 30s/focus cadence runs only while it is on
+  // screen, instead of polling an ELTM page the user never opens. The fetch
+  // calls read reactive state (entities/relationships lengths, the expanded
+  // maps) before their first await, so they must run inside `untrack`: an
+  // effect may depend on the route alone — a completed fetch or a card
+  // expand/collapse must not re-run the effect (a redundant resync + interval
+  // restart per interaction).
+  $effect(() => {
+    if (router.current.name !== 'eltm') return
+    let dispose = () => {}
+    untrack(() => {
+      if (loadedOnce) {
+        void resync()
+      } else {
+        loadedOnce = true
+        void refresh()
+      }
+      dispose = onIntervalAndFocus(30_000, () => void resync())
+    })
+    return () => dispose()
   })
 
   async function toggleEntity(id: number) {
@@ -260,7 +304,7 @@
     {/if}
 
     {#if tab === 'entities'}
-      {#if entities.length === 0}
+      {#if entities.length === 0 && !initialLoading && !error}
         <div class="py-10 text-center text-sm text-muted-foreground">no entities yet</div>
       {/if}
 
@@ -355,11 +399,11 @@
       {/each}
       {#if !entitiesFull && entities.length >= PAGE_SIZE}
         <div class="flex justify-center">
-          <Button size="sm" variant="ghost" onclick={loadMoreEntities}>Load more</Button>
+          <Button size="sm" variant="ghost" disabled={loadingMore} onclick={loadMoreEntities}>Load more</Button>
         </div>
       {/if}
     {:else}
-      {#if relationships.length === 0}
+      {#if relationships.length === 0 && !initialLoading && !error}
         <div class="py-10 text-center text-sm text-muted-foreground">no relationships yet</div>
       {/if}
 
@@ -427,7 +471,7 @@
       {/each}
       {#if !relationshipsFull && relationships.length >= PAGE_SIZE}
         <div class="flex justify-center">
-          <Button size="sm" variant="ghost" onclick={loadMoreRelationships}>Load more</Button>
+          <Button size="sm" variant="ghost" disabled={loadingMore} onclick={loadMoreRelationships}>Load more</Button>
         </div>
       {/if}
     {/if}

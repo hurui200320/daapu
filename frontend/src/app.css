@@ -80,11 +80,14 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    /* scrollbar-width does not inherit, and the real scroll containers are
+       the inner overflow panes, not body — the webkit 6px style below is
+       global, so Firefox's thin scrollbars must be too */
+    scrollbar-width: thin;
   }
 
   body {
     @apply bg-background text-foreground;
-    scrollbar-width: thin;
     scrollbar-gutter: stable;
   }
 

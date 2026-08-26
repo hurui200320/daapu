@@ -29,7 +29,7 @@
   let previewExpanded = $state<Record<number, boolean>>({})
 
   // the persona id whose raw text was just copied ("Copied!" feedback)
-  let copiedId = $state<number | ''>('')
+  let copiedId = $state<number | null>(null)
 
   // form state of the prompt editor (seeded on open via the dialog binding)
   let editorName = $state('')
@@ -56,9 +56,16 @@
     const target = promptEditor
     if (!target || editorBusy) return
     editorBusy = true
-    const ok = target === 'new'
-      ? await personaStore.create(editorName, editorPrompt, [])
-      : await personaStore.update(target.id, editorName, editorPrompt, target.allowedNamespaces)
+    let ok: boolean
+    if (target === 'new') {
+      ok = await personaStore.create(editorName, editorPrompt, [])
+    } else {
+      // merge onto the FRESH row: the 30s resync or another tab may have
+      // edited the fields this dialog does not touch while it was open —
+      // saving the captured copy would silently clobber those edits
+      const fresh = personaStore.personas.find((p) => p.id === target.id) ?? target
+      ok = await personaStore.update(target.id, editorName, editorPrompt, fresh.allowedNamespaces)
+    }
     editorBusy = false
     if (ok) promptEditor = null
   }
@@ -72,13 +79,10 @@
     const target = namespacesTarget
     if (!target || namespacesBusy) return
     namespacesBusy = true
+    // merge onto the FRESH row (same reason as savePromptEditor)
+    const fresh = personaStore.personas.find((p) => p.id === target.id) ?? target
     const items = namespaceItems.map((i) => i.value.trim()).filter((i) => i.length > 0)
-    const ok = await personaStore.update(
-      target.id,
-      target.name,
-      target.systemPrompt,
-      items,
-    )
+    const ok = await personaStore.update(target.id, fresh.name, fresh.systemPrompt, items)
     namespacesBusy = false
     if (ok) namespacesTarget = null
   }
@@ -103,7 +107,7 @@
     }
     copiedId = id
     setTimeout(() => {
-      if (copiedId === id) copiedId = ''
+      if (copiedId === id) copiedId = null
     }, 1500)
   }
 </script>

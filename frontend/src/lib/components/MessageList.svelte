@@ -103,7 +103,6 @@
           <MessageItem
             {message}
             index={i}
-            committedOpen={i === store.committedRoundIndex ? store.committedPartOpen : null}
             onTruncate={(idx) => (truncateTarget = { chatId: store.chatId, index: idx })}
           />
         </div>
@@ -122,7 +121,7 @@
               onOpenChange={(v) => (store.streamReasoningOpen = v)}
             >
               <div class="text-sm text-muted-foreground">
-                <MarkdownContent text={store.streamReasoning} />
+                <MarkdownContent text={store.streamReasoning} live />
               </div>
             </CollapsibleBlock>
           {/if}
@@ -140,7 +139,7 @@
             </CollapsibleBlock>
           {/each}
           {#if store.streamText}
-            <MarkdownContent text={store.streamText} />
+            <MarkdownContent text={store.streamText} live />
           {/if}
           {#if store.retrying}
             <div class="text-xs italic text-muted-foreground">stream hiccup, retrying…</div>

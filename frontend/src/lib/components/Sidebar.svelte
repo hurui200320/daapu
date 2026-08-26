@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Bot, Loader2, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2, UserRound } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
+  import { SvelteSet } from 'svelte/reactivity'
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
   import { chatHref, router } from '../router.svelte'
@@ -14,8 +15,9 @@
   let renameTarget = $state<ChatInfo | null>(null)
   let deleteTarget = $state<ChatInfo | null>(null)
   // in-flight title generations per chat id: concurrent generations on
-  // different chats each keep their own spinner
-  const titleGeneratingIds = $state<Set<string>>(new Set())
+  // different chats each keep their own spinner (SvelteSet: a native Set
+  // under $state is not proxied, so mutations would never re-render)
+  const titleGeneratingIds = new SvelteSet<string>()
 
   $effect(() => {
     localStorage.setItem('daapu.sidebar-collapsed', String(collapsed))
@@ -57,7 +59,7 @@
       <button title="expand sidebar" class={iconBtn} onclick={() => (collapsed = false)}>
         <PanelLeftOpen class="size-5" />
       </button>
-      <button title="new chat" class={iconBtn} disabled={store.streaming} onclick={() => void store.createNewChat()}>
+      <button title="new chat" class={iconBtn} disabled={store.streaming || store.creatingChat} onclick={() => void store.createNewChat()}>
         <SquarePen class="size-5" />
       </button>
       <div class="flex-1"></div>
@@ -87,7 +89,7 @@
     <div class="space-y-2 px-2 pb-2">
       <button
         class={buttonVariants({ size: 'sm', class: 'w-full justify-start' })}
-        disabled={store.streaming}
+        disabled={store.streaming || store.creatingChat}
         onclick={() => void store.createNewChat()}
       >
         <SquarePen class="size-4" />
@@ -134,8 +136,11 @@
             <span class="block truncate text-sm font-medium">{chat.title}</span>
           </a>
           <DropdownMenu.Root>
+            <!-- the menu stays live while a run streams: only the chat
+                 SWITCH needs the lock (the stream renders into
+                 store.messages) — rename/title take no backend lock, and
+                 acting on a different chat never touches the run -->
             <DropdownMenu.Trigger
-              disabled={store.streaming}
               class="mr-1 rounded-md p-1 text-muted-foreground opacity-0 transition hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 no-hover:opacity-100 disabled:pointer-events-none"
               title="chat actions"
             >
@@ -174,7 +179,7 @@
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive disabled:pointer-events-none disabled:opacity-40"
-                  disabled={store.deletingIds.has(chat.id)}
+                  disabled={store.deletingIds.has(chat.id) || (store.streaming && chat.id === store.chatId)}
                   onSelect={() => (deleteTarget = chat)}
                 >
                   <Trash2 class="size-3.5" />

@@ -61,6 +61,33 @@ renderer.code = ({ text, lang }) => {
   ].join('')
 }
 
+renderer.link = function ({ href, title, tokens }) {
+  // chat links must not navigate the app away (a plain <a> would unload the
+  // SPA): open in a new tab, and never hand the new tab a window reference
+  // (tabnabbing). The attributes are emitted here for markdown-syntax links
+  // and forced on every surviving anchor (raw HTML included) by the DOMPurify
+  // hook below. The parser must come from `this` (a regular function, not an
+  // arrow): marked.use copies this method onto an internal wrapper renderer
+  // and assigns `parser` only to that wrapper — the closure's `renderer`
+  // instance never gets one.
+  const text = this.parser?.parseInline(tokens) ?? ''
+  const attrs = `href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer"`
+  return `<a ${attrs}${title ? ` title="${escapeHtml(title)}"` : ''}>${text}</a>`
+}
+
+// DOMPurify strips `target` by default (a tabnabbing vector on its own), so
+// the sanitize call re-allows it — and this hook then forces every surviving
+// anchor to open in a new tab with noopener noreferrer: raw-HTML links with
+// no target would otherwise navigate the SPA away in the same tab, a
+// self-authored target (e.g. `target="_self"`) is the same vector, and a
+// target without rel is tabnabbing.
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A' || node.tagName === 'AREA') {
+    node.setAttribute('target', '_blank')
+    node.setAttribute('rel', 'noopener noreferrer')
+  }
+})
+
 marked.use({ renderer })
 
 /*
@@ -117,5 +144,5 @@ marked.use({ extensions: [mathExtension] })
 
 export function renderMarkdown(text: string): string {
   const html = marked.parse(text, { async: false }) as string
-  return DOMPurify.sanitize(html)
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })
 }
