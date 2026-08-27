@@ -1,12 +1,12 @@
 package info.skyblond.daapu.hand
 
-import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
+import info.skyblond.daapu.testutil.testLlm
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.json.JsonObject
@@ -23,12 +23,7 @@ import kotlin.test.*
  */
 class HandServiceTest {
 
-    private fun model() = ModelCatalog(
-        mapOf(
-            "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
-            "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test"),
-        )
-    ).findModel("bifrost/cerebras/gemma-4-31b")!!
+    private fun model() = testLlm("bifrost/cerebras/gemma-4-31b")
 
     private fun runRequest(
         runId: String? = null,

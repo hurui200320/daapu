@@ -1,26 +1,20 @@
 package info.skyblond.daapu.agent.oneshot.compaction
 
-import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.currentPromptTokens
 import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.testutil.testHandService
+import info.skyblond.daapu.testutil.testLlm
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlin.test.*
 
 class ChatCompactionServiceTest {
 
-    private fun model(id: String = "bifrost/cerebras/gemma-4-31b") = ModelCatalog(
-        mapOf(
-            "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
-            "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test"),
-        )
-    ).findModel(id)!!
+    private fun model(id: String = "bifrost/cerebras/gemma-4-31b") = testLlm(id)
 
     private fun compactor(
         hand: FakeHand = FakeHand(),

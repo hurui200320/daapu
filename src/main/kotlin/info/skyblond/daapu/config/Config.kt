@@ -135,3 +135,23 @@ fun validateToolNamespaceSyntax(namespace: String, owner: String) {
  * output dimensions must only not exceed this limit).
  */
 const val MAX_VECTOR_DIMENSIONS: Int = 2000
+
+/**
+ * The canonical bounds check for an embedding model's output dimensions,
+ * shared by the config layer (`LlmProviderConfig`) and the runtime type
+ * (`agent/model/EmbeddingModel.kt`) so the contract has ONE source of truth.
+ * Throws [IllegalArgumentException] when [dimensions] is unusable: it must be
+ * positive and at most [MAX_VECTOR_DIMENSIONS] — pgvector's HNSW limit for
+ * the `vector` type, the fixed ELTM column width (shorter vectors are
+ * zero-padded on write, wider ones would not fit). [owner] prefixes the
+ * violation message with the caller's location so the error points at the
+ * offending entry: the config path (`providers['<id>'].embedding[<i>]`) or
+ * the runtime model's composite id.
+ */
+fun checkEmbeddingDimensions(dimensions: Int, owner: String) {
+    if (dimensions <= 0) throw IllegalArgumentException("$owner.dimensions must be > 0, got $dimensions")
+    if (dimensions > MAX_VECTOR_DIMENSIONS) throw IllegalArgumentException(
+        "$owner.dimensions must be at most $MAX_VECTOR_DIMENSIONS (pgvector's HNSW limit " +
+                "for the vector type, the fixed ELTM column width), got $dimensions"
+    )
+}

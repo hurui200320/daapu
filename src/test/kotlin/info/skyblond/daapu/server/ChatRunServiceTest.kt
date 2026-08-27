@@ -19,6 +19,7 @@ import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.config.MemoryConfig
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.config.testLlmEntries
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
@@ -369,14 +370,34 @@ class ChatRunServiceTest {
     }
 
     @Test
-    fun `a config without the providers fails fast at construction`() {
-        // the catalog pins its models to the bifrost gateway and the
-        // deepinfra embedding provider (see ModelCatalog.kt); a config
-        // without them is a wiring bug
+    fun `a catalog without any llm model fails fast at construction`() {
+        // the catalog is built from the config's provider entries: a config
+        // with no chat model at all cannot serve any request, so the
+        // catalog construction fails fast instead of degrading every run
         val e = assertIs<IllegalArgumentException>(
             assertFailsFast { chatRunService(testAppConfig().copy(providers = emptyMap())) }
         )
-        assertEquals("ModelCatalog requires a provider with id 'bifrost'", e.message)
+        assertTrue(
+            e.message!!.contains("providers.<id>.llm"),
+            "the error should name the missing config surface: ${e.message}"
+        )
+    }
+
+    @Test
+    fun `a duplicated model id fails fast at construction`() {
+        // model ids are the lookup keys (per kind and across the whole
+        // catalog): a duplicate would make findModel ambiguous
+        val duplicated = testAppConfig().providers.getValue("bifrost")
+            .copy(llm = testLlmEntries().take(1) + testLlmEntries().take(1))
+        val e = assertIs<IllegalArgumentException>(
+            assertFailsFast {
+                chatRunService(testAppConfig().copy(providers = mapOf("bifrost" to duplicated)))
+            }
+        )
+        assertTrue(
+            e.message!!.contains("Duplicate model id"),
+            "the error should name the collision: ${e.message}"
+        )
     }
 
     @Test

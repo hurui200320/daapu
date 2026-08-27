@@ -62,8 +62,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     unlimited); the response MUST carry one vector per
     input, realigned by the provider's `index` — a gateway that collapses/
     duplicates/gaps/misses indexes fails as `upstream`. Kotlin:
-    `agent/model/EmbeddingModel.kt` (catalog entry
-    `bifrost/zenmux sub/google/gemini-embedding-2`, 1536 dims; the gateway
+    `agent/model/EmbeddingModel.kt` (catalog entry from the config's
+    `providers.<id>.embedding`, e.g. `bifrost/zenmux sub/google/gemini-embedding-2`,
+    1536 dims; the gateway
     honors a `dimensions` field), `hand/HandClient.embed` (→
     `EmbeddingException`), `hand/HandService.embed` (per-call knobs; transport
     failures → `EmbeddingException("upstream")`; fail-fast on dimensions ≠
@@ -73,7 +74,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   `ChatRunService.prepareRun` validates (model AND personaId REQUIRED per
   message, no server default), `runChat` runs the turn loop
   (`agent/persist/PersistChatService.kt`).
-  Catalog (`agent/ModelCatalog.kt`) and chat store are built once and shared;
+  Catalog (`agent/ModelCatalog.kt`, built from the config's
+  `providers.<id>.llm/embedding` entries — at least one LLM entry required,
+  duplicate composite ids fail fast) and chat store are built once and shared;
   the system prompt is rendered per run and travels out of band (no `system`
   role; stored chats never contain it). SSE from `server/WebServer.kt` (incl.
   `tool_call`/`tool_result` echoes), flushed with a `comment` event before the
@@ -346,7 +349,9 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
   - Proactive trigger: before the round, when `currentPromptTokens(chat)` (last
     assistant message's provider-reported `meta.inputTokens` — usage REQUIRED on
     every hand response) exceeds `compactionTriggerFraction × model.contextLength`
-    (0.75–0.8 in `agent/model/LLM.kt`; `0` disables); the not-yet-appended input
+    (per-entry config fields under `providers.<id>.llm`, e.g. 0.75–0.8 in
+    `config.example.jsonc`; `agent/model/LLM.kt` owns the `[0,1]`/`>=1`
+    contract; `0` disables); the not-yet-appended input
     isn't counted. Reactive fallback: EVERY hand `context_exhausted` round
     compacts and retries — no attempt cap; a compaction that fails or returns a
     non-clean summary throws and fails the run.

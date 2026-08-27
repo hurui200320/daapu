@@ -11,11 +11,79 @@
     "user": "postgres",
     "password": "postgres"
   },
-  // The OpenAI-compatible LLM gateway; should end with /v1
+  // The OpenAI-compatible LLM gateway(s); each baseUrl should end with /v1.
+  // The MODEL CATALOG lives here too: "llm" entries are the chat models the
+  // UI can select per message ("llm[].modelId" joins the provider key into
+  // the wire-visible id "{provider}/{modelId}"), "embedding" entries are
+  // referenced by memory.eltm.embeddingModel. At least one "llm" entry is
+  // REQUIRED overall (the empty-catalog case fails fast at boot), and every
+  // entry's fields are required: contextLength/maxOutputTokens budget the
+  // run loop's exhaustion classification, capabilities gate attachments and
+  // tool loops ("image", "video", "audio", "document", "tool_calls",
+  // "reasoning:<effort>" with effort minimal/low/medium/high/xhigh/max;
+  // at most one "reasoning:" entry per model),
+  // compactionTriggerFraction/compactionKeepRounds tune per-model proactive
+  // compaction. Duplicate composite ids fail fast at boot.
   "providers": {
     "bifrost": {
       "apiKey": "replace-me",
-      "baseUrl": "http://localhost:8000/v1"
+      "baseUrl": "http://localhost:8000/v1",
+      "llm": [
+        {
+          "modelId": "cerebras/gpt-oss-120b",
+          "contextLength": 131000,
+          "maxOutputTokens": 40000,
+          "capabilities": ["reasoning:high", "tool_calls"],
+          "compactionTriggerFraction": 0.75,
+          "compactionKeepRounds": 2
+        },
+        {
+          "modelId": "cerebras/gemma-4-31b",
+          "contextLength": 131072,
+          "maxOutputTokens": 40000,
+          "capabilities": ["image", "reasoning:high", "tool_calls"],
+          "compactionTriggerFraction": 0.75,
+          "compactionKeepRounds": 2
+        },
+        {
+          "modelId": "novita/google/gemma-4-31b-it",
+          "contextLength": 262144,
+          "maxOutputTokens": 131072,
+          "capabilities": ["image", "reasoning:high", "tool_calls"],
+          "compactionTriggerFraction": 0.8,
+          "compactionKeepRounds": 3
+        }
+      ],
+      // The embedding entry's dimensions pin the output size of every
+      // /v1/embed request (this gateway honors a dimensions request field);
+      // for other providers check the dimensions field first. Must stay
+      // <= 2000 (pgvector's HNSW limit — the ELTM columns are vector(2000)
+      // and shorter vectors are zero-padded).
+      "embedding": [
+        {
+          "modelId": "zenmux sub/google/gemini-embedding-2",
+          "dimensions": 1536
+        }
+      ]
+    },
+    // A second gateway may carry only one kind of entry; it can be removed
+    // entirely when unused. In this example memory.eltm.embeddingModel below
+    // references the BIFROST embedding entry — this block only shows an
+    // embedding-only provider (deepinfra's own Qwen embeddings would need
+    // its id here to be served).
+    "deepinfra": {
+      "apiKey": "replace-me",
+      "baseUrl": "https://api.deepinfra.com/v1/openai/",
+      "embedding": [
+        {
+          "modelId": "Qwen/Qwen3-Embedding-8B",
+          "dimensions": 1536,
+          // Optional extra root-level fields merged into every /v1/embed
+          // gateway request body (gateway-specific knobs; keys colliding
+          // with the hand-managed model/input/dimensions fail at boot):
+          // "additionalProperties": { "service_tier": "priority" }
+        }
+      ]
     }
   },
   // The HTTP API server; the frontend dev server proxies /api to this port

@@ -51,6 +51,14 @@ class LLM(
     val id = "${provider.id}/$modelId"
 
     init {
+        // budgets self-label with the field name, mirroring LlmModelEntryConfig.validate
+        // (which enforces the same bounds at config load with the entry path)
+        require(contextLength > 0) {
+            "ContextLength must be > 0, got $contextLength"
+        }
+        require(maxOutputTokens > 0) {
+            "MaxOutputTokens must be > 0, got $maxOutputTokens"
+        }
         require(compactionTriggerFraction in 0.0..1.0) {
             "CompactionTriggerFraction must be in [0, 1], got $compactionTriggerFraction"
         }

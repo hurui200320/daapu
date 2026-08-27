@@ -1,6 +1,7 @@
 package info.skyblond.daapu.config
 
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -195,6 +196,65 @@ class ConfigTest {
     }
 
     @Test
+    fun `provider model entries decode under their provider`() {
+        // the catalog lives in the config now (providers.*.llm/embedding):
+        // the entries must decode with every field, nested under the gateway
+        // that serves them (a dangling entry naming a nonexistent provider is
+        // structurally impossible)
+        val config = decodeAppConfig(
+            """
+            {
+                "database": { "url": "u", "user": "p", "password": "p" },
+                "providers": {
+                    "bifrost": {
+                        "apiKey": "k",
+                        "baseUrl": "http://h",
+                        "llm": [
+                            {
+                                "modelId": "cerebras/gemma-4-31b",
+                                "contextLength": 131072,
+                                "maxOutputTokens": 40000,
+                                "capabilities": ["image", "reasoning:high", "tool_calls"],
+                                "compactionTriggerFraction": 0.75,
+                                "compactionKeepRounds": 2
+                            }
+                        ],
+                        "embedding": [
+                            { "modelId": "embed/one", "dimensions": 1536 },
+                            {
+                                "modelId": "embed/two",
+                                "dimensions": 512,
+                                "additionalProperties": { "service_tier": "priority" }
+                            }
+                        ]
+                    }
+                },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                "title": { "model": "t" },
+            }
+            """.trimIndent()
+        )
+        val provider = config.providers.getValue("bifrost")
+        val entry = provider.llm.single()
+        assertEquals("cerebras/gemma-4-31b", entry.modelId)
+        assertEquals(131072L, entry.contextLength)
+        assertEquals(40000L, entry.maxOutputTokens)
+        assertEquals(listOf("image", "reasoning:high", "tool_calls"), entry.capabilities)
+        assertEquals(0.75, entry.compactionTriggerFraction)
+        assertEquals(2, entry.compactionKeepRounds)
+
+        val first = provider.embedding[0]
+        assertEquals("embed/one", first.modelId)
+        assertEquals(1536, first.dimensions)
+        assertEquals(null, first.additionalProperties, "no gateway knobs by default")
+        val second = provider.embedding[1]
+        assertEquals(512, second.dimensions)
+        assertEquals("priority", second.additionalProperties?.get("service_tier")?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun `an invalid provider key fails validation`() {
         // the key is prefixed onto every model id ({provider.id}/{modelId}),
         // so only [0-9a-z_-] is allowed, mirroring config.schema.json's
@@ -214,6 +274,63 @@ class ConfigTest {
             )
         }
         assertTrue(e.message!!.contains("providers key"), e.message)
+    }
+
+    @Test
+    fun `llm model entries are validated with their owner path`() {
+        val valid = LlmModelEntryConfig(
+            modelId = "cerebras/gemma-4-31b",
+            contextLength = 131072,
+            maxOutputTokens = 40000,
+            capabilities = listOf("image", "reasoning:high", "tool_calls"),
+            compactionTriggerFraction = 0.75,
+            compactionKeepRounds = 2,
+        )
+        valid.validate("providers['bifrost'].llm[0]")
+        // an empty capability list is valid: a text-only model
+        valid.copy(capabilities = emptyList()).validate("p")
+
+        assertFailsWith<IllegalArgumentException> { valid.copy(modelId = " ").validate("p") }
+        assertFailsWith<IllegalArgumentException> { valid.copy(contextLength = 0).validate("p") }
+        assertFailsWith<IllegalArgumentException> { valid.copy(maxOutputTokens = -1).validate("p") }
+        assertFailsWith<IllegalArgumentException> { valid.copy(compactionTriggerFraction = 1.1).validate("p") }
+        assertFailsWith<IllegalArgumentException> { valid.copy(compactionTriggerFraction = -0.1).validate("p") }
+        assertFailsWith<IllegalArgumentException> { valid.copy(compactionKeepRounds = 0).validate("p") }
+
+        // blank and duplicate capability tokens are rejected HERE, with the
+        // owner path (the token vocabulary itself is re-checked at catalog
+        // build, where the pi-ai coupling lives)
+        val blank = assertFailsWith<IllegalArgumentException> {
+            valid.copy(capabilities = listOf("image", "")).validate("p")
+        }
+        assertTrue(blank.message!!.contains("blank"), blank.message)
+        val duplicate = assertFailsWith<IllegalArgumentException> {
+            valid.copy(capabilities = listOf("image", "image")).validate("p")
+        }
+        assertTrue(duplicate.message!!.contains("duplicate"), duplicate.message)
+        assertTrue(duplicate.message!!.contains("'image'"), duplicate.message)
+    }
+
+    @Test
+    fun `embedding model entries are validated with their owner path`() {
+        val valid = EmbeddingModelEntryConfig(modelId = "embed/one", dimensions = 1536)
+        valid.validate("providers['deepinfra'].embedding[0]")
+
+        val blank = assertFailsWith<IllegalArgumentException> {
+            valid.copy(modelId = " ").validate("p")
+        }
+        assertTrue(blank.message!!.contains("modelId"), blank.message)
+
+        // the dims must fit the fixed ELTM vector column width (pgvector's
+        // HNSW limit): wider output cannot be zero-padded into the column —
+        // and the error must carry the owner path (the bounds live in ONE
+        // shared check, so this layer is responsible for locating the entry)
+        val wide = assertFailsWith<IllegalArgumentException> {
+            valid.copy(dimensions = MAX_VECTOR_DIMENSIONS + 1).validate("p")
+        }
+        assertTrue(wide.message!!.contains("p.dimensions"), wide.message)
+        assertTrue(wide.message!!.contains(MAX_VECTOR_DIMENSIONS.toString()), wide.message)
+        valid.copy(dimensions = MAX_VECTOR_DIMENSIONS).validate("p")
     }
 
     @Test

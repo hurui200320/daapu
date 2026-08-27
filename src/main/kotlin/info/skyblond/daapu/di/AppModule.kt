@@ -5,7 +5,6 @@ import info.skyblond.daapu.agent.chat.ChatStore
 import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.TitleGenerator
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
@@ -68,17 +67,11 @@ fun appModule(config: AppConfig): Module = module {
         )
     } withOptions { onClose { it?.close() } }
 
-    single<ModelCatalog> {
-        ModelCatalog(
-            config.providers.map { (id, config) ->
-                id to ModelProvider(
-                    id = id,
-                    baseUrl = config.baseUrl,
-                    apiKey = config.apiKey,
-                )
-            }.toMap()
-        )
-    }
+    // the model catalog comes straight from the config (`providers.*.llm`
+    // and `providers.*.embedding`, see `agent/ModelCatalog.kt`); an empty
+    // LLM list, a duplicated composite id, or a gateway-contract violation
+    // in an embedding entry fails fast here at boot
+    single<ModelCatalog> { ModelCatalog.fromConfig(config.providers) }
 
     // the stores: all chats-table access and the ELTM tables live
     // behind these seams, so tests override them with fakes

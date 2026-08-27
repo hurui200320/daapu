@@ -1,11 +1,9 @@
 package info.skyblond.daapu.hand
 
-import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
@@ -16,6 +14,7 @@ import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.server.ChatRunService
 import info.skyblond.daapu.server.module
 import info.skyblond.daapu.testutil.testKoinApp
+import info.skyblond.daapu.testutil.testLlm
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -69,20 +68,7 @@ class HandCallbackTest {
         return response.status to response.bodyAsText()
     }
 
-    private fun textModel() = ModelCatalog(
-        mapOf(
-            "bifrost" to ModelProvider(
-                id = "bifrost",
-                baseUrl = "http://127.0.0.1:9/v1",
-                apiKey = "test"
-            ),
-            "deepinfra" to ModelProvider(
-                id = "deepinfra",
-                baseUrl = "http://127.0.0.1:9/v1",
-                apiKey = "test"
-            )
-        )
-    ).findModel("bifrost/cerebras/gpt-oss-120b")!!
+    private fun textModel() = testLlm("bifrost/cerebras/gpt-oss-120b")
 
     private fun callbackRequest(
         runId: String = "run-1",
@@ -284,20 +270,7 @@ class HandCallbackTest {
     @Test
     fun `a result attachment passes for a vision model`() = testApplication {
         runApplicationWithService { service, handCallback ->
-            val visionModel = ModelCatalog(
-                mapOf(
-                    "bifrost" to ModelProvider(
-                        id = "bifrost",
-                        baseUrl = "http://127.0.0.1:9/v1",
-                        apiKey = "test"
-                    ),
-                    "deepinfra" to ModelProvider(
-                        id = "deepinfra",
-                        baseUrl = "http://127.0.0.1:9/v1",
-                        apiKey = "test"
-                    )
-                )
-            ).findModel("bifrost/cerebras/gemma-4-31b")!!
+            val visionModel = testLlm("bifrost/cerebras/gemma-4-31b")
             assertTrue(visionModel.supports(LLMCapability.Input.Vision.Image))
             handCallback.register("run-1", ImageProvider(), visionModel)
             val (status, body) = client.callback(body = callbackRequest())

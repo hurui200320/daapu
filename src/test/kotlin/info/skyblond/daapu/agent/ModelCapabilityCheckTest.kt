@@ -2,7 +2,8 @@ package info.skyblond.daapu.agent
 
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.ModelCapabilityException
-import info.skyblond.daapu.agent.model.ModelProvider
+import info.skyblond.daapu.testutil.TEST_MODELS_BY_ID
+import info.skyblond.daapu.testutil.testLlm
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -19,15 +20,9 @@ import kotlin.test.assertTrue
  */
 class ModelCapabilityCheckTest {
 
-    private val catalog = ModelCatalog(
-        mapOf(
-            "bifrost" to ModelProvider("bifrost", "http://gateway.example/v1", "test-key"),
-            "deepinfra" to ModelProvider("deepinfra", "http://gateway.example/v1", "test-key"),
-        )
-    )
-    private val gptOss = catalog.findModel("bifrost/cerebras/gpt-oss-120b")!!
-    private val cerebrasGemma = catalog.findModel("bifrost/cerebras/gemma-4-31b")!!
-    private val novitaGemma = catalog.findModel("bifrost/novita/google/gemma-4-31b-it")!!
+    private val gptOss = testLlm("bifrost/cerebras/gpt-oss-120b")
+    private val cerebrasGemma = testLlm("bifrost/cerebras/gemma-4-31b")
+    private val novitaGemma = testLlm("bifrost/novita/google/gemma-4-31b-it")
 
     private fun chatWith(kind: AttachmentKind): List<ChatMessage> = listOf(
         ChatMessage(
@@ -99,8 +94,11 @@ class ModelCapabilityCheckTest {
 
     @Test
     fun `video audio and file fail on every catalog model`() {
+        // every fixture catalog model (TEST_MODELS_BY_ID, not a hand-picked
+        // list), so a future entry that silently claims video/audio support
+        // is still caught here
         for (kind in listOf(AttachmentKind.Video, AttachmentKind.Audio, AttachmentKind.File)) {
-            for (model in catalog.models) {
+            for (model in TEST_MODELS_BY_ID.values) {
                 assertFailsWith<ModelCapabilityException>("$kind on ${model.id}") {
                     model.checkPromptContentCapabilities(chatWith(kind))
                 }

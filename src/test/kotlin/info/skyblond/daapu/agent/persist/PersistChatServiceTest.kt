@@ -1,10 +1,8 @@
 package info.skyblond.daapu.agent.persist
 
-import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
@@ -31,6 +29,7 @@ import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.testutil.FakeEltmService
 import info.skyblond.daapu.testutil.testHandService
+import info.skyblond.daapu.testutil.testLlm
 import info.skyblond.daapu.testutil.writerRunFlow
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
@@ -69,18 +68,13 @@ class PersistChatServiceTest {
         compactionTriggerFraction: Double = 0.8,
         compactionKeepRounds: Int = 2,
     ): LLM {
-        val catalog = ModelCatalog(
-            mapOf(
-                "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test-key"),
-                "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test-key"),
-            )
-        ).findModel(id)!!
+        val base = testLlm(id)
         return LLM(
-            provider = catalog.provider,
-            modelId = catalog.modelId,
-            contextLength = catalog.contextLength,
-            maxOutputTokens = catalog.maxOutputTokens,
-            capabilities = catalog.capabilities,
+            provider = base.provider,
+            modelId = base.modelId,
+            contextLength = base.contextLength,
+            maxOutputTokens = base.maxOutputTokens,
+            capabilities = base.capabilities,
             compactionTriggerFraction = compactionTriggerFraction,
             compactionKeepRounds = compactionKeepRounds,
         )

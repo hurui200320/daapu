@@ -1,9 +1,7 @@
 package info.skyblond.daapu.agent.persist
 
-import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
@@ -15,6 +13,7 @@ import info.skyblond.daapu.hand.errorRunFlow
 import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.testutil.FakeEltmService
 import info.skyblond.daapu.testutil.testHandService
+import info.skyblond.daapu.testutil.testLlm
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -28,12 +27,7 @@ import kotlin.test.*
  */
 class GsgToolProviderTest {
 
-    private fun model(id: String) = ModelCatalog(
-        mapOf(
-            "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
-            "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test"),
-        )
-    ).findModel(id)!!
+    private fun model(id: String) = testLlm(id)
 
     /** The whitelisted read-only ELTM tool set the service runs with. */
     private fun eltmProvider(eltm: FakeEltmService): ToolProvider {

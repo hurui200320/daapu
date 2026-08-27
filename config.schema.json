@@ -49,7 +49,7 @@
       "propertyNames": {
         "pattern": "^[0-9a-z_-]+$"
       },
-      "description": "OpenAI-compatible LLM providers, keyed by provider id. The id prefixes every model id ({provider.id}/{modelId}), so only [0-9a-z_-] is allowed. May be empty.",
+      "description": "OpenAI-compatible LLM providers, keyed by provider id. The id prefixes every model id ({provider.id}/{modelId}), so only [0-9a-z_-] is allowed. Each provider carries the catalog entries it serves: llm (chat models) and embedding (embedding models). At least one LLM entry must exist across all providers (the empty-catalog case fails fast at boot).",
       "additionalProperties": {
         "$ref": "#/definitions/llmProvider"
       }
@@ -388,6 +388,7 @@
         "apiKey",
         "baseUrl"
       ],
+      "description": "One OpenAI-compatible LLM provider (gateway) plus the model catalog entries it serves. Both arrays are optional — a gateway may serve only one kind — but the whole catalog must declare at least one llm entry somewhere.",
       "properties": {
         "apiKey": {
           "type": "string",
@@ -398,6 +399,94 @@
           "type": "string",
           "minLength": 1,
           "description": "Base URL of the provider, used as-is by the hand-pi service; must carry the full /v1 root (e.g. http://localhost:8000/v1)."
+        },
+        "llm": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/llmModelEntry"
+          },
+          "description": "The chat models served through this gateway. Each entry becomes one selectable catalog id ({provider.id}/{modelId}); ids must be unique across all providers and both kinds, else boot fails fast."
+        },
+        "embedding": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/embeddingModelEntry"
+          },
+          "description": "The embedding models served through this gateway (referenced by memory.eltm.embeddingModel)."
+        }
+      }
+    },
+    "llmModelEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "modelId",
+        "contextLength",
+        "maxOutputTokens",
+        "capabilities",
+        "compactionTriggerFraction",
+        "compactionKeepRounds"
+      ],
+      "properties": {
+        "modelId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The raw model id passed to the gateway as-is (the second and following segments of the composite {provider.id}/{modelId} wire-visible id; slashes allowed). Must be unique per catalog (duplicates fail fast at boot)."
+        },
+        "contextLength": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The model's context window in tokens: budgets the run loop's context-exhaustion classification and compaction triggering."
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Max output tokens per round: budgets the output-exhaustion classification, sent on every request."
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(image|video|audio|document|tool_calls|reasoning:(minimal|low|medium|high|xhigh|max))$"
+          },
+          "description": "The capability tokens of the model: image/video/audio/document gate attachment kinds, tool_calls is required for tool loops (ELTM writer, investigator), reasoning:<effort> sends reasoning_effort on every request. Blank and duplicate tokens fail fast at config load; the vocabulary itself and the at-most-one-reasoning rule are re-checked at catalog build (ModelCatalog) — this pattern is documentation only."
+        },
+        "compactionTriggerFraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Pre-round proactive compaction trigger: compact when the measured prompt size exceeds this fraction of contextLength. Per-model (headroom depends on the context size); 0 disables the proactive path (reactive compaction still runs)."
+        },
+        "compactionKeepRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Complete rounds kept verbatim at the tail of a compaction."
+        }
+      }
+    },
+    "embeddingModelEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "modelId",
+        "dimensions"
+      ],
+      "properties": {
+        "modelId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The raw embedding model id, referenced as {provider.id}/{modelId} by memory.eltm.embeddingModel. Unique per catalog like the LLM ids."
+        },
+        "dimensions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000,
+          "description": "The output dimensionality the brain pins on every /v1/embed request (and verifies in the response); must not exceed pgvector's HNSW limit of 2000 — the ELTM vector columns are fixed at vector(2000) and shorter vectors are zero-padded."
+        },
+        "additionalProperties": {
+          "type": "object",
+          "description": "Optional extra root-level fields merged into every /v1/embed gateway request body (gateway-specific knobs, e.g. deepinfra's service_tier). Keys colliding with the hand-managed fields (model, input, dimensions) fail fast at boot."
         }
       }
     },

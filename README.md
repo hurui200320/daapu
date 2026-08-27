@@ -113,7 +113,7 @@ cp config.example.jsonc config.jsonc
 | Section     | Fields                                             | Description                                                          |
 |-------------|----------------------------------------------------|----------------------------------------------------------------------|
 | `database`  | `url`, `user`, `password` (required)               | PostgreSQL JDBC URL, user and password.                              |
-| `providers` | `{<id>: {apiKey, baseUrl}}` (required)             | OpenAI-compatible providers, keyed by id (e.g. `bifrost`); `baseUrl` is used as-is and must carry the full `/v1` root. |
+| `providers` | `{<id>: {apiKey, baseUrl, llm[]?, embedding[]?}}` (required) | OpenAI-compatible gateways keyed by id (e.g. `bifrost`); each carries the catalog entries it serves — at least one `llm[]` entry overall is REQUIRED. `baseUrl` is used as-is and must carry the full `/v1` root. |
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `exa` (required) + `customs` (default none)       | MCP tool servers, see below.                                         |
 | `memory`    | `compactModel` + `eltm` (required)                 | Compaction + external long-term memory (ELTM) settings, see below.   |
@@ -132,18 +132,17 @@ History compaction and memory extraction (see `AGENTS.md` and
 `agent/oneshot/compaction/` + `agent/oneshot/eltm/`):
 
 - Compaction is triggered per model: the trigger fraction and the keep
-  rounds live on the catalog entries (`agent/model/LLM.kt`), because the
-  headroom depends on the model's context size. Before each round, the
-  brain measures the prompt size (the last assistant message's
-  provider-reported input-token snapshot) and compacts the history when it
-  exceeds `compactionTriggerFraction` of the model's context window
-  (0.75–0.8 on the current catalog entries; `0` disables the proactive
-  path). A round that still exhausts the context compacts reactively and
-  retries (every exhaustion triggers a compaction; a compaction that fails
-  or returns a non-clean summary fails the run).
-  `compactionKeepRounds` (2–3 on the current catalog entries) complete
-  rounds are kept verbatim at the tail of a compacted chat; everything
-  older is replaced by one
+  rounds live on each configured chat-model entry (`config.jsonc` →
+  `providers.<id>.llm[].compactionTriggerFraction` / `.compactionKeepRounds`),
+  because the headroom depends on the model's context size (`agent/model/LLM.kt`
+  owns the `[0, 1]` / `>= 1` contract). Before each round, the brain measures
+  the prompt size (the last assistant message's provider-reported input-token
+  snapshot) and compacts the history when it exceeds `compactionTriggerFraction`
+  of the model's context window (0 disables the proactive path). A round that
+  still exhausts the context compacts reactively and retries (every exhaustion
+  triggers a compaction; a compaction that fails or returns a non-clean summary
+  fails the run). `compactionKeepRounds` complete rounds are kept verbatim at
+  the tail of a compacted chat; everything older is replaced by one
   `CONTEXT COMPACTION: `-marked summary user message. When the chat has
   fewer rounds than this, the keep count shrinks (down to zero) so an
   overflowing chat always compacts.
@@ -286,9 +285,11 @@ namespaces, and it is the intended shape: this harness targets small
 open-weight models that are prone to mistakes, and information-providing
 tools (web search, ELTM recall) help them produce correct output — a persona
 that disables every tool defeats the harness's purpose (plain chat UIs like
-Open WebUI already exist for that). The model catalog is
-hardcoded in `agent/ModelCatalog.kt` (each model needs an explicit
-capability list). The web UI can switch between the catalog models per
+Open WebUI already exist for that). The model catalog is configured in
+`config.jsonc` under `providers.<id>.llm` / `providers.<id>.embedding`
+(each entry carries its budgets, compaction knobs, and an explicit capability
+list; at least one LLM entry is required — see `config.example.jsonc`). The
+web UI can switch between the catalog models per
 message; the model is sent with every message (the UI defaults to the first
 catalog entry — the server has no default).
 

@@ -1,7 +1,5 @@
 package info.skyblond.daapu.testutil
 
-import info.skyblond.daapu.agent.ModelCatalog
-import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
@@ -448,12 +446,7 @@ fun testEltmWriterService(
     eltmService: EltmService = FakeEltmService(),
     maxWriterRounds: Int = 150,
 ): EltmWriterService {
-    val model = ModelCatalog(
-        mapOf(
-            "bifrost" to ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
-            "deepinfra" to ModelProvider("deepinfra", "http://127.0.0.1:9/v1", "test"),
-        )
-    ).findModel("bifrost/cerebras/gemma-4-31b")!!
+    val model = testLlm("bifrost/cerebras/gemma-4-31b")
     return EltmWriterService(
         writerModel = model,
         hand = testHandService(hand),
