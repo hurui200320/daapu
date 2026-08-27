@@ -18,7 +18,16 @@
     [key: string]: unknown
   }
 
-  let { icon, title, subtitle = '', shimmer = false, open = $bindable(false), onOpenChange, children, ...rest }: Props = $props()
+  let {
+    icon,
+    title,
+    subtitle = '',
+    shimmer = false,
+    open = $bindable(false),
+    onOpenChange,
+    children,
+    ...rest
+  }: Props = $props()
 
   /**
    * Wire the bits-ui Root's open state back into the (bindable) prop so the
@@ -32,13 +41,10 @@
   }
 </script>
 
-<Collapsible.Root
-  {open}
-  onOpenChange={handleOpenChange}
-  class="group/collapsible my-1 w-full"
-  {...rest}
->
-  <Collapsible.Trigger class="flex w-full cursor-pointer items-start gap-2 rounded-md py-1.5 pr-1 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+<Collapsible.Root {open} onOpenChange={handleOpenChange} class="group/collapsible my-1 w-full" {...rest}>
+  <Collapsible.Trigger
+    class="flex w-full cursor-pointer items-start gap-2 rounded-md py-1.5 pr-1 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+  >
     {#if icon}
       {@const Icon = icon}
       <Icon class="mt-1 size-4 shrink-0 text-muted-foreground/60" />
@@ -46,7 +52,9 @@
     <span class="text-sm font-medium {shimmer ? 'shimmer-text' : ''}">{title}</span>
     {#if subtitle}<span class="text-xs italic text-muted-foreground/70">{subtitle}</span>{/if}
     <ChevronDown
-      class="ml-auto mt-0.5 size-4 shrink-0 opacity-0 transition-all group-hover/collapsible:opacity-100 no-hover:opacity-100 {open ? 'rotate-180' : ''}"
+      class="ml-auto mt-0.5 size-4 shrink-0 opacity-0 transition-all group-hover/collapsible:opacity-100 no-hover:opacity-100 {open
+        ? 'rotate-180'
+        : ''}"
     />
   </Collapsible.Trigger>
   <Collapsible.Content>

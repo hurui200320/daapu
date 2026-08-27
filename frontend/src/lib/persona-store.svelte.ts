@@ -45,12 +45,7 @@ class PersonaStore {
     }
   }
 
-  async update(
-    id: number,
-    name: string,
-    systemPrompt: string,
-    allowedNamespaces: string[],
-  ): Promise<boolean> {
+  async update(id: number, name: string, systemPrompt: string, allowedNamespaces: string[]): Promise<boolean> {
     try {
       const persona = await updatePersona(id, { name, systemPrompt, allowedNamespaces })
       this.personas = this.personas.map((p) => (p.id === id ? persona : p))

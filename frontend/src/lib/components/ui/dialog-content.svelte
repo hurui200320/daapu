@@ -23,7 +23,7 @@
       // prompt editor on a phone, or any dialog with the on-screen keyboard
       // open) must scroll instead of clipping its footer out of reach
       'fixed left-1/2 top-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-lg border border-border bg-popover p-6 text-popover-foreground shadow-lg',
-      className
+      className,
     )}
   >
     {@render children()}

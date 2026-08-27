@@ -32,8 +32,9 @@
   --code-background: oklch(0.225 0 0);
   --code-foreground: oklch(0.875 0 0);
 
-  --font-mono-value: ui-monospace, SFMono-Regular, 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas,
-    'Liberation Mono', Menlo, monospace;
+  --font-mono-value:
+    ui-monospace, SFMono-Regular, 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Liberation Mono', Menlo,
+    monospace;
 
   /* chat layout metrics (llama.cpp webui's, mirrored) */
   --chat-form-area-height: 8rem;

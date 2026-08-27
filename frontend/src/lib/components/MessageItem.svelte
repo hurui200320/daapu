@@ -1,6 +1,7 @@
 <script lang="ts">
   import { CheckCircle2, GitFork, Lightbulb, Trash2, Wrench, XCircle } from '@lucide/svelte'
-  import { chatStore as store, roundSignature } from '../chat-store.svelte'
+  import { chatStore as store } from '../chat-store.svelte'
+  import { partOrdinalKey, roundSignature } from '../display'
   import type { ChatAttachmentPart, ChatMessage, ChatMessagePart, ChatToolResultPart, TextPart } from '../types'
   import CollapsibleBlock from './CollapsibleBlock.svelte'
   import ImageLightbox from './ImageLightbox.svelte'
@@ -60,12 +61,14 @@
 
   // history edits must never race the streaming buffers (the optimistic
   // user message / uncommitted tool rounds are not in the DB, so indices
-  // computed on the display list would target the wrong message), and the
-  // backend refuses them while a full-chat delete's extraction runs; a fork
-  // in flight on this chat is the only other pending history edit, so it
-  // disables too
+  // computed on the display list would target the wrong message), and any
+  // other pending history edit makes indices stale until it settles — a
+  // full-chat delete's extraction, a truncation or a fork all disable
   const actionsDisabled = $derived(
-    store.streaming || store.deletingIds.has(store.chatId) || store.forkingIds.has(store.chatId)
+    store.streaming ||
+      store.deletingIds.has(store.chatId) ||
+      store.forkingIds.has(store.chatId) ||
+      store.truncatingIds.has(store.chatId),
   )
 
   const canFork = $derived(message.role === 'assistant' && message.finishReason === 'stop')
@@ -96,29 +99,6 @@
   }
 
   /**
-   * Stable identity of a part for open-state tracking: type + ordinal within
-   * the type — except tool_result parts, which key on their result id. The
-   * display commit coalesces reasoning/text while the stored form keeps the
-   * provider's blocks, so a raw part index would lose track of a collapsible
-   * across the done-reload. A tool result's id is stable across the reload
-   * AND across the display's batching (a round's results share ONE display
-   * tool_result message but are stored one message per result — no
-   * message-level signature could reconcile that), so the id-keyed part
-   * lives under the shared `role:tool_result` signature bucket and the
-   * override follows the result wherever it lands.
-   */
-  function partOrdinalKey(parts: ChatMessagePart[], pi: number): string {
-    const part = parts[pi]
-    if (part.type === 'tool_result') return `tool_result:${part.id}`
-    const type = part.type
-    let ordinal = 0
-    for (let j = 0; j < pi; j++) {
-      if (parts[j].type === type) ordinal++
-    }
-    return `${type}:${ordinal}`
-  }
-
-  /**
    * A tool result carries its text as nested text parts; join those instead
    * of dumping the raw JSON. Trimmed: tool outputs commonly start/end with
    * blank lines, which whitespace-pre-wrap would render as big empty gaps.
@@ -133,7 +113,7 @@
 
 {#if message.role === 'user'}
   <div class="group relative flex flex-col items-end gap-2">
-    {#each message.parts.filter(isImage) as img}
+    {#each message.parts.filter(isImage) as img (img)}
       {@const src = imageSrc(img)}
       {#if src}
         <button
@@ -143,15 +123,17 @@
           class="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           onclick={(e) => openLightbox(e, src)}
         >
-          <img class="block h-40 max-w-full rounded-lg object-cover" src={src} alt="attachment" />
+          <img class="block h-40 max-w-full rounded-lg object-cover" {src} alt="attachment" />
         </button>
       {/if}
     {/each}
-    {#each message.parts.filter((p): p is TextPart => p.type === 'text') as part}
+    {#each message.parts.filter((p): p is TextPart => p.type === 'text') as part (part)}
       <div
         class="max-w-[80%] whitespace-pre-wrap break-words rounded-[1.125rem] bg-primary/15 px-4 py-2 text-foreground backdrop-blur-md"
         style="overflow-wrap: anywhere"
-      >{part.text}</div>
+      >
+        {part.text}
+      </div>
     {/each}
     <button
       title="delete this message and everything after"
@@ -164,7 +146,7 @@
   </div>
 {:else}
   <div class="group relative w-full">
-    {#each message.parts as part, pi}
+    {#each message.parts as part, pi (part)}
       {@const partKey = partOrdinalKey(message.parts, pi)}
       {#if part.type === 'text' && part.text}
         <MarkdownContent text={part.text} />
@@ -189,7 +171,7 @@
             class="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             onclick={(e) => openLightbox(e, src)}
           >
-            <img class="block max-h-80 max-w-full rounded-lg" src={src} alt="attachment" />
+            <img class="block max-h-80 max-w-full rounded-lg" {src} alt="attachment" />
           </button>
         {/if}
       {:else if part.type === 'tool_call'}
@@ -200,8 +182,9 @@
           onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
         >
           <pre
-            class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground"
-          >{argsText(part.args)}</pre>
+            class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground">{argsText(
+              part.args,
+            )}</pre>
         </CollapsibleBlock>
       {:else if part.type === 'tool_result'}
         <CollapsibleBlock
@@ -213,10 +196,11 @@
         >
           {#if toolResultText(part)}
             <pre
-              class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground"
-            >{toolResultText(part)}</pre>
+              class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground">{toolResultText(
+                part,
+              )}</pre>
           {/if}
-          {#each part.parts.filter(isImage) as img}
+          {#each part.parts.filter(isImage) as img (img)}
             {@const src = imageSrc(img)}
             {#if src}
               <button
@@ -226,7 +210,7 @@
                 class="mt-2 inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                 onclick={(e) => openLightbox(e, src)}
               >
-                <img class="block max-h-80 max-w-full rounded-lg" src={src} alt="attachment" />
+                <img class="block max-h-80 max-w-full rounded-lg" {src} alt="attachment" />
               </button>
             {/if}
           {/each}

@@ -7,6 +7,7 @@
   import EltmView from './lib/components/EltmView.svelte'
   import PersonaView from './lib/components/PersonaView.svelte'
   import Sidebar from './lib/components/Sidebar.svelte'
+  import IconButton from './lib/components/ui/icon-button.svelte'
   import { chatHomePath, replaceRoute, router } from './lib/router.svelte'
   import { toastStore } from './lib/toast-store.svelte'
   import { uiStore } from './lib/ui-store.svelte'
@@ -81,9 +82,7 @@
   $effect(() => {
     if (chatStore.models.length > 0 && chatStore.selectedModel === '') {
       const stored = localStorage.getItem(MODEL_STORAGE_KEY)
-      chatStore.selectedModel = chatStore.models.some((m) => m.id === stored)
-        ? stored!
-        : chatStore.models[0].id
+      chatStore.selectedModel = chatStore.models.some((m) => m.id === stored) ? stored! : chatStore.models[0].id
     }
     if (chatStore.selectedModel) {
       localStorage.setItem(MODEL_STORAGE_KEY, chatStore.selectedModel)
@@ -93,24 +92,16 @@
 
 <!-- overflow-x-hidden: nothing may ever push the fixed-height shell sideways
      (e.g. the composer's control row on a very narrow screen) -->
-<div
-  class="flex h-dvh gap-2 overflow-x-hidden p-2"
-  style:padding-bottom={kbInset > 0 ? `${kbInset + 8}px` : undefined}
->
+<div class="flex h-dvh gap-2 overflow-x-hidden p-2" style:padding-bottom={kbInset > 0 ? `${kbInset + 8}px` : undefined}>
   <Sidebar />
   <main class="flex min-w-0 flex-1 flex-col">
     <!-- mobile top bar: the sidebar is an overlay drawer below md, so every
          view needs the button that opens it (there is no other way back to
          the chat list from the ELTM/personas views) -->
     <div class="flex items-center pb-2 md:hidden">
-      <button
-        title="open sidebar"
-        aria-label="open sidebar"
-        class="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-        onclick={() => (uiStore.mobileNavOpen = true)}
-      >
+      <IconButton title="open sidebar" aria-label="open sidebar" onclick={() => (uiStore.mobileNavOpen = true)}>
         <PanelLeftOpen class="size-5" />
-      </button>
+      </IconButton>
     </div>
     <!-- all views stay mounted so the chat view (messages, live stream,
          composer draft) survives tab switches; visibility is CSS-only,
@@ -146,7 +137,8 @@
   {#each toastStore.toasts as toast (toast.id)}
     <button
       onclick={() => toastStore.dismiss(toast.id)}
-      class="pointer-events-auto w-full break-words rounded-lg border px-3 py-2 text-left text-sm shadow-md backdrop-blur-xl {toast.kind === 'error'
+      class="pointer-events-auto w-full break-words rounded-lg border px-3 py-2 text-left text-sm shadow-md backdrop-blur-xl {toast.kind ===
+      'error'
         ? 'border-destructive/50 bg-destructive/10 text-destructive'
         : 'border-border/50 bg-muted/80 text-foreground'}"
     >

@@ -11,8 +11,10 @@ import type {
 
 async function parseError(res: Response): Promise<string> {
   try {
-    const body = await res.json()
-    return body.error ?? res.statusText
+    const body = (await res.json()) as { error?: unknown }
+    // the backend always sends {"error": "<message>"}; anything structured
+    // would render "[object Object]" — fall back to the status text instead
+    return typeof body?.error === 'string' && body.error.length > 0 ? body.error : res.statusText
   } catch {
     return res.statusText
   }
@@ -144,10 +146,7 @@ export async function deletePersona(id: number): Promise<void> {
  * POST, so the stream is parsed manually from a fetch reader (same technique
  * llama.cpp's own webui uses).
  */
-export async function* streamChat(
-  chatId: string,
-  body: SendMessageRequest
-): AsyncGenerator<StreamEvent> {
+export async function* streamChat(chatId: string, body: SendMessageRequest): AsyncGenerator<StreamEvent> {
   const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -161,7 +160,14 @@ export async function* streamChat(
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      // normalize CRLF block/line delimiters to LF across the WHOLE pending
+      // buffer (not just this chunk — a delimiter may straddle reads). The
+      // SSE spec allows CRLF; our backend always emits LF, but anything
+      // rewriting newlines in transit must still parse. Raw CR never appears
+      // inside event payloads here (deltas are JSON-encoded), so a blanket
+      // replacement cannot corrupt content.
       buffer += decoder.decode(value, { stream: true })
+      if (buffer.includes('\r')) buffer = buffer.replace(/\r\n/g, '\n')
       let idx: number
       while ((idx = buffer.indexOf('\n\n')) >= 0) {
         const block = buffer.slice(0, idx)
@@ -183,7 +189,8 @@ export async function* streamChat(
   }
 }
 
-function parseBlock(block: string): StreamEvent | null {
+/** Pure SSE block parser, exported for unit tests. */
+export function parseBlock(block: string): StreamEvent | null {
   let event = 'message'
   const dataLines: string[] = []
   for (const line of block.split('\n')) {
@@ -208,10 +215,7 @@ export async function listEntities(limit = 100, offset = 0): Promise<EntityViewD
   return getJson(`/api/eltm/entities?limit=${limit}&offset=${offset}`)
 }
 
-export async function getEntityRelationships(
-  id: number,
-  includeInvalid = true,
-): Promise<RelationshipViewDto[]> {
+export async function getEntityRelationships(id: number, includeInvalid = true): Promise<RelationshipViewDto[]> {
   return getJson(`/api/eltm/entities/${id}/relationships?includeInvalid=${includeInvalid}`)
 }
 

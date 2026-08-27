@@ -147,7 +147,9 @@
   border-radius: 0.375rem;
   padding: 0.1rem 0.45rem;
   cursor: pointer;
-  transition: color 0.15s, background-color 0.15s;
+  transition:
+    color 0.15s,
+    background-color 0.15s;
 }
 
 .code-copy-btn:hover {

@@ -1,13 +1,6 @@
 <script lang="ts">
-  import { Trash2 } from '@lucide/svelte'
-  import Button from './ui/button.svelte'
-  import { Dialog } from './ui/dialog.svelte'
-  import DialogContent from './ui/dialog-content.svelte'
-  import DialogDescription from './ui/dialog-description.svelte'
-  import DialogFooter from './ui/dialog-footer.svelte'
-  import DialogHeader from './ui/dialog-header.svelte'
-  import DialogTitle from './ui/dialog-title.svelte'
   import { chatStore as store } from '../chat-store.svelte'
+  import ConfirmDialog from './ui/confirm-dialog.svelte'
 
   // the chat + index of the user message to truncate FROM (inclusive), or
   // null while the dialog is closed; the chat id is pinned when the dialog
@@ -15,38 +8,34 @@
   let { target, onClose }: { target: { chatId: string; index: number } | null; onClose: () => void } = $props()
 
   // everything from the target message to the end of the chat
-  const removed = $derived(
-    target == null ? 0 : Math.max(0, store.messages.length - target.index)
-  )
+  const removed = $derived(target == null ? 0 : Math.max(0, store.messages.length - target.index))
 
-  function confirmDelete() {
-    if (target == null) return
-    // fast operation (no memory extraction): fire-and-forget, errors surface as
-    // a toast; on success the store slices the message list locally
-    void store.truncateMessages(target.chatId, target.index)
-    onClose()
+  // in-flight guard: indices go stale once a truncate lands, so the dialog
+  // locks while its request runs (the store additionally serializes per chat)
+  let busy = $state(false)
+
+  async function confirmDelete() {
+    if (target == null || busy) return
+    busy = true
+    try {
+      // the store toasts both failure modes itself (an API error, or a
+      // guarded no-op while another history edit is in flight): only a
+      // real truncation closes the dialog — a no-op must stay open so the
+      // user can retry instead of believing the messages were removed
+      if (await store.truncateMessages(target.chatId, target.index)) onClose()
+    } finally {
+      busy = false
+    }
   }
 </script>
 
-<Dialog open={target !== null} onOpenChange={(open: boolean) => !open && onClose()}>
-  <DialogContent>
-    <DialogHeader>
-      <div class="flex items-center gap-3">
-        <div class="flex size-9 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
-          <Trash2 class="size-4" />
-        </div>
-        <div class="min-w-0">
-          <DialogTitle>Delete this message and everything after?</DialogTitle>
-          <DialogDescription>
-            {removed} message{removed === 1 ? '' : 's'} will be removed from this chat.
-            Nothing is extracted into memories. This cannot be undone.
-          </DialogDescription>
-        </div>
-      </div>
-    </DialogHeader>
-    <DialogFooter>
-      <Button variant="ghost" onclick={onClose}>Cancel</Button>
-      <Button variant="destructive" onclick={confirmDelete}>Delete</Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
+<ConfirmDialog
+  open={target !== null}
+  {onClose}
+  title="Delete this message and everything after?"
+  {busy}
+  onConfirm={() => void confirmDelete()}
+>
+  {removed} message{removed === 1 ? '' : 's'} will be removed from this chat. Nothing is extracted into memories. This cannot
+  be undone.
+</ConfirmDialog>

@@ -533,19 +533,65 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
     refetches the loaded window, so appended pages survive and a server-side
     shrink shrinks the list too.
   - User messages: plain-text pill bubbles (`whitespace-pre-wrap`); assistant:
-    full-width markdown (marked + DOMPurify + highlight.js chrome from
-    `lib/markdown.ts`). Reasoning/tool-call/tool-result parts in collapsible
+    full-width markdown (marked + DOMPurify + highlight.js chrome via
+    `lib/markdown-renderer.ts`). Reasoning/tool-call/tool-result parts in collapsible
     blocks (shimmer title while streaming). Auto-scroll pins while the user
     hasn't scrolled up (scroll-down button otherwise; switching chats re-pins).
     Dialogs replace `window.prompt`/`confirm`; model picker is a searchable chip
     dropdown; images via file picker/paste.
+  - **lib layering & tooling** (keep the reactive hosts thin — logic lives in
+    testable modules):
+    - `lib/routes.ts` (pure hash→route mapping) vs `lib/router.svelte.ts`
+      (window-touching singleton + navigate/replaceRoute helpers); route
+      changes flow through `parseHash`, unit-tested.
+    - `lib/display.ts`: pure display-assembly helpers — `roundSignature`,
+      `partOrdinalKey`, `messageSpacing`, `dataUrlToImagePart` (mirrors the
+      backend's data-URL regex). Imported by MessageItem/MessageList/
+      ChatStore.
+    - `lib/stream-session.ts`: the chat run loop extracted from ChatStore's
+      old inline `send()` loop. `StreamSession.run()` never throws; it owns
+      event order and terminal recovery, and drives the store through a 1:1
+      verb interface (`RunHost`) plus injectable transport/reload/resync
+      (`RunEnvironment`) — scripted-SSE unit tests cover batching, retry
+      wipes, done/error/abnormal-close and transport-failure paths. The SSE
+      parser in `api.ts` normalizes CRLF delimiters before block splitting.
+    - `lib/paging.ts`: ELTM windowing math (`fetchWindow` capped-chunk walk +
+      probe row, `fetchMore`), server cap mirrored as `LIST_LIMIT_CAP = 500`
+      (= WebServer.kt MAX_ELTM_PAGE_LIMIT). EltmView collapses prune BOTH the
+      expanded-flag map and its cached detail payload.
+    - `lib/markdown-renderer.ts`: lazy pipeline facade — marked/hljs/KaTeX/
+      DOMPurify + their CSS load behind `getMarkdownRenderer()` on first
+      render (the home screen no longer pays for them; ~64% smaller critical
+      chunk). MarkdownContent applies renders with a sequence counter so an
+      in-flight init cannot overwrite a newer html state.
+    - Shared ui primitives: `ui/icon-button.svelte` (square utility button),
+      `ui/confirm-dialog.svelte` (destructive confirm scaffold with `busy`;
+      used by DeleteChatDialog/TruncateMessagesDialog/PersonaView delete),
+      `ui/dropdown-styles.ts` (bits-ui trigger/content/item class strings).
+    - Composer attachments: per-file 8 MB client-side cap with a toast;
+      oversized images are canvas-downscaled to a 1568 px longest edge
+      (JPEG re-encode, PNG keeps alpha) — at-or-under-edge files keep their
+      original bytes (animated GIFs untouched). The budget applies to the
+      DOWNSCALED OUTPUT too: a still-oversized result flattens PNG alpha onto
+      white and steps JPEG quality down, refusing the attachment entirely if
+      nothing fits; results decoded after a chat switch park on that chat's
+      persisted draft (a deleted chat's are dropped).
+    - History-edit serialization: `truncatingIds` joins `deletingIds`/
+      `forkingIds`; MessageItem action buttons disable on any of them. A
+      guarded edit answers an "A history edit is in progress" toast instead of
+      silently doing nothing (`send` returns early; truncate's dialog stays
+      open).
+    - Tooling: Prettier + ESLint 10 flat config (`.prettierrc.json`,
+      `eslint.config.js`) wired into `npm run lint`; `npm run check` =
+      lint + svelte-check, `npm run test` = Vitest (node env, colocated
+      `*.test.ts`). `engines.node` pins Vite 8's requirement.
 
 ## Verification commands
 
 ```bash
 ./gradlew test
 cd hand-pi && npm test && npm run build
-cd frontend && npm run check && npm run build
+cd frontend && npm run check && npm run build && npm test
 ```
 
 Run them after any relevant source change. They must exit clean.

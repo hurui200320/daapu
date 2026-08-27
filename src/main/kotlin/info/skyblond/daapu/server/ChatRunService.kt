@@ -430,6 +430,10 @@ class ChatRunService(
 
     companion object {
         // `.+` with DOT_MATCHES_ALL: data URLs may fold base64 across lines
+        // (semantically `[\s\S]+`). Display-side mirror: DATA_URL_RE in
+        // frontend/src/lib/display.ts — update both patterns together
+        // (that copy only prunes non-image parts from the optimistic bubble;
+        // this one is authoritative).
         private val dataUrlRegex = Regex(
             """^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$""",
             RegexOption.DOT_MATCHES_ALL,

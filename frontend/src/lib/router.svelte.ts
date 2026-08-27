@@ -1,39 +1,10 @@
 /**
- * Hash-based client router. Routes: `#/chat` (home), `#/chat/<id>`,
- * `#/eltm`, `#/personas`. Hash routing
- * needs no server cooperation — the hash is never sent to the server, so the
- * app works from any static host (vite dev/preview, ktor static, nginx)
- * without SPA fallback config; the same reason llama.cpp's webui uses
- * `router: hash`.
- *
- * The URL is the source of truth for the active view and the open chat:
- * App.svelte translates route changes into chatStore picks/closes, and store
- * actions that change the open chat (create/fork/delete) navigate the hash.
+ * Hash-based client router (mapping logic lives in `routes.ts`). The URL is
+ * the source of truth for the active view and the open chat: App.svelte
+ * translates route changes into chatStore picks/closes, and store actions
+ * that change the open chat (create/fork/delete) navigate the hash.
  */
-export type Route =
-  | { name: 'chat'; chatId: string | null }
-  | { name: 'eltm' }
-  | { name: 'personas' }
-
-const CHAT_HOME: Route = { name: 'chat', chatId: null }
-
-function safeDecode(s: string): string {
-  try {
-    return decodeURIComponent(s)
-  } catch {
-    return s
-  }
-}
-
-function parseHash(hash: string): Route {
-  const path = hash.replace(/^#/, '')
-  const chat = /^\/chat(?:\/([^/]+))?\/?$/.exec(path)
-  if (chat) return { name: 'chat', chatId: chat[1] ? safeDecode(chat[1]) : null }
-  if (path === '/eltm' || path === '/eltm/') return { name: 'eltm' }
-  if (path === '/personas' || path === '/personas/') return { name: 'personas' }
-  // unknown or empty hash: chat home (the URL bar is left as-is)
-  return CHAT_HOME
-}
+import { parseHash, type Route } from './routes'
 
 class Router {
   current = $state<Route>(parseHash(window.location.hash))
@@ -50,6 +21,7 @@ class Router {
 }
 
 export const router = new Router()
+export type { Route }
 
 /**
  * Navigate to a path ('/chat/xyz'). The route state is updated synchronously

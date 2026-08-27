@@ -1,5 +1,18 @@
 <script lang="ts">
-  import { Bot, Loader2, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pencil, Search, Sparkles, SquarePen, Trash2, UserRound } from '@lucide/svelte'
+  import {
+    Bot,
+    Loader2,
+    MoreHorizontal,
+    Network,
+    PanelLeftClose,
+    PanelLeftOpen,
+    Pencil,
+    Search,
+    Sparkles,
+    SquarePen,
+    Trash2,
+    UserRound,
+  } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
   import { SvelteSet } from 'svelte/reactivity'
   import { cn } from '../utils'
@@ -9,6 +22,8 @@
   import type { ChatInfo } from '../types'
   import DeleteChatDialog from './DeleteChatDialog.svelte'
   import RenameChatDialog from './RenameChatDialog.svelte'
+  import IconButton from './ui/icon-button.svelte'
+  import { dropdownContentPanel, dropdownItemClass, dropdownItemDestructive } from './ui/dropdown-styles'
   import { buttonVariants } from './ui/button.svelte'
 
   // the inline collapse is a ≥ md concern (below md the sidebar is an overlay
@@ -17,7 +32,7 @@
   // springs a 288px column on the user
   let collapsed = $state(
     localStorage.getItem('daapu.sidebar-collapsed') === 'true' ||
-      (localStorage.getItem('daapu.sidebar-collapsed') === null && window.innerWidth < 768)
+      (localStorage.getItem('daapu.sidebar-collapsed') === null && window.innerWidth < 768),
   )
   let query = $state('')
   let renameTarget = $state<ChatInfo | null>(null)
@@ -36,18 +51,13 @@
   // streams, the route may be stale (mid-run back/forward is ignored until
   // the run ends), so the streamed chat stays highlighted via the store
   const route = $derived(router.current)
-  const activeChatId = $derived(
-    store.streaming ? store.chatId : route.name === 'chat' ? route.chatId : null
-  )
+  const activeChatId = $derived(store.streaming ? store.chatId : route.name === 'chat' ? route.chatId : null)
 
   const filtered = $derived(
     query.trim()
       ? store.knownChats.filter((c) => c.title.toLowerCase().includes(query.trim().toLowerCase()))
-      : store.knownChats
+      : store.knownChats,
   )
-
-  const iconBtn =
-    'inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40'
 
   async function generateTitleFor(chat: ChatInfo) {
     titleGeneratingIds.add(chat.id)
@@ -77,24 +87,36 @@
 >
   {#if collapsed && !uiStore.isMobile}
     <div class="flex h-full flex-col items-center gap-1 py-3">
-      <button title="expand sidebar" class={iconBtn} onclick={() => (collapsed = false)}>
+      <IconButton title="expand sidebar" onclick={() => (collapsed = false)}>
         <PanelLeftOpen class="size-5" />
-      </button>
-      <button title="new chat" class={iconBtn} disabled={store.streaming || store.creatingChat} onclick={() => void store.createNewChat()}>
+      </IconButton>
+      <IconButton
+        title="new chat"
+        disabled={store.streaming || store.creatingChat}
+        onclick={() => void store.createNewChat()}
+      >
         <SquarePen class="size-5" />
-      </button>
+      </IconButton>
       <div class="flex-1"></div>
+      <!-- the two anchors below duplicate IconButton's visual recipe (they
+           cannot BE buttons: they are real links for middle-click) -->
       <a
         title="personas"
         href="#/personas"
-        class={cn(iconBtn, !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground')}
+        class={cn(
+          'inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+          !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground',
+        )}
       >
         <UserRound class="size-5" />
       </a>
       <a
         title="eltm"
         href="#/eltm"
-        class={cn(iconBtn, !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground')}
+        class={cn(
+          'inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+          !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground',
+        )}
       >
         <Network class="size-5" />
       </a>
@@ -103,9 +125,9 @@
     <div class="flex items-center gap-2 px-3 py-3">
       <Bot class="size-5 shrink-0" />
       <span class="truncate text-sm font-semibold tracking-tight">daapu</span>
-      <button
+      <IconButton
         title="close sidebar"
-        class={cn(iconBtn, 'ml-auto')}
+        class="ml-auto"
         onclick={() => {
           // one button, two meanings: closes the mobile drawer, collapses
           // the desktop rail (the drawer ignores `collapsed`)
@@ -114,7 +136,7 @@
         }}
       >
         <PanelLeftClose class="size-4" />
-      </button>
+      </IconButton>
     </div>
     <div class="space-y-2 px-2 pb-2">
       <button
@@ -145,7 +167,7 @@
         <div
           class={cn(
             'group flex items-center rounded-lg transition-colors',
-            chat.id === activeChatId ? 'bg-foreground/5' : 'hover:bg-foreground/10'
+            chat.id === activeChatId ? 'bg-foreground/5' : 'hover:bg-foreground/10',
           )}
         >
           <!-- a real link: middle-click / open-in-new-tab work. While a run
@@ -162,7 +184,7 @@
               href={chatHref(chat.id)}
               class={cn(
                 'block rounded-lg py-1.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                store.streaming && 'pointer-events-none opacity-40'
+                store.streaming && 'pointer-events-none opacity-40',
               )}
               aria-hidden={store.streaming}
               tabindex={store.streaming ? -1 : undefined}
@@ -172,11 +194,7 @@
               <span class="block truncate text-sm font-medium">{chat.title}</span>
             </a>
             {#if store.streaming}
-              <div
-                aria-hidden="true"
-                class="absolute inset-0"
-                onclick={() => (uiStore.mobileNavOpen = false)}
-              ></div>
+              <div aria-hidden="true" class="absolute inset-0" onclick={() => (uiStore.mobileNavOpen = false)}></div>
             {/if}
           </div>
           <DropdownMenu.Root>
@@ -191,18 +209,14 @@
               <MoreHorizontal class="size-4" />
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                class="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
-                align="start"
-                sideOffset={6}
-              >
+              <DropdownMenu.Content class={dropdownContentPanel('min-w-40', 'p-1')} align="start" sideOffset={6}>
                 <div class="border-b border-border px-2 py-1.5">
                   <span class="block max-w-64 break-words text-xs leading-snug text-muted-foreground">
                     {chat.title}
                   </span>
                 </div>
                 <DropdownMenu.Item
-                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+                  class={dropdownItemClass()}
                   disabled={store.deletingIds.has(chat.id)}
                   onSelect={() => (renameTarget = chat)}
                 >
@@ -210,7 +224,7 @@
                   Rename
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
-                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground disabled:pointer-events-none disabled:opacity-40"
+                  class={dropdownItemClass()}
                   disabled={titleGeneratingIds.has(chat.id) || store.deletingIds.has(chat.id)}
                   onSelect={() => void generateTitleFor(chat)}
                 >
@@ -222,7 +236,7 @@
                   {titleGeneratingIds.has(chat.id) ? 'Generating…' : 'Generate title'}
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
-                  class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive disabled:pointer-events-none disabled:opacity-40"
+                  class={dropdownItemDestructive()}
                   disabled={store.deletingIds.has(chat.id) || (store.streaming && chat.id === store.chatId)}
                   onSelect={() => (deleteTarget = chat)}
                 >
@@ -245,7 +259,7 @@
         href="#/personas"
         class={cn(
           buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
-          !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground'
+          !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground',
         )}
         onclick={() => (uiStore.mobileNavOpen = false)}
       >
@@ -256,7 +270,7 @@
         href="#/eltm"
         class={cn(
           buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
-          !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground'
+          !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground',
         )}
         onclick={() => (uiStore.mobileNavOpen = false)}
       >

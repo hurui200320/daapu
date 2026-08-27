@@ -11,16 +11,14 @@ import {
   streamChat,
   truncateMessages as apiTruncateMessages,
 } from './api'
-import type { ChatInfo, ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo } from './types'
+import type { ChatInfo, ChatMessage, ChatMessagePart, ModelInfo } from './types'
 import { DEFAULT_PERSONA_ID } from './types'
 import { chatHomePath, chatPath, navigate, replaceRoute, router } from './router.svelte'
 import { personaStore } from './persona-store.svelte'
 import { onIntervalAndFocus } from './resync'
 import { toastStore } from './toast-store.svelte'
-
-// mirrors the backend's data-URL handling (ChatRunService.parseImagePart:
-// trims the URL and strips whitespace from the base64 payload)
-const DATA_URL_RE = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/
+import { dataUrlToImagePart } from './display'
+import { StreamSession } from './stream-session'
 
 // mirrors the backend's DEFAULT_CHAT_TITLE (db/Tables.kt)
 const DEFAULT_CHAT_TITLE = 'New chat'
@@ -29,35 +27,6 @@ const DEFAULT_CHAT_TITLE = 'New chat'
 // App.svelte via $effect: the store is a module-scope singleton, and `$effect`
 // runes are only valid inside a component.
 export const MODEL_STORAGE_KEY = 'daapu.model'
-
-/**
- * Stable per-message identity for collapsible open-state tracking: role +
- * the tool calls (name + args, in order; ids ignored — the display commit
- * has none) + the joined text parts. Content-based because the `done` reload
- * replaces every message object wholesale and a mid-run compaction shifts
- * positions: the same round must keep its signature wherever it lands, and
- * a different round must never inherit another's. The text join is
- * coalescing-invariant (the display commit's single text part vs. the stored
- * form's provider blocks join to the same string). Approximate identity:
- * identical content is indistinguishable by design (and visually too).
- *
- * Tool_result messages all share the constant `role:tool_result` signature:
- * their collapsibles key on the unique result id instead (see
- * MessageItem.partOrdinalKey), so a shared bucket cannot mix up their
- * toggles — and only a shared bucket survives the display's batching (one
- * display message per round's results, one stored message per result).
- */
-export function roundSignature(m: ChatMessage): string {
-  if (m.role !== 'assistant') return `role:${m.role}`
-  const calls = m.parts
-    .filter((p): p is Extract<ChatMessagePart, { type: 'tool_call' }> => p.type === 'tool_call')
-    .map((c) => [c.tool, c.args])
-  const text = m.parts
-    .filter((p): p is Extract<ChatMessagePart, { type: 'text' }> => p.type === 'text')
-    .map((p) => p.text)
-    .join('')
-  return `assistant:${JSON.stringify(calls)}:${text}`
-}
 
 /**
  * All chat state + actions, shared by the sidebar (chat list CRUD), the chat
@@ -157,6 +126,12 @@ class ChatStore {
   // create duplicate fork chats; other chats' buttons stay live
   forkingIds = new SvelteSet<string>()
 
+  // truncations in flight per chat id: indices computed on the display list
+  // go stale once a truncate lands, so while one is pending every OTHER
+  // history edit (truncate/fork) on this chat stays disabled — mirroring how
+  // fork/truncate disable during a full-chat delete's memory extraction
+  truncatingIds = new SvelteSet<string>()
+
   private started = false
   // true while a create request is in flight: a double-click on "New chat"
   // must not create two empty chats
@@ -239,40 +214,11 @@ class ChatStore {
   currentPersonaId = $derived(this.effectivePersonaId())
 
   private effectivePersonaId(): number {
-    const exists = (id: number) =>
-      personaStore.personas.length === 0 || personaStore.personas.some((p) => p.id === id)
+    const exists = (id: number) => personaStore.personas.length === 0 || personaStore.personas.some((p) => p.id === id)
     if (this.personaOverride != null && exists(this.personaOverride)) return this.personaOverride
     const recorded = this.knownChats.find((c) => c.id === this.chatId)?.personaId
     if (recorded != null && exists(recorded)) return recorded
     return DEFAULT_PERSONA_ID
-  }
-
-  /** Mirror of the backend's ChatMessagePart.Attachment, for display only. */
-  private dataUrlToPart(dataUrl: string): ChatMessagePart | null {
-    const match = DATA_URL_RE.exec(dataUrl.trim())
-    if (!match) return null
-    return {
-      type: 'attachment',
-      kind: 'image',
-      mimeType: match[1],
-      content: { type: 'base64', base64: match[2].replace(/\s/g, '') },
-    }
-  }
-
-  /**
-   * Parse a `{"delta": "..."}` SSE payload (text/reasoning events). A
-   * malformed payload or a missing/non-string delta yields null — the event
-   * is skipped instead of appending "undefined" to the buffer or throwing
-   * the whole run into the error path (the `done` reload renders the
-   * authoritative stored form anyway).
-   */
-  private parseDelta(data: string): string | null {
-    try {
-      const delta = (JSON.parse(data) as { delta?: unknown }).delta
-      return typeof delta === 'string' ? delta : null
-    } catch {
-      return null
-    }
   }
 
   /**
@@ -304,6 +250,19 @@ class ChatStore {
     }
     if (parts.length === 0) return
     this.messages = [...this.messages, { role: 'assistant', parts }]
+  }
+
+  /**
+   * Reset the in-flight round's ENTIRE display state to its fresh-send shape
+   * (partials empty, reasoning reopened, tool-call blocks closed): the retry
+   * wipe, every terminal path and `send()` itself share it.
+   */
+  private resetLiveRound() {
+    this.streamReasoning = ''
+    this.streamText = ''
+    this.streamToolCalls = []
+    this.streamReasoningOpen = true
+    this.streamToolCallsOpen = []
   }
 
   /** Record the user's toggle for a collapsible of the round with the given
@@ -376,10 +335,7 @@ class ChatStore {
       this.chatId = id
       this.personaOverride = null
       // prepend to match the server's newest-first order
-      this.knownChats = [
-        { id, title: DEFAULT_CHAT_TITLE, personaId: DEFAULT_PERSONA_ID },
-        ...this.knownChats,
-      ]
+      this.knownChats = [{ id, title: DEFAULT_CHAT_TITLE, personaId: DEFAULT_PERSONA_ID }, ...this.knownChats]
       this.messages = []
       this.clearPartOverrides()
       // the new chat has no failed run of its own: the previous chat's
@@ -465,10 +421,21 @@ class ChatStore {
    * open time), so a chat switch before the request cannot redirect the
    * delete; the slice applies only while still on the same chat. The backend
    * rejects (409) while a run is active; the UI hides the button while
-   * streaming anyway, so the local slice mirrors the DB exactly.
+   * streaming anyway, so the local slice mirrors the DB exactly. Like any
+   * history edit, it is skipped while a full-chat delete, a fork or another
+   * truncation on this chat is still in flight.
+   *
+   * Returns whether the truncation was performed: false either on an API
+   * error (toasted here) or on a guarded no-op — another history edit in
+   * flight on this chat, toasted like `send`. The caller must NOT treat it
+   * as success.
    */
-  async truncateMessages(chatId: string, index: number): Promise<void> {
-    if (!chatId || this.deletingIds.has(chatId)) return
+  async truncateMessages(chatId: string, index: number): Promise<boolean> {
+    if (!chatId || this.deletingIds.has(chatId) || this.forkingIds.has(chatId) || this.truncatingIds.has(chatId)) {
+      toastStore.push('A history edit is in progress')
+      return false
+    }
+    this.truncatingIds.add(chatId)
     try {
       await apiTruncateMessages(chatId, index)
       if (this.chatId === chatId) {
@@ -476,8 +443,12 @@ class ChatStore {
         // the failed turn is gone, so the run-failure banner goes with it
         this.streamError = null
       }
+      return true
     } catch (e) {
       toastStore.pushError(e)
+      return false
+    } finally {
+      this.truncatingIds.delete(chatId)
     }
   }
 
@@ -492,7 +463,7 @@ class ChatStore {
    */
   async forkChat(index: number): Promise<void> {
     const id = this.chatId.trim()
-    if (!id || this.deletingIds.has(id) || this.forkingIds.has(id)) return
+    if (!id || this.deletingIds.has(id) || this.forkingIds.has(id) || this.truncatingIds.has(id)) return
     this.forkingIds.add(id)
     try {
       const chat = await apiForkChat(id, index)
@@ -516,11 +487,7 @@ class ChatStore {
     }
   }
 
-  async send(
-    text: string,
-    images: { dataUrl: string }[],
-    model: string,
-  ): Promise<boolean> {
+  async send(text: string, images: { dataUrl: string }[], model: string): Promise<boolean> {
     const id = this.chatId.trim()
     if (!id) {
       toastStore.push('Select a chat first')
@@ -541,13 +508,16 @@ class ChatStore {
       toastStore.push('This chat is being deleted')
       return false
     }
+    // serialize against history edits like the message-item buttons do: a
+    // pending truncate/fork shifts indices (then the stored history) under
+    // an optimistic send
+    if (this.truncatingIds.has(id) || this.forkingIds.has(id)) {
+      toastStore.push('A history edit is in progress')
+      return false
+    }
     this.streamError = null
     this.retrying = false
-    this.streamReasoning = ''
-    this.streamText = ''
-    this.streamToolCalls = []
-    this.streamReasoningOpen = true
-    this.streamToolCallsOpen = []
+    this.resetLiveRound()
     this.streaming = true
     // the run owns the display from here on (the optimistic message appended
     // below): an in-flight history load for this chat must not overwrite it,
@@ -559,34 +529,36 @@ class ChatStore {
     const userParts: ChatMessagePart[] = []
     if (text) userParts.push({ type: 'text', text })
     for (const image of images) {
-      const part = this.dataUrlToPart(image.dataUrl)
+      const part = dataUrlToImagePart(image.dataUrl)
       if (part) userParts.push(part)
     }
     this.messages = [...this.messages, { role: 'user', parts: userParts }]
+    // The event semantics live in StreamSession (unit-tested against scripted
+    // SSE scripts); this class only supplies the reactive-state verbs.
     let failed = false
-    let sawDone = false
     try {
-      for await (const ev of streamChat(id, { text, images, model, personaId })) {
-        switch (ev.event) {
-          case 'reasoning': {
+      const outcome = await new StreamSession(
+        {
+          events: streamChat(id, { text, images, model, personaId }),
+          reloadFromDb: () => this.reloadFromDb(id),
+          resyncChats: () => this.resyncChats(),
+        },
+        {
+          onTextDelta: (delta) => {
             this.retrying = false
-            const delta = this.parseDelta(ev.data)
-            if (delta != null) this.streamReasoning += delta
-            break
-          }
-          case 'text': {
+            this.streamText += delta
+          },
+          onReasoningDelta: (delta) => {
             this.retrying = false
-            const delta = this.parseDelta(ev.data)
-            if (delta != null) this.streamText += delta
-            break
-          }
-          case 'tool_call':
+            this.streamReasoning += delta
+          },
+          onToolCall: (call) => {
             this.retrying = false
-            this.streamToolCalls = [...this.streamToolCalls, JSON.parse(ev.data)]
+            this.streamToolCalls = [...this.streamToolCalls, call]
             // a new live tool block starts open
             this.streamToolCallsOpen = [...this.streamToolCallsOpen, true]
-            break
-          case 'tool_result':
+          },
+          onToolResult: (resultPart) => {
             // a tool result commits the current round: its assistant message
             // (reasoning + text + tool calls) is finished, so move it into the
             // history and reset the buffers — the next round must stream as
@@ -598,130 +570,38 @@ class ChatStore {
             // state (the tool_call parts have no real id — the SSE event
             // doesn't carry one): the `done` reload replaces it with the
             // stored form.
-            {
-              const result = JSON.parse(ev.data)
-              const resultPart: ChatToolResultPart = {
-                type: 'tool_result',
-                id: result.id,
-                tool: result.name,
-                isError: result.isError,
-                parts: [{ type: 'text', text: result.content }],
-              }
-              const last = this.messages[this.messages.length - 1]
-              if (this.streamToolCalls.length === 0 && last?.role === 'tool_result') {
-                // 2nd..Nth result of the same batch: extend the committed
-                // tool_result message instead of creating an empty pair
-                this.messages = [
-                  ...this.messages.slice(0, -1),
-                  { ...last, parts: [...last.parts, resultPart] },
-                ]
-              } else {
-                // commit the round's assistant message, then attach the
-                // result
-                this.commitRound()
-                this.messages = [...this.messages, { role: 'tool_result', parts: [resultPart] }]
-                this.streamReasoning = ''
-                this.streamText = ''
-                this.streamToolCalls = []
-                this.streamReasoningOpen = true
-                this.streamToolCallsOpen = []
-              }
-            }
-            break
-          case 'retry':
-            // the server re-streams the whole round from scratch; drop the
-            // failed round's partials so the retried output doesn't append to
-            // stale text (committed rounds live in `messages` and survive)
-            this.retrying = true
-            this.streamReasoning = ''
-            this.streamText = ''
-            this.streamToolCalls = []
-            // the retried round's blocks start open again
-            this.streamReasoningOpen = true
-            this.streamToolCallsOpen = []
-            break
-          case 'done': {
-            sawDone = true
-            this.retrying = false
-            // hide the live block for the resync: the run is over, and the
-            // empty buffers would otherwise render a "Processing…" shimmer
-            // while the DB reload + chat-list refresh are in flight
-            this.runEnding = true
-            if (!(await this.reloadFromDb(id))) {
-              // the reload failed: commit the final round into the display
-              // (the buffers hold the only copy of the answer) so the view
-              // still shows the full run; the next resync or run replaces it
+            const last = this.messages[this.messages.length - 1]
+            if (this.streamToolCalls.length === 0 && last?.role === 'tool_result') {
+              // 2nd..Nth result of the same batch: extend the committed
+              // tool_result message instead of creating an empty pair
+              this.messages = [...this.messages.slice(0, -1), { ...last, parts: [...last.parts, resultPart] }]
+            } else {
+              // commit the round's assistant message, then attach the result
               this.commitRound()
+              this.messages = [...this.messages, { role: 'tool_result', parts: [resultPart] }]
+              // the next round streams as its own message
+              this.resetLiveRound()
             }
-            // The run's streaming buffers are stale in every path (the
-            // display is the stored history now). Wipe them so a future
-            // render path can never resurrect the last run's partials.
-            this.streamReasoning = ''
-            this.streamText = ''
-            this.streamToolCalls = []
-            this.streamReasoningOpen = true
-            this.streamToolCallsOpen = []
-            // The successful store also stamped the chat's persona record,
-            // so refresh the chat list too — the picker would otherwise show
-            // the pre-run record until the next 30s/focus resync.
-            await this.resyncChats()
-            break
-          }
-          case 'error':
-            failed = true
+          },
+          onRetryBegin: () => {
+            this.retrying = true
+            // the retried round's blocks start open again (resetLiveRound)
+            this.resetLiveRound()
+          },
+          beginRunEnding: () => {
             this.retrying = false
             this.runEnding = true
-            // the failed round's partials must not flash under the error
-            // banner while the reload below is in flight
-            this.streamReasoning = ''
-            this.streamText = ''
-            this.streamToolCalls = []
-            {
-              // the server sends {"message": ...} — anything else (a
-              // malformed payload, a missing message field) falls back to
-              // the raw data instead of throwing a SyntaxError up the stack
-              let message: string
-              try {
-                const parsed = JSON.parse(ev.data) as { message?: unknown }
-                message =
-                  typeof parsed.message === 'string'
-                    ? parsed.message
-                    : ev.data
-              } catch {
-                message = ev.data
-              }
-              this.streamError = message
-            }
-            // the run failed before storing, so the optimistic user message
-            // and any committed tool rounds are not in the DB: reload to match
-            await this.reloadFromDb(id)
-            break
-        }
-      }
-      if (!sawDone && !failed) {
-        // the connection closed cleanly without a terminal event (e.g. the
-        // server restarted mid-run): the run's outcome is unknown, so sync
-        // with whatever the DB actually has and restore the draft
-        failed = true
-        this.runEnding = true
-        this.streamReasoning = ''
-        this.streamText = ''
-        this.streamToolCalls = []
-        await this.reloadFromDb(id)
-        await this.resyncChats()
-        this.streamError = 'connection closed before the run completed'
-      }
-    } catch (e) {
-      failed = true
-      // a fetch/parse failure may still have stored the run server-side (or
-      // not): sync with the DB so a phantom optimistic message never sticks.
-      // If the stream already surfaced a run error (streamError), that is
-      // the more specific message — the banner or the finally fallback toast
-      // carries it, so don't stack a second toast on top
-      if (!this.streamError) toastStore.pushError(e)
-      this.runEnding = true
-      await this.reloadFromDb(id)
-      await this.resyncChats()
+          },
+          resetLiveRound: () => this.resetLiveRound(),
+          commitFinalRound: () => this.commitRound(),
+          setRunError: (message) => (this.streamError = message),
+          // falsy check (NOT just != null) so '' suppresses the fallback
+          // toast too, like the legacy `if (!this.streamError)` did
+          hasRunError: () => !!this.streamError,
+          toastTransportFailure: (e) => toastStore.pushError(e),
+        },
+      ).run()
+      failed = outcome.failed
     } finally {
       this.streaming = false
       this.runEnding = false

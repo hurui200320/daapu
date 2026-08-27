@@ -1,15 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { ChevronDown, ChevronRight } from '@lucide/svelte'
-  import {
-    getEntityNotes,
-    getEntityRelationships,
-    getRelationshipNotes,
-    listEntities,
-    listRelationships,
-  } from '../api'
+  import { getEntityNotes, getEntityRelationships, getRelationshipNotes, listEntities, listRelationships } from '../api'
   import type { EltmNoteDto, EntityViewDto, RelationshipViewDto } from '../types'
   import { onIntervalAndFocus } from '../resync'
+  import { fetchMore, fetchWindow } from '../paging'
   import { router } from '../router.svelte'
   import { errMsg } from '../utils'
   import Button from './ui/button.svelte'
@@ -29,11 +24,6 @@
 
   /** Page size of the browse lists (`/api/eltm` `limit` param). */
   const PAGE_SIZE = 100
-  /**
-   * Server-side cap of a single `/api/eltm` page
-   * (WebServer.kt MAX_ELTM_PAGE_LIMIT): a resync chunk must never exceed it.
-   */
-  const LIST_LIMIT_CAP = 500
 
   let tab = $state<Tab>('entities')
   let entities = $state<EntityViewDto[]>([])
@@ -84,36 +74,6 @@
   }
 
   /**
-   * Fetch [windowSize] rows plus one probe row (to learn whether more pages
-   * exist), in chunks of at most [LIST_LIMIT_CAP] — the server rejects pages
-   * beyond the cap, so a window grown past it via "load more" must be walked
-   * in capped chunks instead of one growing request.
-   */
-  async function fetchWindow<T>(
-    fetchPage: (limit: number, offset: number) => Promise<T[]>,
-    windowSize: number,
-  ): Promise<{ rows: T[]; full: boolean }> {
-    const rows: T[] = []
-    const probe = windowSize + 1
-    while (rows.length < probe) {
-      const limit = Math.min(LIST_LIMIT_CAP, probe - rows.length)
-      const page = await fetchPage(limit, rows.length)
-      rows.push(...page)
-      if (page.length < limit) break
-    }
-    return { rows: rows.slice(0, windowSize), full: rows.length <= windowSize }
-  }
-
-  /** One "load more" page of [PAGE_SIZE] rows plus the probe row. */
-  async function fetchMore<T>(
-    fetchPage: (limit: number, offset: number) => Promise<T[]>,
-    offset: number,
-  ): Promise<{ rows: T[]; full: boolean }> {
-    const more = await fetchPage(PAGE_SIZE + 1, offset)
-    return { rows: more.slice(0, PAGE_SIZE), full: more.length <= PAGE_SIZE }
-  }
-
-  /**
    * Background resync (30s + window focus): the extraction pipeline writes to
    * the ELTM server-side, so the view must refresh on its own. Silent on
    * failure and replaces a list only when it actually changed, so an expanded
@@ -156,9 +116,7 @@
 
   async function refreshExpandedDetails() {
     const entityIds = Object.keys(expandedEntities).filter((k) => expandedEntities[Number(k)])
-    const relationshipIds = Object.keys(expandedRelationships).filter(
-      (k) => expandedRelationships[Number(k)],
-    )
+    const relationshipIds = Object.keys(expandedRelationships).filter((k) => expandedRelationships[Number(k)])
     await Promise.all([
       ...entityIds.map(async (k) => {
         const id = Number(k)
@@ -237,9 +195,24 @@
     return () => dispose()
   })
 
+  /** Collapse bookkeeping: drop the id from BOTH the flag map and its cached
+   * payload, so expanded cards never accumulate stale notes arrays for rows
+   * that scrolled out of (or vanished from) the loaded window. */
+  function collapse<T>(
+    flags: Record<number, boolean>,
+    details: Record<number, T>,
+    id: number,
+  ): { flags: Record<number, boolean>; details: Record<number, T> } {
+    const f = { ...flags }
+    delete f[id]
+    const d = { ...details }
+    delete d[id]
+    return { flags: f, details: d }
+  }
+
   async function toggleEntity(id: number) {
     if (expandedEntities[id]) {
-      expandedEntities = { ...expandedEntities, [id]: false }
+      ;({ flags: expandedEntities, details: entityDetails } = collapse(expandedEntities, entityDetails, id))
       return
     }
     expandedEntities = { ...expandedEntities, [id]: true }
@@ -256,7 +229,11 @@
 
   async function toggleRelationship(id: number) {
     if (expandedRelationships[id]) {
-      expandedRelationships = { ...expandedRelationships, [id]: false }
+      ;({ flags: expandedRelationships, details: relationshipDetails } = collapse(
+        expandedRelationships,
+        relationshipDetails,
+        id,
+      ))
       return
     }
     expandedRelationships = { ...expandedRelationships, [id]: true }
@@ -298,7 +275,9 @@
     </div>
 
     {#if error}
-      <div class="break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      <div
+        class="break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+      >
         {error}
       </div>
     {/if}
@@ -308,7 +287,7 @@
         <div class="py-10 text-center text-sm text-muted-foreground">no entities yet</div>
       {/if}
 
-      {#each entities as view}
+      {#each entities as view (view.entity.id)}
         <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
           <button
             class="flex w-full items-center justify-between gap-2 text-left"
@@ -331,10 +310,8 @@
           </button>
           {#if Object.keys(view.attributes).length > 0}
             <div class="mt-1 flex flex-wrap gap-1 pl-6">
-              {#each Object.entries(view.attributes) as [key, value]}
-                <span
-                  class="rounded-full border border-border/30 bg-background/40 px-2 py-0.5 text-xs"
-                >
+              {#each Object.entries(view.attributes) as [key, value] (key)}
+                <span class="rounded-full border border-border/30 bg-background/40 px-2 py-0.5 text-xs">
                   <span class="text-muted-foreground">{key}</span> <span class="font-medium">{value}</span>
                 </span>
               {/each}
@@ -347,9 +324,7 @@
           {/if}
           {#if expandedEntities[view.entity.id]}
             {#if !entityDetails[view.entity.id]}
-              <p class="mt-3 border-t border-border/30 pt-3 text-xs text-muted-foreground">
-                loading…
-              </p>
+              <p class="mt-3 border-t border-border/30 pt-3 text-xs text-muted-foreground">loading…</p>
             {:else if entityDetails[view.entity.id]!.error}
               <p class="mt-3 border-t border-border/30 pt-3 text-xs text-destructive">
                 {entityDetails[view.entity.id]!.error}
@@ -361,7 +336,7 @@
                   {#if entityDetails[view.entity.id]?.relationships.length === 0}
                     <p class="text-xs text-muted-foreground">none</p>
                   {:else}
-                    {#each entityDetails[view.entity.id]?.relationships ?? [] as rel}
+                    {#each entityDetails[view.entity.id]?.relationships ?? [] as rel (rel.relationship.id)}
                       <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
                         <div class="text-sm">
                           {rel.srcName}
@@ -384,7 +359,7 @@
                   {#if entityDetails[view.entity.id]?.notes.length === 0}
                     <p class="text-xs text-muted-foreground">none</p>
                   {:else}
-                    {#each entityDetails[view.entity.id]?.notes ?? [] as note}
+                    {#each entityDetails[view.entity.id]?.notes ?? [] as note (note.id)}
                       <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
                         <span class="text-xs text-muted-foreground tabular-nums">{note.eventDate}</span>
                         <p class="whitespace-pre-wrap break-words text-sm leading-6">{note.note}</p>
@@ -407,7 +382,7 @@
         <div class="py-10 text-center text-sm text-muted-foreground">no relationships yet</div>
       {/if}
 
-      {#each relationships as view}
+      {#each relationships as view (view.relationship.id)}
         <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
           <button
             class="flex w-full items-center justify-between gap-2 text-left"
@@ -429,9 +404,7 @@
                   ended
                 </span>
               {:else}
-                <span class="shrink-0 rounded-full bg-accent px-2 py-0.5 text-xs text-accent-foreground">
-                  active
-                </span>
+                <span class="shrink-0 rounded-full bg-accent px-2 py-0.5 text-xs text-accent-foreground"> active </span>
               {/if}
             </span>
             <span class="shrink-0 text-xs text-muted-foreground tabular-nums">
@@ -445,9 +418,7 @@
           {/if}
           {#if expandedRelationships[view.relationship.id]}
             {#if !relationshipDetails[view.relationship.id]}
-              <p class="mt-3 border-t border-border/30 pt-3 text-xs text-muted-foreground">
-                loading…
-              </p>
+              <p class="mt-3 border-t border-border/30 pt-3 text-xs text-muted-foreground">loading…</p>
             {:else if relationshipDetails[view.relationship.id]!.error}
               <p class="mt-3 border-t border-border/30 pt-3 text-xs text-destructive">
                 {relationshipDetails[view.relationship.id]!.error}
@@ -457,7 +428,7 @@
                 {#if relationshipDetails[view.relationship.id]?.notes.length === 0}
                   <p class="text-xs text-muted-foreground">no notes</p>
                 {:else}
-                  {#each relationshipDetails[view.relationship.id]?.notes ?? [] as note}
+                  {#each relationshipDetails[view.relationship.id]?.notes ?? [] as note (note.id)}
                     <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
                       <span class="text-xs text-muted-foreground tabular-nums">{note.eventDate}</span>
                       <p class="whitespace-pre-wrap break-words text-sm leading-6">{note.note}</p>

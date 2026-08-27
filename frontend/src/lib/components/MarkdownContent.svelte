@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { cn } from '../utils'
-  import { renderMarkdown } from '../markdown'
+  import { getMarkdownRenderer } from '../markdown-renderer'
   import '../markdown.css'
 
   type Props = { text: string; live?: boolean; class?: string; [key: string]: unknown }
@@ -39,7 +39,29 @@
     return () => clearTimeout(timer)
   })
 
-  const html = $derived(renderMarkdown(rendered))
+  // async pipeline application: awaited once per app session (lazy-loaded),
+  // then effectively synchronous. The sequence counter guards against an
+  // older resolve overwriting a newer render if two effect runs race while
+  // the first initialization is still in flight.
+  let html = $state('')
+  let seq = 0
+  $effect(() => {
+    const current = rendered
+    const mySeq = ++seq
+    let alive = true
+    getMarkdownRenderer()
+      .then((renderMarkdown) => {
+        if (!alive || mySeq !== seq) return
+        html = renderMarkdown(current)
+      })
+      .catch(() => {
+        // lazy-init failed (a rejected promise, never swallowed by the cache —
+        // the next effect run re-attempts init): leave the previous html alone
+      })
+    return () => {
+      alive = false
+    }
+  })
 
   /**
    * The copy buttons inside the injected HTML are wired via event delegation

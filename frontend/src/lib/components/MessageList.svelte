@@ -1,27 +1,11 @@
 <script lang="ts">
   import { ArrowDown, Lightbulb, Wrench } from '@lucide/svelte'
   import { chatStore as store } from '../chat-store.svelte'
-  import type { ChatMessage } from '../types'
+  import { messageSpacing } from '../display'
   import CollapsibleBlock from './CollapsibleBlock.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
   import MessageItem from './MessageItem.svelte'
   import TruncateMessagesDialog from './TruncateMessagesDialog.svelte'
-
-  /**
-   * Vertical rhythm: standalone messages sit 2rem apart, but a tool chain
-   * (assistant tool calls → tool_result → next tool round) is visually
-   * glued together — only the chain's first message keeps the full gap, the
-   * rest are separated by the blocks' own 4px margins.
-   */
-  function messageSpacing(messages: ChatMessage[], i: number): string {
-    if (i === 0) return ''
-    const prev = messages[i - 1]
-    const curr = messages[i]
-    const chained =
-      curr.role === 'tool_result' ||
-      (prev.role === 'tool_result' && curr.parts.some((p) => p.type === 'tool_call'))
-    return chained ? '' : 'mt-8'
-  }
 
   // the chat + user-message index a pending truncation starts from, or null
   // while closed; the chat id is pinned at open time so a chat switch before
@@ -98,6 +82,12 @@
          button hangs -bottom-8 (32px) below its row, so the padding must
          clear that overhang or the button clips at the scroll edge -->
     <div class="mx-auto flex w-full max-w-3xl flex-col px-4 pt-6 pb-10">
+      <!-- svelte/require-each-key disabled: the chat array is reconciled by
+           INDEX (see MessageItem's comment). Every store mutation re-creates
+           the message objects (`[...messages, ...]`), so any key would force a
+           full list rebuild on every streamed commit instead of index-position
+           updates; MessageItem guards the re-targeting hazard itself -->
+      <!-- eslint-disable-next-line svelte/require-each-key -->
       {#each store.messages as message, i}
         <div class={messageSpacing(store.messages, i)}>
           <MessageItem
@@ -125,6 +115,10 @@
               </div>
             </CollapsibleBlock>
           {/if}
+          <!-- same rule: the live buffer is wiped/re-grown per round and on
+               retry, where index identity IS the semantic (open-states key by
+               position) — keyed blocks would teardown on every delta append -->
+          <!-- eslint-disable-next-line svelte/require-each-key -->
           {#each store.streamToolCalls as call, i}
             <CollapsibleBlock
               icon={Wrench}
@@ -134,8 +128,11 @@
               onOpenChange={(v) => (store.streamToolCallsOpen[i] = v)}
             >
               <pre
-                class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground"
-              >{JSON.stringify(call.args, null, 2)}</pre>
+                class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground">{JSON.stringify(
+                  call.args,
+                  null,
+                  2,
+                )}</pre>
             </CollapsibleBlock>
           {/each}
           {#if store.streamText}

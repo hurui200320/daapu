@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X } from '@lucide/svelte'
+  import { SvelteMap } from 'svelte/reactivity'
 
   let {
     src,
@@ -40,7 +41,11 @@
   } | null = null
   // live pointer positions plus their gesture-start positions (the latter
   // feed the tap-movement tolerance)
-  const pointers = new Map<number, { x: number; y: number; startX: number; startY: number }>()
+  // live pointer positions plus their gesture-start positions (the latter
+  // feed the tap-movement tolerance). SvelteMap: the linter requires it over
+  // a raw Map, and gesture state must not be reactive — nothing renders from
+  // this map (dragging/pinch flags below own the visuals)
+  const pointers = new SvelteMap<number, { x: number; y: number; startX: number; startY: number }>()
   // how far the farthest pointer has traveled since its press: a background
   // tap must not close the viewer after a drag or pinch that ended over the
   // background (its click lands on the overlay — see the click handler)
@@ -76,8 +81,8 @@
     if (!overlay) return
     const focusables = Array.from(
       overlay.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex="-1"])'
-      )
+        'a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex="-1"])',
+      ),
     )
     if (focusables.length === 0) {
       e.preventDefault()
@@ -192,10 +197,7 @@
     if (!p) return
     p.x = e.clientX
     p.y = e.clientY
-    gestureMaxMove = Math.max(
-      gestureMaxMove,
-      Math.hypot(e.clientX - p.startX, e.clientY - p.startY)
-    )
+    gestureMaxMove = Math.max(gestureMaxMove, Math.hypot(e.clientX - p.startX, e.clientY - p.startY))
     if (pinchStart && pointers.size >= 2) {
       const [a, b] = [...pointers.values()]
       const dist = Math.hypot(a.x - b.x, a.y - b.y)
@@ -270,10 +272,12 @@
 >
   <img
     bind:this={imgEl}
-    src={src}
-    alt={alt}
+    {src}
+    {alt}
     draggable={false}
-    class="max-h-[92vh] max-w-[92vw] touch-none select-none object-contain {dragging ? 'cursor-grabbing' : 'cursor-grab'}"
+    class="max-h-[92vh] max-w-[92vw] touch-none select-none object-contain {dragging
+      ? 'cursor-grabbing'
+      : 'cursor-grab'}"
     style="transform: translate({tx}px, {ty}px) scale({scale})"
   />
   <button
@@ -286,7 +290,9 @@
     <X class="size-5" />
     <span class="sr-only">Close</span>
   </button>
-  <div class="pointer-events-none absolute bottom-4 right-4 rounded-md bg-black/50 px-2 py-1 text-xs tabular-nums text-white/80">
+  <div
+    class="pointer-events-none absolute bottom-4 right-4 rounded-md bg-black/50 px-2 py-1 text-xs tabular-nums text-white/80"
+  >
     {Math.round(scale * 100)}%
   </div>
 </div>

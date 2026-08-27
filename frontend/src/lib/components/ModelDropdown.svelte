@@ -2,6 +2,7 @@
   import { ChevronDown, Package, Search } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
   import { chatStore as store } from '../chat-store.svelte'
+  import { dropdownChipTrigger, dropdownContentPanel, dropdownItemClass } from './ui/dropdown-styles'
 
   /**
    * Model picker: llama.cpp webui style chip trigger + searchable dropdown.
@@ -10,28 +11,18 @@
   let query = $state('')
 
   const filtered = $derived(
-    query.trim()
-      ? store.models.filter((m) => m.id.toLowerCase().includes(query.trim().toLowerCase()))
-      : store.models
+    query.trim() ? store.models.filter((m) => m.id.toLowerCase().includes(query.trim().toLowerCase())) : store.models,
   )
 </script>
 
 <DropdownMenu.Root onOpenChange={(open: boolean) => open && (query = '')}>
-  <DropdownMenu.Trigger
-    disabled={store.streaming}
-    class="inline-flex h-8 min-w-0 max-w-36 items-center gap-1.5 rounded-md bg-muted px-2 text-xs text-foreground transition-colors hover:bg-muted-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 sm:max-w-52"
-    title="model"
-  >
+  <DropdownMenu.Trigger disabled={store.streaming} class={dropdownChipTrigger('max-w-36', 'sm:max-w-52')} title="model">
     <Package class="size-3.5 shrink-0 text-muted-foreground" />
     <span class="min-w-0 truncate">{store.selectedModel || 'model'}</span>
     <ChevronDown class="size-3.5 shrink-0 text-muted-foreground" />
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>
-    <DropdownMenu.Content
-      class="z-50 w-72 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-md"
-      align="end"
-      sideOffset={6}
-    >
+    <DropdownMenu.Content class={dropdownContentPanel('w-72')} align="end" sideOffset={6}>
       <div class="relative mb-1">
         <Search class="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <input
@@ -41,9 +32,9 @@
         />
       </div>
       <div class="max-h-72 overflow-y-auto">
-        {#each filtered as model}
+        {#each filtered as model (model.id)}
           <DropdownMenu.Item
-            class="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+            class={dropdownItemClass('justify-between', 'cursor-pointer')}
             onSelect={() => (store.selectedModel = model.id)}
           >
             <span class="truncate">{model.id}</span>

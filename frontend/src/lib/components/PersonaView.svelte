@@ -1,5 +1,16 @@
 <script lang="ts">
-  import { Check, ChevronDown, ChevronRight, Copy, Loader2, Pencil, Plus, Tags, Trash2, UserRound } from '@lucide/svelte'
+  import {
+    Check,
+    ChevronDown,
+    ChevronRight,
+    Copy,
+    Loader2,
+    Pencil,
+    Plus,
+    Tags,
+    Trash2,
+    UserRound,
+  } from '@lucide/svelte'
   import Button from './ui/button.svelte'
   import { Dialog } from './ui/dialog.svelte'
   import DialogContent from './ui/dialog-content.svelte'
@@ -8,6 +19,8 @@
   import DialogHeader from './ui/dialog-header.svelte'
   import DialogTitle from './ui/dialog-title.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
+  import ConfirmDialog from './ui/confirm-dialog.svelte'
+  import IconButton from './ui/icon-button.svelte'
   import { personaStore } from '../persona-store.svelte'
   import type { Persona } from '../types'
   import { DEFAULT_PERSONA_ID } from '../types'
@@ -117,8 +130,8 @@
     <div>
       <h1 class="text-lg font-semibold tracking-tight">Personas</h1>
       <p class="text-xs text-muted-foreground">
-        The persona text is prepended to the GSG harness introduction; the namespace whitelist
-        restricts which tools the chat loop serves (empty = all).
+        The persona text is prepended to the GSG harness introduction; the namespace whitelist restricts which tools the
+        chat loop serves (empty = all).
       </p>
     </div>
     <Button size="sm" onclick={() => openPromptEditor('new')}>
@@ -131,8 +144,7 @@
     {#each personaStore.personas as persona (persona.id)}
       <div class="rounded-xl border border-border/60 bg-muted/40 transition-colors hover:bg-muted/70">
         <div class="flex items-center gap-1.5 px-2.5 py-2.5">
-          <button
-            class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          <IconButton
             title={previewExpanded[persona.id] ? 'hide system prompt preview' : 'preview system prompt'}
             onclick={() => togglePreview(persona.id)}
           >
@@ -141,7 +153,7 @@
             {:else}
               <ChevronRight class="size-4" />
             {/if}
-          </button>
+          </IconButton>
           <UserRound class="size-4 shrink-0 text-muted-foreground" />
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
@@ -157,27 +169,19 @@
             </div>
           </div>
           {#if persona.id !== DEFAULT_PERSONA_ID}
-            <button
-              class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              title="edit system prompt"
-              onclick={() => openPromptEditor(persona)}
-            >
+            <IconButton title="edit system prompt" onclick={() => openPromptEditor(persona)}>
               <Pencil class="size-4" />
-            </button>
-            <button
-              class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              title="edit allowed namespaces"
-              onclick={() => openNamespacesEditor(persona)}
-            >
+            </IconButton>
+            <IconButton title="edit allowed namespaces" onclick={() => openNamespacesEditor(persona)}>
               <Tags class="size-4" />
-            </button>
-            <button
-              class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            </IconButton>
+            <IconButton
               title="delete persona"
+              class="hover:bg-destructive/10 hover:text-destructive"
               onclick={() => (deleteTarget = persona)}
             >
               <Trash2 class="size-4" />
-            </button>
+            </IconButton>
           {/if}
         </div>
         {#if previewExpanded[persona.id]}
@@ -214,8 +218,8 @@
     <DialogHeader>
       <DialogTitle>{promptEditor === 'new' ? 'New persona' : 'Edit system prompt'}</DialogTitle>
       <DialogDescription>
-        This text is prepended to the GSG harness introduction (policy, harness mechanics,
-        context injection) automatically.
+        This text is prepended to the GSG harness introduction (policy, harness mechanics, context injection)
+        automatically.
       </DialogDescription>
     </DialogHeader>
     <div class="space-y-3">
@@ -254,17 +258,14 @@
 </Dialog>
 
 <!-- namespace whitelist editor: one text input per item -->
-<Dialog
-  open={namespacesTarget !== null}
-  onOpenChange={(open: boolean) => !open && (namespacesTarget = null)}
->
+<Dialog open={namespacesTarget !== null} onOpenChange={(open: boolean) => !open && (namespacesTarget = null)}>
   <DialogContent>
     <DialogHeader>
       <DialogTitle>Edit allowed namespaces</DialogTitle>
       <DialogDescription>
         One namespace per item; this persona's current whitelist is
-        {#if namespacesTarget}{namespacesText(namespacesTarget)}{:else}…{/if}. Leave the list empty
-        for all namespaces served by the chat loop.
+        {#if namespacesTarget}{namespacesText(namespacesTarget)}{:else}…{/if}. Leave the list empty for all namespaces
+        served by the chat loop.
       </DialogDescription>
     </DialogHeader>
     <div class="space-y-2">
@@ -275,13 +276,13 @@
             placeholder="e.g. gsg"
             class="h-9 w-full rounded-md border border-border bg-transparent px-3 font-mono text-sm outline-none transition focus:border-border no-hover:text-base"
           />
-          <button
-            class="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          <IconButton
             title="remove namespace"
+            class="hover:bg-destructive/10 hover:text-destructive"
             onclick={() => (namespaceItems = namespaceItems.filter((row) => row.id !== item.id))}
           >
             <Trash2 class="size-4" />
-          </button>
+          </IconButton>
         </div>
       {/each}
       <Button
@@ -308,25 +309,11 @@
 </Dialog>
 
 <!-- delete confirm -->
-<Dialog open={deleteTarget !== null} onOpenChange={(open: boolean) => !open && (deleteTarget = null)}>
-  <DialogContent>
-    <DialogHeader>
-      <div class="flex items-center gap-3">
-        <div class="flex size-9 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
-          <Trash2 class="size-4" />
-        </div>
-        <div class="min-w-0">
-          <DialogTitle>Delete persona?</DialogTitle>
-          <DialogDescription>
-            "{deleteTarget?.name ?? ''}" will be deleted. Chats that used it fall back to the
-            default persona on their next run.
-          </DialogDescription>
-        </div>
-      </div>
-    </DialogHeader>
-    <DialogFooter>
-      <Button variant="ghost" onclick={() => (deleteTarget = null)}>Cancel</Button>
-      <Button variant="destructive" onclick={confirmDelete}>Delete</Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
+<ConfirmDialog
+  open={deleteTarget !== null}
+  onClose={() => (deleteTarget = null)}
+  title="Delete persona?"
+  onConfirm={confirmDelete}
+>
+  "{deleteTarget?.name ?? ''}" will be deleted. Chats that used it fall back to the default persona on their next run.
+</ConfirmDialog>
