@@ -125,7 +125,10 @@ export interface RunRequest {
   toolCallbackUrl?: string;
   /** Round cap; 0 = unlimited. */
   maxRounds: number;
-  /** Transient retries per round; 0 = unlimited. */
+  /**
+   * Total transient attempts per round (a `maxRetries` of 1 allows a single
+   * attempt); 0 = unlimited. Mirrors `/v1/embed`'s `maxRetries` semantics.
+   */
   maxRetries: number;
   /** Idle timeout per streamed round in ms; 0 = disabled. */
   streamIdleTimeoutMs: number;

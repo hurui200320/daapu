@@ -20,7 +20,7 @@ data class HandConfig(
     val token: String = "dev-token",
     /** Round cap per `/v1/run`; 0 = unlimited. */
     val maxRounds: Int = 64,
-    /** Transient retries per round; 0 = unlimited. */
+    /** Total transient attempts per `/v1/run` round (1 = a single attempt); 0 = unlimited. */
     val maxRetries: Int = 0,
     /** Stream idle timeout per round in ms; 0 = disabled. */
     val streamIdleTimeoutMs: Long = 300_000,

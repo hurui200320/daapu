@@ -1,138 +1,26 @@
 /**
- * Shared finish classification plus the `/v1/run` round loop (spec §3.3).
+ * The `/v1/run` round loop (spec §3.3): stream a round, classify its
+ * terminal event, retry transient failures with backoff, execute tool calls
+ * in parallel, and relay everything as named SSE events — exactly one of
+ * `done`/`error` closes the run. The hand holds no state beyond this
+ * function: everything it needs arrives in the request.
  *
- * daapu's classification: a `length` finish means `context_exhausted` when
- * the prompt overflows the window minus the output budget,
- * `output_budget_exhausted` otherwise. A gateway-side rejection (HTTP
- * 400/413 error body) is the same "input overflows the window" signal as a
- * near-window length finish, so it classifies as `context_exhausted` via
- * pi-ai's `isContextOverflow`.
+ * This file is deliberately only the LOOP. Finish classification lives in
+ * `classification.ts`, and the outbound brain calls (tool listing + tool
+ * callbacks) in `toolTransport.ts`.
  */
 
-import { isContextOverflow, uuidv7 } from "@earendil-works/pi-ai";
+import { uuidv7 } from "@earendil-works/pi-ai";
 import type { AssistantMessage as PiAssistantMessage, Model as PiModel } from "@earendil-works/pi-ai";
 import type { ServerResponse } from "node:http";
 import { backoffDelayMs, sleepOrAbort } from "./backoff.js";
-import {
-  assembleAssistantMessage,
-  isRecord,
-  toPiContext,
-} from "./convert.js";
+import { classifyTerminal, isTransientError } from "./classification.js";
+import { assembleAssistantMessage, toPiContext } from "./convert.js";
 import { buildModel, openStream, type TerminalOutcome } from "./piCall.js";
-import { validateTools } from "./routes.js";
+import { fetchTools, postToolCallback, type CallbackResult } from "./toolTransport.js";
 import { writeSseComment, writeSseEvent, writeSseHead, type SseEventName } from "./sse.js";
-import {
-  HandFailure,
-  type ChatMessage,
-  type ChatMessagePart,
-  type ContentPart,
-  type HandError,
-  type RunRequest,
-  type ToolSpec,
-} from "./types.js";
-
-type FinishClassification =
-  | { ok: true; finishReason: string }
-  | { ok: false; error: HandError };
-
-const CONTENT_FILTER_MARKER = "Provider finish_reason: content_filter";
-
-/**
- * Classifies a pi-ai terminal message. `outcome` is `done`/`error` matching
- * the terminal event that carried the message.
- */
-export function classifyTerminal(
-  outcome: "done" | "error",
-  message: PiAssistantMessage,
-  contextWindow: number,
-  effectiveMaxTokens: number,
-): FinishClassification {
-  if (outcome === "done") {
-    switch (message.stopReason) {
-      case "stop":
-        return { ok: true, finishReason: "stop" };
-      case "toolUse":
-        return { ok: true, finishReason: "tool_calls" };
-      // Deferred is only produced by streamSimple's deferred mode, which the
-      // hand never requests; a provider emitting it anyway ends a round.
-      case "deferred":
-        return { ok: true, finishReason: "stop" };
-      case "length":
-        return classifyLength(message, contextWindow, effectiveMaxTokens);
-      default:
-        return {
-          ok: false,
-          error: {
-            type: "internal",
-            message: `unexpected pi-ai stop reason '${message.stopReason}'`,
-          },
-        };
-    }
-  }
-  const errorMessage = message.errorMessage ?? "";
-  if (errorMessage.includes(CONTENT_FILTER_MARKER)) {
-    return { ok: false, error: { type: "content_filter", message: errorMessage } };
-  }
-  if (isContextOverflow(message, contextWindow)) {
-    return { ok: false, error: { type: "context_exhausted", message: errorMessage } };
-  }
-  return { ok: false, error: { type: "upstream", message: errorMessage } };
-}
-
-function classifyLength(
-  message: PiAssistantMessage,
-  contextWindow: number,
-  effectiveMaxTokens: number,
-): FinishClassification {
-  const usage = message.usage;
-  if (usage === undefined) {
-    return {
-      ok: false,
-      error: { type: "output_budget_exhausted", message: "length finish without usage data" },
-    };
-  }
-  const inputTokens = fullInput(usage);
-  if (inputTokens > contextWindow - effectiveMaxTokens) {
-    return {
-      ok: false,
-      error: {
-        type: "context_exhausted",
-        message:
-          `input ${inputTokens} tokens exceeds context window ${contextWindow} minus output budget ${effectiveMaxTokens}`,
-      },
-    };
-  }
-  return {
-    ok: false,
-    error: { type: "output_budget_exhausted", message: "output hit the token budget" },
-  };
-}
-
-function fullInput(usage: NonNullable<PiAssistantMessage["usage"]>): number {
-  return (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
-}
-
-/**
- * The transient set (spec §3.3.8): 5xx responses, mid-stream error chunks,
- * network failures, and truncated streams. Terminal: content_filter,
- * context overflow, and non-retryable 4xx responses.
- */
-function isTransientError(message: PiAssistantMessage, contextWindow: number): boolean {
-  const text = message.errorMessage ?? "";
-  if (text.includes(CONTENT_FILTER_MARKER)) {
-    return false;
-  }
-  if (isContextOverflow(message, contextWindow)) {
-    return false;
-  }
-  if (/^4\d\d(?:\s|:|$)/.test(text)) {
-    return false;
-  }
-  if (text.includes("No API key for provider")) {
-    return false;
-  }
-  return true;
-}
+import { fullInputTokens } from "./usage.js";
+import { HandFailure, type ChatMessage, type ChatMessagePart, type RunRequest, type ToolSpec } from "./types.js";
 
 type Emit = (event: SseEventName, payload: unknown) => boolean;
 
@@ -199,37 +87,23 @@ export async function executeRun(
           }
           roundTools = toolsOutcome.tools;
         }
-        const roundOutcome = await streamOneRound(
-          model, history, roundTools, request, emit, signal, idleTimeoutMs,
-        );
-        if (roundOutcome.outcome === "error") {
-          if (roundOutcome.aborted) {
-            if (signal.aborted || brainGone) {
-              return;
-            }
-            const retry = await retryRound(
-              emit,
-              signal,
-              attempt,
-              maxRetries,
-              "stream idle timeout, retrying",
-            );
-            if (retry === "gave_up") {
-              outcome = "error:upstream";
-              return;
-            }
-            if (retry === "aborted") {
-              return;
-            }
-            continue;
+        const roundOutcome = await streamOneRound(model, history, roundTools, request, emit, signal, idleTimeoutMs);
+        if (roundOutcome.kind === "error") {
+          if (roundOutcome.aborted && (signal.aborted || brainGone)) {
+            return;
           }
-          if (isTransientError(roundOutcome.message, request.model.contextWindow)) {
+          // an abort the client did not cause is the idle timeout firing; a
+          // non-abort error event is retried exactly when it classifies as
+          // transient — the two retry paths share one policy below
+          if (roundOutcome.aborted || isTransientError(roundOutcome.message, request.model.contextWindow)) {
             const retry = await retryRound(
               emit,
               signal,
               attempt,
               maxRetries,
-              roundOutcome.message.errorMessage ?? "transient upstream failure",
+              roundOutcome.aborted
+                ? "stream idle timeout, retrying"
+                : (roundOutcome.message.errorMessage ?? "transient upstream failure"),
             );
             if (retry === "gave_up") {
               outcome = "error:upstream";
@@ -246,10 +120,13 @@ export async function executeRun(
             request.model.contextWindow,
             effectiveMaxTokens,
           );
-          if (!classification.ok) {
-            emit("error", classification.error);
-            outcome = `error:${classification.error.type}`;
+          if (classification.ok) {
+            // unreachable: for the "error" outcome classifyTerminal always
+            // answers `{ok:false}` (content_filter/overflow/upstream)
+            return;
           }
+          emit("error", classification.error);
+          outcome = `error:${classification.error.type}`;
           return;
         }
         const classification = classifyTerminal(
@@ -267,7 +144,7 @@ export async function executeRun(
             // (daapu requires usage on every accepted message); the partial
             // is skipped so the classified error survives instead of being
             // replaced by an assembly failure
-            if (usage !== undefined && (fullInput(usage) > 0 || (usage.output ?? 0) > 0)) {
+            if (usage !== undefined && (fullInputTokens(usage) > 0 || (usage.output ?? 0) > 0)) {
               const partial = assembleAssistantMessage(
                 normalizeToolCallIds(roundOutcome.message),
                 request.model.modelId,
@@ -292,10 +169,7 @@ export async function executeRun(
           outcome = "error:empty_response";
           return;
         }
-        const assembled = assembleAssistantMessage(
-          normalizeToolCallIds(roundOutcome.message),
-          request.model.modelId,
-        );
+        const assembled = assembleAssistantMessage(normalizeToolCallIds(roundOutcome.message), request.model.modelId);
         history.push(assembled.message);
         totalInputTokens += assembled.message.meta?.inputTokens ?? 0;
         totalOutputTokens += assembled.message.meta?.outputTokens ?? 0;
@@ -311,14 +185,7 @@ export async function executeRun(
             outcome = "error:round_limit";
             return;
           }
-          const callbackOutcome = await executeToolCalls(
-            assembled.message,
-            history,
-            request,
-            token,
-            signal,
-            emit,
-          );
+          const callbackOutcome = await executeToolCalls(assembled.message, history, request, token, signal, emit);
           if (callbackOutcome === "abort") {
             outcome = "aborted";
             return;
@@ -415,9 +282,9 @@ async function streamOneRound(
       } else if (event.type === "thinking_delta") {
         emit("reasoning_delta", { text: event.delta });
       } else if (event.type === "done") {
-        return { outcome: "done", message: event.message };
+        return { kind: "done", message: event.message };
       } else if (event.type === "error") {
-        return { outcome: "error", message: event.error, aborted: event.reason === "aborted" };
+        return { kind: "error", message: event.error, aborted: event.reason === "aborted" };
       }
     }
     throw new Error("pi-ai stream ended without a terminal event");
@@ -445,9 +312,7 @@ function normalizeToolCallIds(message: PiAssistantMessage): PiAssistantMessage {
 }
 
 function hasText(message: PiAssistantMessage): boolean {
-  return message.content.some(
-    (block) => block.type === "text" && block.text.trim().length > 0,
-  );
+  return message.content.some((block) => block.type === "text" && block.text.trim().length > 0);
 }
 
 type ToolCallsOutcome = "done" | "abort" | "transport_failure";
@@ -495,8 +360,7 @@ async function executeToolCalls(
     emit("error", { type: "internal", message: "tool calls received but no toolCallbackUrl" });
     return "transport_failure";
   }
-  const isToolCall = (part: ChatMessagePart): part is ToolCallPart =>
-    part.type === "tool_call";
+  const isToolCall = (part: ChatMessagePart): part is ToolCallPart => part.type === "tool_call";
   const parts = assistantMessage.parts.filter(isToolCall);
   for (const part of parts) {
     if (!emit("tool_call", { id: part.id, name: part.tool, args: part.args })) {
@@ -556,128 +420,3 @@ async function executeToolCalls(
   }
   return "done";
 }
-
-type CallbackResult =
-  | { kind: "ok"; parts: ContentPart[]; isError: boolean }
-  | { kind: "transport_failure"; message: string }
-  | { kind: "abort" };
-
-type ToolsOutcome =
-  | { kind: "ok"; tools: ToolSpec[] | undefined }
-  | { kind: "failure"; message: string }
-  | { kind: "abort" };
-
-/**
- * Queries the brain for the run's current tool set before an LLM request
- * (`GET {toolListUrl}?runId=...`, the brain resolves the in-flight run's
- * provider by runId). The fetched list feeds that round's LLM request
- * (`tools`). Any failure is terminal (the caller maps it onto
- * `error{tool_transport}`): the brain enforces the execution budgets and
- * the provider's reachability itself, so a query failure means the run's
- * tools are unavailable — matching the callback `fatal` semantics. An
- * empty list answers "no tools" (the request may omit `toolCallbackUrl`
- * then).
- */
-async function fetchTools(
-  toolListUrl: string,
-  runId: string,
-  token: string,
-  signal: AbortSignal,
-): Promise<ToolsOutcome> {
-  const url = new URL(toolListUrl);
-  url.searchParams.set("runId", runId);
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      headers: { "x-daapu-token": token },
-      signal,
-    });
-  } catch (error) {
-    if (signal.aborted) {
-      return { kind: "abort" };
-    }
-    return {
-      kind: "failure",
-      message: `tool listing failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  if (response.status !== 200) {
-    return { kind: "failure", message: `tool listing returned HTTP ${response.status}` };
-  }
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return { kind: "failure", message: "tool listing returned a non-JSON body" };
-  }
-  if (!isRecord(body) || !Array.isArray(body.tools)) {
-    return { kind: "failure", message: "tool listing returned an invalid body" };
-  }
-  try {
-    return { kind: "ok", tools: validateTools(body.tools) };
-  } catch (error) {
-    return {
-      kind: "failure",
-      message: `tool listing returned invalid tools: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
-async function postToolCallback(
-  url: string,
-  token: string,
-  payload: unknown,
-  signal: AbortSignal,
-): Promise<CallbackResult> {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-daapu-token": token },
-      body: JSON.stringify(payload),
-      // the brain always answers (it enforces the budgets itself), so the
-      // client disconnect is the only abort; a brain crash drops the
-      // connection and fails the fetch below
-      signal,
-    });
-  } catch (error) {
-    if (signal.aborted) {
-      return { kind: "abort" };
-    }
-    return {
-      kind: "transport_failure",
-      message: `tool callback failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  if (response.status !== 200) {
-    return { kind: "transport_failure", message: `tool callback returned HTTP ${response.status}` };
-  }
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return { kind: "transport_failure", message: "tool callback returned a non-JSON body" };
-  }
-  if (!isRecord(body)) {
-    return { kind: "transport_failure", message: "tool callback returned a non-object body" };
-  }
-  if (body.fatal !== undefined) {
-    const fatal = body.fatal;
-    const message =
-      isRecord(fatal) && typeof fatal.message === "string"
-        ? fatal.message
-        : "tool callback reported a fatal error";
-    return { kind: "transport_failure", message };
-  }
-  const parts = body.parts;
-  if (!Array.isArray(parts)) {
-    return { kind: "transport_failure", message: "tool callback returned invalid parts" };
-  }
-  return {
-    kind: "ok",
-    parts: parts as ContentPart[],
-    isError: body.isError === true,
-  };
-}
-

@@ -590,7 +590,7 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
 
 ```bash
 ./gradlew test
-cd hand-pi && npm test && npm run build
+cd hand-pi && npm test && npm run build && npm run typecheck && npm run lint
 cd frontend && npm run check && npm run build && npm test
 ```
 

@@ -369,7 +369,7 @@
           "type": "integer",
           "minimum": 0,
           "default": 0,
-          "description": "Transient retries per round; 0 = unlimited."
+          "description": "Total transient attempts per /v1/run round (1 = a single attempt); 0 = unlimited."
         },
         "streamIdleTimeoutMs": {
           "type": "integer",

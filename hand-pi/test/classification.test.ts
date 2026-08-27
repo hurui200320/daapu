@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyTerminal } from "../src/run.js";
+import { classifyTerminal, isTransientError } from "../src/classification.js";
 import { makePiMessage } from "./pi-fixtures.js";
 
 const USAGE = {
@@ -111,5 +111,54 @@ describe("classifyTerminal", () => {
     });
     const result = classifyTerminal("error", message, 131000, 40000);
     expect(result).toMatchObject({ ok: false, error: { type: "upstream" } });
+  });
+});
+
+describe("isTransientError", () => {
+  it("classifies a 5xx status as transient", () => {
+    const message = makePiMessage({ stopReason: "error", errorMessage: '503: {"error":"service unavailable"}' });
+    expect(isTransientError(message, 131000)).toBe(true);
+  });
+
+  it("classifies a network failure message as transient", () => {
+    const message = makePiMessage({ stopReason: "error", errorMessage: "fetch failed" });
+    expect(isTransientError(message, 131000)).toBe(true);
+  });
+
+  it("classifies a truncated stream as transient", () => {
+    const message = makePiMessage({ stopReason: "error", errorMessage: "Stream ended without finish_reason" });
+    expect(isTransientError(message, 131000)).toBe(true);
+  });
+
+  it("does not retry a content_filter error", () => {
+    const message = makePiMessage({
+      stopReason: "error",
+      errorMessage: "Provider finish_reason: content_filter",
+    });
+    expect(isTransientError(message, 131000)).toBe(false);
+  });
+
+  it("does not retry a context overflow", () => {
+    const message = makePiMessage({
+      stopReason: "error",
+      errorMessage:
+        '400: {"message":"This model\'s maximum context length is 131072 tokens. However, you requested 200000 tokens."}',
+    });
+    expect(isTransientError(message, 131000)).toBe(false);
+  });
+
+  it("does not retry a bare 4xx status", () => {
+    for (const status of [400, 401, 403, 413, 422, 429]) {
+      const message = makePiMessage({ stopReason: "error", errorMessage: `${status}: rejected` });
+      expect(isTransientError(message, 131000)).toBe(false);
+    }
+  });
+
+  it("does not retry a missing provider API key", () => {
+    const message = makePiMessage({
+      stopReason: "error",
+      errorMessage: "No API key for provider openai",
+    });
+    expect(isTransientError(message, 131000)).toBe(false);
   });
 });

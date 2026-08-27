@@ -7,14 +7,10 @@ export interface ToolCallbackRequest {
   args: unknown;
 }
 
-export type ToolCallbackResponse =
-  | { parts: unknown[]; isError: boolean }
-  | { fatal: { message: string } };
+export type ToolCallbackResponse = { parts: unknown[]; isError: boolean } | { fatal: { message: string } };
 
 /** A scripted `GET /tools` answer: a tool list, or a custom HTTP status. */
-export type ToolListResponse =
-  | { tools: unknown[] }
-  | { status: number };
+export type ToolListResponse = { tools: unknown[] } | { status: number };
 
 interface QueueEntry {
   delayMs: number;
@@ -128,11 +124,13 @@ export function startFakeCallback(): Promise<FakeCallback> {
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
+      let parsed: ToolCallbackRequest;
       try {
-        requests.push(JSON.parse(raw) as ToolCallbackRequest);
+        parsed = JSON.parse(raw) as ToolCallbackRequest;
       } catch {
-        requests.push({ runId: "", id: "", name: "", args: raw });
+        parsed = { runId: "", id: "", name: "", args: raw };
       }
+      requests.push(parsed);
       if (hangNext) {
         // never answer; the client's abort closes the connection (note:
         // `req` 'close' fires right after a completed body, so it must not
@@ -151,7 +149,7 @@ export function startFakeCallback(): Promise<FakeCallback> {
           }
         }
         if (inFlightGate !== undefined) {
-          inFlightGate.held.push({ res, request: requests[requests.length - 1] });
+          inFlightGate.held.push({ res, request: parsed });
           if (inFlightGate.held.length === inFlightGate.expected) {
             const held = inFlightGate.held;
             const responder = inFlightGate.responder;

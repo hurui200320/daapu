@@ -252,7 +252,7 @@
     "token": "dev-token",
     // Round cap per /v1/run; 0 = unlimited.
     "maxRounds": 64,
-    // Transient retries per round; 0 = unlimited.
+    // Total transient attempts per /v1/run round (1 = a single attempt); 0 = unlimited.
     "maxRetries": 0,
     // Stream idle timeout per round in ms; 0 = disabled.
     "streamIdleTimeoutMs": 300000

@@ -4,10 +4,11 @@
  * no config file, no content logging.
  */
 
-import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
-import {handleEmbed} from "./embed.js";
-import {readBody, requestAbortSignal, respondFailure, respondJson} from "./http.js";
-import {handleHealth, handleRun} from "./routes.js";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { pathToFileURL } from "node:url";
+import { handleEmbed } from "./embed.js";
+import { readBody, requestAbortSignal, respondFailure, respondJson } from "./http.js";
+import { handleHealth, handleRun } from "./routes.js";
 
 const HAND_PORT = Number(process.env.HAND_PORT ?? "3100");
 const HAND_TOKEN = process.env.HAND_TOKEN ?? "";
@@ -28,7 +29,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
   if (req.headers["x-daapu-token"] !== token) {
     respondJson(res, 401, {
       ok: false,
-      error: {type: "auth", message: "invalid or missing x-daapu-token"}
+      error: { type: "auth", message: "invalid or missing x-daapu-token" },
     });
     return;
   }
@@ -49,14 +50,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
   }
   respondJson(res, 404, {
     ok: false,
-    error: {type: "invalid_request", message: `no route for ${req.method ?? "?"} ${url.pathname}`},
+    error: { type: "invalid_request", message: `no route for ${req.method ?? "?"} ${url.pathname}` },
   });
 }
 
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+// pathToFileURL (not string interpolation) so executable paths with spaces
+// or non-ASCII characters still compare equal to import.meta.url
+const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
-  if (HAND_TOKEN.length == 0) {
+  if (HAND_TOKEN.length === 0) {
     console.warn("[hand] HAND_TOKEN environment variable is empty, this is not secure");
   }
   startServer(HAND_PORT, HAND_TOKEN)

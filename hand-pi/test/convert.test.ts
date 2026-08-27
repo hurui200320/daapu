@@ -1,10 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import {
-  REPLAY_THINKING_SIGNATURE,
-  assembleAssistantMessage,
-  toPiContext,
-} from "../src/convert.js";
+import type { AssistantMessage as PiAssistantMessage } from "@earendil-works/pi-ai";
+import { REPLAY_THINKING_SIGNATURE, assembleAssistantMessage, toPiContext } from "../src/convert.js";
+import type { ChatMessage } from "../src/types.js";
 import { HandFailure } from "../src/types.js";
 import { makePiMessage } from "./pi-fixtures.js";
 
@@ -57,7 +55,7 @@ describe("golden fixture", () => {
 
 describe("toPiContext", () => {
   it("passes the system prompt through and drops an empty one", () => {
-    const messages = [{ role: "user", parts: [{ type: "text", text: "hi" }] }];
+    const messages: ChatMessage[] = [{ role: "user", parts: [{ type: "text", text: "hi" }] }];
     expect(toPiContext(messages, "be nice").systemPrompt).toBe("be nice");
     expect(toPiContext(messages, undefined).systemPrompt).toBeUndefined();
     expect(toPiContext(messages, "").systemPrompt).toBeUndefined();
@@ -134,9 +132,9 @@ describe("toPiContext", () => {
   });
 
   it("rejects part types that do not match the role", () => {
-    expect(() =>
-      toPiContext([{ role: "user", parts: [{ type: "reasoning", content: "x" }] }], undefined),
-    ).toThrowError(HandFailure);
+    expect(() => toPiContext([{ role: "user", parts: [{ type: "reasoning", content: "x" }] }], undefined)).toThrowError(
+      HandFailure,
+    );
   });
 
   it("replays thinking blocks under the synthesized reasoning signature", () => {
@@ -172,8 +170,8 @@ describe("toPiContext", () => {
       undefined,
       { reasoning: true, modelId: "cerebras/gpt-oss-120b" },
     );
-    const assistant = context.messages[0];
-    expect(assistant?.model).toBe("cerebras/gpt-oss-120b");
+    const assistant = context.messages[0] as PiAssistantMessage;
+    expect(assistant.model).toBe("cerebras/gpt-oss-120b");
     expect(assistant?.content).toEqual([
       {
         type: "thinking",

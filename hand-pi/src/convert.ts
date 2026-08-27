@@ -6,7 +6,6 @@ import type {
   TextContent,
   ThinkingContent,
   ToolResultMessage,
-  Usage as PiUsage,
   UserMessage,
 } from "@earendil-works/pi-ai";
 import {
@@ -16,6 +15,8 @@ import {
   type ChatMessagePart,
   type ContentPart,
 } from "./types.js";
+import { failInvalid } from "./validate.js";
+import { fullInputTokens, ZERO_USAGE } from "./usage.js";
 
 /**
  * Reasoning dialect used when replaying stored thinking blocks. daapu's
@@ -25,28 +26,6 @@ import {
  * OpenAI-standard assistant field — the only dialect the hand drives.
  */
 export const REPLAY_THINKING_SIGNATURE = "reasoning_content";
-
-const ZERO_USAGE: PiUsage = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
-
-/** The full prompt size pi-ai's cache-subtracted usage represents. */
-function fullInputTokens(usage: PiUsage): number {
-  return (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function failInvalid(message: string): never {
-  throw new HandFailure({ type: "invalid_request", message });
-}
 
 /**
  * Converts daapu messages into the pi-ai context. The system prompt travels
@@ -111,9 +90,7 @@ function toPiUserMessage(message: ChatMessage, timestamp: number): UserMessage {
   return { role: "user", content: content.length > 0 ? content : "", timestamp };
 }
 
-function attachmentToPiBlock(
-  part: Extract<ChatMessagePart, { type: "attachment" }>,
-): ImageContent {
+function attachmentToPiBlock(part: Extract<ChatMessagePart, { type: "attachment" }>): ImageContent {
   if (part.kind === "image") {
     return { type: "image", data: part.content.base64, mimeType: part.mimeType };
   }

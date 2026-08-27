@@ -278,9 +278,7 @@ describe("POST /v1/embed", () => {
     // per-item vector associations
     const upstream = await startFakeUpstream(HAPPY_NO_USAGE);
     try {
-      const { status, payload } = await embed(
-        embedRequest(upstream.port, { input: ["a", "b", "c"] }),
-      );
+      const { status, payload } = await embed(embedRequest(upstream.port, { input: ["a", "b", "c"] }));
       expect(status).toBe(502);
       expect(payload).toMatchObject({
         ok: false,
@@ -392,9 +390,7 @@ describe("POST /v1/embed", () => {
       body: { error: { message: "too many inputs in a single request" } },
     });
     try {
-      const { status, payload } = await embed(
-        embedRequest(upstream.port, { input: oversized, maxRetries: 5 }),
-      );
+      const { status, payload } = await embed(embedRequest(upstream.port, { input: oversized, maxRetries: 5 }));
       expect(status).toBe(400);
       expect(payload).toMatchObject({
         ok: false,
@@ -433,9 +429,7 @@ describe("POST /v1/embed", () => {
     for (const status of [404, 405]) {
       const upstream = await startFakeUpstream({ status, body: { error: { message: "nope" } } });
       try {
-        const { status: responseStatus, payload } = await embed(
-          embedRequest(upstream.port, { maxRetries: 1 }),
-        );
+        const { status: responseStatus, payload } = await embed(embedRequest(upstream.port, { maxRetries: 1 }));
         expect(responseStatus).toBe(502);
         expect(payload).toMatchObject({
           ok: false,
@@ -454,10 +448,7 @@ describe("POST /v1/embed", () => {
   it("retries a 429 rate limit and succeeds on the next attempt", async () => {
     // rate limiting is transient: it must ride the `upstream` retry path,
     // not the `invalid_request` "split your input" channel
-    const upstream = await startFakeUpstream([
-      { status: 429, body: { error: { message: "rate limited" } } },
-      HAPPY,
-    ]);
+    const upstream = await startFakeUpstream([{ status: 429, body: { error: { message: "rate limited" } } }, HAPPY]);
     try {
       const { status, payload } = await embed(embedRequest(upstream.port, { maxRetries: 2 }));
       expect(status).toBe(200);
@@ -484,10 +475,7 @@ describe("POST /v1/embed", () => {
   });
 
   it("retries a 5xx and succeeds on the next attempt", async () => {
-    const upstream = await startFakeUpstream([
-      { status: 500, body: { error: { message: "boom" } } },
-      HAPPY,
-    ]);
+    const upstream = await startFakeUpstream([{ status: 500, body: { error: { message: "boom" } } }, HAPPY]);
     try {
       const { status, payload } = await embed(embedRequest(upstream.port, { maxRetries: 2 }));
       expect(status).toBe(200);
@@ -513,89 +501,71 @@ describe("POST /v1/embed", () => {
     }
   });
 
-  it(
-    "times out a hanging gateway and fails with upstream",
-    async () => {
-      const upstream = await startFakeUpstream({ status: 200, body: HAPPY.body, delay: 800 });
-      try {
-        const { status, payload } = await embed(embedRequest(upstream.port, { timeoutMs: 100 }));
-        expect(status).toBe(502);
-        expect(payload).toMatchObject({
-          ok: false,
-          error: { type: "upstream", message: expect.stringContaining("timed out") },
-        });
-      } finally {
-        await upstream.close();
-      }
-    },
-    10_000,
-  );
+  it("times out a hanging gateway and fails with upstream", async () => {
+    const upstream = await startFakeUpstream({ status: 200, body: HAPPY.body, delay: 800 });
+    try {
+      const { status, payload } = await embed(embedRequest(upstream.port, { timeoutMs: 100 }));
+      expect(status).toBe(502);
+      expect(payload).toMatchObject({
+        ok: false,
+        error: { type: "upstream", message: expect.stringContaining("timed out") },
+      });
+    } finally {
+      await upstream.close();
+    }
+  }, 10_000);
 
-  it(
-    "tears down a stalled upstream body when the per-attempt timeout fires",
-    async () => {
-      // the gateway answers the headers immediately but stalls the body:
-      // the timeout must cancel the upstream read (and connection), not
-      // leave it open for the gateway's delayed body — with unlimited
-      // retries, an abandoned read would leak one connection per attempt
-      const upstream = await startFakeUpstream({ status: 200, body: HAPPY.body, bodyDelay: 1000 });
-      try {
-        const closePromise = upstream.waitForClientClose();
-        const { status, payload } = await embed(embedRequest(upstream.port, { timeoutMs: 100 }));
-        expect(status).toBe(502);
-        expect(payload).toMatchObject({
-          ok: false,
-          error: { type: "upstream", message: expect.stringContaining("timed out") },
-        });
-        // the upstream connection closed well before the gateway would
-        // have finished its delayed body (1000 ms)
-        await expect(
-          Promise.race([
-            closePromise,
-            new Promise((resolve) => setTimeout(() => resolve("still-open"), 300)),
-          ]),
-        ).resolves.toBe(undefined);
-      } finally {
-        await upstream.close();
-      }
-    },
-    10_000,
-  );
+  it("tears down a stalled upstream body when the per-attempt timeout fires", async () => {
+    // the gateway answers the headers immediately but stalls the body:
+    // the timeout must cancel the upstream read (and connection), not
+    // leave it open for the gateway's delayed body — with unlimited
+    // retries, an abandoned read would leak one connection per attempt
+    const upstream = await startFakeUpstream({ status: 200, body: HAPPY.body, bodyDelay: 1000 });
+    try {
+      const closePromise = upstream.waitForClientClose();
+      const { status, payload } = await embed(embedRequest(upstream.port, { timeoutMs: 100 }));
+      expect(status).toBe(502);
+      expect(payload).toMatchObject({
+        ok: false,
+        error: { type: "upstream", message: expect.stringContaining("timed out") },
+      });
+      // the upstream connection closed well before the gateway would
+      // have finished its delayed body (1000 ms)
+      await expect(
+        Promise.race([closePromise, new Promise((resolve) => setTimeout(() => resolve("still-open"), 300))]),
+      ).resolves.toBe(undefined);
+    } finally {
+      await upstream.close();
+    }
+  }, 10_000);
 
-  it(
-    "closes the upstream body read when the client disconnects mid-response",
-    async () => {
-      // the gateway answers the headers immediately but stalls the body
-      // for a second: a client disconnect in that window must tear down the
-      // upstream read (and connection), not leave the hand waiting on a
-      // dead client
-      const upstream = await startFakeUpstream({ status: 200, body: HAPPY.body, bodyDelay: 1000 });
-      try {
-        const closePromise = upstream.waitForClientClose();
-        const controller = new AbortController();
-        const responsePromise = fetch(`http://127.0.0.1:${port}/v1/embed`, {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
-          body: JSON.stringify(embedRequest(upstream.port)),
-          signal: controller.signal,
-        });
-        // the hand relays nothing until it has the full upstream body, so
-        // the client is still waiting for its response when it disconnects
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        controller.abort();
-        await expect(responsePromise).rejects.toThrow();
-        // the upstream connection closed well before the gateway would
-        // have finished its delayed body (1000 ms)
-        await expect(
-          Promise.race([
-            closePromise,
-            new Promise((resolve) => setTimeout(() => resolve("still-open"), 300)),
-          ]),
-        ).resolves.toBe(undefined);
-      } finally {
-        await upstream.close();
-      }
-    },
-    10_000,
-  );
+  it("closes the upstream body read when the client disconnects mid-response", async () => {
+    // the gateway answers the headers immediately but stalls the body
+    // for a second: a client disconnect in that window must tear down the
+    // upstream read (and connection), not leave the hand waiting on a
+    // dead client
+    const upstream = await startFakeUpstream({ status: 200, body: HAPPY.body, bodyDelay: 1000 });
+    try {
+      const closePromise = upstream.waitForClientClose();
+      const controller = new AbortController();
+      const responsePromise = fetch(`http://127.0.0.1:${port}/v1/embed`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-daapu-token": TOKEN },
+        body: JSON.stringify(embedRequest(upstream.port)),
+        signal: controller.signal,
+      });
+      // the hand relays nothing until it has the full upstream body, so
+      // the client is still waiting for its response when it disconnects
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      controller.abort();
+      await expect(responsePromise).rejects.toThrow();
+      // the upstream connection closed well before the gateway would
+      // have finished its delayed body (1000 ms)
+      await expect(
+        Promise.race([closePromise, new Promise((resolve) => setTimeout(() => resolve("still-open"), 300))]),
+      ).resolves.toBe(undefined);
+    } finally {
+      await upstream.close();
+    }
+  }, 10_000);
 });

@@ -61,7 +61,13 @@ data class HandRunRequest(
     val toolCallbackUrl: String? = null,
     /** Round cap; 0 = unlimited. */
     val maxRounds: Int,
-    /** Transient retries per round; 0 = unlimited. */
+    /**
+     * Total transient attempts per round (a `maxRetries` of 1 allows a
+     * single attempt); 0 = unlimited. Mirrors [HandEmbedRequest]'s
+     * `maxRetries` and `hand-pi/src/types.ts` — the hand retries a round
+     * while `attempt < maxRetries`, so this caps the attempt count, not the
+     * retry count.
+     */
     val maxRetries: Int,
     /** Idle timeout per streamed round in ms; 0 = disabled. */
     val streamIdleTimeoutMs: Long,
@@ -100,7 +106,7 @@ data class HandEmbedRequest(
     val model: HandEmbedModelSpec,
     val dimensions: Int,
     val input: List<String>,
-    /** Transient retries (5xx/429/network/timeout); 0 = unlimited. */
+    /** Total attempts for transient failures (5xx/429/network/timeout); 0 = unlimited. */
     val maxRetries: Int,
     /** Per-attempt timeout in ms; 0 = disabled. */
     val timeoutMs: Long,

@@ -14,67 +14,11 @@
 
 import type { ServerResponse } from "node:http";
 import { backoffDelayMs, sleepOrAbort } from "./backoff.js";
-import { failInvalid, isRecord } from "./convert.js";
 import { respondJson } from "./http.js";
-import {
-  parseBody,
-  validateNonNegativeInt,
-  validatePositiveInt,
-  validateString,
-} from "./routes.js";
 import { HandFailure, type EmbedRequest, type EmbedResult, type EmbedUsage } from "./types.js";
+import { isRecord, validateEmbedRequest } from "./validate.js";
 
-type EmbedOutcome =
-  | { kind: "ok"; result: EmbedResult }
-  | { kind: "failure"; error: HandFailure }
-  | { kind: "abort" };
-
-/** The fields the hand itself puts into the `{baseUrl}/embeddings` request body. */
-const RESERVED_GATEWAY_FIELDS = ["model", "input", "dimensions"] as const;
-
-export function validateEmbedRequest(body: string): EmbedRequest {
-  const raw = parseBody(body);
-  const model = raw.model;
-  if (!isRecord(model)) {
-    failInvalid("model must be an object");
-  }
-  const baseUrl = validateString(model.baseUrl, "model.baseUrl");
-  if (!/^https?:\/\//.test(baseUrl)) {
-    failInvalid("model.baseUrl must be an http(s) URL");
-  }
-  const apiKey = validateString(model.apiKey, "model.apiKey");
-  const modelId = validateString(model.modelId, "model.modelId");
-  const dimensions = validatePositiveInt(raw.dimensions, "dimensions");
-  const input = raw.input;
-  if (!Array.isArray(input) || input.length === 0) {
-    failInvalid("input must be a non-empty array");
-  }
-  const texts: string[] = [];
-  for (const [index, entry] of input.entries()) {
-    if (typeof entry !== "string" || entry.trim().length === 0) {
-      failInvalid(`input[${index}] must be a non-blank string`);
-    }
-    texts.push(entry);
-  }
-  const maxRetries = validateNonNegativeInt(raw.maxRetries, "maxRetries");
-  const timeoutMs = validateNonNegativeInt(raw.timeoutMs, "timeoutMs");
-  let additionalProperties: Record<string, unknown> | undefined;
-  if (raw.additionalProperties !== undefined) {
-    if (!isRecord(raw.additionalProperties)) {
-      failInvalid("additionalProperties must be an object");
-    }
-    // the hand manages these gateway body fields itself: an extra
-    // property with the same name would either silently override them or
-    // be overridden — a brain bug either way, so fail it loudly
-    for (const key of RESERVED_GATEWAY_FIELDS) {
-      if (Object.prototype.hasOwnProperty.call(raw.additionalProperties, key)) {
-        failInvalid(`additionalProperties must not override the '${key}' field`);
-      }
-    }
-    additionalProperties = raw.additionalProperties;
-  }
-  return { model: { baseUrl, apiKey, modelId }, dimensions, input: texts, maxRetries, timeoutMs, additionalProperties };
-}
+type EmbedOutcome = { kind: "ok"; result: EmbedResult } | { kind: "failure"; error: HandFailure } | { kind: "abort" };
 
 /** `/v1/embed` is plain JSON, so it maps statuses itself (the shared SSE mapper defaults to 200). */
 function embedStatusForErrorType(type: string): number {
@@ -90,16 +34,10 @@ function embedStatusForErrorType(type: string): number {
   }
 }
 
-export async function handleEmbed(
-  res: ServerResponse,
-  body: string,
-  signal: AbortSignal,
-): Promise<void> {
+export async function handleEmbed(res: ServerResponse, body: string, signal: AbortSignal): Promise<void> {
   try {
     const request = validateEmbedRequest(body);
-    console.log(
-      `[hand] embed start model=${request.model.modelId} items=${request.input.length}`,
-    );
+    console.log(`[hand] embed start model=${request.model.modelId} items=${request.input.length}`);
     const outcome = await embedWithRetry(request, signal);
     if (outcome.kind === "abort") {
       return;
@@ -177,10 +115,12 @@ async function embedWithRetry(request: EmbedRequest, signal: AbortSignal): Promi
  */
 async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<EmbedOutcome> {
   const timeoutController = new AbortController();
-  const timer =
-    request.timeoutMs > 0 ? setTimeout(() => timeoutController.abort(), request.timeoutMs) : undefined;
+  const timer = request.timeoutMs > 0 ? setTimeout(() => timeoutController.abort(), request.timeoutMs) : undefined;
   // the baseUrl carries the `/v1` root; join so the path is preserved
-  const url = new URL("embeddings", request.model.baseUrl.endsWith("/") ? request.model.baseUrl : `${request.model.baseUrl}/`);
+  const url = new URL(
+    "embeddings",
+    request.model.baseUrl.endsWith("/") ? request.model.baseUrl : `${request.model.baseUrl}/`,
+  );
   let response: Response;
   try {
     response = await fetch(url, {
@@ -225,7 +165,7 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
       };
     }
     if (response.status === 429) {
-      const text = await readBody(response, request.timeoutMs, timeoutController, signal);
+      const text = await readUpstreamBody(response, request.timeoutMs, timeoutController, signal);
       return {
         kind: "failure",
         error: new HandFailure({
@@ -235,7 +175,7 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
       };
     }
     if (response.status === 404 || response.status === 405) {
-      const text = await readBody(response, request.timeoutMs, timeoutController, signal);
+      const text = await readUpstreamBody(response, request.timeoutMs, timeoutController, signal);
       return {
         kind: "failure",
         error: new HandFailure({
@@ -245,7 +185,7 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
       };
     }
     if (response.status >= 400 && response.status < 500) {
-      const text = await readBody(response, request.timeoutMs, timeoutController, signal);
+      const text = await readUpstreamBody(response, request.timeoutMs, timeoutController, signal);
       return {
         kind: "failure",
         error: new HandFailure({
@@ -255,7 +195,7 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
       };
     }
     if (response.status >= 500) {
-      const text = await readBody(response, request.timeoutMs, timeoutController, signal);
+      const text = await readUpstreamBody(response, request.timeoutMs, timeoutController, signal);
       return {
         kind: "failure",
         error: new HandFailure({
@@ -275,7 +215,7 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
     }
     let payload: unknown;
     try {
-      payload = JSON.parse(await readBody(response, request.timeoutMs, timeoutController, signal));
+      payload = JSON.parse(await readUpstreamBody(response, request.timeoutMs, timeoutController, signal));
     } catch {
       return {
         kind: "failure",
@@ -285,8 +225,8 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
     return parseEmbedPayload(payload, request.input.length);
   } catch (error) {
     // the only failures left are body reads: a fired per-attempt timeout
-    // (rejected by [readBody]), a client disconnect during the read
-    // (aborted via [readBody]'s cancel), or a connection drop after the
+    // (rejected by [readUpstreamBody]), a client disconnect during the read
+    // (aborted via [readUpstreamBody]'s cancel), or a connection drop after the
     // headers
     if (signal.aborted) {
       return { kind: "abort" };
@@ -319,7 +259,7 @@ async function embedOnce(request: EmbedRequest, signal: AbortSignal): Promise<Em
  * connection per retried attempt). Rejects on timeout, client abort, or a
  * torn-down connection.
  */
-async function readBody(
+async function readUpstreamBody(
   response: Response,
   timeoutMs: number,
   timeoutController: AbortController,

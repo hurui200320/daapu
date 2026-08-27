@@ -51,8 +51,7 @@ interface StreamOptions {
 }
 
 export type TerminalOutcome =
-  | { outcome: "done"; message: PiAssistantMessage }
-  | { outcome: "error"; message: PiAssistantMessage; aborted: boolean };
+  { kind: "done"; message: PiAssistantMessage } | { kind: "error"; message: PiAssistantMessage; aborted: boolean };
 
 /**
  * Opens pi-ai's direct `stream()` (never `streamSimple`). pi-ai surfaces

@@ -57,9 +57,7 @@ export interface FakeUpstream {
  * next scenario; the last scenario repeats forever. A single scenario (or a
  * single list of steps) can be passed directly.
  */
-export function startFakeUpstream(
-  scenarios: FakeScenario | FakeScenario[],
-): Promise<FakeUpstream> {
+export function startFakeUpstream(scenarios: FakeScenario | FakeScenario[]): Promise<FakeUpstream> {
   const queue: FakeScenario[] = Array.isArray(scenarios)
     ? isStepList(scenarios)
       ? [scenarios]
@@ -80,7 +78,7 @@ export function startFakeUpstream(
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
-      let body: unknown = raw;
+      let body: unknown;
       try {
         body = raw ? JSON.parse(raw) : null;
       } catch {
@@ -131,7 +129,10 @@ export function startFakeUpstream(
   });
 }
 
-async function respond(res: ServerResponse, scenario: SseStep[] | { status: number; body: unknown; delay?: number; bodyDelay?: number }): Promise<void> {
+async function respond(
+  res: ServerResponse,
+  scenario: SseStep[] | { status: number; body: unknown; delay?: number; bodyDelay?: number },
+): Promise<void> {
   if (Array.isArray(scenario)) {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     for (const step of scenario) {
