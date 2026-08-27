@@ -14,6 +14,9 @@ import type { TokenizerAndRendererExtension, Tokens } from 'marked'
 type RenderMarkdown = (text: string) => string
 
 let cached: Promise<RenderMarkdown> | null = null
+// the tabnabbing hook below lives on the DOMPurify module (a page-global):
+// a retried init after a partial failure must not stack a second copy
+let hookInstalled = false
 
 /**
  * Resolve the render function, initializing the pipeline on first call.
@@ -103,12 +106,15 @@ async function init(): Promise<RenderMarkdown> {
   // DOMPurify strips `target` by default (tabnabbing), so the sanitize call
   // re-allows it — and this hook forces every surviving anchor (raw HTML
   // included) onto the safe shape above.
-  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-    if (node.tagName === 'A' || node.tagName === 'AREA') {
-      node.setAttribute('target', '_blank')
-      node.setAttribute('rel', 'noopener noreferrer')
-    }
-  })
+  if (!hookInstalled) {
+    DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+      if (node.tagName === 'A' || node.tagName === 'AREA') {
+        node.setAttribute('target', '_blank')
+        node.setAttribute('rel', 'noopener noreferrer')
+      }
+    })
+    hookInstalled = true
+  }
 
   marked.use({ renderer })
 

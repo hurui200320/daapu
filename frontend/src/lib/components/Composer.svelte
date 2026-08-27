@@ -41,6 +41,19 @@
   // which can take minutes): no message may be sent to it until it is gone
   const deleting = $derived(store.deletingIds.has(store.chatId))
 
+  // one gate shared by the submit guard and the send button's disabled
+  // binding: no send while the history is still loading (an optimistic
+  // message sent before it arrives would be clobbered by the load), while a
+  // run streams or the chat is being deleted, without a model (the server
+  // requires one — an empty id is a guaranteed 400), or with nothing to send
+  const canSend = $derived(
+    !!store.selectedModel &&
+      !store.streaming &&
+      !deleting &&
+      !store.chatLoading &&
+      (!!text.trim() || images.length > 0),
+  )
+
   const usage = $derived(store.usage)
   const usagePct = $derived(
     usage.used != null && usage.context != null && usage.context > 0
@@ -136,13 +149,8 @@
   }
 
   async function submit() {
+    if (!canSend) return
     const trimmed = text.trim()
-    // no send while the history is still loading (an optimistic message sent
-    // before it arrives would be clobbered by the load), nor without a model
-    // (the server requires one — an empty id is a guaranteed 400)
-    if ((!trimmed && images.length === 0) || store.streaming || deleting || store.chatLoading || !store.selectedModel) {
-      return
-    }
     const chatId = store.chatId
     const draft = { text, images: [...images] }
     text = ''
@@ -240,11 +248,7 @@
       <button
         type="button"
         onclick={() => void submit()}
-        disabled={store.streaming ||
-          deleting ||
-          store.chatLoading ||
-          !store.selectedModel ||
-          (!text.trim() && images.length === 0)}
+        disabled={!canSend}
         title="send"
         class="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
       >

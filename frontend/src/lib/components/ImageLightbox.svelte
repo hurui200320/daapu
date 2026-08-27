@@ -1,6 +1,7 @@
 <script lang="ts">
   import { X } from '@lucide/svelte'
   import { SvelteMap } from 'svelte/reactivity'
+  import { trapTab } from '../focus-trap'
 
   let {
     src,
@@ -73,31 +74,13 @@
 
   /**
    * Keep Tab inside the dialog: the close button is its only focusable
-   * element, so Tab wraps back onto it instead of reaching the page behind.
+   * element, so Tab wraps back onto it instead of reaching the page behind
+   * (the wrap logic itself lives in lib/focus-trap.ts).
    */
   function onKeydown(e: KeyboardEvent) {
-    if (e.key !== 'Tab') return
     const overlay = overlayEl
     if (!overlay) return
-    const focusables = Array.from(
-      overlay.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex="-1"])',
-      ),
-    )
-    if (focusables.length === 0) {
-      e.preventDefault()
-      closeBtn?.focus()
-      return
-    }
-    const first = focusables[0]
-    const last = focusables[focusables.length - 1]
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault()
-      last.focus()
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault()
-      first.focus()
-    }
+    trapTab(overlay, e, closeBtn)
   }
 
   function clampTranslate() {

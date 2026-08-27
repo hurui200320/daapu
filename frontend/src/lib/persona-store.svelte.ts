@@ -2,6 +2,7 @@ import { createPersona, deletePersona, listPersonas, updatePersona } from './api
 import type { Persona } from './types'
 import { toastStore } from './toast-store.svelte'
 import { onIntervalAndFocus } from './resync'
+import { jsonEquals } from './utils'
 
 /**
  * The persona catalog (the code default + the `personas` rows), shared by
@@ -26,7 +27,7 @@ class PersonaStore {
   private async resync() {
     try {
       const fresh = await listPersonas()
-      if (JSON.stringify(fresh) !== JSON.stringify(this.personas)) {
+      if (!jsonEquals(fresh, this.personas)) {
         this.personas = fresh
       }
     } catch {

@@ -1,10 +1,17 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { ChevronDown, ChevronRight } from '@lucide/svelte'
-  import { getEntityNotes, getEntityRelationships, getRelationshipNotes, listEntities, listRelationships } from '../api'
+  import {
+    ELTM_DRILLDOWN_LIMIT,
+    getEntityNotes,
+    getEntityRelationships,
+    getRelationshipNotes,
+    listEntities,
+    listRelationships,
+  } from '../api'
   import type { EltmNoteDto, EntityViewDto, RelationshipViewDto } from '../types'
   import { onIntervalAndFocus } from '../resync'
-  import { fetchMore, fetchWindow } from '../paging'
+  import { PagedTab } from '../paged-tab.svelte'
   import { router } from '../router.svelte'
   import { errMsg } from '../utils'
   import Button from './ui/button.svelte'
@@ -14,178 +21,46 @@
   interface EntityDetails {
     relationships: RelationshipViewDto[]
     notes: EltmNoteDto[]
+    // the notes fetch carries a one-row probe past ELTM_DRILLDOWN_LIMIT:
+    // true only when it arrived (an exact-window payload is complete)
+    truncated: boolean
     error?: string
   }
 
   interface RelationshipDetails {
     notes: EltmNoteDto[]
+    truncated: boolean
     error?: string
   }
-
-  /** Page size of the browse lists (`/api/eltm` `limit` param). */
-  const PAGE_SIZE = 100
 
   const TABS: [Tab, string][] = [
     ['entities', 'Entities'],
     ['relationships', 'Relationships'],
   ]
 
-  /**
-   * One ELTM browse tab: the paged row window ("load more" appends
-   * client-side while the server caps a request's row count) plus the
-   * per-card expand flags and their lazily fetched drill-down payloads.
-   * The former entities/relationships pair was two hand-maintained copies of
-   * this machine; the details fetchers and empty payloads are injected, so
-   * the two tabs cannot drift apart again. Details are refetched on every
-   * expand AND on every background resync while a card stays expanded: the
-   * extraction pipeline writes server-side, so a cached payload must not go
-   * stale for as long as it is on screen.
-   */
-  class PagedTab<R, D extends { error?: string }> {
-    rows = $state<R[]>([])
-    // true once the last fetch of the list came back short: no more pages.
-    // Lists are fetched with a one-row probe (PAGE_SIZE + 1), so an exact
-    // PAGE_SIZE server side is already known to be the last page — no no-op
-    // "load more"
-    full = $state(false)
-    // true while a "load more" request is in flight: without the guard a
-    // double-click fires two requests at the same offset and appends both
-    // page copies
-    loadingMore = $state(false)
-    // per-card expand flags and cached drill-down payloads, keyed by row id
-    expanded = $state<Record<number, boolean>>({})
-    details = $state<Record<number, D>>({})
-
-    get canLoadMore(): boolean {
-      return !this.full && this.rows.length >= PAGE_SIZE
-    }
-
-    // NOTE: no parameter properties — the Svelte compiler rejects TypeScript
-    // accessibility modifiers, so the injected collaborators are declared as
-    // plain fields and assigned in the constructor body
-    private readonly fetchPage: (limit: number, offset: number) => Promise<R[]>
-    private readonly fetchDetails: (id: number) => Promise<D>
-    private readonly emptyDetails: () => D
-
-    constructor(
-      fetchPage: (limit: number, offset: number) => Promise<R[]>,
-      fetchDetails: (id: number) => Promise<D>,
-      emptyDetails: () => D,
-    ) {
-      this.fetchPage = fetchPage
-      this.fetchDetails = fetchDetails
-      this.emptyDetails = emptyDetails
-    }
-
-    /** Initial page load; throws on failure (the view owns the error banner). */
-    async load(): Promise<void> {
-      const { rows, full } = await fetchWindow(this.fetchPage, PAGE_SIZE)
-      this.rows = rows
-      this.full = full
-    }
-
-    /**
-     * Background resync (silent): fetches the loaded window — so pages
-     * appended via "load more" survive, and a window that shrank
-     * server-side (merge/delete) shrinks here too — and reports whether it
-     * succeeded, since the view may only clear its banner then. The probe
-     * fetch always settles `full`: a server that grew past the loaded
-     * window leaves the window itself unchanged, so the equality gate
-     * below would skip it (stale flag = no "load more").
-     */
-    async resync(): Promise<boolean> {
-      try {
-        const { rows, full } = await fetchWindow(this.fetchPage, Math.max(PAGE_SIZE, this.rows.length))
-        this.full = full
-        if (JSON.stringify(rows) !== JSON.stringify(this.rows)) {
-          this.rows = rows
-        }
-        return true
-      } catch {
-        // transient backend hiccup: keep the current list
-        return false
-      }
-    }
-
-    /** One "load more" page (double-click safe); throws on failure. */
-    async loadMore(): Promise<void> {
-      if (this.loadingMore) return
-      this.loadingMore = true
-      try {
-        const { rows, full } = await fetchMore(this.fetchPage, this.rows.length)
-        this.rows = [...this.rows, ...rows]
-        if (full) this.full = true
-      } finally {
-        this.loadingMore = false
-      }
-    }
-
-    /** Expand a card, fetching its drill-down payload (a failed fetch
-     * renders the payload's error instead). A collapse racing the fetch
-     * never resurrects the entry: the write is guarded on the flag still
-     * being up (same rule as the chat history loads). */
-    async toggle(id: number) {
-      if (this.expanded[id]) {
-        this.collapse(id)
-        return
-      }
-      this.expanded = { ...this.expanded, [id]: true }
-      try {
-        const details = await this.fetchDetails(id)
-        if (this.expanded[id]) this.details = { ...this.details, [id]: details }
-      } catch (e) {
-        if (this.expanded[id]) {
-          this.details = { ...this.details, [id]: { ...this.emptyDetails(), error: errMsg(e) } }
-        }
-      }
-    }
-
-    /** Collapse bookkeeping: drop the id from BOTH the flag map and its cached
-     * payload, so expanded cards never accumulate stale notes arrays for rows
-     * that scrolled out of (or vanished from) the loaded window. */
-    collapse(id: number) {
-      const expanded = { ...this.expanded }
-      delete expanded[id]
-      const details = { ...this.details }
-      delete details[id]
-      this.expanded = expanded
-      this.details = details
-    }
-
-    /** Refresh the drill-down payloads of the cards currently expanded (the
-     * extraction pipeline may have appended notes/ended relationships); a
-     * failed fetch keeps the previous payload, and a card collapsed
-     * mid-fetch is not resurrected (same guard as toggle). */
-    async refreshExpanded(): Promise<void> {
-      const ids = Object.keys(this.expanded)
-        .filter((k) => this.expanded[Number(k)])
-        .map(Number)
-      await Promise.all(
-        ids.map(async (id) => {
-          try {
-            const details = await this.fetchDetails(id)
-            if (this.expanded[id]) this.details = { ...this.details, [id]: details }
-          } catch {
-            // keep the previous payload
-          }
-        }),
-      )
-    }
-  }
-
   const entitiesTab = new PagedTab<EntityViewDto, EntityDetails>(
     (limit, offset) => listEntities(limit, offset),
     async (id) => {
-      const [relationships, notes] = await Promise.all([getEntityRelationships(id), getEntityNotes(id)])
-      return { relationships, notes }
+      const [relationships, notes] = await Promise.all([
+        getEntityRelationships(id),
+        getEntityNotes(id, ELTM_DRILLDOWN_LIMIT + 1),
+      ])
+      return {
+        relationships,
+        notes: notes.slice(0, ELTM_DRILLDOWN_LIMIT),
+        truncated: notes.length > ELTM_DRILLDOWN_LIMIT,
+      }
     },
-    () => ({ relationships: [], notes: [] }),
+    () => ({ relationships: [], notes: [], truncated: false }),
   )
 
   const relationshipsTab = new PagedTab<RelationshipViewDto, RelationshipDetails>(
     (limit, offset) => listRelationships(limit, offset),
-    async (id) => ({ notes: await getRelationshipNotes(id) }),
-    () => ({ notes: [] }),
+    async (id) => {
+      const notes = await getRelationshipNotes(id, ELTM_DRILLDOWN_LIMIT + 1)
+      return { notes: notes.slice(0, ELTM_DRILLDOWN_LIMIT), truncated: notes.length > ELTM_DRILLDOWN_LIMIT }
+    },
+    () => ({ notes: [], truncated: false }),
   )
 
   let tab = $state<Tab>('entities')
@@ -226,22 +101,15 @@
     await Promise.all([entitiesTab.refreshExpanded(), relationshipsTab.refreshExpanded()])
   }
 
-  async function loadMoreEntities() {
-    if (entitiesTab.loadingMore) return
-    // clear stale errors so the list state stays the banner's source of truth
-    error = null
-    try {
-      await entitiesTab.loadMore()
-    } catch (e) {
-      error = errMsg(e)
-    }
-  }
+  // one "load more" handler for both tabs (PagedTab.loadMore is itself
+  // double-click safe): a failed page leaves the error in the banner, a
+  // success clears any stale one first
+  type AnyTab = PagedTab<EntityViewDto, EntityDetails> | PagedTab<RelationshipViewDto, RelationshipDetails>
 
-  async function loadMoreRelationships() {
-    if (relationshipsTab.loadingMore) return
+  async function loadMore(tab: AnyTab) {
     error = null
     try {
-      await relationshipsTab.loadMore()
+      await tab.loadMore()
     } catch (e) {
       error = errMsg(e)
     }
@@ -286,16 +154,21 @@
   </p>
 {/snippet}
 
-{#snippet notesList(notes: EltmNoteDto[], emptyLabel: string)}
-  {#if notes.length === 0}
+{#snippet notesList(details: { notes: EltmNoteDto[]; truncated: boolean } | undefined, emptyLabel: string)}
+  {#if !details || details.notes.length === 0}
     <p class="text-xs text-muted-foreground">{emptyLabel}</p>
   {:else}
-    {#each notes as note (note.id)}
+    {#each details.notes as note (note.id)}
       <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
         <span class="text-xs text-muted-foreground tabular-nums">{note.eventDate}</span>
         <p class="whitespace-pre-wrap break-words text-sm leading-6">{note.note}</p>
       </div>
     {/each}
+    {#if details.truncated}
+      <p class="pt-1 text-xs text-muted-foreground">
+        showing the first {ELTM_DRILLDOWN_LIMIT} — older notes exist server-side
+      </p>
+    {/if}
   {/if}
 {/snippet}
 
@@ -405,14 +278,14 @@
                 </div>
                 <div>
                   <div class="mb-1 text-xs font-medium text-muted-foreground">notes</div>
-                  {@render notesList(entitiesTab.details[view.entity.id]?.notes ?? [], 'none')}
+                  {@render notesList(entitiesTab.details[view.entity.id], 'none')}
                 </div>
               </div>
             {/if}
           {/if}
         </div>
       {/each}
-      {@render loadMoreButton(entitiesTab, loadMoreEntities)}
+      {@render loadMoreButton(entitiesTab, () => void loadMore(entitiesTab))}
     {:else}
       {#if relationshipsTab.rows.length === 0 && !initialLoading && !error}
         <div class="py-10 text-center text-sm text-muted-foreground">no relationships yet</div>
@@ -455,13 +328,13 @@
               </p>
             {:else}
               <div class="mt-3 space-y-1 border-t border-border/30 pt-3">
-                {@render notesList(relationshipsTab.details[view.relationship.id]?.notes ?? [], 'no notes')}
+                {@render notesList(relationshipsTab.details[view.relationship.id], 'no notes')}
               </div>
             {/if}
           {/if}
         </div>
       {/each}
-      {@render loadMoreButton(relationshipsTab, loadMoreRelationships)}
+      {@render loadMoreButton(relationshipsTab, () => void loadMore(relationshipsTab))}
     {/if}
   </div>
 </div>

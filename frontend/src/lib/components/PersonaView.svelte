@@ -219,7 +219,7 @@
       <DialogTitle>{promptEditor === 'new' ? 'New persona' : 'Edit system prompt'}</DialogTitle>
       <DialogDescription>
         This text is prepended to the GSG harness introduction (policy, harness mechanics, context injection)
-        automatically.
+        automatically. The namespace whitelist is edited separately, after creating.
       </DialogDescription>
     </DialogHeader>
     <div class="space-y-3">

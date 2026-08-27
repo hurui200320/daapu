@@ -181,6 +181,22 @@ describe('StreamSession', () => {
     expect(t.rh.log.setRunError).toEqual([['"just a string"']])
   })
 
+  it('falls back to a generic message for an empty error payload', async () => {
+    // a blank error would render an empty banner and suppress the
+    // transport-failure toast via hasRunError's falsy check
+    const t = make([{ event: 'error', data: '' }])
+    await t.session.run()
+    expect(t.rh.log.setRunError).toEqual([['run failed']])
+  })
+
+  it('falls back to a generic message for a blank message field', async () => {
+    // a blank message is as useless as an empty payload: the raw JSON blob
+    // must not become the banner text
+    const t = make([{ event: 'error', data: '{"message": ""}' }])
+    await t.session.run()
+    expect(t.rh.log.setRunError).toEqual([['run failed']])
+  })
+
   it('reports abnormal connection close as a failed run', async () => {
     const t = make([ev.text('partial only')])
     await expect(t.session.run()).resolves.toEqual({ failed: true })

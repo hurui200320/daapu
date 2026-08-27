@@ -188,14 +188,20 @@ export class StreamSession {
   /**
    * The server sends `{"message": ...}` — anything else (a malformed payload,
    * a missing message field) falls back to the raw data instead of throwing
-   * a SyntaxError up the stack.
+   * a SyntaxError up the stack. An EMPTY payload — or a blank `message`
+   * field, which is just as useless — degrades to a generic message: a blank
+   * error would render an empty banner and, via hasRunError's falsy check,
+   * wrongly suppress the transport-failure toast on a later crash.
    */
   private runErrorMessage(data: string): string {
     try {
       const parsed = JSON.parse(data) as { message?: unknown }
-      return typeof parsed.message === 'string' ? parsed.message : data
+      if (typeof parsed.message === 'string') {
+        return parsed.message.length > 0 ? parsed.message : 'run failed'
+      }
     } catch {
-      return data
+      // not JSON: fall through to the raw payload
     }
+    return data.length > 0 ? data : 'run failed'
   }
 }

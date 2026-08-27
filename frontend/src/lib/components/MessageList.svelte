@@ -6,6 +6,7 @@
   import MarkdownContent from './MarkdownContent.svelte'
   import MessageItem from './MessageItem.svelte'
   import TruncateMessagesDialog from './TruncateMessagesDialog.svelte'
+  import { toolPreBlock } from './ui/message-styles'
 
   // the chat + user-message index a pending truncation starts from, or null
   // while closed; the chat id is pinned at open time so a chat switch before
@@ -127,12 +128,7 @@
               open={store.streamToolCallsOpen[i] ?? true}
               onOpenChange={(v) => (store.streamToolCallsOpen[i] = v)}
             >
-              <pre
-                class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground">{JSON.stringify(
-                  call.args,
-                  null,
-                  2,
-                )}</pre>
+              <pre class={toolPreBlock()}>{JSON.stringify(call.args, null, 2)}</pre>
             </CollapsibleBlock>
           {/each}
           {#if store.streamText}

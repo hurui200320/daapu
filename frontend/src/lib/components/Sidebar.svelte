@@ -17,12 +17,13 @@
   import { SvelteSet } from 'svelte/reactivity'
   import { cn } from '../utils'
   import { chatStore as store } from '../chat-store.svelte'
-  import { chatHref, router } from '../router.svelte'
-  import { uiStore } from '../ui-store.svelte'
+  import { chatHref, router, viewHref } from '../router.svelte'
+  import { SIDEBAR_COLLAPSED_KEY, uiStore } from '../ui-store.svelte'
+  import type { Route } from '../routes'
   import type { ChatInfo } from '../types'
   import DeleteChatDialog from './DeleteChatDialog.svelte'
   import RenameChatDialog from './RenameChatDialog.svelte'
-  import IconButton from './ui/icon-button.svelte'
+  import IconButton, { iconButtonClass } from './ui/icon-button.svelte'
   import { dropdownContentPanel, dropdownItemClass, dropdownItemDestructive } from './ui/dropdown-styles'
   import { buttonVariants } from './ui/button.svelte'
 
@@ -31,8 +32,8 @@
   // screen still defaults to collapsed, so a later resize to desktop never
   // springs a 288px column on the user
   let collapsed = $state(
-    localStorage.getItem('daapu.sidebar-collapsed') === 'true' ||
-      (localStorage.getItem('daapu.sidebar-collapsed') === null && window.innerWidth < 768),
+    localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true' ||
+      (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === null && window.innerWidth < 768),
   )
   let query = $state('')
   let renameTarget = $state<ChatInfo | null>(null)
@@ -43,7 +44,7 @@
   const titleGeneratingIds = new SvelteSet<string>()
 
   $effect(() => {
-    localStorage.setItem('daapu.sidebar-collapsed', String(collapsed))
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed))
   })
 
   // the URL owns navigation (router.svelte.ts): the active chat highlight
@@ -52,6 +53,13 @@
   // the run ends), so the streamed chat stays highlighted via the store
   const route = $derived(router.current)
   const activeChatId = $derived(store.streaming ? store.chatId : route.name === 'chat' ? route.chatId : null)
+
+  // the nav links' active highlight (rail + full sidebar): the four sites
+  // must agree on the streaming rule — while a run streams the highlights
+  // stay with the stream, so the ELTM/personas links stay unmarked even
+  // though their views can be opened mid-run
+  const navActive = (name: Route['name']): string | false =>
+    !store.streaming && route.name === name && 'bg-accent text-accent-foreground'
 
   const filtered = $derived(
     query.trim()
@@ -98,26 +106,12 @@
         <SquarePen class="size-5" />
       </IconButton>
       <div class="flex-1"></div>
-      <!-- the two anchors below duplicate IconButton's visual recipe (they
+      <!-- the two anchors below reuse IconButton's visual recipe (they
            cannot BE buttons: they are real links for middle-click) -->
-      <a
-        title="personas"
-        href="#/personas"
-        class={cn(
-          'inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-          !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground',
-        )}
-      >
+      <a title="personas" href={viewHref('personas')} class={cn(iconButtonClass(), navActive('personas'))}>
         <UserRound class="size-5" />
       </a>
-      <a
-        title="eltm"
-        href="#/eltm"
-        class={cn(
-          'inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-          !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground',
-        )}
-      >
+      <a title="eltm" href={viewHref('eltm')} class={cn(iconButtonClass(), navActive('eltm'))}>
         <Network class="size-5" />
       </a>
     </div>
@@ -151,6 +145,7 @@
         <Search class="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <input
           bind:value={query}
+          aria-label="search conversations"
           placeholder="Search conversations…"
           class="h-8 w-full rounded-md border border-transparent bg-transparent pl-8 pr-2 text-sm outline-none transition placeholder:text-muted-foreground hover:bg-foreground/10 focus:border-border no-hover:text-base"
         />
@@ -256,22 +251,16 @@
            even though their views can be opened mid-run (the chat view
            stays mounted, CSS-hidden) -->
       <a
-        href="#/personas"
-        class={cn(
-          buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
-          !store.streaming && route.name === 'personas' && 'bg-accent text-accent-foreground',
-        )}
+        href={viewHref('personas')}
+        class={cn(buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }), navActive('personas'))}
         onclick={() => (uiStore.mobileNavOpen = false)}
       >
         <UserRound class="size-4" />
         Personas
       </a>
       <a
-        href="#/eltm"
-        class={cn(
-          buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }),
-          !store.streaming && route.name === 'eltm' && 'bg-accent text-accent-foreground',
-        )}
+        href={viewHref('eltm')}
+        class={cn(buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }), navActive('eltm'))}
         onclick={() => (uiStore.mobileNavOpen = false)}
       >
         <Network class="size-4" />

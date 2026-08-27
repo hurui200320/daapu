@@ -12,31 +12,20 @@
   import { toastStore } from './lib/toast-store.svelte'
   import { uiStore } from './lib/ui-store.svelte'
 
+  let kbInset = $state(0)
   onMount(() => {
     router.init()
     uiStore.init()
     void chatStore.init()
     void personaStore.init()
-  })
 
-  // the mobile navigation drawer closes on every navigation (a chat pick, a
-  // personas/ELTM link, back/forward); a tap that changes NO route (the
-  // already-open chat/personas/eltm link, or a streaming-locked chat link)
-  // gets no effect run, so the sidebar closes the drawer itself there
-  $effect(() => {
-    void router.current
-    uiStore.mobileNavOpen = false
-  })
-
-  // on-screen keyboard vs. the fixed h-dvh shell: the layout viewport does
-  // not shrink for the keyboard and the document has no scroll range, so the
-  // composer would sit behind it. `interactive-widget=resizes-content`
-  // (index.html) fixes browsers that honor it by shrinking the layout
-  // viewport; for the rest (iOS Safari) mirror the keyboard inset as a
-  // bottom padding on the shell. Where the meta is honored innerHeight
-  // already shrank, so the inset computes to 0 and this is a no-op.
-  let kbInset = $state(0)
-  onMount(() => {
+    // on-screen keyboard vs. the fixed h-dvh shell: the layout viewport does
+    // not shrink for the keyboard and the document has no scroll range, so the
+    // composer would sit behind it. `interactive-widget=resizes-content`
+    // (index.html) fixes browsers that honor it by shrinking the layout
+    // viewport; for the rest (iOS Safari) mirror the keyboard inset as a
+    // bottom padding on the shell. Where the meta is honored innerHeight
+    // already shrank, so the inset computes to 0 and this is a no-op.
     const vv = window.visualViewport
     if (!vv) return
     const update = () => {
@@ -48,6 +37,15 @@
       vv.removeEventListener('resize', update)
       vv.removeEventListener('scroll', update)
     }
+  })
+
+  // the mobile navigation drawer closes on every navigation (a chat pick, a
+  // personas/ELTM link, back/forward); a tap that changes NO route (the
+  // already-open chat/personas/eltm link, or a streaming-locked chat link)
+  // gets no effect run, so the sidebar closes the drawer itself there
+  $effect(() => {
+    void router.current
+    uiStore.mobileNavOpen = false
   })
 
   // The URL owns the active view and the open chat: translate the route into

@@ -185,6 +185,15 @@ export function parseBlock(block: string): StreamEvent | null {
 
 // ---- ELTM browse (read-only; writes are LLM-driven) ----
 
+/**
+ * Page cap of the ELTM drill-down fetches (entity/relationship notes). The
+ * view fetches one probe row past it: only a payload that RETURNS the extra
+ * row is truncated, so the hint never claims older notes for a subject with
+ * exactly this many. Exported so the api default and the view's hint cannot
+ * drift apart.
+ */
+export const ELTM_DRILLDOWN_LIMIT = 100
+
 export async function listEntities(limit = 100, offset = 0): Promise<EntityViewDto[]> {
   return getJson(`/api/eltm/entities?limit=${limit}&offset=${offset}`)
 }
@@ -193,7 +202,7 @@ export async function getEntityRelationships(id: number, includeInvalid = true):
   return getJson(`/api/eltm/entities/${id}/relationships?includeInvalid=${includeInvalid}`)
 }
 
-export async function getEntityNotes(id: number, limit = 100): Promise<EltmNoteDto[]> {
+export async function getEntityNotes(id: number, limit = ELTM_DRILLDOWN_LIMIT): Promise<EltmNoteDto[]> {
   return getJson(`/api/eltm/entities/${id}/notes?limit=${limit}`)
 }
 
@@ -201,6 +210,6 @@ export async function listRelationships(limit = 100, offset = 0): Promise<Relati
   return getJson(`/api/eltm/relationships?limit=${limit}&offset=${offset}`)
 }
 
-export async function getRelationshipNotes(id: number, limit = 100): Promise<EltmNoteDto[]> {
+export async function getRelationshipNotes(id: number, limit = ELTM_DRILLDOWN_LIMIT): Promise<EltmNoteDto[]> {
   return getJson(`/api/eltm/relationships/${id}/notes?limit=${limit}`)
 }

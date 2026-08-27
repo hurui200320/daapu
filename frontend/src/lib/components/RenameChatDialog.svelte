@@ -50,6 +50,7 @@
     <input
       bind:this={input}
       bind:value={title}
+      aria-label="chat title"
       placeholder="Chat title"
       onkeydown={(e) => {
         if (e.key === 'Enter') {

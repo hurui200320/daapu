@@ -62,3 +62,13 @@ export function chatPath(chatId: string): string {
 export function chatHref(chatId: string): string {
   return '#' + chatPath(chatId)
 }
+
+/** Route path for a fixed view ('/eltm', '/personas'). */
+function viewPath(name: 'eltm' | 'personas'): string {
+  return '/' + name
+}
+
+/** href for a fixed view ('#/eltm'), for use in <a href>. */
+export function viewHref(name: 'eltm' | 'personas'): string {
+  return '#' + viewPath(name)
+}

@@ -548,6 +548,16 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
       `partOrdinalKey`, `messageSpacing`, `dataUrlToImagePart` (mirrors the
       backend's data-URL regex). Imported by MessageItem/MessageList/
       ChatStore.
+    - `lib/chat-logic.ts`: pure decision logic lifted from ChatStore —
+      persona resolution (`effectivePersonaId`), the usage scan
+      (`computeUsage`), and the tool-result display batching
+      (`applyToolResult`/`commitRoundParts`, returns whether the buffers
+      must be wiped) plus `runFailureText` (the shared banner/toast wording);
+      unit-tested in `chat-logic.test.ts`.
+    - `lib/paged-tab.svelte.ts`: the ELTM browse tab state machine
+      (`PagedTab`, rune module extracted from EltmView) — paged row window,
+      per-card expand flags + lazily fetched drill-down payloads, resync
+      that re-arms `full` via the probe; unit-tested in `paged-tab.test.ts`.
     - `lib/stream-session.ts`: the chat run loop extracted from ChatStore's
       old inline `send()` loop. `StreamSession.run()` never throws; it owns
       event order and terminal recovery, and drives the store through a 1:1
@@ -563,11 +573,21 @@ Agents (and users) should adhere to the **Micro-Session** philosophy:
       DOMPurify + their CSS load behind `getMarkdownRenderer()` on first
       render (the home screen no longer pays for them; ~64% smaller critical
       chunk). MarkdownContent applies renders with a sequence counter so an
-      in-flight init cannot overwrite a newer html state.
-    - Shared ui primitives: `ui/icon-button.svelte` (square utility button),
+      in-flight init cannot overwrite a newer html state; its live-mode
+      throttle scales the render interval with the buffered length (+1 ms
+      per 100 chars, capped at 1 s) so a long stream's per-second render
+      cost stays flat. The tabnabbing hook installs once (guarded) so a
+      retried init never stacks a copy.
+    - Shared ui primitives: `ui/icon-button.svelte` (square utility button;
+      its class recipe is exported as `iconButtonClass` for the sidebar
+      rail's real links),
       `ui/confirm-dialog.svelte` (destructive confirm scaffold with `busy`;
       used by DeleteChatDialog/TruncateMessagesDialog/PersonaView delete),
-      `ui/dropdown-styles.ts` (bits-ui trigger/content/item class strings).
+      `ui/dropdown-styles.ts` (bits-ui trigger/content/item class strings),
+      `ui/message-styles.ts` (`lightboxTriggerBtn`/`toolPreBlock` class
+      strings shared by MessageItem/MessageList),
+      `lib/focus-trap.ts` (`trapTab`, the Tab wrap-around used by
+      ImageLightbox).
     - Composer attachments: per-file 8 MB client-side cap with a toast;
       oversized images are canvas-downscaled to a 1568 px longest edge
       (JPEG re-encode, PNG keeps alpha) — at-or-under-edge files keep their

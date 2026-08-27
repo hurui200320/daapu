@@ -13,8 +13,18 @@
   // re-rendering per streamed token is O(n^2) over a stream. Throttle to one
   // render per interval, with a trailing render so the tail of a chunk burst
   // still shows; the full final text always renders via the committed/stored
-  // message's non-live MarkdownContent once the round commits.
-  const LIVE_RENDER_INTERVAL_MS = 100
+  // message's non-live MarkdownContent once the round commits. The interval
+  // scales with the buffer (see liveRenderInterval below) so the per-second
+  // cost stays flat on long responses.
+  const LIVE_RENDER_BASE_MS = 100
+  const LIVE_RENDER_MAX_MS = 1000
+  // +1 ms of spacing per 100 buffered chars, capped at 1 s: each render is
+  // O(n) in the buffered text, so spacing renders by the buffer length keeps
+  // the cost per second roughly constant; the 100 ms floor keeps short
+  // streams snappy. Measured against the PREVIOUS render's length (a plain
+  // field, not reactive state — the throttle must not add dependencies).
+  let lastLen = 0
+  const liveRenderInterval = () => Math.min(LIVE_RENDER_MAX_MS, LIVE_RENDER_BASE_MS + lastLen / 100)
   // the initial value is a deliberate one-time snapshot (the effect below
   // owns all later updates) — untrack keeps that explicit
   let rendered = $state(untrack(() => text))
@@ -23,19 +33,23 @@
   $effect(() => {
     const latest = text
     if (!live) {
+      lastLen = latest.length
       rendered = latest
       return
     }
+    const interval = liveRenderInterval()
     const elapsed = Date.now() - lastRender
-    if (elapsed >= LIVE_RENDER_INTERVAL_MS) {
+    if (elapsed >= interval) {
       lastRender = Date.now()
+      lastLen = latest.length
       rendered = latest
       return
     }
     const timer = setTimeout(() => {
       lastRender = Date.now()
+      lastLen = latest.length
       rendered = latest
-    }, LIVE_RENDER_INTERVAL_MS - elapsed)
+    }, interval - elapsed)
     return () => clearTimeout(timer)
   })
 

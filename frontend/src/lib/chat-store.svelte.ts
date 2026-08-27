@@ -18,6 +18,15 @@ import { personaStore } from './persona-store.svelte'
 import { onIntervalAndFocus } from './resync'
 import { toastStore } from './toast-store.svelte'
 import { dataUrlToImagePart } from './display'
+import {
+  applyToolResult,
+  commitRoundParts,
+  computeUsage,
+  effectivePersonaId,
+  runFailureText,
+  type LiveRound,
+} from './chat-logic'
+import { jsonEquals } from './utils'
 import { StreamSession } from './stream-session'
 
 // mirrors the backend's DEFAULT_CHAT_TITLE (db/Tables.kt)
@@ -157,8 +166,13 @@ class ChatStore {
     if (this.started) return
     this.started = true
     try {
-      this.models = await listModels()
-      this.knownChats = await listChats()
+      // independent fetches: resolve together (the resync below does the
+      // same). On a failure NEITHER list lands (Promise.all rejects once) —
+      // the 30s/focus resync re-fetches both, so a failed initial load
+      // self-heals within one tick
+      const [models, chats] = await Promise.all([listModels(), listChats()])
+      this.models = models
+      this.knownChats = chats
     } catch (e) {
       toastStore.pushError(e)
     }
@@ -178,10 +192,10 @@ class ChatStore {
   private async resyncChats() {
     try {
       const [freshChats, freshModels] = await Promise.all([listChats(), listModels()])
-      if (JSON.stringify(freshChats) !== JSON.stringify(this.knownChats)) {
+      if (!jsonEquals(freshChats, this.knownChats)) {
         this.knownChats = freshChats
       }
-      if (JSON.stringify(freshModels) !== JSON.stringify(this.models)) {
+      if (!jsonEquals(freshModels, this.models)) {
         this.models = freshModels
         if (this.selectedModel && !freshModels.some((m) => m.id === this.selectedModel)) {
           this.selectedModel = freshModels[0]?.id ?? ''
@@ -192,45 +206,18 @@ class ChatStore {
     }
   }
 
-  /**
-   * Latest-round usage: scan backwards for the last assistant message that
-   * carries token usage (each round's total = full prompt + output of that
-   * round, the best proxy for current context occupancy). The context window
-   * is always the currently selected model's, since the next message will be
-   * processed by it. Missing either side (no usage data, unknown/null
-   * contextLength) hides the indicator.
-   */
-  private computeUsage(): { used: number | null; context: number | null } {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const msg = this.messages[i]
-      const used = msg.role === 'assistant' ? msg.meta?.totalTokens : null
-      if (used == null) continue
-      const model = this.models.find((m) => m.id === this.selectedModel)
-      return { used, context: model?.contextLength ?? null }
-    }
-    return { used: null, context: null }
-  }
+  // latest-round usage (see computeUsage in chat-logic.ts)
+  usage = $derived(computeUsage(this.messages, this.models, this.selectedModel))
 
-  usage = $derived(this.computeUsage())
-
-  /**
-   * The persona id the next send will carry: the transient picker override,
-   * else the chat's recorded persona. A persona that no longer exists in the
-   * loaded catalog (deleted here or in another tab) falls back to the other
-   * source, then to the code default — the backend keeps stale records and
-   * would 400 a stale id. An unloaded catalog (empty list) is still trusted:
-   * a loaded catalog is never empty (the code default always leads it), and
-   * the record was fetched together with the chats.
-   */
-  currentPersonaId = $derived(this.effectivePersonaId())
-
-  private effectivePersonaId(): number {
-    const exists = (id: number) => personaStore.personas.length === 0 || personaStore.personas.some((p) => p.id === id)
-    if (this.personaOverride != null && exists(this.personaOverride)) return this.personaOverride
-    const recorded = this.knownChats.find((c) => c.id === this.chatId)?.personaId
-    if (recorded != null && exists(recorded)) return recorded
-    return DEFAULT_PERSONA_ID
-  }
+  // the persona id the next send will carry (see effectivePersonaId in
+  // chat-logic.ts): the transient picker override, else the chat's record
+  currentPersonaId = $derived(
+    effectivePersonaId(
+      personaStore.personas,
+      this.personaOverride,
+      this.knownChats.find((c) => c.id === this.chatId)?.personaId,
+    ),
+  )
 
   /**
    * Sync the view with whatever the DB actually holds. A failed reload must
@@ -247,19 +234,19 @@ class ChatStore {
     }
   }
 
+  /** The live round's uncommitted buffers, in the shape chat-logic.ts consumes. */
+  private liveRound(): LiveRound {
+    return { reasoning: this.streamReasoning, text: this.streamText, toolCalls: this.streamToolCalls }
+  }
+
   /**
    * Move the live round into the history as an assistant message. No-op when
-   * the buffers hold nothing to commit. Callers wipe the streaming buffers
-   * afterwards.
+   * the buffers hold nothing to commit (commitRoundParts returns null).
+   * Callers wipe the streaming buffers afterwards.
    */
   private commitRound() {
-    const parts: ChatMessagePart[] = []
-    if (this.streamReasoning) parts.push({ type: 'reasoning', content: this.streamReasoning })
-    if (this.streamText) parts.push({ type: 'text', text: this.streamText })
-    for (const call of this.streamToolCalls) {
-      parts.push({ type: 'tool_call', id: '', tool: call.name, args: call.args })
-    }
-    if (parts.length === 0) return
+    const parts = commitRoundParts(this.liveRound())
+    if (!parts) return
     this.messages = [...this.messages, { role: 'assistant', parts }]
   }
 
@@ -442,7 +429,11 @@ class ChatStore {
    * as success.
    */
   async truncateMessages(chatId: string, index: number): Promise<boolean> {
-    if (!chatId || this.isMutatingHistory(chatId)) {
+    if (!chatId) {
+      toastStore.push('Select a chat first')
+      return false
+    }
+    if (this.isMutatingHistory(chatId)) {
       toastStore.push('A history edit is in progress')
       return false
     }
@@ -580,19 +571,12 @@ class ChatStore {
             // tool_result message, mirroring the stored format. Display-only
             // state (the tool_call parts have no real id — the SSE event
             // doesn't carry one): the `done` reload replaces it with the
-            // stored form.
-            const last = this.messages[this.messages.length - 1]
-            if (this.streamToolCalls.length === 0 && last?.role === 'tool_result') {
-              // 2nd..Nth result of the same batch: extend the committed
-              // tool_result message instead of creating an empty pair
-              this.messages = [...this.messages.slice(0, -1), { ...last, parts: [...last.parts, resultPart] }]
-            } else {
-              // commit the round's assistant message, then attach the result
-              this.commitRound()
-              this.messages = [...this.messages, { role: 'tool_result', parts: [resultPart] }]
-              // the next round streams as its own message
-              this.resetLiveRound()
-            }
+            // stored form. The branching lives in applyToolResult
+            // (chat-logic.ts, unit-tested there); only a fresh round commit
+            // wipes the buffers again.
+            const { messages, committedRound } = applyToolResult(this.messages, this.liveRound(), resultPart)
+            this.messages = messages
+            if (committedRound) this.resetLiveRound()
           },
           onRetryBegin: () => {
             this.retrying = true
@@ -628,7 +612,7 @@ class ChatStore {
       if (failed && this.streamError) {
         const route = router.current
         if (route.name !== 'chat' || route.chatId !== id) {
-          toastStore.push('run failed: ' + this.streamError, 'error')
+          toastStore.push(runFailureText(this.streamError), 'error')
         }
       }
     }

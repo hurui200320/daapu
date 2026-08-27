@@ -6,6 +6,7 @@
   import CollapsibleBlock from './CollapsibleBlock.svelte'
   import ImageLightbox from './ImageLightbox.svelte'
   import MarkdownContent from './MarkdownContent.svelte'
+  import { lightboxTriggerBtn, toolPreBlock } from './ui/message-styles'
 
   let {
     message,
@@ -115,7 +116,7 @@
           type="button"
           title="view fullscreen"
           aria-label="view fullscreen"
-          class="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          class={lightboxTriggerBtn()}
           onclick={(e) => openLightbox(e, src)}
         >
           <img class="block h-40 max-w-full rounded-lg object-cover" {src} alt="attachment" />
@@ -163,7 +164,7 @@
             type="button"
             title="view fullscreen"
             aria-label="view fullscreen"
-            class="inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            class={lightboxTriggerBtn()}
             onclick={(e) => openLightbox(e, src)}
           >
             <img class="block max-h-80 max-w-full rounded-lg" {src} alt="attachment" />
@@ -176,10 +177,7 @@
           open={partOverrides[partKey] ?? false}
           onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
         >
-          <pre
-            class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground">{argsText(
-              part.args,
-            )}</pre>
+          <pre class={toolPreBlock()}>{argsText(part.args)}</pre>
         </CollapsibleBlock>
       {:else if part.type === 'tool_result'}
         <CollapsibleBlock
@@ -190,10 +188,7 @@
           onOpenChange={(v) => store.setPartOverride(signature, partKey, v)}
         >
           {#if toolResultText(part)}
-            <pre
-              class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-code-background p-3 font-mono text-xs leading-5 text-code-foreground">{toolResultText(
-                part,
-              )}</pre>
+            <pre class={toolPreBlock()}>{toolResultText(part)}</pre>
           {/if}
           {#each part.parts.filter(isImage) as img (img)}
             {@const src = imageSrc(img)}
@@ -202,7 +197,7 @@
                 type="button"
                 title="view fullscreen"
                 aria-label="view fullscreen"
-                class="mt-2 inline-block max-w-full cursor-zoom-in overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                class={lightboxTriggerBtn('mt-2')}
                 onclick={(e) => openLightbox(e, src)}
               >
                 <img class="block max-h-80 max-w-full rounded-lg" {src} alt="attachment" />

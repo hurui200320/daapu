@@ -7,6 +7,9 @@
  * composer's Enter behavior (soft keyboards have no Shift — Enter must
  * insert a newline on touch devices, matching mobile messaging convention).
  */
+/** localStorage key of the sidebar's collapsed toggle (Sidebar.svelte). */
+export const SIDEBAR_COLLAPSED_KEY = 'daapu.sidebar-collapsed'
+
 class UiStore {
   /** true while the mobile navigation drawer is open (inert on ≥ md). */
   mobileNavOpen = $state(false)
