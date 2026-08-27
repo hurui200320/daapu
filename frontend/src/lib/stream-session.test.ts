@@ -219,6 +219,25 @@ describe('StreamSession', () => {
     expect(t.rh.log.resetLiveRound).toBeUndefined()
   })
 
+  it('degrades a non-string tool_result content to an empty text part', async () => {
+    // every other wire payload degrades gracefully; a structured/missing
+    // content must not render "[object Object]" or undefined downstream
+    const t = make([
+      {
+        event: 'tool_result',
+        data: JSON.stringify({ id: 'r1', name: 't', isError: false, content: { nested: true } }),
+      },
+      { event: 'tool_result', data: JSON.stringify({ id: 'r2', name: 't', isError: false }) },
+      ev.done(),
+    ])
+    await expect(t.session.run()).resolves.toEqual({ failed: false })
+    const parts = t.rh.log.onToolResult as unknown as [ChatToolResultPart[]]
+    expect(parts).toEqual([
+      [{ type: 'tool_result', id: 'r1', tool: 't', isError: false, parts: [{ type: 'text', text: '' }] }],
+      [{ type: 'tool_result', id: 'r2', tool: 't', isError: false, parts: [{ type: 'text', text: '' }] }],
+    ])
+  })
+
   it('ignores unknown event kinds (forward compatibility)', async () => {
     const t = make([{ event: 'comment', data: 'connected' }, { event: 'future_thing', data: '{}' }, ev.done()])
     await expect(t.session.run()).resolves.toEqual({ failed: false })

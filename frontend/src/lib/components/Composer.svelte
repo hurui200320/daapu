@@ -5,6 +5,7 @@
   import { router } from '../router.svelte'
   import { toastStore } from '../toast-store.svelte'
   import { uiStore } from '../ui-store.svelte'
+  import { browserEncoder, imageFileToDataUrl, MAX_IMAGE_BYTES } from '../image-attachment'
   import ModelDropdown from './ModelDropdown.svelte'
   import PersonaDropdown from './PersonaDropdown.svelte'
 
@@ -60,107 +61,9 @@
     textarea.style.height = `${textarea.scrollHeight}px`
   })
 
-  /** Per-attachment byte budget (pre-base64): a 50 MB paste would balloon
-   * into reactive state as a base64 string and blow up the request body. */
-  const MAX_IMAGE_BYTES = 8 * 1024 * 1024
-  /** Longest edge kept when downscaling; vision models gain nothing beyond this. */
-  const MAX_IMAGE_EDGE = 1568
-
-  function readAsDataUrl(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result))
-      reader.onerror = () => reject(reader.error ?? new Error('read failed'))
-      reader.readAsDataURL(blob)
-    })
-  }
-
-  function canvasToBlob(canvas: HTMLCanvasElement, mime: string, quality?: number): Promise<Blob | null> {
-    return new Promise((resolve) => canvas.toBlob(resolve, mime, quality))
-  }
-
-  function toastTooLarge(name: string) {
+  /** Per-attachment byte budget (lives with the pipeline in image-attachment.ts). */
+  const toastTooLarge = (name: string) =>
     toastStore.push(`"${name}" is too large (max ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB)`, 'error')
-  }
-
-  /**
-   * Encode the downscaled bitmap within [MAX_IMAGE_BYTES]. The primary format
-   * keeps PNG alpha; if that still exceeds the budget (noise-heavy sources do,
-   * even at [MAX_IMAGE_EDGE]), alpha is flattened onto white BEHIND the pixels
-   * (`destination-over` — no black-background JPEG artifact) and lower-quality
-   * JPEG steps run until it fits. Returns the data URL, or NULL when the
-   * result is still oversized after the full ladder — refused with the
-   * oversized toast so nothing balloons into reactive state / request body.
-   * Throws only when encoding itself failed.
-   */
-  async function encodeWithinBudget(
-    canvas: HTMLCanvasElement,
-    ctx: CanvasRenderingContext2D,
-    keepAlpha: boolean,
-    name: string,
-  ): Promise<string | null> {
-    let blob = await canvasToBlob(canvas, keepAlpha ? 'image/png' : 'image/jpeg', 0.85)
-    if (blob && blob.size > MAX_IMAGE_BYTES && keepAlpha) {
-      ctx.globalCompositeOperation = 'destination-over'
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, canvas.width, canvas.height)
-      ctx.globalCompositeOperation = 'source-over'
-      blob = await canvasToBlob(canvas, 'image/jpeg', 0.85)
-    }
-    for (const quality of [0.7, 0.55, 0.4]) {
-      if (!blob || blob.size <= MAX_IMAGE_BYTES) break
-      blob = await canvasToBlob(canvas, 'image/jpeg', quality)
-    }
-    if (!blob) throw new Error('encode failed')
-    if (blob.size <= MAX_IMAGE_BYTES) return await readAsDataUrl(blob)
-    toastTooLarge(name)
-    return null
-  }
-
-  /**
-   * One attachment file → data URL. Oversized images are downscaled on a
-   * canvas to [MAX_IMAGE_EDGE] and then forced through [encodeWithinBudget]
-   * (the budget applies to the OUTPUT too — PNG alpha flattens onto white,
-   * JPEG quality steps down, a still-oversized result is refused);
-   * everything at or under the edge passes through with its ORIGINAL bytes,
-   * so normal screenshots/animated GIFs are untouched.
-   */
-  async function imageFileToDataUrl(file: File): Promise<string | null> {
-    if (!file.type.startsWith('image/')) return null
-    if (file.size > MAX_IMAGE_BYTES) {
-      toastTooLarge(file.name)
-      return null
-    }
-    try {
-      const bitmap = await createImageBitmap(file)
-      const longest = Math.max(bitmap.width, bitmap.height)
-      if (longest <= MAX_IMAGE_EDGE) {
-        bitmap.close()
-        return await readAsDataUrl(file)
-      }
-      const scale = MAX_IMAGE_EDGE / longest
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.round(bitmap.width * scale)
-      canvas.height = Math.round(bitmap.height * scale)
-      const ctx = canvas.getContext('2d')
-      if (!ctx) throw new Error('canvas unavailable')
-      const keepAlpha = file.type === 'image/png'
-      if (!keepAlpha) {
-        // JPEG has no alpha channel: paint the background first
-        ctx.fillStyle = '#ffffff'
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
-      }
-      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-      bitmap.close()
-      return await encodeWithinBudget(canvas, ctx, keepAlpha, file.name)
-    } catch {
-      // decode/encode failure: unusable in the optimistic bubble AND likely
-      // rejected by the backend anyway — reject here with context instead of
-      // silently dropping the paste
-      toastStore.push(`"${file.name}" could not be processed`, 'error')
-      return null
-    }
-  }
 
   async function addFiles(files: FileList | null) {
     if (!files) return
@@ -170,8 +73,16 @@
     // the composer now shows.
     const pickChatId = store.chatId
     for (const file of Array.from(files)) {
-      const dataUrl = await imageFileToDataUrl(file)
-      if (dataUrl !== null) appendImage(pickChatId, { dataUrl })
+      const result = await imageFileToDataUrl(file, browserEncoder)
+      if (!result.ok) {
+        if (result.reason === 'too-large') toastTooLarge(file.name)
+        else if (result.reason === 'unprocessable') {
+          toastStore.push(`"${file.name}" could not be processed`, 'error')
+        }
+        // 'not-an-image': silently skipped, like the paperclip's image/* filter
+        continue
+      }
+      appendImage(pickChatId, { dataUrl: result.dataUrl })
     }
     // a stale input value fires no change event for a re-pick of the same
     // file (also after a failed send restores the draft): reset it so the
@@ -239,6 +150,11 @@
     let stored = false
     try {
       stored = await store.send(trimmed, draft.images, store.selectedModel)
+    } catch (e) {
+      // send() is contractually non-throwing, but a bug in its host callbacks
+      // must not surface as a silent unhandled rejection: toast it and let the
+      // finally below restore the draft like any other failed send
+      toastStore.pushError(e)
     } finally {
       // a rejected or failed send means the message wasn't stored: restore
       // the draft instead of silently losing it. The composer stays editable

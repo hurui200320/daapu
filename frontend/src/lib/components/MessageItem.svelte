@@ -64,12 +64,7 @@
   // computed on the display list would target the wrong message), and any
   // other pending history edit makes indices stale until it settles — a
   // full-chat delete's extraction, a truncation or a fork all disable
-  const actionsDisabled = $derived(
-    store.streaming ||
-      store.deletingIds.has(store.chatId) ||
-      store.forkingIds.has(store.chatId) ||
-      store.truncatingIds.has(store.chatId),
-  )
+  const actionsDisabled = $derived(store.streaming || store.isMutatingHistory(store.chatId))
 
   const canFork = $derived(message.role === 'assistant' && message.finishReason === 'stop')
 

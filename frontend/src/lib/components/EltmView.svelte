@@ -25,9 +25,170 @@
   /** Page size of the browse lists (`/api/eltm` `limit` param). */
   const PAGE_SIZE = 100
 
+  const TABS: [Tab, string][] = [
+    ['entities', 'Entities'],
+    ['relationships', 'Relationships'],
+  ]
+
+  /**
+   * One ELTM browse tab: the paged row window ("load more" appends
+   * client-side while the server caps a request's row count) plus the
+   * per-card expand flags and their lazily fetched drill-down payloads.
+   * The former entities/relationships pair was two hand-maintained copies of
+   * this machine; the details fetchers and empty payloads are injected, so
+   * the two tabs cannot drift apart again. Details are refetched on every
+   * expand AND on every background resync while a card stays expanded: the
+   * extraction pipeline writes server-side, so a cached payload must not go
+   * stale for as long as it is on screen.
+   */
+  class PagedTab<R, D extends { error?: string }> {
+    rows = $state<R[]>([])
+    // true once the last fetch of the list came back short: no more pages.
+    // Lists are fetched with a one-row probe (PAGE_SIZE + 1), so an exact
+    // PAGE_SIZE server side is already known to be the last page — no no-op
+    // "load more"
+    full = $state(false)
+    // true while a "load more" request is in flight: without the guard a
+    // double-click fires two requests at the same offset and appends both
+    // page copies
+    loadingMore = $state(false)
+    // per-card expand flags and cached drill-down payloads, keyed by row id
+    expanded = $state<Record<number, boolean>>({})
+    details = $state<Record<number, D>>({})
+
+    get canLoadMore(): boolean {
+      return !this.full && this.rows.length >= PAGE_SIZE
+    }
+
+    // NOTE: no parameter properties — the Svelte compiler rejects TypeScript
+    // accessibility modifiers, so the injected collaborators are declared as
+    // plain fields and assigned in the constructor body
+    private readonly fetchPage: (limit: number, offset: number) => Promise<R[]>
+    private readonly fetchDetails: (id: number) => Promise<D>
+    private readonly emptyDetails: () => D
+
+    constructor(
+      fetchPage: (limit: number, offset: number) => Promise<R[]>,
+      fetchDetails: (id: number) => Promise<D>,
+      emptyDetails: () => D,
+    ) {
+      this.fetchPage = fetchPage
+      this.fetchDetails = fetchDetails
+      this.emptyDetails = emptyDetails
+    }
+
+    /** Initial page load; throws on failure (the view owns the error banner). */
+    async load(): Promise<void> {
+      const { rows, full } = await fetchWindow(this.fetchPage, PAGE_SIZE)
+      this.rows = rows
+      this.full = full
+    }
+
+    /**
+     * Background resync (silent): fetches the loaded window — so pages
+     * appended via "load more" survive, and a window that shrank
+     * server-side (merge/delete) shrinks here too — and reports whether it
+     * succeeded, since the view may only clear its banner then. The probe
+     * fetch always settles `full`: a server that grew past the loaded
+     * window leaves the window itself unchanged, so the equality gate
+     * below would skip it (stale flag = no "load more").
+     */
+    async resync(): Promise<boolean> {
+      try {
+        const { rows, full } = await fetchWindow(this.fetchPage, Math.max(PAGE_SIZE, this.rows.length))
+        this.full = full
+        if (JSON.stringify(rows) !== JSON.stringify(this.rows)) {
+          this.rows = rows
+        }
+        return true
+      } catch {
+        // transient backend hiccup: keep the current list
+        return false
+      }
+    }
+
+    /** One "load more" page (double-click safe); throws on failure. */
+    async loadMore(): Promise<void> {
+      if (this.loadingMore) return
+      this.loadingMore = true
+      try {
+        const { rows, full } = await fetchMore(this.fetchPage, this.rows.length)
+        this.rows = [...this.rows, ...rows]
+        if (full) this.full = true
+      } finally {
+        this.loadingMore = false
+      }
+    }
+
+    /** Expand a card, fetching its drill-down payload (a failed fetch
+     * renders the payload's error instead). A collapse racing the fetch
+     * never resurrects the entry: the write is guarded on the flag still
+     * being up (same rule as the chat history loads). */
+    async toggle(id: number) {
+      if (this.expanded[id]) {
+        this.collapse(id)
+        return
+      }
+      this.expanded = { ...this.expanded, [id]: true }
+      try {
+        const details = await this.fetchDetails(id)
+        if (this.expanded[id]) this.details = { ...this.details, [id]: details }
+      } catch (e) {
+        if (this.expanded[id]) {
+          this.details = { ...this.details, [id]: { ...this.emptyDetails(), error: errMsg(e) } }
+        }
+      }
+    }
+
+    /** Collapse bookkeeping: drop the id from BOTH the flag map and its cached
+     * payload, so expanded cards never accumulate stale notes arrays for rows
+     * that scrolled out of (or vanished from) the loaded window. */
+    collapse(id: number) {
+      const expanded = { ...this.expanded }
+      delete expanded[id]
+      const details = { ...this.details }
+      delete details[id]
+      this.expanded = expanded
+      this.details = details
+    }
+
+    /** Refresh the drill-down payloads of the cards currently expanded (the
+     * extraction pipeline may have appended notes/ended relationships); a
+     * failed fetch keeps the previous payload, and a card collapsed
+     * mid-fetch is not resurrected (same guard as toggle). */
+    async refreshExpanded(): Promise<void> {
+      const ids = Object.keys(this.expanded)
+        .filter((k) => this.expanded[Number(k)])
+        .map(Number)
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const details = await this.fetchDetails(id)
+            if (this.expanded[id]) this.details = { ...this.details, [id]: details }
+          } catch {
+            // keep the previous payload
+          }
+        }),
+      )
+    }
+  }
+
+  const entitiesTab = new PagedTab<EntityViewDto, EntityDetails>(
+    (limit, offset) => listEntities(limit, offset),
+    async (id) => {
+      const [relationships, notes] = await Promise.all([getEntityRelationships(id), getEntityNotes(id)])
+      return { relationships, notes }
+    },
+    () => ({ relationships: [], notes: [] }),
+  )
+
+  const relationshipsTab = new PagedTab<RelationshipViewDto, RelationshipDetails>(
+    (limit, offset) => listRelationships(limit, offset),
+    async (id) => ({ notes: await getRelationshipNotes(id) }),
+    () => ({ notes: [] }),
+  )
+
   let tab = $state<Tab>('entities')
-  let entities = $state<EntityViewDto[]>([])
-  let relationships = $state<RelationshipViewDto[]>([])
   let error = $state<string | null>(null)
   // true until the FIRST list fetch settles: the empty states must not flash
   // "no entities yet" while that first load is in flight
@@ -35,37 +196,13 @@
   // false until the view's first visit: the first visit loads the browse
   // window, later visits resync (keeping the loaded pages)
   let loadedOnce = false
-  // true once the last fetch of a list came back short: no more pages. Lists
-  // are fetched with a one-row probe (PAGE_SIZE + 1), so an exact PAGE_SIZE
-  // server side is already known to be the last page — no no-op "load more"
-  let entitiesFull = $state(false)
-  let relationshipsFull = $state(false)
-  // true while a "load more" request is in flight: without the guard a
-  // double-click fires two requests at the same offset and appends both
-  // page copies
-  let loadingMore = $state(false)
-  // per-card expand flags and lazily fetched drill-down payloads. Details are
-  // refetched on every expand AND on every background resync while a card
-  // stays expanded: the extraction pipeline writes server-side, so a cached
-  // payload must not go stale for as long as it is on screen
-  let expandedEntities = $state<Record<number, boolean>>({})
-  let expandedRelationships = $state<Record<number, boolean>>({})
-  let entityDetails = $state<Record<number, EntityDetails>>({})
-  let relationshipDetails = $state<Record<number, RelationshipDetails>>({})
 
   async function refresh() {
     // every mutation ends in refresh(): clear stale errors so a failed op
     // doesn't leave a permanent banner after later successes
     error = null
     try {
-      const [e, r] = await Promise.all([
-        fetchWindow(listEntities, PAGE_SIZE),
-        fetchWindow(listRelationships, PAGE_SIZE),
-      ])
-      entities = e.rows
-      relationships = r.rows
-      entitiesFull = e.full
-      relationshipsFull = r.full
+      await Promise.all([entitiesTab.load(), relationshipsTab.load()])
     } catch (e) {
       error = errMsg(e)
     } finally {
@@ -75,99 +212,38 @@
 
   /**
    * Background resync (30s + window focus): the extraction pipeline writes to
-   * the ELTM server-side, so the view must refresh on its own. Silent on
-   * failure and replaces a list only when it actually changed, so an expanded
-   * card keeps its payload. The fetch covers the currently loaded window
-   * (`max(PAGE_SIZE, list length)`) plus the probe row, so pages appended via
-   * "load more" survive a resync — and a window that shrank server-side
-   * (merge/delete) shrinks here too.
+   * the ELTM server-side, so the view must refresh on its own. Both lists
+   * must succeed before the banner clears (a failed fetch keeps the current
+   * lists and any existing banner), and the expanded cards' drill-down
+   * payloads refresh with the lists.
    */
   async function resync() {
-    try {
-      const entityLimit = Math.max(PAGE_SIZE, entities.length)
-      const relationshipLimit = Math.max(PAGE_SIZE, relationships.length)
-      const [e, r] = await Promise.all([
-        fetchWindow(listEntities, entityLimit),
-        fetchWindow(listRelationships, relationshipLimit),
-      ])
-      // the fetch succeeded: a stale banner (e.g. the first visit's failed
-      // load) is resolved; a failed fetch keeps the current lists and any
-      // existing banner
-      error = null
-      // the probe fetch always settles the full flag: a server that grew
-      // past the loaded window leaves the window itself unchanged, so the
-      // equality gates below would skip it (stale flag = no "load more")
-      entitiesFull = e.full
-      relationshipsFull = r.full
-      if (JSON.stringify(e.rows) !== JSON.stringify(entities)) {
-        entities = e.rows
-      }
-      if (JSON.stringify(r.rows) !== JSON.stringify(relationships)) {
-        relationships = r.rows
-      }
-      // refresh the drill-down payloads of the cards currently expanded (the
-      // extraction pipeline may have appended notes/ended relationships); a
-      // failed fetch keeps the previous payload
-      await refreshExpandedDetails()
-    } catch {
-      // transient backend hiccup: keep the current lists
-    }
-  }
-
-  async function refreshExpandedDetails() {
-    const entityIds = Object.keys(expandedEntities).filter((k) => expandedEntities[Number(k)])
-    const relationshipIds = Object.keys(expandedRelationships).filter((k) => expandedRelationships[Number(k)])
-    await Promise.all([
-      ...entityIds.map(async (k) => {
-        const id = Number(k)
-        try {
-          const [rels, notes] = await Promise.all([getEntityRelationships(id), getEntityNotes(id)])
-          entityDetails = { ...entityDetails, [id]: { relationships: rels, notes } }
-        } catch {
-          // keep the previous payload
-        }
-      }),
-      ...relationshipIds.map(async (k) => {
-        const id = Number(k)
-        try {
-          const notes = await getRelationshipNotes(id)
-          relationshipDetails = { ...relationshipDetails, [id]: { notes } }
-        } catch {
-          // keep the previous payload
-        }
-      }),
-    ])
+    const [entitiesOk, relationshipsOk] = await Promise.all([entitiesTab.resync(), relationshipsTab.resync()])
+    if (!entitiesOk || !relationshipsOk) return
+    // the fetch succeeded: a stale banner (e.g. the first visit's failed
+    // load) is resolved
+    error = null
+    await Promise.all([entitiesTab.refreshExpanded(), relationshipsTab.refreshExpanded()])
   }
 
   async function loadMoreEntities() {
-    // like refresh(): clear stale errors so the list state stays the banner's
-    // source of truth
-    if (loadingMore) return
-    loadingMore = true
+    if (entitiesTab.loadingMore) return
+    // clear stale errors so the list state stays the banner's source of truth
     error = null
     try {
-      const { rows, full } = await fetchMore(listEntities, entities.length)
-      entities = [...entities, ...rows]
-      if (full) entitiesFull = true
+      await entitiesTab.loadMore()
     } catch (e) {
       error = errMsg(e)
-    } finally {
-      loadingMore = false
     }
   }
 
   async function loadMoreRelationships() {
-    if (loadingMore) return
-    loadingMore = true
+    if (relationshipsTab.loadingMore) return
     error = null
     try {
-      const { rows, full } = await fetchMore(listRelationships, relationships.length)
-      relationships = [...relationships, ...rows]
-      if (full) relationshipsFull = true
+      await relationshipsTab.loadMore()
     } catch (e) {
       error = errMsg(e)
-    } finally {
-      loadingMore = false
     }
   }
 
@@ -175,9 +251,9 @@
   // on the other routes): the first visit loads the browse window, later
   // visits resync — and the 30s/focus cadence runs only while it is on
   // screen, instead of polling an ELTM page the user never opens. The fetch
-  // calls read reactive state (entities/relationships lengths, the expanded
-  // maps) before their first await, so they must run inside `untrack`: an
-  // effect may depend on the route alone — a completed fetch or a card
+  // calls read reactive state (the tabs' row counts, the expanded maps)
+  // before their first await, so they must run inside `untrack`: an effect
+  // may depend on the route alone — a completed fetch or a card
   // expand/collapse must not re-run the effect (a redundant resync + interval
   // restart per interaction).
   $effect(() => {
@@ -194,57 +270,42 @@
     })
     return () => dispose()
   })
-
-  /** Collapse bookkeeping: drop the id from BOTH the flag map and its cached
-   * payload, so expanded cards never accumulate stale notes arrays for rows
-   * that scrolled out of (or vanished from) the loaded window. */
-  function collapse<T>(
-    flags: Record<number, boolean>,
-    details: Record<number, T>,
-    id: number,
-  ): { flags: Record<number, boolean>; details: Record<number, T> } {
-    const f = { ...flags }
-    delete f[id]
-    const d = { ...details }
-    delete d[id]
-    return { flags: f, details: d }
-  }
-
-  async function toggleEntity(id: number) {
-    if (expandedEntities[id]) {
-      ;({ flags: expandedEntities, details: entityDetails } = collapse(expandedEntities, entityDetails, id))
-      return
-    }
-    expandedEntities = { ...expandedEntities, [id]: true }
-    try {
-      const [rels, notes] = await Promise.all([getEntityRelationships(id), getEntityNotes(id)])
-      entityDetails = { ...entityDetails, [id]: { relationships: rels, notes } }
-    } catch (e) {
-      entityDetails = {
-        ...entityDetails,
-        [id]: { relationships: [], notes: [], error: errMsg(e) },
-      }
-    }
-  }
-
-  async function toggleRelationship(id: number) {
-    if (expandedRelationships[id]) {
-      ;({ flags: expandedRelationships, details: relationshipDetails } = collapse(
-        expandedRelationships,
-        relationshipDetails,
-        id,
-      ))
-      return
-    }
-    expandedRelationships = { ...expandedRelationships, [id]: true }
-    try {
-      const notes = await getRelationshipNotes(id)
-      relationshipDetails = { ...relationshipDetails, [id]: { notes } }
-    } catch (e) {
-      relationshipDetails = { ...relationshipDetails, [id]: { notes: [], error: errMsg(e) } }
-    }
-  }
 </script>
+
+{#snippet chevron(expanded: boolean)}
+  {#if expanded}
+    <ChevronDown class="size-4 shrink-0 text-muted-foreground" />
+  {:else}
+    <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
+  {/if}
+{/snippet}
+
+{#snippet latestNoteLine(note: EltmNoteDto)}
+  <p class="mt-1 line-clamp-2 pl-6 text-xs text-muted-foreground">
+    <span class="tabular-nums">{note.eventDate}</span> — {note.note}
+  </p>
+{/snippet}
+
+{#snippet notesList(notes: EltmNoteDto[], emptyLabel: string)}
+  {#if notes.length === 0}
+    <p class="text-xs text-muted-foreground">{emptyLabel}</p>
+  {:else}
+    {#each notes as note (note.id)}
+      <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
+        <span class="text-xs text-muted-foreground tabular-nums">{note.eventDate}</span>
+        <p class="whitespace-pre-wrap break-words text-sm leading-6">{note.note}</p>
+      </div>
+    {/each}
+  {/if}
+{/snippet}
+
+{#snippet loadMoreButton(tabState: { canLoadMore: boolean; loadingMore: boolean }, action: () => void)}
+  {#if tabState.canLoadMore}
+    <div class="flex justify-center">
+      <Button size="sm" variant="ghost" disabled={tabState.loadingMore} onclick={action}>Load more</Button>
+    </div>
+  {/if}
+{/snippet}
 
 <div class="h-full overflow-y-auto">
   <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-8">
@@ -256,22 +317,16 @@
     </div>
 
     <div class="flex gap-2">
-      <Button
-        size="sm"
-        variant="ghost"
-        class={tab === 'entities' ? 'bg-accent text-accent-foreground' : ''}
-        onclick={() => (tab = 'entities')}
-      >
-        Entities
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        class={tab === 'relationships' ? 'bg-accent text-accent-foreground' : ''}
-        onclick={() => (tab = 'relationships')}
-      >
-        Relationships
-      </Button>
+      {#each TABS as [value, label] (value)}
+        <Button
+          size="sm"
+          variant="ghost"
+          class={tab === value ? 'bg-accent text-accent-foreground' : ''}
+          onclick={() => (tab = value)}
+        >
+          {label}
+        </Button>
+      {/each}
     </div>
 
     {#if error}
@@ -283,22 +338,18 @@
     {/if}
 
     {#if tab === 'entities'}
-      {#if entities.length === 0 && !initialLoading && !error}
+      {#if entitiesTab.rows.length === 0 && !initialLoading && !error}
         <div class="py-10 text-center text-sm text-muted-foreground">no entities yet</div>
       {/if}
 
-      {#each entities as view (view.entity.id)}
+      {#each entitiesTab.rows as view (view.entity.id)}
         <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
           <button
             class="flex w-full items-center justify-between gap-2 text-left"
-            onclick={() => toggleEntity(view.entity.id)}
+            onclick={() => entitiesTab.toggle(view.entity.id)}
           >
             <span class="flex min-w-0 items-center gap-2">
-              {#if expandedEntities[view.entity.id]}
-                <ChevronDown class="size-4 shrink-0 text-muted-foreground" />
-              {:else}
-                <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
-              {/if}
+              {@render chevron(entitiesTab.expanded[view.entity.id] ?? false)}
               <span class="truncate text-sm font-medium">{view.entity.canonicalName}</span>
               <span class="shrink-0 rounded-full bg-accent px-2 py-0.5 text-xs text-accent-foreground">
                 {view.entity.category}
@@ -318,25 +369,23 @@
             </div>
           {/if}
           {#if view.latestNote}
-            <p class="mt-1 line-clamp-2 pl-6 text-xs text-muted-foreground">
-              <span class="tabular-nums">{view.latestNote.eventDate}</span> — {view.latestNote.note}
-            </p>
+            {@render latestNoteLine(view.latestNote)}
           {/if}
-          {#if expandedEntities[view.entity.id]}
-            {#if !entityDetails[view.entity.id]}
+          {#if entitiesTab.expanded[view.entity.id]}
+            {#if !entitiesTab.details[view.entity.id]}
               <p class="mt-3 border-t border-border/30 pt-3 text-xs text-muted-foreground">loading…</p>
-            {:else if entityDetails[view.entity.id]!.error}
+            {:else if entitiesTab.details[view.entity.id]!.error}
               <p class="mt-3 border-t border-border/30 pt-3 text-xs text-destructive">
-                {entityDetails[view.entity.id]!.error}
+                {entitiesTab.details[view.entity.id]!.error}
               </p>
             {:else}
               <div class="mt-3 space-y-3 border-t border-border/30 pt-3">
                 <div>
                   <div class="mb-1 text-xs font-medium text-muted-foreground">relationships</div>
-                  {#if entityDetails[view.entity.id]?.relationships.length === 0}
+                  {#if entitiesTab.details[view.entity.id]?.relationships.length === 0}
                     <p class="text-xs text-muted-foreground">none</p>
                   {:else}
-                    {#each entityDetails[view.entity.id]?.relationships ?? [] as rel (rel.relationship.id)}
+                    {#each entitiesTab.details[view.entity.id]?.relationships ?? [] as rel (rel.relationship.id)}
                       <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
                         <div class="text-sm">
                           {rel.srcName}
@@ -356,44 +405,27 @@
                 </div>
                 <div>
                   <div class="mb-1 text-xs font-medium text-muted-foreground">notes</div>
-                  {#if entityDetails[view.entity.id]?.notes.length === 0}
-                    <p class="text-xs text-muted-foreground">none</p>
-                  {:else}
-                    {#each entityDetails[view.entity.id]?.notes ?? [] as note (note.id)}
-                      <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
-                        <span class="text-xs text-muted-foreground tabular-nums">{note.eventDate}</span>
-                        <p class="whitespace-pre-wrap break-words text-sm leading-6">{note.note}</p>
-                      </div>
-                    {/each}
-                  {/if}
+                  {@render notesList(entitiesTab.details[view.entity.id]?.notes ?? [], 'none')}
                 </div>
               </div>
             {/if}
           {/if}
         </div>
       {/each}
-      {#if !entitiesFull && entities.length >= PAGE_SIZE}
-        <div class="flex justify-center">
-          <Button size="sm" variant="ghost" disabled={loadingMore} onclick={loadMoreEntities}>Load more</Button>
-        </div>
-      {/if}
+      {@render loadMoreButton(entitiesTab, loadMoreEntities)}
     {:else}
-      {#if relationships.length === 0 && !initialLoading && !error}
+      {#if relationshipsTab.rows.length === 0 && !initialLoading && !error}
         <div class="py-10 text-center text-sm text-muted-foreground">no relationships yet</div>
       {/if}
 
-      {#each relationships as view (view.relationship.id)}
+      {#each relationshipsTab.rows as view (view.relationship.id)}
         <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
           <button
             class="flex w-full items-center justify-between gap-2 text-left"
-            onclick={() => toggleRelationship(view.relationship.id)}
+            onclick={() => relationshipsTab.toggle(view.relationship.id)}
           >
             <span class="flex min-w-0 items-center gap-2">
-              {#if expandedRelationships[view.relationship.id]}
-                <ChevronDown class="size-4 shrink-0 text-muted-foreground" />
-              {:else}
-                <ChevronRight class="size-4 shrink-0 text-muted-foreground" />
-              {/if}
+              {@render chevron(relationshipsTab.expanded[view.relationship.id] ?? false)}
               <span class="truncate text-sm font-medium">
                 {view.srcName}
                 <span class="italic text-muted-foreground">{view.relationship.verb}</span>
@@ -412,39 +444,24 @@
             </span>
           </button>
           {#if view.latestNote}
-            <p class="mt-1 line-clamp-2 pl-6 text-xs text-muted-foreground">
-              <span class="tabular-nums">{view.latestNote.eventDate}</span> — {view.latestNote.note}
-            </p>
+            {@render latestNoteLine(view.latestNote)}
           {/if}
-          {#if expandedRelationships[view.relationship.id]}
-            {#if !relationshipDetails[view.relationship.id]}
+          {#if relationshipsTab.expanded[view.relationship.id]}
+            {#if !relationshipsTab.details[view.relationship.id]}
               <p class="mt-3 border-t border-border/30 pt-3 text-xs text-muted-foreground">loading…</p>
-            {:else if relationshipDetails[view.relationship.id]!.error}
+            {:else if relationshipsTab.details[view.relationship.id]!.error}
               <p class="mt-3 border-t border-border/30 pt-3 text-xs text-destructive">
-                {relationshipDetails[view.relationship.id]!.error}
+                {relationshipsTab.details[view.relationship.id]!.error}
               </p>
             {:else}
               <div class="mt-3 space-y-1 border-t border-border/30 pt-3">
-                {#if relationshipDetails[view.relationship.id]?.notes.length === 0}
-                  <p class="text-xs text-muted-foreground">no notes</p>
-                {:else}
-                  {#each relationshipDetails[view.relationship.id]?.notes ?? [] as note (note.id)}
-                    <div class="rounded-lg border border-border/20 bg-background/40 px-3 py-2">
-                      <span class="text-xs text-muted-foreground tabular-nums">{note.eventDate}</span>
-                      <p class="whitespace-pre-wrap break-words text-sm leading-6">{note.note}</p>
-                    </div>
-                  {/each}
-                {/if}
+                {@render notesList(relationshipsTab.details[view.relationship.id]?.notes ?? [], 'no notes')}
               </div>
             {/if}
           {/if}
         </div>
       {/each}
-      {#if !relationshipsFull && relationships.length >= PAGE_SIZE}
-        <div class="flex justify-center">
-          <Button size="sm" variant="ghost" disabled={loadingMore} onclick={loadMoreRelationships}>Load more</Button>
-        </div>
-      {/if}
+      {@render loadMoreButton(relationshipsTab, loadMoreRelationships)}
     {/if}
   </div>
 </div>

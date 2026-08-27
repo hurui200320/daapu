@@ -20,43 +20,48 @@ async function parseError(res: Response): Promise<string> {
   }
 }
 
-export async function listModels(): Promise<ModelInfo[]> {
-  const res = await fetch('/api/models')
+/** Fetch + error normalization: a non-2xx response throws with the backend's error message. */
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(path, init)
   if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
+  return res
+}
+
+/** GET returning the parsed JSON body. */
+function getJson<T>(path: string): Promise<T> {
+  return request(path).then((res) => res.json())
+}
+
+/** RequestInit carrying a JSON request body (Content-Type + serialization). */
+function jsonInit(method: string, body: unknown): RequestInit {
+  return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+}
+
+export async function listModels(): Promise<ModelInfo[]> {
+  return getJson('/api/models')
 }
 
 export async function listChats(): Promise<ChatInfo[]> {
-  const res = await fetch('/api/chats')
-  if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
+  return getJson('/api/chats')
 }
 
 export async function newChat(): Promise<string> {
-  const res = await fetch('/api/chats', { method: 'POST' })
-  if (!res.ok) throw new Error(await parseError(res))
+  const res = await request('/api/chats', { method: 'POST' })
   return (await res.json()).id
 }
 
 export async function renameChat(chatId: string, title: string): Promise<void> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
-  })
-  if (!res.ok) throw new Error(await parseError(res))
+  await request(`/api/chats/${encodeURIComponent(chatId)}`, jsonInit('PUT', { title }))
 }
 
 /** Generate a session title from the chat's history; returns the new title. */
 export async function generateTitle(chatId: string): Promise<ChatInfo> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/title`, { method: 'POST' })
-  if (!res.ok) throw new Error(await parseError(res))
+  const res = await request(`/api/chats/${encodeURIComponent(chatId)}/title`, { method: 'POST' })
   return res.json()
 }
 
 export async function deleteChat(chatId: string): Promise<void> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(await parseError(res))
+  await request(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
 }
 
 /**
@@ -64,10 +69,7 @@ export async function deleteChat(chatId: string): Promise<void> {
  * The dropped tail is NOT extracted into memories. 204 on success.
  */
 export async function truncateMessages(chatId: string, index: number): Promise<void> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/messages/${index}`, {
-    method: 'DELETE',
-  })
-  if (!res.ok) throw new Error(await parseError(res))
+  await request(`/api/chats/${encodeURIComponent(chatId)}/messages/${index}`, { method: 'DELETE' })
 }
 
 /**
@@ -75,17 +77,12 @@ export async function truncateMessages(chatId: string, index: number): Promise<v
  * assistant message that ended naturally) into a new chat; returns its info.
  */
 export async function forkChat(chatId: string, index: number): Promise<ChatInfo> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/fork/${index}`, {
-    method: 'POST',
-  })
-  if (!res.ok) throw new Error(await parseError(res))
+  const res = await request(`/api/chats/${encodeURIComponent(chatId)}/fork/${index}`, { method: 'POST' })
   return res.json()
 }
 
 export async function loadChat(chatId: string): Promise<ChatMessage[]> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/chat`)
-  if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
+  return getJson(`/api/chats/${encodeURIComponent(chatId)}/chat`)
 }
 
 interface SendMessageRequest {
@@ -111,34 +108,21 @@ export interface PersonaSaveBody {
  * [DEFAULT_PERSONA_ID], read-only), then the `personas` rows.
  */
 export async function listPersonas(): Promise<Persona[]> {
-  const res = await fetch('/api/personas')
-  if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
+  return getJson('/api/personas')
 }
 
 export async function createPersona(body: PersonaSaveBody): Promise<Persona> {
-  const res = await fetch('/api/personas', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error(await parseError(res))
+  const res = await request('/api/personas', jsonInit('POST', body))
   return res.json()
 }
 
 export async function updatePersona(id: number, body: PersonaSaveBody): Promise<Persona> {
-  const res = await fetch(`/api/personas/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error(await parseError(res))
+  const res = await request(`/api/personas/${id}`, jsonInit('PUT', body))
   return res.json()
 }
 
 export async function deletePersona(id: number): Promise<void> {
-  const res = await fetch(`/api/personas/${id}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(await parseError(res))
+  await request(`/api/personas/${id}`, { method: 'DELETE' })
 }
 
 /**
@@ -147,12 +131,8 @@ export async function deletePersona(id: number): Promise<void> {
  * llama.cpp's own webui uses).
  */
 export async function* streamChat(chatId: string, body: SendMessageRequest): AsyncGenerator<StreamEvent> {
-  const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok || !res.body) throw new Error(await parseError(res))
+  const res = await request(`/api/chats/${encodeURIComponent(chatId)}/messages`, jsonInit('POST', body))
+  if (!res.body) throw new Error('empty response body')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -204,12 +184,6 @@ export function parseBlock(block: string): StreamEvent | null {
 }
 
 // ---- ELTM browse (read-only; writes are LLM-driven) ----
-
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path)
-  if (!res.ok) throw new Error(await parseError(res))
-  return res.json()
-}
 
 export async function listEntities(limit = 100, offset = 0): Promise<EntityViewDto[]> {
   return getJson(`/api/eltm/entities?limit=${limit}&offset=${offset}`)

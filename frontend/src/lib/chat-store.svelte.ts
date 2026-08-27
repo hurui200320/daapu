@@ -132,6 +132,17 @@ class ChatStore {
   // fork/truncate disable during a full-chat delete's memory extraction
   truncatingIds = new SvelteSet<string>()
 
+  /**
+   * True while ANY history mutation (full-chat delete / fork / truncate) is
+   * in flight on this chat: the other edits' display indices go stale until
+   * it settles, so every edit entry point must gate on this ONE predicate —
+   * adding a future mutation kind means adding it here, not finding the
+   * inline triples.
+   */
+  isMutatingHistory(id: string): boolean {
+    return this.deletingIds.has(id) || this.forkingIds.has(id) || this.truncatingIds.has(id)
+  }
+
   private started = false
   // true while a create request is in flight: a double-click on "New chat"
   // must not create two empty chats
@@ -431,7 +442,7 @@ class ChatStore {
    * as success.
    */
   async truncateMessages(chatId: string, index: number): Promise<boolean> {
-    if (!chatId || this.deletingIds.has(chatId) || this.forkingIds.has(chatId) || this.truncatingIds.has(chatId)) {
+    if (!chatId || this.isMutatingHistory(chatId)) {
       toastStore.push('A history edit is in progress')
       return false
     }
@@ -463,7 +474,7 @@ class ChatStore {
    */
   async forkChat(index: number): Promise<void> {
     const id = this.chatId.trim()
-    if (!id || this.deletingIds.has(id) || this.forkingIds.has(id) || this.truncatingIds.has(id)) return
+    if (!id || this.isMutatingHistory(id)) return
     this.forkingIds.add(id)
     try {
       const chat = await apiForkChat(id, index)
@@ -511,7 +522,7 @@ class ChatStore {
     // serialize against history edits like the message-item buttons do: a
     // pending truncate/fork shifts indices (then the stored history) under
     // an optimistic send
-    if (this.truncatingIds.has(id) || this.forkingIds.has(id)) {
+    if (this.isMutatingHistory(id)) {
       toastStore.push('A history edit is in progress')
       return false
     }

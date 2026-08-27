@@ -110,7 +110,9 @@ export class StreamSession {
               id: result.id,
               tool: result.name,
               isError: result.isError,
-              parts: [{ type: 'text', text: result.content }],
+              // like parseDelta, a non-string payload degrades instead of
+              // rendering "[object Object]" downstream
+              parts: [{ type: 'text', text: typeof result.content === 'string' ? result.content : '' }],
             })
             break
           }
