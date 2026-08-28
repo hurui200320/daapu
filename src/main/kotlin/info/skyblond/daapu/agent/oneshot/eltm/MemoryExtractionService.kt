@@ -78,6 +78,7 @@ class MemoryExtractionService(
             // semantics, applied to the configured extraction model)
             extractModel.checkPromptContentCapabilities(droppedMessages)
             val extraction = extract(droppedMessages)
+            logger.info { "Extracted memories:\n${extraction}" }
             if (extraction != NOTHING_TO_REMEMBER_TEXT) {
                 logger.info { "Extracted memories from ${droppedMessages.size} dropped message(s), writing into the ELTM" }
                 eltmWriterService.writeToEltm(extraction, LocalDate.now())

@@ -10,6 +10,7 @@ import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.toHandModelSpec
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import java.time.Instant
 
@@ -121,6 +122,7 @@ class ChatCompactionService(
         } catch (e: Exception) {
             throw IllegalStateException("Compaction summarization failed", e)
         }
+        logger.info { "Compaction summary:\n${summary}" }
         val summaryMessage = ChatMessage(
             role = ChatMessageRole.User,
             parts = listOf(ChatMessagePart.Text(COMPACTION_HEADER + summary)),
@@ -181,6 +183,7 @@ class ChatCompactionService(
     }
 
     companion object {
+        private val logger = KotlinLogging.logger {}
         private const val COMPACTION_HEADER = "CONTEXT COMPACTION: "
 
         private fun renderSystemPrompt(outputSize: Int): String = """
