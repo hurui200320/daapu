@@ -29,6 +29,11 @@ import java.time.LocalDate
  *    The writer deduplicates against the store, so a retried run never
  *    duplicates diary entries.
  *
+ * The stages are also usable separately: [extractFacts] runs the extractor
+ * only and returns the fact text without writing anything (the import
+ * script materializes it into a reviewable file), while
+ * [EltmWriterService.writeToEltm] records a fact batch.
+ *
  * A failure throws and fails the run:
  * - [info.skyblond.daapu.agent.model.ModelCapabilityException] when the
  *   extraction model cannot process the dropped content (e.g. images with a
@@ -73,17 +78,37 @@ class MemoryExtractionService(
         droppedMessages: List<ChatMessage>,
     ) {
         if (droppedMessages.isNotEmpty()) {
-            // fail fast on a capability mismatch before the LLM call: the same
-            // prompt would fail identically forever (the loop's per-round check
-            // semantics, applied to the configured extraction model)
-            extractModel.checkPromptContentCapabilities(droppedMessages)
-            val extraction = extract(droppedMessages)
-            logger.info { "Extracted memories:\n${extraction}" }
+            val extraction = extractFacts(droppedMessages)
             if (extraction != NOTHING_TO_REMEMBER_TEXT) {
                 logger.info { "Extracted memories from ${droppedMessages.size} dropped message(s), writing into the ELTM" }
                 eltmWriterService.writeToEltm(extraction, LocalDate.now())
             }
         }
+    }
+
+    /**
+     * The extraction stage alone: run the extractor over [droppedMessages]
+     * and return the free-text fact list (or the [NOTHING_TO_REMEMBER_TEXT]
+     * sentinel when nothing is worth remembering) WITHOUT writing anything
+     * — the caller decides what to do with the facts. The import script
+     * uses this to materialize the facts into a reviewable file instead of
+     * recording them directly.
+     *
+     * Throws per the class KDoc (a capability mismatch is a configuration
+     * error and fails fast; a failed extraction throws
+     * [IllegalStateException]). [droppedMessages] must not be empty.
+     */
+    suspend fun extractFacts(droppedMessages: List<ChatMessage>): String {
+        require(droppedMessages.isNotEmpty()) {
+            "cannot extract memories from an empty message list"
+        }
+        // fail fast on a capability mismatch before the LLM call: the same
+        // prompt would fail identically forever (the loop's per-round check
+        // semantics, applied to the configured extraction model)
+        extractModel.checkPromptContentCapabilities(droppedMessages)
+        val extraction = extract(droppedMessages)
+        logger.info { "Extracted memories:\n${extraction}" }
+        return extraction
     }
 
     /**
@@ -118,8 +143,9 @@ class MemoryExtractionService(
                     systemPrompt = renderExtractorSystemPrompt(),
                     maxTokens = extractModel.maxOutputTokens,
                     // 0 = no round cap, safe here: no tools are declared
-                    // (and [EmptyToolProvider] answers stray calls with an
-                    // error result), so the loop ends on the first stop
+                    // (a tool-less run attaches no tool URLs, so a stray
+                    // model tool call fails the run), the loop ends on the
+                    // first stop
                     maxRounds = 0,
                     maxRetries = maxRetries,
                     streamIdleTimeoutMs = streamIdleTimeoutMs,
@@ -137,7 +163,7 @@ class MemoryExtractionService(
     companion object {
         private val logger = KotlinLogging.logger {}
 
-        private const val NOTHING_TO_REMEMBER_TEXT = "Nothing worth remember."
+        internal const val NOTHING_TO_REMEMBER_TEXT = "Nothing worth remember."
 
         private fun renderExtractorSystemPrompt(): String = """
 You're extracting memories from a discarded conversation.

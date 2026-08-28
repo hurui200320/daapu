@@ -58,6 +58,12 @@ data class HandRunRequest(
      * all.
      */
     val toolListUrl: String? = null,
+    /**
+     * The brain's tool-callback endpoint the hand POSTs each tool call to.
+     * Required iff [toolListUrl] is present (an advertised tool may need
+     * executing); omitted together with it on a tool-less run
+     * ([HandService] sends neither URL for [info.skyblond.daapu.agent.tool.EmptyToolProvider]).
+     */
     val toolCallbackUrl: String? = null,
     /** Round cap; 0 = unlimited. */
     val maxRounds: Int,

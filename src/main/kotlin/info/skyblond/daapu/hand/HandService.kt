@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
@@ -23,14 +24,22 @@ import java.util.*
  *   registered under it before the request goes out. The entry is evicted
  *   when the flow ends — success, failure, or brain-disconnect
  *   cancellation (the flow body's `finally` runs on cancellation).
- * - the tool callback URL is attached on every `/v1/run` request (the hand
- *   only POSTs it when a tool call actually needs executing, so it is
- *   harmless without tools), keeping the callback wiring out of the agent
- *   layer.
- * - the tool-listing URL (`GET {toolListUrl}?runId=...`) is attached on
- *   every request as well: the hand re-queries the run's tool set before
- *   EVERY LLM request, so the model always sees the provider's latest
- *   advertisements instead of a static list captured at request time.
+ * - the tool URLs are attached on every TOOL-FUL run, keeping the callback
+ *   wiring out of the agent layer: the tool-listing URL
+ *   (`GET {toolListUrl}?runId=...`) is re-queried by the hand before EVERY
+ *   LLM request, so the model always sees the provider's latest
+ *   advertisements instead of a static list captured at request time, and
+ *   the callback URL is where the hand POSTs each tool call for execution
+ *   (only when a tool call actually needs executing).
+ * - a tool-less run ([EmptyToolProvider] — the one-shot services) attaches
+ *   NEITHER URL: the fields are sent as null and the JSON encoder omits
+ *   nulls (`explicitNulls = false`), so they vanish from the wire and the
+ *   hand performs no brain-side HTTP at all — no per-round tool-list GET,
+ *   and no callback can ever fire. A tool-less run therefore needs no HTTP
+ *   server next to it (scripts, one-shots). The flip side: a model that
+ *   emits tool calls anyway cannot be answered (the hand has no callback to
+ *   reach), so the hand fails such a run — with no tools advertised that is
+ *   a model pathology, not a recoverable state.
  *
  * The runId carries no meaning to the chat loop: a fresh id is generated
  * per `/v1/run` call (reactive-compaction retries each get their own), and
@@ -59,10 +68,15 @@ class HandService(
         model: LLM,
     ): Flow<HandEvent> = flow {
         val runId = request.runId ?: UUID.randomUUID().toString()
+        // A tool-less run sends neither tool URL (see the class KDoc): the
+        // hand skips its per-round tool-list GET and no callback can fire,
+        // so the run needs no brain-side HTTP at all. Explicit URLs on a
+        // tool-less request are contradictions and are dropped.
+        val toolLess = toolProvider === EmptyToolProvider
         val prepared = request.copy(
             runId = runId,
-            toolListUrl = request.toolListUrl ?: toolListUrl,
-            toolCallbackUrl = request.toolCallbackUrl ?: toolCallbackUrl,
+            toolListUrl = if (toolLess) null else (request.toolListUrl ?: toolListUrl),
+            toolCallbackUrl = if (toolLess) null else (request.toolCallbackUrl ?: toolCallbackUrl),
         )
         handCallback.register(runId, toolProvider, model)
         try {

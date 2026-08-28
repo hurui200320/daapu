@@ -108,8 +108,9 @@ class ChatCompactionService(
                     systemPrompt = renderSystemPrompt(500),
                     maxTokens = model.maxOutputTokens,
                     // 0 = no round cap, safe here: no tools are declared
-                    // (and [EmptyToolProvider] answers stray calls with an
-                    // error result), so the loop ends on the first stop
+                    // (a tool-less run attaches no tool URLs, so a stray
+                    // model tool call fails the run), the loop ends on the
+                    // first stop
                     maxRounds = 0,
                     maxRetries = maxRetries,
                     streamIdleTimeoutMs = streamIdleTimeoutMs,
@@ -184,7 +185,13 @@ class ChatCompactionService(
 
     companion object {
         private val logger = KotlinLogging.logger {}
-        private const val COMPACTION_HEADER = "CONTEXT COMPACTION: "
+
+        /**
+         * The marker every compaction summary message starts with. Internal
+         * so tooling (the import script) can recognize a summary message
+         * without duplicating the literal.
+         */
+        internal const val COMPACTION_HEADER = "CONTEXT COMPACTION: "
 
         private fun renderSystemPrompt(outputSize: Int): String = """
 You're summarizing the conversation between user and assistant to compact the context window.

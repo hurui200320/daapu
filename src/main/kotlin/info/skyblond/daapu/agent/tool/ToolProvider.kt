@@ -42,9 +42,13 @@ data class ToolCallRequest(
  * transport failure (the MCP provider `mcp/McpToolProvider.kt` connects
  * eagerly at construction and reconnects in-turn on demand).
  *
- * [EmptyToolProvider] is the no-tools fallback: a model that emits tool
- * calls anyway gets an explicit error result back and can recover in the
- * next round instead of failing the run.
+ * [EmptyToolProvider] is the no-tools fallback: a run through
+ * [info.skyblond.daapu.hand.HandService] sends neither tool URL for it, so
+ * the hand makes no brain-side HTTP call at all (scripts and one-shots need
+ * no HTTP server next to them). A model that emits tool calls anyway cannot
+ * be answered there (the hand has no callback to reach) and the run fails;
+ * [execute] still answers an explicit error result for any call that does
+ * reach the provider (test doubles standing in for the hand's callback).
  */
 interface ToolProvider {
     suspend fun specifications(): List<ToolSpec>

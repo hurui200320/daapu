@@ -113,6 +113,25 @@ describe("POST /v1/run tool rounds", () => {
     });
   });
 
+  it("runs a tool-less request without ever contacting the brain", async () => {
+    const upstream = await startFakeUpstream([STOP]);
+    const callback = await startFakeCallback();
+    await withCallback(upstream, callback, async () => {
+      // NO toolListUrl / toolCallbackUrl on the request (a tool-less run —
+      // e.g. the brain's one-shots): the hand skips the per-round tool-list
+      // GET and can never POST a callback, so the brain — this fake
+      // callback doubles as its spy — sees zero traffic for the whole run.
+      const { status, events } = await run(port(), runRequest(upstream.port));
+      expect(status).toBe(200);
+      expect(eventNames(events)).toEqual(["text_delta", "assistant_message", "done"]);
+      expect(callback.toolListRequests()).toEqual([]);
+      expect(callback.requests()).toEqual([]);
+      // no tools were advertised to the upstream LLM request either
+      const body = upstream.capturedAll()[0] as { tools?: unknown };
+      expect(body.tools).toBeUndefined();
+    });
+  });
+
   it("a fatal callback in a parallel batch fails the run and drops every result", async () => {
     // one call fails fatally while its sibling succeeds: the whole round
     // fails with tool_transport and NO result is assembled into history or

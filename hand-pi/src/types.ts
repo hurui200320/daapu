@@ -115,7 +115,9 @@ export interface RunRequest {
    * the hand queries it BEFORE every LLM request and uses the returned
    * set for that round — the tool set is never captured statically in the
    * request, so the run always sees the provider's latest advertisements.
-   * Omitted = no tools at all.
+   * Omitted = no tools at all: the hand makes NO brain-side HTTP call for
+   * the run (no tool-list GET, and no callback can fire — a tool-less run
+   * works without any HTTP server next to it).
    */
   toolListUrl?: string;
   /** The output budget for this call; always explicit. */

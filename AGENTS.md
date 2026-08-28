@@ -43,6 +43,11 @@ frontend + Node/TS "hand-pi" service.
     LLM request, so MCP servers can change tools mid-session; a failed
     list ends the run `tool_transport` (same as callback `fatal`). The
     list feeds `tools` only; execution budgets never leave the brain.
+    A tool-LESS run (`EmptyToolProvider` — the one-shots, the import
+    script) sends NEITHER tool URL (nulls are omitted on the wire), so
+    the hand makes no brain-side HTTP call at all — no tool-list GET, no
+    callback (a stray model tool call fails the run `internal`). It
+    needs no HTTP server next to it.
     Execution calls back `POST /api/hand/tool`, resolved by `runId` in
     `hand/HandCallbackService.kt`; a round's tool calls execute IN
     PARALLEL, results reassemble in call order. The callback has no

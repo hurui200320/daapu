@@ -64,8 +64,9 @@ class QueryRewriteService(
                     systemPrompt = renderRewriteSystemPrompt(),
                     maxTokens = model.maxOutputTokens,
                     // 0 = no round cap, safe here: no tools are declared
-                    // (and [EmptyToolProvider] answers stray calls with an
-                    // error result), so the loop ends on the first stop
+                    // (a tool-less run attaches no tool URLs, so a stray
+                    // model tool call fails the run), the loop ends on the
+                    // first stop
                     maxRounds = 0,
                     maxRetries = maxRetries,
                     streamIdleTimeoutMs = streamIdleTimeoutMs,

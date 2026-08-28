@@ -6,6 +6,9 @@ import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
+import info.skyblond.daapu.agent.tool.ToolCallRequest
+import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.testutil.testLlm
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.toList
@@ -19,9 +22,24 @@ import kotlin.test.*
  * `/v1/run` (internal to the run plumbing), the in-flight run is registered
  * before the request goes out and evicted when the stream ends — success,
  * terminal error, or cancellation — a duplicate runId fails fast, and the
- * callback URL is attached on every run (preserving an explicit one).
+ * tool URLs are attached on every tool-ful run (preserving explicit ones)
+ * while a tool-less run ([EmptyToolProvider]) sends neither.
  */
 class HandServiceTest {
+
+    /** A minimal TOOL-FUL provider, for the URL-attachment tests. */
+    private object OneToolProvider : ToolProvider {
+        override suspend fun specifications(): List<ToolSpec> =
+            listOf(ToolSpec("flag", "sets a flag", JsonObject(emptyMap())))
+
+        override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult =
+            ChatMessagePart.ToolResult(
+                id = request.id,
+                tool = request.name,
+                parts = listOf(ChatMessagePart.Text("done")),
+                isError = false,
+            )
+    }
 
     private fun model() = testLlm("bifrost/cerebras/gemma-4-31b")
 
@@ -122,7 +140,7 @@ class HandServiceTest {
     }
 
     @Test
-    fun `attaches the callback and tool-list URLs on every run and preserves explicit ones`() = runBlocking {
+    fun `attaches the callback and tool-list URLs on every tool-ful run and preserves explicit ones`() = runBlocking {
         val callbackService = HandCallbackService("test-token")
         val hand = FakeHand()
         val service = HandService(
@@ -131,14 +149,14 @@ class HandServiceTest {
             "http://127.0.0.1:9/api/hand/tools",
         )
 
-        service.run(runRequest(), EmptyToolProvider, model()).toList()
-        service.run(runRequest(toolCallbackUrl = "http://custom-callback"), EmptyToolProvider, model()).toList()
+        service.run(runRequest(), OneToolProvider, model()).toList()
+        service.run(runRequest(toolCallbackUrl = "http://custom-callback"), OneToolProvider, model()).toList()
         service.run(
             runRequest(
                 toolListUrl = "http://custom-tools",
                 toolCallbackUrl = "http://custom-callback",
             ),
-            EmptyToolProvider,
+            OneToolProvider,
             model(),
         ).toList()
 
@@ -146,8 +164,8 @@ class HandServiceTest {
         assertEquals(
             "http://127.0.0.1:9/api/hand/tools",
             hand.requests[0].toolListUrl,
-            "the tool-list URL is attached on every run (the hand re-queries " +
-                    "the tool set before each LLM request)",
+            "the tool-list URL is attached on every tool-ful run (the hand " +
+                    "re-queries the tool set before each LLM request)",
         )
         assertEquals("http://custom-callback", hand.requests[1].toolCallbackUrl)
         assertEquals(
@@ -161,6 +179,53 @@ class HandServiceTest {
             hand.requests[2].toolListUrl,
             "an explicit tool-list URL is preserved"
         )
+    }
+
+    @Test
+    fun `a tool-less run sends neither tool URL so the hand makes no brain-side calls`() = runBlocking {
+        val callbackService = HandCallbackService("test-token")
+        val hand = FakeHand()
+        val service = HandService(
+            hand, callbackService,
+            "http://127.0.0.1:9/api/hand/tool",
+            "http://127.0.0.1:9/api/hand/tools",
+        )
+
+        service.run(runRequest(), EmptyToolProvider, model()).toList()
+
+        val request = hand.requests.single()
+        assertNull(
+            request.toolListUrl,
+            "a tool-less run sends no tool-list URL (the hand skips its per-round GET)"
+        )
+        assertNull(
+            request.toolCallbackUrl,
+            "a tool-less run sends no callback URL (no tool can ever execute)"
+        )
+    }
+
+    @Test
+    fun `a tool-less run discards even explicit tool URLs`() = runBlocking {
+        val callbackService = HandCallbackService("test-token")
+        val hand = FakeHand()
+        val service = HandService(
+            hand, callbackService,
+            "http://127.0.0.1:9/api/hand/tool",
+            "http://127.0.0.1:9/api/hand/tools",
+        )
+
+        service.run(
+            runRequest(
+                toolListUrl = "http://custom-tools",
+                toolCallbackUrl = "http://custom-callback",
+            ),
+            EmptyToolProvider,
+            model(),
+        ).toList()
+
+        val request = hand.requests.single()
+        assertNull(request.toolListUrl, "tools=false and a tool-list URL contradict each other")
+        assertNull(request.toolCallbackUrl, "no tool-list means no callback either")
     }
 
     @Test
