@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonObject
  * One OpenAI-compatible LLM provider, keyed by its id in [AppConfig.providers]
  * (`{provider.id}/{modelId}` prefixes every model id, so the id must match
  * [SAFE_ID_REGEX] — enforced at provider construction, see
- * `agent/hand/HandMappers.kt`). [baseUrl] is used as-is by the hand
+ * `hand/HandMappers.kt`). [baseUrl] is used as-is by the hand
  * (`hand-pi/`), which appends the OpenAI API path to it — so the value must
  * carry the full `/v1` root (e.g. `http://localhost:8000/v1`); nothing
  * appends `/v1`.

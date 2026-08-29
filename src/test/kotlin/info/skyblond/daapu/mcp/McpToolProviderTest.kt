@@ -3,7 +3,7 @@ package info.skyblond.daapu.mcp
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.config.McpProxyConfig
-import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
+import info.skyblond.daapu.agent.tool.TOOL_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import kotlinx.coroutines.runBlocking

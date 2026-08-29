@@ -223,7 +223,7 @@ internal fun padVector(vector: List<Float>, width: Int): List<Float> {
  * The ELTM (external long-term memory) store: entities, attributes,
  * relationships, and diary notes (the diary model, see `V1__init.sql`).
  * Written by the extraction pipeline only
- * (`agent/oneshot/eltm/EltmWriterService.kt`); read by the writer,
+ * (`agent/pipeline/eltm/EltmWriterService.kt`); read by the writer,
  * the context injection's searches and the investigate sub-agent.
  *
  * All embeddings go through the hand (`hand/HandService.embed`), are

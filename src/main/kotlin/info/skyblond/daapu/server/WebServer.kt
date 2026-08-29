@@ -1,5 +1,9 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.chat.ChatRunConflictException
+import info.skyblond.daapu.agent.chat.ChatService
+import info.skyblond.daapu.agent.chat.ChatValidationException
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.config.AppConfig
@@ -37,7 +41,7 @@ data class ErrorResponse(val error: String)
  *
  * The whole object graph lives in the Koin container (`di/AppModule.kt`);
  * resolving the graph eagerly before the server starts runs every
- * definition reachable from the root ([ChatRunService]) — the fail-fast
+ * definition reachable from the root ([ChatService]) — the fail-fast
  * config validation (including the investigate sub-agent's model and tool
  * whitelist, reachable through the loop's `gsg__investigate` tool) and the
  * MCP tool servers' eager connect (a server that cannot be reached aborts
@@ -49,7 +53,7 @@ fun startWebServer(config: AppConfig) {
     val koinApp = koinApplication { modules(appModule(config)) }
     // eager resolution: every fail-fast validation above fires here, never
     // mid-run (the resolved service is what the module below serves)
-    koinApp.koin.get<ChatRunService>()
+    koinApp.koin.get<ChatService>()
     // graceful close of the hand client and the MCP clients (stdio
     // subprocesses, HTTP sessions) via the container's onClose callbacks
     Runtime.getRuntime().addShutdownHook(Thread { koinApp.close() })
@@ -60,16 +64,17 @@ fun startWebServer(config: AppConfig) {
 
 /**
  * The HTTP API: routes take their services from the Koin container, not
- * from [ChatRunService] — the service only holds what its own methods use
+ * from [ChatService] — the service only holds what its own methods use
  * (the stores and the hand callback service live here as independent
  * definitions, shared with the run pipeline). Tests assemble the container
  * with fake seams (see `testutil/TestDi.kt`) and pass its `Koin` instance.
  */
 internal fun Application.module(koin: Koin) {
-    val service = koin.get<ChatRunService>()
+    val service = koin.get<ChatService>()
     val eltmService = koin.get<EltmService>()
     val handCallback = koin.get<HandCallbackService>()
     val personaService = koin.get<PersonaService>()
+    val modelCatalog = koin.get<ModelCatalog>()
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
@@ -85,6 +90,9 @@ internal fun Application.module(koin: Koin) {
         }
         exception<ChatRunConflictException> { call, cause ->
             call.respond(HttpStatusCode.Conflict, ErrorResponse(cause.message ?: "Conflict"))
+        }
+        exception<ChatValidationException> { call, cause ->
+            call.respond(HttpStatusCode.BadRequest, ErrorResponse(cause.message ?: "Bad request"))
         }
         exception<BadRequestException> { call, cause ->
             call.respond(HttpStatusCode.BadRequest, ErrorResponse(cause.message ?: "Bad request"))
@@ -126,7 +134,7 @@ internal fun Application.module(koin: Koin) {
 
     routing {
         route("/api") {
-            registerModelsEndpoints(service)
+            registerModelsEndpoints(modelCatalog)
             registerHandEndpoints(handCallback)
             registerChatsEndpoints(service)
             registerEltmEndpoints(eltmService)

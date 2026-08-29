@@ -685,7 +685,7 @@ class PostgresEltmService(
     // ------------------------------------------------------------------
 
     override suspend fun version(): String =
-        withTransaction { readWriteVersion() }.toString()
+        withTransaction { currentWriteVersion() }.toString()
 
     // ------------------------------------------------------------------
     // shared helpers (ambient transaction: only called inside withTransaction)
@@ -705,8 +705,8 @@ class PostgresEltmService(
         }
     }
 
-    /** Read the global ELTM write counter. Ambient transaction. */
-    private fun readWriteVersion(): Long =
+    /** Read the global ELTM write counter (the write version). Ambient transaction. */
+    private fun currentWriteVersion(): Long =
         MemoryMetaNumber.selectAll()
             .where { MemoryMetaNumber.key eq ELTM_VERSION_KEY }
             .singleOrNull()?.get(MemoryMetaNumber.value) ?: 0L

@@ -13,7 +13,7 @@ import kotlinx.serialization.Serializable
  * `gsg`, the loop's own combined set); an EMPTY list means ALL namespaces
  * the chat loop serves — the default persona's shape. The whitelist filters
  * the loop's tool advertisements per request (`WhitelistedToolProvider`,
- * built in `ChatRunService.prepareRun`).
+ * built in `ChatService.prepareRun`).
  *
  * Also the wire type of the `/api/personas` routes.
  */

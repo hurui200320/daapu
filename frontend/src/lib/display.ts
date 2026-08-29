@@ -9,7 +9,7 @@ import type { ChatMessage, ChatMessagePart } from './types'
 
 /*
  * Mirror of the backend's data-URL validation — `dataUrlRegex` in
- * src/main/kotlin/info/skyblond/daapu/server/ChatRunService.kt
+ * src/main/kotlin/info/skyblond/daapu/agent/chat/ChatService.kt
  * (`^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$`), plus its post-match
  * handling: trim the URL, strip whitespace from the base64 payload.
  * UPDATE BOTH PATTERNS TOGETHER. This copy is display-only (it prunes

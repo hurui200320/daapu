@@ -17,11 +17,12 @@ import {
 } from './types'
 
 const persona = (id: number): Persona => ({ id, name: `p${id}`, systemPrompt: '', allowedNamespaces: [] })
-const model = (id: string, contextLength: number | null): ModelInfo => ({
+const model = (id: string, contextLength: number): ModelInfo => ({
   id,
   vision: false,
   contextLength,
-  maxOutputTokens: null,
+  // always present per the backend contract (validated > 0 at catalog boot)
+  maxOutputTokens: 4096,
 })
 const call = (tool: string, args: Record<string, unknown> = {}): ChatMessagePart => ({
   type: 'tool_call',
@@ -91,9 +92,9 @@ describe('computeUsage', () => {
     expect(computeUsage([assistantWithTokens(80)], [model('m1', 1000)], 'gone')).toEqual({ used: 80, context: null })
   })
 
-  it('hides the context for a model with a null contextLength', () => {
-    expect(computeUsage([assistantWithTokens(80)], [model('m1', null)], 'm1')).toEqual({ used: 80, context: null })
-  })
+  // no "null contextLength" case exists: the backend guarantees the field
+  // (validated > 0 at catalog boot), so the only null-context branch is the
+  // unknown-model one pinned above
 })
 
 describe('commitRoundParts', () => {

@@ -1,8 +1,8 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
-import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 
 /**
  * An in-memory [ChatStore] for service/route tests: seeded via [seed] and

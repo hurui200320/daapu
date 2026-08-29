@@ -71,11 +71,13 @@ export interface ChatAttachmentPart {
 // backend boundary) until a real use case exists.
 type AttachmentContent = { type: 'base64'; base64: string }
 
+// The budgets are always present: the backend's LLM catalog validates both
+// > 0 at boot (agent/model/LLM.kt), so /api/models never serves nulls here.
 export interface ModelInfo {
   id: string
   vision: boolean
-  contextLength: number | null
-  maxOutputTokens: number | null
+  contextLength: number
+  maxOutputTokens: number
 }
 
 // ---- ELTM browse views (`GET /api/eltm`, read-only) ----

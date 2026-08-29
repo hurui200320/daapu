@@ -51,7 +51,7 @@ class PersonaServiceTest {
 
     @Test
     fun `an unknown persona resolves to null`() = runBlocking {
-        // the caller (ChatRunService.prepareRun) maps the null onto a 400
+        // the caller (ChatService.prepareRun) maps the null onto a 400
         // before any run starts
         assertNull(service().resolveForRequest(999L))
     }

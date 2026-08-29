@@ -1,17 +1,18 @@
 package info.skyblond.daapu.agent.persist
 
 import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.agent.context.ContextInjection
+import info.skyblond.daapu.agent.context.InjectionSpec
+import info.skyblond.daapu.agent.context.RelatedNoteView
+import info.skyblond.daapu.agent.context.resolveRelatedNotes
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
-import info.skyblond.daapu.agent.oneshot.currentPromptTokens
-import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
-import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
+import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionService
+import info.skyblond.daapu.agent.pipeline.currentPromptTokens
+import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
+import info.skyblond.daapu.agent.pipeline.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.tool.ToolProvider
-import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
-import info.skyblond.daapu.memory.eltm.EltmEntity
-import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EntityWithScore
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -65,7 +66,7 @@ class PersistChatService(
     private val systemPromptService: MainAgentSystemPromptService,
     /**
      * Memory extraction over the raw messages a compaction is about to
-     * discard (see `agent/oneshot/eltm/MemoryExtractionService.kt`): the
+     * discard (see `agent/pipeline/eltm/MemoryExtractionService.kt`): the
      * extractor summarizes them and the ELTM writer records the facts into
      * the diary directly. No lock is held: concurrent writes are safe
      * because the writer deduplicates against the store.
@@ -131,8 +132,7 @@ class PersistChatService(
         // below). The not-yet-appended input is not counted; the trigger
         // headroom absorbs the difference.
         // The raw dropped messages feed the memory extraction BEFORE they are
-        // discarded (see agent/persist/MainAgentSystemPromptService.kt's
-        // memory architecture).
+        // discarded (the harness's memory architecture, see the README).
         if (model.compactionTriggerFraction > 0 &&
             currentPromptTokens(chat) > model.contextLength * model.compactionTriggerFraction
         ) {
@@ -181,6 +181,7 @@ class PersistChatService(
                 }
                 val notes = if (relatedNotesLimit > 0) {
                     resolveRelatedNotes(
+                        eltmService,
                         notes = eltmService.searchNotes(
                             query, null, null, null, null, relatedNotesLimit
                         ),
@@ -265,7 +266,7 @@ class PersistChatService(
                         // fall through: the next loop iteration starts a fresh
                         // hand run with the compacted prompt
                     } else {
-                        runError(terminal.type, terminal.message)
+                        failRun(terminal.type, terminal.message)
                     }
                 }
             }
@@ -289,9 +290,8 @@ class PersistChatService(
 
     /**
      * Compact the chat and run the memory extraction over the dropped
-     * messages BEFORE they are discarded (see
-     * `agent/persist/MainAgentSystemPromptService.kt`'s memory
-     * architecture); returns the compacted history (no injection). The
+     * messages BEFORE they are discarded (the harness's memory architecture,
+     * see the README); returns the compacted history (no injection). The
      * compacted history reaches the client via the post-run resync; no
      * dedicated event is emitted. Both the proactive trigger and the
      * reactive `context_exhausted` recovery go through here — the two
@@ -304,59 +304,6 @@ class PersistChatService(
         val result = compactionService.compactChat(chat, model.compactionKeepRounds)
         memoryExtractionService.processDiscardedMessages(result.droppedMessages)
         return result.newChat
-    }
-
-    /**
-     * Turn raw diary-note search hits into the injection's [RelatedNoteView]
-     * list by resolving each note's subject to NAMES (the render carries no
-     * ids-only references): an entity subject reuses the search's own hits
-     * when the note's entity is among them, otherwise a [EltmService.getEntity]
-     * fallback; a relationship subject resolves via
-     * [EltmService.getRelationship] (which carries the endpoint names and the
-     * verb). A note whose subject cannot be resolved (impossible under the
-     * notes CHECK) is skipped rather than rendered with partial ids.
-     */
-    private suspend fun resolveRelatedNotes(
-        notes: List<EltmNote>,
-        knownEntities: List<EntityWithScore>,
-    ): List<RelatedNoteView> = notes.mapNotNull { note ->
-        when {
-            note.entityId != null -> {
-                val entity: EltmEntity = knownEntities.firstOrNull {
-                    it.entity.id == note.entityId
-                }?.entity
-                    ?: eltmService.getEntity(note.entityId)?.entity
-                    ?: return@mapNotNull null
-                RelatedNoteView(
-                    id = note.id,
-                    eventDate = note.eventDate,
-                    subjectType = "entity",
-                    subjectAttributes = linkedMapOf(
-                        "name" to entity.canonicalName,
-                        "category" to entity.category,
-                    ),
-                    note = note.note,
-                )
-            }
-
-            note.relationshipId != null -> {
-                val relationship = eltmService.getRelationship(note.relationshipId)
-                    ?: return@mapNotNull null
-                RelatedNoteView(
-                    id = note.id,
-                    eventDate = note.eventDate,
-                    subjectType = "relationship",
-                    subjectAttributes = linkedMapOf(
-                        "src-name" to relationship.srcName,
-                        "verb" to relationship.relationship.verb,
-                        "dst-name" to relationship.dstName,
-                    ),
-                    note = note.note,
-                )
-            }
-
-            else -> null // impossible: the notes CHECK enforces exactly one subject
-        }
     }
 
     /**
@@ -419,11 +366,11 @@ class PersistChatService(
     }
 
     /**
-     * Maps a hand run error type onto the run failure. `context_exhausted` is
-     * handled by the caller (reactive compaction); the rest fail the run with
+     * Maps a hand run error type onto the run failure — always throws.
+     * `context_exhausted` is handled by the caller (reactive compaction); the rest fail the run with
      * the same explanatory wording the old in-process loop used.
      */
-    private fun runError(type: String, message: String): Nothing = when (type) {
+    private fun failRun(type: String, message: String): Nothing = when (type) {
         "output_budget_exhausted" -> throw HandRunException(
             type,
             "The model exhausted its output budget without producing usable content " +

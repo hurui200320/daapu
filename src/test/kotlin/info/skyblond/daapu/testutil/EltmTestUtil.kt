@@ -1,6 +1,6 @@
 package info.skyblond.daapu.testutil
 
-import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
+import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandRunPolicy

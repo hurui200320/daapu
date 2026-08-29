@@ -47,7 +47,7 @@ object ChatCodec {
     /**
      * Validate a chat: the invariants that keep a stored chat re-sendable to
      * providers (see the class KDoc). Internal so history-mutating operations
-     * (e.g. truncation in [info.skyblond.daapu.server.ChatRunService]) can
+     * (e.g. truncation in [info.skyblond.daapu.agent.chat.ChatService]) can
      * check their result before storing.
      */
     internal fun validateChat(chat: List<ChatMessage>) {

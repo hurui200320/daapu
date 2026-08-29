@@ -59,8 +59,8 @@ data class RenameChatRequest(val title: String)
 data class ModelInfo(
     val id: String,
     val vision: Boolean,
-    val contextLength: Long?,
-    val maxOutputTokens: Long?,
+    val contextLength: Long,
+    val maxOutputTokens: Long,
 )
 
 // ----------------------------------------------------------------------
@@ -161,8 +161,3 @@ data class RelationshipViewDto(
         )
     }
 }
-
-/**
- * The chat is locked by a run or a deletion in progress. Mapped to HTTP 409.
- */
-class ChatRunConflictException(message: String) : Exception(message)

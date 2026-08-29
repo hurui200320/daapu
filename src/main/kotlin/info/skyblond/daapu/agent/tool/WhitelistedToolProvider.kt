@@ -1,7 +1,7 @@
 package info.skyblond.daapu.agent.tool
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.config.validateToolNamespaceSyntax
+import info.skyblond.daapu.agent.tool.validateToolNamespaceSyntax
 
 /**
  * A transparent namespace-level filter over another [ToolProvider]: the

@@ -3,7 +3,7 @@ package info.skyblond.daapu.config
 import kotlinx.serialization.Serializable
 
 /**
- * The session-title generation settings (see `agent/oneshot/TitleGenerator.kt`).
+ * The session-title generation settings (see `agent/pipeline/TitleGenerator.kt`).
  * The model id is REQUIRED and references the catalog
  * (`agent/ModelCatalog.kt`); it is resolved once at startup by the DI
  * container (`di/AppModule.kt`), like the memory pipeline models — a

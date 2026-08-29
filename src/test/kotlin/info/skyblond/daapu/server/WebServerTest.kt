@@ -1,5 +1,7 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.ChatRunConflictException
+import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessage
@@ -20,6 +22,7 @@ import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -143,7 +146,7 @@ class WebServerTest {
     @Test
     fun `message on a chat with an active run is rejected with 409`() {
         val koinApp = testKoinApp()
-        val chatService = koinApp.koin.get<ChatRunService>()
+        val chatService = koinApp.koin.get<ChatService>()
         val chatId = "chat-running"
         val lock = chatService.acquireChatLock(chatId)
         try {
@@ -163,7 +166,7 @@ class WebServerTest {
     @Test
     fun `delete on a chat with an active run is rejected with 409`() {
         val koinApp = testKoinApp()
-        val chatService = koinApp.koin.get<ChatRunService>()
+        val chatService = koinApp.koin.get<ChatService>()
         val chatId = "chat-running"
         val lock = chatService.acquireChatLock(chatId)
         try {
@@ -235,7 +238,7 @@ class WebServerTest {
     @Test
     fun `truncate on a chat with an active run is rejected with 409`() {
         val koinApp = testKoinApp()
-        val chatService = koinApp.koin.get<ChatRunService>()
+        val chatService = koinApp.koin.get<ChatService>()
         val chatId = "chat-running"
         val lock = chatService.acquireChatLock(chatId)
         try {
@@ -596,6 +599,27 @@ class WebServerTest {
             application { module(testKoinApp().koin) }
             val response = client.get("/api/models")
             assertEquals(HttpStatusCode.OK, response.status)
+            // the wire shape is hand-mirrored in the frontend's ModelInfo
+            // type: pin it here, in the test config's catalog order, with
+            // the budgets ALWAYS present (LLM validates both > 0 at boot)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(
+                listOf(
+                    "bifrost/cerebras/gpt-oss-120b",
+                    "bifrost/cerebras/gemma-4-31b",
+                    "bifrost/novita/google/gemma-4-31b-it",
+                ),
+                body.map { it.jsonObject["id"]!!.jsonPrimitive.content },
+            )
+            assertTrue(
+                body.all {
+                    it.jsonObject["contextLength"]!!.jsonPrimitive.long > 0 &&
+                            it.jsonObject["maxOutputTokens"]!!.jsonPrimitive.long > 0
+                },
+            )
+            // the vision flag mirrors each model's image capability
+            assertEquals(false, body[0].jsonObject["vision"]!!.jsonPrimitive.boolean)
+            assertEquals(true, body[1].jsonObject["vision"]!!.jsonPrimitive.boolean)
         }
     }
 

@@ -1,13 +1,14 @@
 package info.skyblond.daapu.agent.persist
 
 import info.skyblond.daapu.agent.chat.*
+import info.skyblond.daapu.agent.context.ContextInjection
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
-import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
-import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
-import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
-import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
-import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
+import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionService
+import info.skyblond.daapu.memory.eltm.EltmToolProvider
+import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
+import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
+import info.skyblond.daapu.agent.pipeline.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.persona.defaultPersona
@@ -17,7 +18,6 @@ import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
-import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer

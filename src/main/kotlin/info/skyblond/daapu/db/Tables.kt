@@ -47,12 +47,6 @@ object Personas : Table("personas") {
 }
 
 /**
- * The title a chat starts with; mirrors the `chats.title` column default in
- * `V1__init.sql` (kept in sync manually so inserts state the title explicitly).
- */
-const val DEFAULT_CHAT_TITLE = "New chat"
-
-/**
  * Simple numeric key-value meta store (`memory_meta_number` in
  * `V1__init.sql`); the only entry is the global ELTM write counter
  * (`eltm_version`) that feeds the eltm-updated digest — every ELTM write

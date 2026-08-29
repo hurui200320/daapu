@@ -1,5 +1,7 @@
 package info.skyblond.daapu.config
 
+import info.skyblond.daapu.agent.tool.TOOL_RESERVED_NAMESPACES
+import info.skyblond.daapu.agent.tool.validateToolNamespaceSyntax
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -119,7 +121,7 @@ data class McpServerConfig(
             throw IllegalArgumentException("MCP server '$namespace': url must start with http:// or https://, got '$url'")
         }
         // mirror config.schema.json's minimum: 1 — 0/negative would reach the
-        // SDK transport builders (McpEntry) as a nonsense Duration
+        // SDK transport builders (mcp/ClientEntry.kt) as a nonsense Duration
         require(initializationTimeoutSeconds == null || initializationTimeoutSeconds >= 1) {
             "MCP server '$namespace': initializationTimeoutSeconds must be at least 1, got $initializationTimeoutSeconds"
         }
@@ -152,7 +154,7 @@ enum class McpTransportType {
  * The optional `mcp.proxy` section: an HTTP proxy (CONNECT tunneling for both
  * http and https MCP endpoints) used by every http-type MCP server
  * ([McpServerConfig]). Applied as the ktor engine's `proxy` in
- * `mcp/McpEntry.kt`, which routes ALL transport traffic (initialize POST,
+ * `mcp/ClientEntry.kt`, which routes ALL transport traffic (initialize POST,
  * tool POST, SSE GET, session DELETE) through it. The config model has no
  * username/password fields, so credentials must not be configured here —
  * an authenticated proxy is not supported.

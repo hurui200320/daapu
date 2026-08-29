@@ -18,7 +18,7 @@ import info.skyblond.daapu.agent.tool.stringArraySchema
 import info.skyblond.daapu.agent.tool.stringSchema
 import info.skyblond.daapu.agent.tool.textArg
 import info.skyblond.daapu.agent.tool.textResult
-import info.skyblond.daapu.config.validateToolNamespaceSyntax
+import info.skyblond.daapu.agent.tool.validateToolNamespaceSyntax
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json

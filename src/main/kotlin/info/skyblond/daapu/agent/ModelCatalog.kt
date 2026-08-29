@@ -7,7 +7,7 @@ import info.skyblond.daapu.agent.model.ModelProvider
 import info.skyblond.daapu.config.EmbeddingModelEntryConfig
 import info.skyblond.daapu.config.LlmModelEntryConfig
 import info.skyblond.daapu.config.LlmProviderConfig
-import info.skyblond.daapu.config.SAFE_ID_REGEX
+import info.skyblond.daapu.agent.tool.SAFE_ID_REGEX
 
 /**
  * The model catalog: every model the API can serve, across all configured

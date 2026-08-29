@@ -120,7 +120,7 @@ class McpToolProvider(
         // with a second `__` — cannot be an advertised name and has no
         // budget ([splitStrictNsToolName] rejects it)
         return splitStrictNsToolName(toolName)?.let { (namespace, _) ->
-            entries[namespace]?.timeout
+            entries[namespace]?.timeoutSeconds
         } ?: 0
     }
 
@@ -151,13 +151,15 @@ class McpToolProvider(
         return try {
             entry.executeRequestOnce(request.id, request.args, advertisedName)
         } catch (e: TimeoutCancellationException) {
-            // the execution budget (enforced by the callback route's
-            // `withTimeout`, see HandCallbackService) expired: the run
-            // already got its isError timeout answer and this coroutine is
-            // cancelled. The connection is kept: the server is usually fine
-            // and just slow, and a genuinely broken one surfaces a transport
-            // failure on the next call, which drops it and lets the next
-            // tool-list refresh reconnect.
+            // the execution budget expired — it is enforced ONCE, by the
+            // callback route's `withTimeout` (HandCallbackService, budget
+            // from this entry's toolExecutionTimeoutSeconds): the route
+            // already answered the isError timeout result and cancelled this
+            // coroutine, so this catch only logs before rethrowing into the
+            // route's handler. The connection is kept: the server is usually
+            // fine and just slow, and a genuinely broken one surfaces a
+            // transport failure on the next call, which drops it and lets
+            // the next tool-list refresh reconnect.
             logger.warn { "MCP server ${entry.namespace} timed out" }
             throw e
         } catch (e: CancellationException) {

@@ -1,5 +1,6 @@
 package info.skyblond.daapu.config
 
+import info.skyblond.daapu.agent.tool.SAFE_ID_REGEX
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -52,9 +53,9 @@ data class AppConfig(
     /** The harness-owned tool providers (see `ToolConfig`; today only the read-only filesystem provider). */
     val tool: ToolConfig = ToolConfig(),
     val memory: MemoryConfig,
-    /** The sub-agent settings (see `agent/oneshot/investigate/InvestigatorService.kt`). */
+    /** The sub-agent settings (see `agent/pipeline/investigate/InvestigatorService.kt`). */
     val agent: AgentConfig,
-    /** Session-title generation (a one-shot pipeline service, see `agent/oneshot/TitleGenerator.kt`). */
+    /** Session-title generation (a one-shot pipeline service, see `agent/pipeline/TitleGenerator.kt`). */
     val title: TitleConfig,
     /** The hand-pi execution service. */
     val hand: HandConfig = HandConfig(),
@@ -78,59 +79,6 @@ data class AppConfig(
         agent.validate()
         title.validate()
         hand.validate()
-    }
-}
-
-/**
- * Namespaces reserved for the harness's own internal/harness tools: an MCP
- * server must not use one of these, or its advertised tool names would
- * collide with the internal tools' namespaces. All lowercase, matching
- * [SAFE_ID_REGEX] — the check in [McpServerConfig.validate] is exact.
- */
-val TOOL_RESERVED_NAMESPACES: Set<String> = setOf(
-    "system", "inner", "internal", "gsg",
-    "eltm", "harness"
-)
-
-/**
- * Charset for ids that become part of wire-visible strings: MCP namespaces
- * (prefixed onto every advertised tool name) and provider ids (prefixed onto
- * every model id served via `/api/models` and stored in chat history).
- * OpenAI-compatible gateways only accept `[0-9a-z_-]` in such strings;
- * uppercase is rejected so the reserved-namespace check stays an exact match.
- */
-val SAFE_ID_REGEX: Regex = Regex("[0-9a-z_-]+")
-
-/**
- * Fail fast on a namespace that cannot become part of an advertised tool
- * name. A blank namespace is allowed (the one-shot providers' default: tools
- * are advertised unprefixed, e.g. `agent/oneshot/eltm/EltmToolProvider.kt`);
- * a non-blank one must match [SAFE_ID_REGEX], must not contain the `__`
- * separator that joins namespaces to tool names, and must not start or end
- * with `_`: an ending `_` would read as the separator's first underscore
- * (namespace `a_` advertising `a___tool` splits as namespace `a` under the
- * first-`__` rule, silently misrouting the call), and a starting `_` blurs
- * the boundary the same way visually. Shared by [McpServerConfig.validate],
- * the namespaced tool providers and the persona namespace whitelist;
- * reserved names are a caller-specific concern ([TOOL_RESERVED_NAMESPACES]
- * applies to MCP servers only — the internal tools own those namespaces).
- */
-fun validateToolNamespaceSyntax(namespace: String, owner: String) {
-    if (namespace.isBlank()) return
-    if (!namespace.matches(SAFE_ID_REGEX)) {
-        throw IllegalArgumentException(
-            "$owner namespace '$namespace' is invalid: tool names are prefixed with it, so only [0-9a-z_-] is allowed"
-        )
-    }
-    if (namespace.contains("__")) {
-        throw IllegalArgumentException(
-            "$owner namespace '$namespace' is invalid: it must not contain '__', which separates the parts of advertised tool names"
-        )
-    }
-    if (namespace.startsWith("_") || namespace.endsWith("_")) {
-        throw IllegalArgumentException(
-            "$owner namespace '$namespace' is invalid: it must not start or end with '_', which would blur the '__' separator that joins namespaces to tool names"
-        )
     }
 }
 

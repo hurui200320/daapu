@@ -1,7 +1,7 @@
 package info.skyblond.daapu.agent.persist
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
+import info.skyblond.daapu.agent.pipeline.investigate.InvestigatorService
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
@@ -14,7 +14,11 @@ import kotlinx.coroutines.CancellationException
 /**
  * The main agent's ONLY access to the investigate sub-agent: the single
  * `gsg__investigate` tool (namespace `gsg`, one of
- * `TOOL_RESERVED_NAMESPACES`). The main model's tool set is the MCP servers
+ * `TOOL_RESERVED_NAMESPACES`). GSG is the harness's internal codename (the
+ * context-injection + compaction + ELTM machinery, see the README); the
+ * namespace gates the harness's own tooling the same way the persona
+ * whitelist gates the full system-prompt introduction. The main model's
+ * tool set is the MCP servers
  * plus this provider — the granular ELTM read tools live in the
  * sub-agent's OWN tool set, not the loop's.
  *
@@ -22,7 +26,7 @@ import kotlinx.coroutines.CancellationException
  * [InvestigatorService.runInvestigate] (the sub-agent's elastic tool loop
  * over the read-only ELTM plus the MCP tools; it recovers its own stops —
  * round limit, exhausted context, upstream failures — into an
- * [info.skyblond.daapu.agent.oneshot.investigate.InvestigateOutcome]).
+ * [info.skyblond.daapu.agent.pipeline.investigate.InvestigateOutcome]).
  * The outcome's `report` mirrors a `ToolResult`'s `parts`, so it is
  * packaged verbatim without a lossy string round-trip, with the outcome's
  * `isError` flag passing through as the tool-result error. The execution

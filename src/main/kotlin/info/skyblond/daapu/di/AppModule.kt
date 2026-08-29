@@ -1,17 +1,18 @@
 package info.skyblond.daapu.di
 
 import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatStore
 import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.agent.oneshot.TitleGenerator
-import info.skyblond.daapu.agent.oneshot.compaction.ChatCompactionService
-import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
-import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
-import info.skyblond.daapu.agent.oneshot.eltm.MemoryExtractionService
-import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
-import info.skyblond.daapu.agent.oneshot.rewrite.QueryRewriteService
+import info.skyblond.daapu.agent.pipeline.TitleGenerator
+import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionService
+import info.skyblond.daapu.memory.eltm.EltmToolProvider
+import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
+import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
+import info.skyblond.daapu.agent.pipeline.investigate.InvestigatorService
+import info.skyblond.daapu.agent.pipeline.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.agent.persona.PersonaStore
 import info.skyblond.daapu.agent.persona.PostgresPersonaStore
@@ -31,7 +32,6 @@ import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.PostgresEltmService
-import info.skyblond.daapu.server.ChatRunService
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.onClose
 import org.koin.core.module.dsl.withOptions
@@ -43,7 +43,7 @@ import org.koin.plugin.module.dsl.single
  * The Koin container's module: the whole application object graph. Every
  * definition is a singleton — the services are stateless across runs and
  * shared by every concurrent chat run — and everything resolves eagerly
- * when [ChatRunService] (the graph root) is first requested, so the
+ * when [ChatService] (the graph root) is first requested, so the
  * fail-fast validation here (REQUIRED model ids, tool-call capability, the
  * eager MCP connect) fires at startup, never mid-run.
  *
@@ -184,7 +184,7 @@ fun appModule(config: AppConfig): Module = module {
     single<LengthSafeToolProvider> {
         LengthSafeToolProvider(get<CombinedToolProvider>(), config.agent.main.toolResultLimit)
     }
-    // the investigate sub-agent (`agent/oneshot/investigate/`): its tool
+    // the investigate sub-agent (`agent/pipeline/investigate/`): its tool
     // set is its OWN combined provider — the MCP servers plus the read-only
     // ELTM tools — restricted by the `agent.investigator.allowedNamespaces`
     // whitelist and capped by the length-safe provider
@@ -281,7 +281,7 @@ fun appModule(config: AppConfig): Module = module {
     // fail the boot, not the first request. The service owns no resources:
     // the hand client and the MCP clients are closed through the onClose
     // callbacks above when the shutdown hook closes the Koin application.
-    single<ChatRunService>()
+    single<ChatService>()
 }
 
 /**

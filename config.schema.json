@@ -181,7 +181,7 @@
         "compactModel",
         "eltm"
       ],
-      "description": "The memory pipeline settings: compaction (agent/oneshot/compaction/) and the ELTM (external long-term memory, memory/eltm/). The model ids are REQUIRED, resolved once at startup by the DI container (di/AppModule.kt) and reused for every run (never the run's model). The compaction trigger fraction and keep rounds are per-model (agent/model/LLM.kt), depending on the model's context size.",
+      "description": "The memory pipeline settings: compaction (agent/pipeline/compaction/) and the ELTM (external long-term memory, memory/eltm/). The model ids are REQUIRED, resolved once at startup by the DI container (di/AppModule.kt) and reused for every run (never the run's model). The compaction trigger fraction and keep rounds are per-model (agent/model/LLM.kt), depending on the model's context size.",
       "properties": {
         "compactModel": {
           "type": "string",
@@ -267,7 +267,7 @@
       "required": [
         "investigator"
       ],
-      "description": "The agent settings: the main (chat loop) agent and the investigate agent (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that gathers information from the ELTM (read-only) and the web (MCP tools) on behalf of the main agent.",
+      "description": "The agent settings: the main (chat loop) agent and the investigate agent (agent/pipeline/investigate/InvestigatorService.kt), a tool loop that gathers information from the ELTM (read-only) and the web (MCP tools) on behalf of the main agent.",
       "properties": {
         "main": {
           "type": "object",
@@ -327,7 +327,7 @@
       "required": [
         "model"
       ],
-      "description": "Session-title generation settings (agent/oneshot/TitleGenerator.kt): the model id is REQUIRED, resolved once at startup by the DI container (di/AppModule.kt) like the memory pipeline models (never the run's model).",
+      "description": "Session-title generation settings (agent/pipeline/TitleGenerator.kt): the model id is REQUIRED, resolved once at startup by the DI container (di/AppModule.kt) like the memory pipeline models (never the run's model).",
       "properties": {
         "model": {
           "type": "string",
@@ -612,7 +612,7 @@
           "description": "HTTP proxy port."
         }
       },
-      "description": "An HTTP proxy (CONNECT tunneling for both http and https MCP endpoints) used by every http-type MCP server. Applied engine-wide in mcp/McpEntry.kt, so initialize POST, tool POST, SSE GET and session DELETE all tunnel through it. The proxy config model has no authentication fields."
+      "description": "An HTTP proxy (CONNECT tunneling for both http and https MCP endpoints) used by every http-type MCP server. Applied engine-wide in mcp/ClientEntry.kt, so initialize POST, tool POST, SSE GET and session DELETE all tunnel through it. The proxy config model has no authentication fields."
     }
   }
 }

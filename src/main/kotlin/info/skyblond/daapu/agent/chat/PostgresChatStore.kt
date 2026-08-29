@@ -1,7 +1,6 @@
 package info.skyblond.daapu.agent.chat
 
 import info.skyblond.daapu.db.Chats
-import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
 import org.jetbrains.exposed.v1.core.SortOrder

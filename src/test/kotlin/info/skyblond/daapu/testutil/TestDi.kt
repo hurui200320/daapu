@@ -1,5 +1,6 @@
 package info.skyblond.daapu.testutil
 
+import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatStore
 import info.skyblond.daapu.agent.persona.PersonaStore
 import info.skyblond.daapu.config.AppConfig
@@ -8,7 +9,6 @@ import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.server.ChatRunService
 import info.skyblond.daapu.server.FakePersonaStore
 import kotlin.test.assertFails
 import org.koin.core.KoinApplication
@@ -21,10 +21,10 @@ import org.koin.dsl.module
  * The test seam for the Koin container ([appModule]): override the
  * store/client definitions with fakes, then resolve the graph root.
  *
- * The overrides mirror the pre-Koin `ChatRunService(...)` constructor
+ * The overrides mirror the pre-Koin `ChatService(...)` constructor
  * parameters (`hand = ...`, `chatStore = ...`, ...), so a call site swap
- * from `ChatRunService(testAppConfig(), hand = fake)` to
- * `chatRunService(testAppConfig(), hand = fake)` keeps every named argument.
+ * from `ChatService(testAppConfig(), hand = fake)` to
+ * `chatService(testAppConfig(), hand = fake)` keeps every named argument.
  *
  * Koin 4 allows overrides by default (`allowOverride = true`), so the
  * override module simply re-declares the seam types after the production
@@ -59,16 +59,16 @@ fun testKoinApp(
     )
 }
 
-fun chatRunService(
+fun chatService(
     config: AppConfig = testAppConfig(),
     hand: HandClient? = null,
     chatStore: ChatStore? = null,
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
     personaStore: PersonaStore? = null,
-): ChatRunService = testKoinApp(
+): ChatService = testKoinApp(
     config, hand, chatStore, eltmService, mcpToolProvider, personaStore,
-).koin.get<ChatRunService>()
+).koin.get<ChatService>()
 
 /**
  * The empty MCP provider shared by every test that does not pass its own:

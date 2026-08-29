@@ -169,12 +169,12 @@
     // invariant under zero-padding), so switching embedding models never
     // needs a schema change.
     "eltm": {
-      // The memory extractor (agent/oneshot/eltm/MemoryExtractionService.kt):
+      // The memory extractor (agent/pipeline/eltm/MemoryExtractionService.kt):
       // sees the raw dropped history, images included; no tool calls.
       "extractionModel": "bifrost/cerebras/gemma-4-31b",
       "embeddingModel": "bifrost/zenmux sub/google/gemini-embedding-2",
       "writerModel": "bifrost/cerebras/gemma-4-31b",
-      // Query rewrite one-shot (agent/oneshot/rewrite/QueryRewriteService.kt):
+      // Query rewrite one-shot (agent/pipeline/rewrite/QueryRewriteService.kt):
       // rewrites the run's latest input into standalone retrieval queries.
       "rewriteModel": "bifrost/cerebras/gemma-4-31b",
       // How many trailing user rounds of the chat feed the rewrite.
@@ -197,7 +197,7 @@
     }
   },
   // The agents: the main (chat loop) agent and the investigate agent
-  // (agent/oneshot/investigate/InvestigatorService.kt), a tool loop that
+  // (agent/pipeline/investigate/InvestigatorService.kt), a tool loop that
   // gathers information from the ELTM (read-only) and the web (MCP tools)
   // on behalf of the main agent (which reaches it through the single
   // `gsg__investigate` tool). The model id is REQUIRED (resolved once at
@@ -232,7 +232,7 @@
       "toolResultLimit": 40000
     }
   },
-  // Session-title generation (agent/oneshot/TitleGenerator.kt): the model id
+  // Session-title generation (agent/pipeline/TitleGenerator.kt): the model id
   // is REQUIRED and resolved once at startup, like the memory pipeline
   // models; it is never the chat run's own model. lastNRound caps the
   // history fed to the title model to the last N user rounds (0 = all).

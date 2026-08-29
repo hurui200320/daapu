@@ -2,7 +2,7 @@ package info.skyblond.daapu.testutil
 
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
+import info.skyblond.daapu.memory.eltm.EltmToolProvider
 import info.skyblond.daapu.hand.HandEvent
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.toolRoundEvents

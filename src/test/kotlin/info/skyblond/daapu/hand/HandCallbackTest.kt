@@ -11,7 +11,7 @@ import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
 import info.skyblond.daapu.mcp.*
 import info.skyblond.daapu.hand.HandCallbackService
-import info.skyblond.daapu.server.ChatRunService
+import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.server.module
 import info.skyblond.daapu.testutil.testKoinApp
 import info.skyblond.daapu.testutil.testLlm
@@ -34,10 +34,10 @@ class HandCallbackTest {
     private fun json() = Json { ignoreUnknownKeys = true }
 
     private fun ApplicationTestBuilder.runApplicationWithService(
-        block: suspend (ChatRunService, HandCallbackService) -> Unit,
+        block: suspend (ChatService, HandCallbackService) -> Unit,
     ) {
         val koinApp = testKoinApp()
-        val service = koinApp.koin.get<ChatRunService>()
+        val service = koinApp.koin.get<ChatService>()
         val handCallback = koinApp.koin.get<HandCallbackService>()
         application {
             module(koinApp.koin)

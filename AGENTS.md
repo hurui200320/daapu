@@ -70,7 +70,7 @@ frontend + Node/TS "hand-pi" service.
     dimensions ≠ catalog fails fast).
 - **ktor HTTP API** (`server/`) — `Main.kt` loads `config.jsonc`
   (`config/Config.kt`), starts DB + API. One chat run per request:
-  `ChatRunService.prepareRun` validates (model AND personaId REQUIRED per
+  `ChatService.prepareRun` validates (model AND personaId REQUIRED per
   message, no server default); `runChat` runs the turn loop
   (`agent/persist/PersistChatService.kt`). Catalog
   (`agent/ModelCatalog.kt`, from `providers.<id>.llm/embedding`; ≥1 LLM
@@ -102,14 +102,14 @@ frontend + Node/TS "hand-pi" service.
     0), `server/endpoint/PersonasRoute.kt`.
   - **DI** (`di/AppModule.kt`, Koin 4.2 + compiler plugin): one
     `module { }`, all definitions `single` via the plugin DSL —
-    compile-time graph checks. `ChatRunService` is pure constructor
+    compile-time graph checks. `ChatService` is pure constructor
     injection. One-shot models resolve inline via `requiredLlm(...)`
     (fail-fast; investigator's model at boot, wired via the loop's
     `gsg__investigate`). Cleanup: Koin `onClose` on
     `HandService`/`McpToolProvider` at JVM shutdown (`koinApp.close()`).
     `startWebServer` resolves the root BEFORE server start (fail-fast +
     eager MCP connect). Tests: `testutil/TestDi.kt`
-    `testKoinApp`/`chatRunService` with overrides (`personaStore` defaults
+    `testKoinApp`/`chatService` with overrides (`personaStore` defaults
     to `FakePersonaStore`); `assertFailsFast` unwraps
     `InstanceCreationException`.
   - **ELTM** (`memory/eltm/EltmService.kt` + `PostgresEltmService.kt`,
@@ -122,8 +122,8 @@ frontend + Node/TS "hand-pi" service.
     ended triple is a diary event. No mention counter — prominence
     computed on read.
     - Write path = extraction only: facts → ELTM writer agent
-      (`agent/oneshot/eltm/EltmWriterService.kt` + 13-tool
-      `EltmToolProvider.kt`, RW; `readOnly` mode = the 5 read tools for
+      (`agent/pipeline/eltm/EltmWriterService.kt` + 13-tool
+      `memory/eltm/EltmToolProvider.kt`, RW; `readOnly` mode = the 5 read tools for
       the investigator; `runCollect` loop, `memory.eltm.writerModel`, cap
       `maxWriterRounds`). Writer failure fails the run; retry re-extracts
       (recorded content is skipped). Exact-match creates are pure reads;
@@ -157,7 +157,7 @@ frontend + Node/TS "hand-pi" service.
       prefix; vectors/queries zero-padded to 2000 (`padVector`); cosine is
       invariant — model switches need no schema change. Similarity via
       Exposed pgvector (`VectorDistance` COSINE).
-  - **Context injection** (`agent/persist/ContextInjection.kt`): user
+  - **Context injection** (`agent/context/ContextInjection.kt`): user
     messages carry stored `createdAt` (UTC Instant; required by
     `ChatCodec.validateChat` + `PostgresChatStore.store`).
     `injectContext` prepends `<meta><sent-at>` anchors to historical user
@@ -185,7 +185,7 @@ frontend + Node/TS "hand-pi" service.
     re-extracts). Entries via `ConcurrentHashMap.compute`, evicted on
     completion/delete.
   - **ChatStore** (`agent/chat/ChatStore.kt`): all `chats` access behind
-    it; `ChatRunService` holds no raw DB calls. `load` → full
+    it; `ChatService` holds no raw DB calls. `load` → full
     `ChatEntry`; `ChatInfo` is the wire shape only. `renameChat`/
     `generateTitle` take no lock.
   - **History mutation by message INDEX** (no message ids):
@@ -242,8 +242,8 @@ frontend + Node/TS "hand-pi" service.
   Errors never truncated; attachments keep order ahead of text; other
   metadata delegates. Around the loop's set (persona whitelist wraps it)
   and the investigator's set; caps REQUIRED positive (default 40000).
-- **Compaction & memory extraction** (`agent/oneshot/compaction/`,
-  `agent/oneshot/eltm/MemoryExtractionService.kt`, wired in
+- **Compaction & memory extraction** (`agent/pipeline/compaction/`,
+  `agent/pipeline/eltm/MemoryExtractionService.kt`, wired in
   `PersistChatService`, config `memory.*`):
   - Proactive trigger: `currentPromptTokens(chat)` (last assistant's
     `meta.inputTokens` — usage REQUIRED on every hand response) exceeds
@@ -286,7 +286,7 @@ frontend + Node/TS "hand-pi" service.
     last stored history once, never the injection; empty chat
     short-circuits; a model that can't see the history → 400;
     `title.lastNRound` (default 0) caps history fed.
-  - Investigator (`agent/oneshot/investigate/InvestigatorService.kt`,
+  - Investigator (`agent/pipeline/investigate/InvestigatorService.kt`,
     tool loop): REQUIRED at boot; round cap
     `agent.investigator.maxRounds` (0 = unlimited; `round_limit` stop
     recovered by a no-tools summarization one-shot, `context_exhausted`
@@ -297,7 +297,7 @@ frontend + Node/TS "hand-pi" service.
     `agent.investigator.allowedNamespaces` (unservable entries incl.
     `gsg` — no recursion — fail fast), wrapped length-safe. Compactions
     emit no SSE event — the frontend resyncs.
-  - **Query rewrite** (`agent/oneshot/rewrite/QueryRewriteService.kt`,
+  - **Query rewrite** (`agent/pipeline/rewrite/QueryRewriteService.kt`,
     `memory.eltm.rewriteModel` + `rewriteRounds`): no-tools `runCollect`
     before the first round of every turn, after injection. Sanitizes,
     clips the last `rewriteRounds` user rounds (`takeLastNRound`),

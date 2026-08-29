@@ -71,6 +71,11 @@ export interface ModelSpec {
   reasoning: boolean;
   /** e.g. "high"; reasoning models only (omitted otherwise). */
   reasoningEffort?: string;
+  // TODO: the wire carries text and image only; audio/video/document
+  //       attachments are declared by the brain's capability model but not
+  //       supported yet (convert.ts rejects those kinds). Extend the union
+  //       here together with convert.ts and the brain's HandMappers when
+  //       support lands.
   input: ("text" | "image")[];
 }
 

@@ -1,10 +1,11 @@
 package info.skyblond.daapu.config
 
+import info.skyblond.daapu.agent.tool.validateToolNamespaceSyntax
 import kotlinx.serialization.Serializable
 
 /**
  * The agent settings: the main (chat loop) agent and the investigate
- * sub-agent (`agent/oneshot/investigate/InvestigatorService.kt`, a
+ * sub-agent (`agent/pipeline/investigate/InvestigatorService.kt`, a
  * `runCollect` tool loop that gathers information from the ELTM (read-only)
  * and the web (MCP tools) on behalf of the main agent).
  */

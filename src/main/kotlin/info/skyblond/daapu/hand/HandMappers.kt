@@ -16,6 +16,13 @@ fun LLM.toHandModelSpec(): HandModelSpec = HandModelSpec(
     maxOutputTokens = maxOutputTokens,
     reasoning = hasReasoning(),
     reasoningEffort = reasoningEffort(),
+    // TODO: the hand wire only carries text and image input; the capability
+    //       model already declares audio/video/document (config tokens
+    //       `audio`/`video`/`document`, `AttachmentKind`) but they must not
+    //       be advertised here until the hand protocol supports them (see
+    //       `hand-pi/src/types.ts` `HandModelSpec.input` and
+    //       `hand-pi/src/convert.ts`, which reject those attachment kinds).
+    //       Extend both sides together when support lands.
     input = listOf("text") +
             if (supports(LLMCapability.Input.Vision.Image)) listOf("image") else emptyList(),
 )

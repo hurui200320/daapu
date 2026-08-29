@@ -10,7 +10,7 @@ import kotlinx.serialization.json.put
 /**
  * The [StreamingExecutionCallback] that maps turn-loop stream events to SSE
  * events — the contract the frontend (`frontend/src/lib/api.ts`) parses.
- * Extracted from `ChatRunService` so the exact event payloads can be
+ * Extracted from the chat run pipeline so the exact event payloads can be
  * unit-tested.
  */
 internal fun streamEventCallback(

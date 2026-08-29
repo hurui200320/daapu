@@ -2,8 +2,8 @@ package info.skyblond.daapu.agent.persist
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.oneshot.eltm.EltmToolProvider
-import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
+import info.skyblond.daapu.memory.eltm.EltmToolProvider
+import info.skyblond.daapu.agent.pipeline.investigate.InvestigatorService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider

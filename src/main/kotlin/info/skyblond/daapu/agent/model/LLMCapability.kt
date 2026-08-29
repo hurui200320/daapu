@@ -15,6 +15,14 @@ sealed class LLMCapability {
 
         data object Audio : LLMCapability()
         data object Document : LLMCapability()
+        // TODO: Audio/Video(Vision)/Document are declared for the pre-send
+        //       content checks and the config tokens, but the hand wire does
+        //       not carry these kinds yet (`HandModelSpec.input` is
+        //       text/image only, `hand-pi/src/convert.ts` rejects them), so
+        //       a model declaring them still fails at the hand on such
+        //       attachments. Extend the hand protocol
+        //       (`hand-pi/src/types.ts` + `convert.ts`, see
+        //       `hand/HandMappers.kt`) instead of declaring the capability.
     }
 
     class Output {

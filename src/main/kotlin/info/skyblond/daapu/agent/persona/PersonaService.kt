@@ -1,10 +1,10 @@
 package info.skyblond.daapu.agent.persona
 
-import info.skyblond.daapu.config.validateToolNamespaceSyntax
+import info.skyblond.daapu.agent.tool.validateToolNamespaceSyntax
 
 /**
  * The persona seam between the `/api/personas` routes, the chat run
- * (`ChatRunService.prepareRun`) and the [PersonaStore].
+ * (`ChatService.prepareRun`) and the [PersonaStore].
  *
  * The DEFAULT persona lives ONLY in code
  * (`agent/persona/DefaultPersona.kt`, id [DEFAULT_PERSONA_ID]): it is never a

@@ -32,8 +32,8 @@ export function effectivePersonaId(
  * carries token usage (each round's total = full prompt + output of that
  * round, the best proxy for current context occupancy). The context window
  * is always the currently selected model's, since the next message will be
- * processed by it. Missing either side (no usage data, unknown/null
- * contextLength) hides the indicator.
+ * processed by it. Missing either side (no usage data, unknown model —
+ * the contextLength itself is always present) hides the indicator.
  */
 export function computeUsage(
   messages: ChatMessage[],

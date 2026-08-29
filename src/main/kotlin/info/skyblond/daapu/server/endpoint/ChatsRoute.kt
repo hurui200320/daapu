@@ -1,6 +1,7 @@
 package info.skyblond.daapu.server.endpoint
 
 import info.skyblond.daapu.agent.chat.ChatCodec
+import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.server.*
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.*
@@ -17,13 +18,13 @@ import kotlinx.serialization.json.put
 
 private val logger = KotlinLogging.logger("ChatsRoute")
 
-fun Route.registerChatsEndpoints(service: ChatRunService) {
+fun Route.registerChatsEndpoints(service: ChatService) {
     route("/chats") {
         get {
             call.respond(service.listChats())
         }
         post {
-            call.respond(HttpStatusCode.Created, service.newChat())
+            call.respond(HttpStatusCode.Created, ChatIdResponse(service.newChat().id))
         }
         put("/{chatId}") {
             val id = call.chatIdParam()
@@ -87,11 +88,21 @@ fun Route.registerChatsEndpoints(service: ChatRunService) {
  * `tool_result`, `retry`, `done`, `error`); a 200 response is
  * already committed then.
  */
-private suspend fun handleChatMessage(call: ApplicationCall, service: ChatRunService) {
+private suspend fun handleChatMessage(call: ApplicationCall, service: ChatService) {
     val chatId = call.chatIdParam()
-    val setup = service.prepareRun(chatId, call.receive<SendMessageRequest>())
-    val lock = service.acquireChatLock(chatId)
-    try {
+    val request = call.receive<SendMessageRequest>()
+    val setup = service.prepareRun(
+        chatId = chatId,
+        text = request.text,
+        imageDataUrls = request.images.map { it.dataUrl },
+        model = request.model,
+        personaId = request.personaId,
+    )
+    // the scoped lock wrap: validation above happened before any lock or
+    // stream (a malformed request gets a plain 400), the lock conflict gets
+    // a plain 409 before the response starts, and the release cannot be
+    // forgotten — it wraps the whole streaming response
+    service.withChatLock(chatId) {
         call.respondBytesWriter(ContentType.Text.EventStream) {
             // Flush the SSE stream immediately: ktor Netty's
             // responseWriteTimeoutSeconds (10s default) starts a timer on the
@@ -123,8 +134,6 @@ private suspend fun handleChatMessage(call: ApplicationCall, service: ChatRunSer
                 runCatching { sink("error", errorEventData(e)) }
             }
         }
-    } finally {
-        service.releaseChatLock(chatId, lock)
     }
 }
 

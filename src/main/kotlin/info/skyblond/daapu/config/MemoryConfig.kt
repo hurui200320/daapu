@@ -3,7 +3,7 @@ package info.skyblond.daapu.config
 import kotlinx.serialization.Serializable
 
 /**
- * The memory pipeline settings: compaction (`agent/oneshot/compaction/`)
+ * The memory pipeline settings: compaction (`agent/pipeline/compaction/`)
  * and the ELTM (external long-term memory, `memory/eltm/`). The compaction
  * trigger fraction and keep rounds are per-model (`agent/model/LLM.kt`),
  * since they depend on the model's context size. All model ids are REQUIRED
@@ -57,7 +57,7 @@ data class EltmConfig(
     val writerModel: String,
     /**
      * Catalog LLM id of the query rewrite one-shot (a no-tools `/v1/run`,
-     * see `agent/oneshot/rewrite/QueryRewriteService.kt`): rewrites the
+     * see `agent/pipeline/rewrite/QueryRewriteService.kt`): rewrites the
      * run's latest input into standalone retrieval queries before the chat
      * round; REQUIRED.
      */

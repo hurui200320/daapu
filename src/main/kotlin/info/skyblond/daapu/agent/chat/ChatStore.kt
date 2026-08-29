@@ -4,6 +4,12 @@ import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import kotlinx.serialization.Serializable
 
 /**
+ * The title a chat starts with; mirrors the `chats.title` column default in
+ * `V1__init.sql` (kept in sync manually so inserts state the title explicitly).
+ */
+const val DEFAULT_CHAT_TITLE = "New chat"
+
+/**
  * One chat row: id + the user-visible title + the persona RECORD (the
  * persona id of the chat's last successful run; the UI pre-fills its picker
  * from it). The wire shape of `GET /api/chats` and the rename/title
@@ -32,7 +38,7 @@ data class ChatEntry(
 /**
  * The `chats`-table seam: every raw database access to chat rows (list,
  * create, rename, delete, message load/store) lives here, so callers
- * (`server/ChatRunService.kt` and the turn loop) never touch Exposed
+ * (`agent/chat/ChatService.kt` and the turn loop) never touch Exposed
  * directly. The turn loop's store upsert writes `id` + `chat_json` +
  * `eltm_version` + `persona_id` — never the title.
  */

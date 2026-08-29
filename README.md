@@ -129,7 +129,7 @@ and autocomplete field names.
 ### Memory pipeline (`memory`)
 
 History compaction and memory extraction (see `AGENTS.md` and
-`agent/oneshot/compaction/` + `agent/oneshot/eltm/`):
+`agent/pipeline/compaction/` + `agent/pipeline/eltm/`):
 
 - Compaction is triggered per model: the trigger fraction and the keep
   rounds live on each configured chat-model entry (`config.jsonc` →
@@ -191,7 +191,7 @@ pipeline and the investigate agent's ELTM access depend on it, so the
 
 ### Sub-agents (`agent`)
 
-The investigate agent (`agent/oneshot/investigate/InvestigatorService.kt`):
+The investigate agent (`agent/pipeline/investigate/InvestigatorService.kt`):
 a `runCollect` tool loop that gathers information from the ELTM (read-only)
 and the web (the MCP tools) on behalf of the main agent. The main agent's
 tool set is the MCP servers plus the single `gsg__investigate` tool
@@ -199,6 +199,12 @@ tool set is the MCP servers plus the single `gsg__investigate` tool
 in the chat loop anymore; deep memory and web searches go through the
 sub-agent. The sub-agent runs on its OWN tool set (MCP + read-only `eltm`),
 so `gsg` is not whitelistable for it (recursion is ruled out at boot).
+
+> **GSG** is the project's internal codename for this harness (the
+> context-injection + compaction + ELTM machinery). It surfaces only as the
+> reserved `gsg` tool namespace and the `gsg__investigate` tool name —
+> personas whitelist `gsg` to grant access to the harness's sub-agent and
+> the full memory injection (see the Personas section in `AGENTS.md`).
 
 - `investigator.model` — REQUIRED catalog model id (must support tool calls),
   resolved once at startup like the memory pipeline models (unknown ids and
@@ -218,7 +224,7 @@ so `gsg` is not whitelistable for it (recursion is ruled out at boot).
 ### Session titles (`title`)
 
 `title.model` is a REQUIRED catalog model id for the session-title generator
-(`agent/oneshot/TitleGenerator.kt`, wired to `POST /api/chats/{id}/title`):
+(`agent/pipeline/TitleGenerator.kt`, wired to `POST /api/chats/{id}/title`):
 it is resolved once at startup like the memory pipeline models and never the
 chat run's own model. The generator summarizes the chat's stored history
 (empty chats short-circuit to a no-op — the title is left untouched and no

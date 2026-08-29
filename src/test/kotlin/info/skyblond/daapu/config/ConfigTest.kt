@@ -1,5 +1,6 @@
 package info.skyblond.daapu.config
 
+import info.skyblond.daapu.agent.tool.TOOL_RESERVED_NAMESPACES
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -367,7 +368,7 @@ class ConfigTest {
     @Test
     fun `a config with no providers decodes`() {
         // no provider configs is valid (only the "bifrost" provider is
-        // wired at runtime, see ChatRunService — a config missing it fails
+        // wired at runtime, see ChatService — a config missing it fails
         // there with a clear message)
         val config = decodeAppConfig(
             """
