@@ -105,11 +105,15 @@ val SAFE_ID_REGEX: Regex = Regex("[0-9a-z_-]+")
  * Fail fast on a namespace that cannot become part of an advertised tool
  * name. A blank namespace is allowed (the one-shot providers' default: tools
  * are advertised unprefixed, e.g. `agent/oneshot/eltm/EltmToolProvider.kt`);
- * a non-blank one must match [SAFE_ID_REGEX] and must not contain the `__`
- * separator that joins namespaces to tool names. Shared by
- * [McpServerConfig.validate] and the namespaced tool providers; reserved
- * names are a caller-specific concern ([TOOL_RESERVED_NAMESPACES] applies to
- * MCP servers only — the internal tools own those namespaces).
+ * a non-blank one must match [SAFE_ID_REGEX], must not contain the `__`
+ * separator that joins namespaces to tool names, and must not start or end
+ * with `_`: an ending `_` would read as the separator's first underscore
+ * (namespace `a_` advertising `a___tool` splits as namespace `a` under the
+ * first-`__` rule, silently misrouting the call), and a starting `_` blurs
+ * the boundary the same way visually. Shared by [McpServerConfig.validate],
+ * the namespaced tool providers and the persona namespace whitelist;
+ * reserved names are a caller-specific concern ([TOOL_RESERVED_NAMESPACES]
+ * applies to MCP servers only — the internal tools own those namespaces).
  */
 fun validateToolNamespaceSyntax(namespace: String, owner: String) {
     if (namespace.isBlank()) return
@@ -121,6 +125,11 @@ fun validateToolNamespaceSyntax(namespace: String, owner: String) {
     if (namespace.contains("__")) {
         throw IllegalArgumentException(
             "$owner namespace '$namespace' is invalid: it must not contain '__', which separates the parts of advertised tool names"
+        )
+    }
+    if (namespace.startsWith("_") || namespace.endsWith("_")) {
+        throw IllegalArgumentException(
+            "$owner namespace '$namespace' is invalid: it must not start or end with '_', which would blur the '__' separator that joins namespaces to tool names"
         )
     }
 }

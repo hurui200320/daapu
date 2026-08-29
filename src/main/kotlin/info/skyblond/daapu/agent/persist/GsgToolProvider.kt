@@ -5,14 +5,11 @@ import info.skyblond.daapu.agent.oneshot.investigate.InvestigatorService
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
-import info.skyblond.daapu.mcp.errorResult
+import info.skyblond.daapu.agent.tool.errorResult
+import info.skyblond.daapu.agent.tool.objectSchema
+import info.skyblond.daapu.agent.tool.stringSchema
+import info.skyblond.daapu.agent.tool.textArg
 import kotlinx.coroutines.CancellationException
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
 
 /**
  * The main agent's ONLY access to the investigate sub-agent: the single
@@ -49,22 +46,17 @@ class GsgToolProvider(
             description = "Investigate a query by launching a temporary sub-agent that searches the long-term memory (ELTM), the web (MCP tools) and other configured sources (for example, fs) in a multi-step tool loop, returning ONE self-contained report. " +
                     "Use this for anything needing memory recall or current web information; write a self-contained and specific query, which will be used as the first user message for the sub-agent. " +
                     "The current context is NOT shared with the sub-agent. You MUST provide everything (path of related files, or description of related contents, etc.) in your query.",
-            schema = buildJsonObject {
-                put("type", "object")
-                put("properties", buildJsonObject {
-                    put("query", buildJsonObject {
-                        put("type", "string")
-                        put("description", "The question or topic to investigate, self-contained and specific enough for a sub-agent without this conversation's context")
-                    })
-                })
-                put("required", buildJsonArray { add("query") })
-            },
+            schema = objectSchema(
+                required = listOf("query"),
+                "query" to stringSchema(
+                    "The question or topic to investigate, self-contained and specific enough for a sub-agent without this conversation's context"
+                ),
+            ),
         ),
     )
 
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
-        val query = request.args["query"]?.jsonPrimitive?.contentOrNull?.trim()
-            ?.takeIf { it.isNotBlank() }
+        val query = request.args.textArg("query")
         if (query == null) {
             return errorResult(request.id, request.name, "query is required and must not be blank")
         }

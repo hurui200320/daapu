@@ -224,7 +224,7 @@
       // Round cap for the investigate tool loop; 0 = unlimited.
       "maxRounds": 150,
       // The namespaces the sub-agent may execute; entries validated like any
-      // tool namespace (only [0-9a-z_-], no "__").
+      // tool namespace (only [0-9a-z_-], no "__", no leading/trailing "_").
       "allowedNamespaces": ["eltm", "exa"],
       // The sub-agent's own tool-result truncation cap, like
       // agent.main.toolResultLimit (chars, not tokens, by design; error

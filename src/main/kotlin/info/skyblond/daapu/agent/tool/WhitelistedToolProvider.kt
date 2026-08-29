@@ -2,7 +2,6 @@ package info.skyblond.daapu.agent.tool
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
-import info.skyblond.daapu.mcp.errorResult
 
 /**
  * A transparent namespace-level filter over another [ToolProvider]: the
@@ -80,12 +79,9 @@ class WhitelistedToolProvider(
 
     /**
      * The namespace prefix of an advertised name (the same FIRST-`__` rule
-     * [CombinedToolProvider] routes by); a bare name has no prefix and is
-     * never whitelisted.
+     * [CombinedToolProvider] routes by, [splitNsToolName]); a bare
+     * name has no prefix and is never whitelisted.
      */
-    private fun prefixOf(toolName: String): String? {
-        val separator = toolName.indexOf("__")
-        if (separator < 0) return null
-        return toolName.substring(0, separator)
-    }
+    private fun prefixOf(toolName: String): String? =
+        splitNsToolName(toolName)?.first
 }

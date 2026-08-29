@@ -4,6 +4,8 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
+import info.skyblond.daapu.agent.tool.errorResult
+import info.skyblond.daapu.agent.tool.splitStrictNsToolName
 import info.skyblond.daapu.config.McpConfig
 import info.skyblond.daapu.config.McpProxyConfig
 import info.skyblond.daapu.config.McpServerConfig
@@ -13,6 +15,13 @@ import io.modelcontextprotocol.kotlin.sdk.types.RPCError
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
+
+/**
+ * The model-visible answer for a transport failure: the connection is
+ * dropped, reconnection happens at the next tool-list refresh.
+ */
+internal const val TRANSPORT_FAILURE_MESSAGE =
+    "tool call failed with transport failure, will reconnect on next call"
 
 /**
  * The MCP-backed [ToolProvider] (#8): one [ClientEntry] per configured server
@@ -105,26 +114,26 @@ class McpToolProvider(
     }
 
     override fun executionTimeoutSeconds(toolName: String): Long {
-        // the advertised name is `namespace__toolName`: neither part can
+        // the advertised name is `namespace__tool`: neither part can
         // contain `__` (namespaces are validated, tool names are sanitized
-        // in specifications), so the split is unambiguous
-        val parts = toolName.split("__")
-        return if (parts.size == 2) {
-            entries[parts[0]]?.timeout ?: 0
-        } else {
-            0
-        }
+        // in specifications), so anything else — a bare name, or a name
+        // with a second `__` — cannot be an advertised name and has no
+        // budget ([splitStrictNsToolName] rejects it)
+        return splitStrictNsToolName(toolName)?.let { (namespace, _) ->
+            entries[namespace]?.timeout
+        } ?: 0
     }
 
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val advertisedName = request.name
-        // the advertised name is `namespace__toolName`: neither part can
+        // the advertised name is `namespace__tool`: neither part can
         // contain `__` (namespaces are validated, tool names are sanitized
-        // in specifications), so the split is unambiguous
-        val parts = advertisedName.split("__")
-        if (parts.size != 2)
-            return errorResult(request.id, advertisedName, "invalid tool name")
-        val namespace = parts[0]
+        // in specifications), so anything else — a bare name, or a name
+        // with a second `__` — cannot be an advertised name;
+        // [splitStrictNsToolName] rejects it with the "invalid tool name"
+        // error
+        val namespace = splitStrictNsToolName(advertisedName)?.first
+            ?: return errorResult(request.id, advertisedName, "invalid tool name")
         val entry = entries[namespace] ?: return errorResult(
             request.id, advertisedName,
             "tool '$advertisedName' is not advertised by any configured MCP server."

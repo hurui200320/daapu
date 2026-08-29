@@ -2,7 +2,6 @@ package info.skyblond.daapu.agent.tool
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
-import info.skyblond.daapu.mcp.errorResult
 
 /**
  * The tool set for the chat loop: one provider combining several
@@ -71,14 +70,12 @@ class CombinedToolProvider(
     }
 
     /**
-     * The child owning an advertised name: split at the FIRST `__`; the
+     * The child owning an advertised name: split at the FIRST `__`
+     * ([splitNsToolName], the shared namespace contract); the
      * prefix must be a registered namespace (tool names are always
      * `{namespace}__{toolName}` in a combined set, so a bare name or an
      * unknown prefix is unroutable). Returns null for unroutable names.
      */
-    private fun route(toolName: String): ToolProvider? {
-        val separator = toolName.indexOf("__")
-        if (separator < 0) return null
-        return byNamespace[toolName.substring(0, separator)]
-    }
+    private fun route(toolName: String): ToolProvider? =
+        splitNsToolName(toolName)?.let { (namespace, _) -> byNamespace[namespace] }
 }

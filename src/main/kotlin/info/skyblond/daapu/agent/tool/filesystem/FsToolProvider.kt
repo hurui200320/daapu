@@ -6,19 +6,25 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
+import info.skyblond.daapu.agent.tool.enumStringSchema
+import info.skyblond.daapu.agent.tool.errorResult
+import info.skyblond.daapu.agent.tool.intArg
+import info.skyblond.daapu.agent.tool.integerSchema
+import info.skyblond.daapu.agent.tool.nsToolName
+import info.skyblond.daapu.agent.tool.objectSchema
+import info.skyblond.daapu.agent.tool.splitNsToolName
+import info.skyblond.daapu.agent.tool.stringArrayArg
+import info.skyblond.daapu.agent.tool.stringArraySchema
+import info.skyblond.daapu.agent.tool.stringSchema
+import info.skyblond.daapu.agent.tool.textArg
+import info.skyblond.daapu.agent.tool.textResult
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
-import info.skyblond.daapu.mcp.errorResult
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
@@ -113,7 +119,7 @@ class FsToolProvider(
             canonical.toPath()
         }.distinct()
         blacklistMatchers = blacklists.map(::GlobMatcher)
-        specs = toolSpecs.map { it.copy(name = "${FS_NAMESPACE}__${it.name}") }
+        specs = toolSpecs.map { it.copy(name = nsToolName(FS_NAMESPACE, it.name)) }
     }
 
     override fun namespaces(): Set<String> = setOf(FS_NAMESPACE)
@@ -123,8 +129,8 @@ class FsToolProvider(
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
         // in namespaced mode only `{namespace}__{tool}` names are accepted:
         // anything else is not advertised by this provider
-        val prefix = "${FS_NAMESPACE}__"
-        val name = request.name.takeIf { it.startsWith(prefix) }?.substring(prefix.length)
+        val name = splitNsToolName(request.name)
+            ?.takeIf { it.first == FS_NAMESPACE }?.second
         if (name == null) {
             return errorResult(
                 request, "tool '${request.name}' is not advertised by this filesystem provider"
@@ -162,11 +168,11 @@ class FsToolProvider(
 
     private fun readTextFile(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val path = args.requiredText("path") ?: return errorResult(
+        val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
-        val head = args.optionalIntArg("head", "head")
-        val tail = args.optionalIntArg("tail", "tail")
+        val head = args.intArg("head", strict = true)
+        val tail = args.intArg("tail", strict = true)
         if (head != null && tail != null) {
             return errorResult(request, "cannot specify both head and tail simultaneously")
         }
@@ -195,7 +201,7 @@ class FsToolProvider(
 
     private fun readMediaFile(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val path = args.requiredText("path") ?: return errorResult(
+        val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
         val target = resolveTarget(request, path)
@@ -224,7 +230,7 @@ class FsToolProvider(
 
     private fun readMultipleFiles(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val paths = args.requiredStringArray("paths") ?: return errorResult(
+        val paths = args.stringArrayArg("paths") ?: return errorResult(
             request, "paths is required and must be a non-empty array of non-blank paths"
         )
         // failed reads for individual files never stop the batch (server
@@ -247,7 +253,7 @@ class FsToolProvider(
 
     private fun listDirectory(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val path = args.requiredText("path") ?: return errorResult(
+        val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
         val target = resolveTarget(request, path)
@@ -262,10 +268,10 @@ class FsToolProvider(
 
     private fun listDirectoryWithSizes(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val path = args.requiredText("path") ?: return errorResult(
+        val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
-        val sortBy = args.optionalText("sortBy") ?: "name"
+        val sortBy = args.textArg("sortBy", strict = true) ?: "name"
         if (sortBy != "name" && sortBy != "size") {
             return errorResult(request, "sortBy must be either 'name' or 'size', got '$sortBy'")
         }
@@ -307,10 +313,10 @@ class FsToolProvider(
 
     private fun directoryTree(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val path = args.requiredText("path") ?: return errorResult(
+        val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
-        val excludePatterns = args.optionalStringArray("excludePatterns").orEmpty()
+        val excludePatterns = args.stringArrayArg("excludePatterns").orEmpty()
         val target = resolveTarget(request, path)
         if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
         if (!Files.isDirectory(target)) return errorResult(request, "'$path' is not a directory")
@@ -332,13 +338,13 @@ class FsToolProvider(
 
     private fun searchFiles(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val path = args.requiredText("path") ?: return errorResult(
+        val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
-        val pattern = args.requiredText("pattern") ?: return errorResult(
+        val pattern = args.textArg("pattern", strict = true) ?: return errorResult(
             request, "pattern is required and must not be blank"
         )
-        val excludePatterns = args.optionalStringArray("excludePatterns").orEmpty()
+        val excludePatterns = args.stringArrayArg("excludePatterns").orEmpty()
         val target = resolveTarget(request, path)
         if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
         if (!Files.isDirectory(target)) return errorResult(request, "'$path' is not a directory")
@@ -381,7 +387,7 @@ class FsToolProvider(
 
     private fun getFileInfo(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        val path = args.requiredText("path") ?: return errorResult(
+        val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
         val target = resolveTarget(request, path)
@@ -654,106 +660,5 @@ class FsToolProvider(
                 schema = objectSchema(required = emptyList()),
             ),
         )
-
-        private fun stringSchema(description: String) = buildJsonObject {
-            put("type", "string")
-            put("description", description)
-        }
-
-        private fun enumStringSchema(description: String, vararg values: String) = buildJsonObject {
-            put("type", "string")
-            put("description", description)
-            put("enum", buildJsonArray { values.forEach { add(it) } })
-        }
-
-        private fun integerSchema(description: String) = buildJsonObject {
-            put("type", "integer")
-            put("description", description)
-        }
-
-        private fun stringArraySchema(description: String) = buildJsonObject {
-            put("type", "array")
-            put("items", buildJsonObject { put("type", "string") })
-            put("description", description)
-        }
-
-        private fun objectSchema(
-            required: List<String>,
-            vararg properties: Pair<String, JsonObject>,
-        ) = buildJsonObject {
-            put("type", "object")
-            put("properties", buildJsonObject {
-                properties.forEach { (name, schema) -> put(name, schema) }
-            })
-            if (required.isNotEmpty()) {
-                put("required", buildJsonArray { required.forEach { add(it) } })
-            }
-        }
     }
 }
-
-/**
- * The text value of [key] or `null` when absent/blank. A PRESENT value that
- * is not a JSON string throws [IllegalArgumentException] — like the
- * server's zod `z.string()` schema, which rejects numbers/booleans/null at
- * the tool-call boundary instead of coercing them.
- */
-private fun JsonObject.requiredText(key: String): String? {
-    val element = this[key] ?: return null
-    val primitive = runCatching { element.jsonPrimitive }.getOrNull()
-        ?: throw IllegalArgumentException("$key must be a string")
-    if (!primitive.isString) throw IllegalArgumentException("$key must be a string")
-    return primitive.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
-}
-
-private fun JsonObject.optionalText(key: String): String? =
-    requiredText(key)
-
-/**
- * `null` when [key] is ABSENT; throws [IllegalArgumentException] when it is
- * present but not an integer number. Deliberately STRICTER than the server:
- * zod's `z.number()` accepts any JSON number, so the server reads with a
- * float (truncating through its `lines.length < numLines` loops) and with
- * `0`/negative values (answering an empty read); here head/tail must be
- * whole numbers, and a string, float, bool or null argument is an invalid
- * argument, not a silently truncated one. The `>= 1` range check lives in
- * [readTextFile].
- */
-private fun JsonObject.optionalIntArg(key: String, display: String): Int? {
-    val element = this[key] ?: return null
-    val primitive = runCatching { element.jsonPrimitive }.getOrNull()
-        ?: throw IllegalArgumentException("$display must be a number")
-    if (primitive.isString) throw IllegalArgumentException("$display must be a number")
-    val value = primitive.contentOrNull?.toIntOrNull()
-        ?: throw IllegalArgumentException("$display must be an integer, got '$primitive'")
-    return value
-}
-
-/**
- * Non-blank string entries only; absent, empty or all-blank arrays answer
- * `null`. A present value that is not a string array — or an array with a
- * non-string element (number, boolean, null, object) — throws
- * [IllegalArgumentException], like the server's zod `z.array(z.string())`
- * schema.
- */
-private fun JsonObject.optionalStringArray(key: String): List<String>? {
-    val array = this[key]?.jsonArray ?: return null
-    return array.map { element ->
-        val primitive = runCatching { element.jsonPrimitive }.getOrNull()
-            ?: throw IllegalArgumentException("$key must be an array of strings")
-        if (!primitive.isString) throw IllegalArgumentException("$key must be an array of strings")
-        primitive.contentOrNull?.trim().orEmpty()
-    }.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }
-}
-
-private fun JsonObject.requiredStringArray(key: String): List<String>? = optionalStringArray(key)
-
-private fun textResult(request: ToolCallRequest, text: String): ChatMessagePart.ToolResult =
-    ChatMessagePart.ToolResult(
-        id = request.id,
-        tool = request.name,
-        parts = listOf(ChatMessagePart.Text(text)),
-    )
-
-private fun errorResult(request: ToolCallRequest, error: String): ChatMessagePart.ToolResult =
-    errorResult(request.id, request.name, error)

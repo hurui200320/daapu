@@ -79,7 +79,7 @@
           "type": "object",
           "default": {},
           "propertyNames": {
-            "pattern": "^(?!.*__)[0-9a-z_-]+$",
+            "pattern": "^(?!_)(?!.*__)(?!.*_$)[0-9a-z_-]+$",
             "not": {
               "enum": [
                 "system",
@@ -92,7 +92,7 @@
               ]
             }
           },
-          "description": "MCP tool servers keyed by namespace: the key is the namespace prefix of the advertised tool names ({namespace}__{tool}), so only [0-9a-z_-] is allowed, no '__', and it must not be a harness-reserved namespace or the dedicated exa namespace.",
+          "description": "MCP tool servers keyed by namespace: the key is the namespace prefix of the advertised tool names ({namespace}__{tool}), so only [0-9a-z_-] is allowed, no '__', no leading/trailing '_', and it must not be a harness-reserved namespace or the dedicated exa namespace.",
           "additionalProperties": {
             "$ref": "#/definitions/mcpServer"
           }
@@ -307,9 +307,9 @@
               "minItems": 1,
               "items": {
                 "type": "string",
-                "pattern": "^(?!.*__)[0-9a-z_-]+$"
+                "pattern": "^(?!_)(?!.*__)(?!.*_$)[0-9a-z_-]+$"
               },
-              "description": "The namespaces the investigate sub-agent may execute (a whitelist over its own tool set — the read-only eltm tools plus the MCP servers); required, non-empty, entries validated like any tool namespace (only [0-9a-z_-], no '__')."
+              "description": "The namespaces the investigate sub-agent may execute (a whitelist over its own tool set — the read-only eltm tools plus the MCP servers); required, non-empty, entries validated like any tool namespace (only [0-9a-z_-], no '__', no leading/trailing '_')."
             },
             "toolResultLimit": {
               "type": "integer",

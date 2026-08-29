@@ -5,7 +5,6 @@ import info.skyblond.daapu.agent.tool.*
 import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
 import info.skyblond.daapu.hand.EmbeddingException
-import info.skyblond.daapu.mcp.errorResult
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.normalizeAttributeKey
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -53,13 +52,12 @@ class EltmToolProvider(
     }
 
     private fun advertisedName(toolName: String): String =
-        if (namespace.isBlank()) toolName else "${namespace}__$toolName"
+        if (namespace.isBlank()) toolName else nsToolName(namespace, toolName)
 
-    private fun bareName(advertisedName: String): String? {
-        val prefix = "${namespace}__"
-        return if (namespace.isBlank()) advertisedName
-        else advertisedName.takeIf { it.startsWith(prefix) }?.substring(prefix.length)
-    }
+    private fun bareName(advertised: String): String? =
+        if (namespace.isBlank()) advertised
+        else splitNsToolName(advertised)
+            ?.takeIf { it.first == namespace }?.second
 
     private val readSpecs = listOf(
         ToolSpec(
@@ -226,10 +224,10 @@ class EltmToolProvider(
         return try {
             when (name) {
                 "search_entities" -> {
-                    val query = args.requiredText("query") ?: return errorResult(
+                    val query = args.textArg("query") ?: return errorResult(
                         request, "query is required and must not be blank"
                     )
-                    val limit = args.optionalInt("limit") ?: 5
+                    val limit = args.intArg("limit") ?: 5
                     if (limit < 1) return errorResult(request, "limit must be >= 1")
                     val hits = eltmService.searchEntities(query, limit)
                     if (hits.isEmpty()) {
@@ -256,13 +254,13 @@ class EltmToolProvider(
                 }
 
                 "get_relationships" -> {
-                    val id = args.requiredLong("entity_id") ?: return errorResult(
+                    val id = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
                     if (!eltmService.entityExists(id)) {
                         return errorResult(request, "entity $id does not exist")
                     }
-                    val includeInvalid = args.optionalBool("include_invalid") ?: false
+                    val includeInvalid = args.boolArg("include_invalid") ?: false
                     val views = eltmService.getRelationships(id, includeInvalid)
                     if (views.isEmpty()) textResult(request, "No relationships.")
                     else views.joinToString("\n\n") { view ->
@@ -277,15 +275,15 @@ class EltmToolProvider(
                 }
 
                 "get_entity_notes" -> {
-                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                    val entityId = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
                     if (!eltmService.entityExists(entityId)) {
                         return errorResult(request, "entity $entityId does not exist")
                     }
                     val (from, to) = args.strictDateRange()
-                    val limit = args.optionalInt("limit") ?: 5
-                    val offset = args.optionalInt("offset") ?: 0
+                    val limit = args.intArg("limit") ?: 5
+                    val offset = args.intArg("offset") ?: 0
                     if (limit < 1) return errorResult(request, "limit must be >= 1")
                     if (offset < 0) return errorResult(request, "offset must be >= 0")
                     val notes = eltmService.getEntityNotes(entityId, from, to, limit, offset)
@@ -295,15 +293,15 @@ class EltmToolProvider(
                 }
 
                 "get_relationship_notes" -> {
-                    val relId = args.requiredLong("relationship_id") ?: return errorResult(
+                    val relId = args.longArg("relationship_id") ?: return errorResult(
                         request, "relationship_id is required and must be a number"
                     )
                     if (!eltmService.relationshipExists(relId)) {
                         return errorResult(request, "relationship $relId does not exist")
                     }
                     val (from, to) = args.strictDateRange()
-                    val limit = args.optionalInt("limit") ?: 5
-                    val offset = args.optionalInt("offset") ?: 0
+                    val limit = args.intArg("limit") ?: 5
+                    val offset = args.intArg("offset") ?: 0
                     if (limit < 1) return errorResult(request, "limit must be >= 1")
                     if (offset < 0) return errorResult(request, "offset must be >= 0")
                     val notes = eltmService.getRelationshipNotes(relId, from, to, limit, offset)
@@ -313,11 +311,11 @@ class EltmToolProvider(
                 }
 
                 "search_notes" -> {
-                    val query = args.requiredText("query") ?: return errorResult(
+                    val query = args.textArg("query") ?: return errorResult(
                         request, "query is required and must not be blank"
                     )
-                    val entityId = args.optionalLong("entity_id")
-                    val relId = args.optionalLong("relationship_id")
+                    val entityId = args.longArg("entity_id")
+                    val relId = args.longArg("relationship_id")
                     if (entityId != null && relId != null) {
                         return errorResult(
                             request, "a note search accepts at most one subject"
@@ -330,7 +328,7 @@ class EltmToolProvider(
                         return errorResult(request, "relationship $relId does not exist")
                     }
                     val (from, to) = args.strictDateRange()
-                    val limit = args.optionalInt("limit") ?: 5
+                    val limit = args.intArg("limit") ?: 5
                     if (limit < 1) return errorResult(request, "limit must be >= 1")
                     val notes = eltmService.searchNotes(query, entityId, relId, from, to, limit)
                     if (notes.isEmpty()) textResult(request, "No matching notes.")
@@ -339,10 +337,10 @@ class EltmToolProvider(
                 }
 
                 "create_entity" -> {
-                    val name = args.requiredText("name") ?: return errorResult(
+                    val name = args.textArg("name") ?: return errorResult(
                         request, "name is required and must not be blank"
                     )
-                    val category = args.optionalText("category") ?: "general"
+                    val category = args.textArg("category") ?: "general"
                     val result = eltmService.createEntity(name, category)
                     val view = eltmService.getEntity(result.entity.id)
                     val entity = view?.entity ?: result.entity
@@ -374,11 +372,11 @@ class EltmToolProvider(
                 }
 
                 "refine_entity" -> {
-                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                    val entityId = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
-                    val newName = args.optionalText("new_name")
-                    val newCategory = args.optionalText("new_category")
+                    val newName = args.textArg("new_name")
+                    val newCategory = args.textArg("new_category")
                     if (newName == null && newCategory == null) {
                         return errorResult(
                             request,
@@ -400,13 +398,13 @@ class EltmToolProvider(
                 }
 
                 "create_relationship" -> {
-                    val src = args.requiredLong("src_id") ?: return errorResult(
+                    val src = args.longArg("src_id") ?: return errorResult(
                         request, "src_id is required and must be a number"
                     )
-                    val dst = args.requiredLong("dst_id") ?: return errorResult(
+                    val dst = args.longArg("dst_id") ?: return errorResult(
                         request, "dst_id is required and must be a number"
                     )
-                    val verb = args.requiredText("verb") ?: return errorResult(
+                    val verb = args.textArg("verb") ?: return errorResult(
                         request, "verb is required and must not be blank"
                     )
                     val rel = eltmService.createRelationship(src, dst, verb)
@@ -420,10 +418,10 @@ class EltmToolProvider(
                 }
 
                 "merge_entities" -> {
-                    val winner = args.requiredLong("winner_id") ?: return errorResult(
+                    val winner = args.longArg("winner_id") ?: return errorResult(
                         request, "winner_id is required and must be a number"
                     )
-                    val loser = args.requiredLong("loser_id") ?: return errorResult(
+                    val loser = args.longArg("loser_id") ?: return errorResult(
                         request, "loser_id is required and must be a number"
                     )
                     eltmService.mergeEntities(winner, loser)
@@ -431,7 +429,7 @@ class EltmToolProvider(
                 }
 
                 "add_entity_note" -> {
-                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                    val entityId = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
                     if (args.containsKey("valid")) {
@@ -443,7 +441,7 @@ class EltmToolProvider(
                     val eventDate = args.strictDate("event_date") ?: return errorResult(
                         request, "event_date is required and must be YYYY-MM-DD"
                     )
-                    val note = args.requiredText("note") ?: return errorResult(
+                    val note = args.textArg("note") ?: return errorResult(
                         request, "note is required and must not be blank"
                     )
                     val created = eltmService.attachNoteToEntity(entityId, eventDate, note)
@@ -454,16 +452,16 @@ class EltmToolProvider(
                 }
 
                 "add_relationship_note" -> {
-                    val relId = args.requiredLong("relationship_id") ?: return errorResult(
+                    val relId = args.longArg("relationship_id") ?: return errorResult(
                         request, "relationship_id is required and must be a number"
                     )
                     val eventDate = args.strictDate("event_date") ?: return errorResult(
                         request, "event_date is required and must be YYYY-MM-DD"
                     )
-                    val note = args.requiredText("note") ?: return errorResult(
+                    val note = args.textArg("note") ?: return errorResult(
                         request, "note is required and must not be blank"
                     )
-                    val valid = args.optionalBool("valid")
+                    val valid = args.boolArg("valid")
                     val created =
                         eltmService.attachNoteToRelationship(relId, eventDate, note, valid)
                     val relView = eltmService.getRelationship(relId)
@@ -479,13 +477,13 @@ class EltmToolProvider(
                 }
 
                 "set_entity_attribute" -> {
-                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                    val entityId = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
-                    val key = args.requiredText("key") ?: return errorResult(
+                    val key = args.textArg("key") ?: return errorResult(
                         request, "key is required and must not be blank"
                     )
-                    val value = args.requiredText("value") ?: return errorResult(
+                    val value = args.textArg("value") ?: return errorResult(
                         request, "value is required and must not be blank"
                     )
                     // canonicalize here so the echoed messages show the model
@@ -504,10 +502,10 @@ class EltmToolProvider(
                 }
 
                 "delete_entity_attribute" -> {
-                    val entityId = args.requiredLong("entity_id") ?: return errorResult(
+                    val entityId = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
-                    val key = args.requiredText("key") ?: return errorResult(
+                    val key = args.textArg("key") ?: return errorResult(
                         request, "key is required and must not be blank"
                     )
                     val k = normalizeAttributeKey(key)
@@ -559,24 +557,6 @@ class EltmToolProvider(
         }
     }
 
-    private fun JsonObject.requiredText(key: String): String? =
-        this[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
-
-    private fun JsonObject.optionalText(key: String): String? =
-        this[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
-
-    private fun JsonObject.requiredLong(key: String): Long? =
-        this[key]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
-
-    private fun JsonObject.optionalLong(key: String): Long? =
-        this[key]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
-
-    private fun JsonObject.optionalInt(key: String): Int? =
-        this[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
-
-    private fun JsonObject.optionalBool(key: String): Boolean? =
-        this[key]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
-
     /** The strict date-filter validation shared by the note read tools. */
     private fun JsonObject.strictDateRange(): Pair<LocalDate?, LocalDate?> {
         val from = strictDate("from")
@@ -601,16 +581,6 @@ class EltmToolProvider(
         }
     }
 
-    private fun textResult(request: ToolCallRequest, text: String): ChatMessagePart.ToolResult =
-        ChatMessagePart.ToolResult(
-            id = request.id,
-            tool = request.name,
-            parts = listOf(ChatMessagePart.Text(text)),
-        )
-
-    private fun errorResult(request: ToolCallRequest, error: String): ChatMessagePart.ToolResult =
-        errorResult(request.id, request.name, error)
-
     companion object {
         private val logger = KotlinLogging.logger {}
 
@@ -624,33 +594,5 @@ class EltmToolProvider(
             "set_entity_attribute",
             "delete_entity_attribute",
         )
-
-        private fun stringSchema(description: String) = buildJsonObject {
-            put("type", "string")
-            put("description", description)
-        }
-
-        private fun integerSchema(description: String) = buildJsonObject {
-            put("type", "integer")
-            put("description", description)
-        }
-
-        private fun boolSchema(description: String) = buildJsonObject {
-            put("type", "boolean")
-            put("description", description)
-        }
-
-        private fun objectSchema(
-            required: List<String>,
-            vararg properties: Pair<String, JsonObject>,
-        ) = buildJsonObject {
-            put("type", "object")
-            put("properties", buildJsonObject {
-                properties.forEach { (name, schema) -> put(name, schema) }
-            })
-            if (required.isNotEmpty()) {
-                put("required", buildJsonArray { required.forEach { add(it) } })
-            }
-        }
     }
 }

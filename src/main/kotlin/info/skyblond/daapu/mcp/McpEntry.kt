@@ -4,6 +4,8 @@ import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.ToolSpec
+import info.skyblond.daapu.agent.tool.errorResult
+import info.skyblond.daapu.agent.tool.nsToolName
 import info.skyblond.daapu.config.McpProxyConfig
 import info.skyblond.daapu.config.McpServerConfig
 import info.skyblond.daapu.config.McpTransportType
@@ -178,7 +180,8 @@ class ClientEntry(
         runCatching { httpClient.close() }
     }
 
-    private fun advertisedName(toolName: String): String = "${namespace}__$toolName"
+    private fun advertisedName(toolName: String): String =
+        nsToolName(namespace, toolName)
 
     suspend fun listTools(): List<ToolSpec> {
         val tools = try {

@@ -1304,12 +1304,19 @@ class EltmToolProviderTest {
 
     @Test
     fun `an invalid namespace fails at construction`() {
-        // uppercase fails the SAFE_ID_REGEX charset; `__` is the separator
+        // uppercase fails the SAFE_ID_REGEX charset; `__` is the separator;
+        // a leading/trailing `_` would blur the separator boundary
         assertFailsWith<IllegalArgumentException> {
             EltmToolProvider(FakeEltmService(), namespace = "ElTm")
         }
         assertFailsWith<IllegalArgumentException> {
             EltmToolProvider(FakeEltmService(), namespace = "a__b")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            EltmToolProvider(FakeEltmService(), namespace = "a_")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            EltmToolProvider(FakeEltmService(), namespace = "_a")
         }
         // blank stays legal: the one-shot shape
         EltmToolProvider(FakeEltmService(), namespace = "")

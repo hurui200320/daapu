@@ -1189,6 +1189,18 @@ assertTrue(
                 investigator = InvestigatorConfig(model = "bifrost/i", allowedNamespaces = listOf("bad__ns"))
             ).validate()
         }
+        // a trailing/leading `_` would blur the `__` separator the first-`__`
+        // split rule routes by (namespace `ns_` advertising `ns___tool`)
+        assertFailsWith<IllegalArgumentException> {
+            AgentConfig(
+                investigator = InvestigatorConfig(model = "bifrost/i", allowedNamespaces = listOf("ns_"))
+            ).validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            AgentConfig(
+                investigator = InvestigatorConfig(model = "bifrost/i", allowedNamespaces = listOf("_ns"))
+            ).validate()
+        }
         valid.copy(investigator = valid.investigator.copy(allowedNamespaces = listOf("eltm", "exa"))).validate()
 
         // the tool-result truncation caps are REQUIRED positive (0 would

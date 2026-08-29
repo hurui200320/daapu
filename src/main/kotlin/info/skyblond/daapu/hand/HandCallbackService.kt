@@ -6,6 +6,7 @@ import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.agent.tool.ToolTransportException
+import info.skyblond.daapu.agent.tool.errorResult
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
 
@@ -103,14 +104,11 @@ class HandCallbackService(
         } catch (e: TimeoutCancellationException) {
             // must precede the CancellationException rethrow: a timeout is a
             // cancellation, but one we answer with a model-visible error
-            return HandToolCallbackResponse(
-                parts = listOf(
-                    ChatMessagePart.Text(
-                        "Error: tool '${request.name}' timed out after ${budgetSeconds}s"
-                    )
-                ),
-                isError = true,
+            val result = errorResult(
+                request.id, request.name,
+                "tool '${request.name}' timed out after ${budgetSeconds}s",
             )
+            return HandToolCallbackResponse(parts = result.parts, isError = result.isError)
         } catch (e: CancellationException) {
             throw e
         } catch (e: ToolTransportException) {

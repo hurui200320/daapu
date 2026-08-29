@@ -96,12 +96,5 @@ object EmptyToolProvider : ToolProvider {
     override suspend fun specifications(): List<ToolSpec> = emptyList()
 
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult =
-        ChatMessagePart.ToolResult(
-            id = request.id,
-            tool = request.name,
-            parts = listOf(
-                ChatMessagePart.Text("Error: tool '${request.name}' is not available in this harness.")
-            ),
-            isError = true,
-        )
+        errorResult(request, "tool '${request.name}' is not available in this harness.")
 }
