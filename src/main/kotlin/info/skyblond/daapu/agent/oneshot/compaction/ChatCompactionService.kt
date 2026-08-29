@@ -4,14 +4,13 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.oneshot.lastMessageText
+import info.skyblond.daapu.agent.oneshot.roundCount
+import info.skyblond.daapu.agent.oneshot.runOneShotText
+import info.skyblond.daapu.agent.oneshot.takeLastNRound
 import info.skyblond.daapu.agent.persist.ContextInjection
-import info.skyblond.daapu.agent.tool.EmptyToolProvider
-import info.skyblond.daapu.hand.HandRunRequest
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.toHandModelSpec
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CancellationException
 import java.time.Instant
 
 class ChatCompactionService(
@@ -19,8 +18,7 @@ class ChatCompactionService(
     private val hand: HandService,
     // the hand's /v1/run policy knobs for this one-shot (config `hand.*`):
     // transient failures retry with the same budget/backoff as the chat loop
-    private val maxRetries: Int,
-    private val streamIdleTimeoutMs: Long,
+    private val policy: HandRunPolicy,
     // the harness context: sanitize the input (it may be the chat loop's
     // injected in-loop chat) and re-anchor the history user messages so the
     // summarizer sees each message's send time
@@ -100,29 +98,13 @@ class ChatCompactionService(
             spec = null,
         )
 
-        val summary = try {
-            hand.runCollect(
-                HandRunRequest(
-                    model = model.toHandModelSpec(),
-                    messages = chat,
-                    systemPrompt = renderSystemPrompt(500),
-                    maxTokens = model.maxOutputTokens,
-                    // 0 = no round cap, safe here: no tools are declared
-                    // (a tool-less run attaches no tool URLs, so a stray
-                    // model tool call fails the run), the loop ends on the
-                    // first stop
-                    maxRounds = 0,
-                    maxRetries = maxRetries,
-                    streamIdleTimeoutMs = streamIdleTimeoutMs,
-                ),
-                toolProvider = EmptyToolProvider,
-                model = model,
-            ).lastMessageText()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw IllegalStateException("Compaction summarization failed", e)
-        }
+        val summary = hand.runOneShotText(
+            model = model,
+            messages = chat,
+            systemPrompt = renderSystemPrompt(500),
+            policy = policy,
+            label = "Compaction summarization",
+        )
         logger.info { "Compaction summary:\n${summary}" }
         val summaryMessage = ChatMessage(
             role = ChatMessageRole.User,
@@ -163,23 +145,19 @@ class ChatCompactionService(
         lastNRound: Int,
     ): Pair<List<ChatMessage>, List<ChatMessage>> {
         require(lastNRound >= 1)
-        val userIndexes = chat.mapIndexedNotNull { index, message ->
-            if (message.role == ChatMessageRole.User) index else null
-        }
-        require(userIndexes.isNotEmpty()) {
+        require(chat.roundCount() >= 1) {
             "Nothing to compact: the chat has no user messages"
         }
         // always leave at least one round to compact: keep the last N
         // rounds, but never ALL of them
-        val keep = minOf(lastNRound, userIndexes.size - 1)
-        val cutIdx = if (keep == 0) chat.size else userIndexes[userIndexes.size - keep]
+        val keep = minOf(lastNRound, chat.roundCount() - 1)
+        val preserved = chat.takeLastNRound(keep)
+        val dropped = chat.subList(0, chat.size - preserved.size)
         // defensive: the arithmetic above always cuts after the first chat
         // message, so an empty drop region can never reach the LLM
-        require(cutIdx > 0) {
+        require(dropped.isNotEmpty()) {
             "Nothing to compact: the drop region would be empty"
         }
-        val dropped = chat.subList(0, cutIdx)
-        val preserved = chat.subList(cutIdx, chat.size)
         return dropped to preserved
     }
 

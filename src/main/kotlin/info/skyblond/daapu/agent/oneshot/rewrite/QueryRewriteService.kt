@@ -1,24 +1,19 @@
 package info.skyblond.daapu.agent.oneshot.rewrite
 
 import info.skyblond.daapu.agent.chat.ChatMessage
-import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.oneshot.lastMessageText
+import info.skyblond.daapu.agent.oneshot.runOneShotText
+import info.skyblond.daapu.agent.oneshot.takeLastNRound
 import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.agent.persist.InjectionSpec
-import info.skyblond.daapu.agent.tool.EmptyToolProvider
-import info.skyblond.daapu.hand.HandRunRequest
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.toHandModelSpec
-import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CancellationException
 import java.time.ZonedDateTime
 
 class QueryRewriteService(
     private val model: LLM,
     private val hand: HandService,
-    private val maxRetries: Int,
-    private val streamIdleTimeoutMs: Long,
+    private val policy: HandRunPolicy,
     private val contextInjection: ContextInjection = ContextInjection(),
 ) {
     /**
@@ -32,7 +27,12 @@ class QueryRewriteService(
         history: List<ChatMessage>,
         rounds: Int
     ): String? {
-        val historyClipped = takeLastNRound(chat = history, lastNRound = rounds)
+        // fail fast on a non-positive round count (config `memory.eltm.
+        // rewriteRounds` validates this at boot; this guards direct callers):
+        // the shared clip helper treats it as "nothing to take", which here
+        // would silently skip the rewrite instead of failing loudly
+        require(rounds >= 1) { "rewriteRounds must be >= 1, got $rounds" }
+        val historyClipped = history.takeLastNRound(rounds)
         // a chat with no user message has nothing to rewrite: there is no
         // latest input to make standalone
         if (historyClipped.isEmpty()) {
@@ -56,48 +56,16 @@ class QueryRewriteService(
             ),
         )
 
-        val rewrite = try {
-            hand.runCollect(
-                HandRunRequest(
-                    model = model.toHandModelSpec(),
-                    messages = chat,
-                    systemPrompt = renderRewriteSystemPrompt(),
-                    maxTokens = model.maxOutputTokens,
-                    // 0 = no round cap, safe here: no tools are declared
-                    // (a tool-less run attaches no tool URLs, so a stray
-                    // model tool call fails the run), the loop ends on the
-                    // first stop
-                    maxRounds = 0,
-                    maxRetries = maxRetries,
-                    streamIdleTimeoutMs = streamIdleTimeoutMs,
-                ),
-                toolProvider = EmptyToolProvider,
-                model = model,
-            ).lastMessageText()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw IllegalStateException("Query rewrite failed", e)
-        }
+        val rewrite = hand.runOneShotText(
+            model = model,
+            messages = chat,
+            systemPrompt = renderRewriteSystemPrompt(),
+            policy = policy,
+            label = "Query rewrite",
+        )
 
         return if (rewrite == NOTHING_TO_QUERY) null
         else rewrite
-    }
-
-    internal fun takeLastNRound(
-        chat: List<ChatMessage>,
-        lastNRound: Int
-    ): List<ChatMessage> {
-        require(lastNRound >= 1)
-        val userIndexes = chat.mapIndexedNotNull { index, message ->
-            if (message.role == ChatMessageRole.User) index else null
-        }
-        if (userIndexes.isEmpty()) {
-            return emptyList()
-        }
-        val take = minOf(lastNRound, userIndexes.size)
-        val cutIdx = if (take == 0) chat.size else userIndexes[userIndexes.size - take]
-        return chat.subList(cutIdx, chat.size)
     }
 
     companion object {

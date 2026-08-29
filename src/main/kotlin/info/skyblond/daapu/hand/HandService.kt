@@ -170,9 +170,11 @@ class HandService(
     }
 
     /**
-     * One `/v1/embed` call through the hand, with the caller's run-policy
-     * knobs supplied per call (the hand holds no defaults; the ELTM service
-     * passes the `HandConfig` values). Cancellation is rethrown untouched;
+     * One `/v1/embed` call through the hand, with the caller's
+     * [HandRunPolicy] supplied per call (the hand holds no defaults;
+     * `policy.streamIdleTimeoutMs` doubles as the per-attempt embed timeout —
+     * the same `hand.streamIdleTimeoutMs` knob that paces the runs).
+     * Cancellation is rethrown untouched;
      * every transport-level failure (connection, missing error envelope,
      * unexpected protocol errors) is wrapped into
      * [EmbeddingException]("upstream") so callers see ONE exception family.
@@ -182,8 +184,7 @@ class HandService(
     suspend fun embed(
         model: EmbeddingModel,
         input: List<String>,
-        maxRetries: Int,
-        timeoutMs: Long,
+        policy: HandRunPolicy,
     ): HandEmbedResult {
         // the checks live OUTSIDE the wrap: a drift is a catalog/gateway
         // bug (fail fast), not an upstream failure
@@ -193,8 +194,8 @@ class HandService(
                     model = HandEmbedModelSpec(model.provider.baseUrl, model.provider.apiKey, model.modelId),
                     dimensions = model.dimensions,
                     input = input,
-                    maxRetries = maxRetries,
-                    timeoutMs = timeoutMs,
+                    maxRetries = policy.maxRetries,
+                    timeoutMs = policy.streamIdleTimeoutMs,
                     additionalProperties = model.additionalProperties,
                 )
             )

@@ -135,14 +135,12 @@ class PersistChatServiceTest {
         val compactionService = ChatCompactionService(
             model = model,
             hand = handService,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         val rewriteService = QueryRewriteService(
             model = model,
             hand = handService,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         val callback = RecordingCallback()
         val error = runBlocking {
@@ -161,23 +159,20 @@ class PersistChatServiceTest {
                         ?: MemoryExtractionService(
                             extractModel = model,
                             hand = handService,
-                            maxRetries = 0,
-                            streamIdleTimeoutMs = 300_000,
+                            policy = HandRunPolicy(0, 300_000),
                             eltmWriterService = EltmWriterService(
                                 writerModel = model,
                                 hand = handService,
                                 eltmService = eltmService,
                                 maxWriterRounds = 150,
-                                maxRetries = 0,
-                                streamIdleTimeoutMs = 300_000,
+                                policy = HandRunPolicy(0, 300_000),
                             ),
                         ),
                     rewriteRounds = rewriteRounds,
                     relatedEntitiesLimit = relatedEntitiesLimit,
                     relatedNotesLimit = relatedNotesLimit,
                     maxRounds = 64,
-                    maxRetries = 0,
-                    streamIdleTimeoutMs = 300_000,
+                    policy = HandRunPolicy(0, 300_000),
                 ).runChat(
                     chatId = "chat-1",
                     model = model,
@@ -1049,8 +1044,7 @@ class PersistChatServiceTest {
         val service = QueryRewriteService(
             model = catalogModel("bifrost/cerebras/gemma-4-31b"),
             hand = testHandService(hand),
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         val chat = listOf(
             ChatMessage(
@@ -1067,8 +1061,7 @@ class PersistChatServiceTest {
         val result = QueryRewriteService(
             model = catalogModel("bifrost/cerebras/gemma-4-31b"),
             hand = testHandService(rewritten),
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         ).rewriteQuery(chat, 1)
         assertEquals("When did Alice visit Paris?", result)
     }
@@ -1079,8 +1072,7 @@ class PersistChatServiceTest {
         val service = QueryRewriteService(
             model = catalogModel("bifrost/cerebras/gemma-4-31b"),
             hand = testHandService(hand),
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         assertNull(service.rewriteQuery(emptyList(), 1), "nothing to rewrite, nothing to query")
         assertNull(
@@ -1101,6 +1093,22 @@ class PersistChatServiceTest {
     }
 
     @Test
+    fun `rewriteQuery fails fast on a non-positive round count`() = runBlocking {
+        // config validates `memory.eltm.rewriteRounds >= 1` at boot; this
+        // pins the direct-caller guard so a bad count cannot silently skip
+        // the rewrite
+        val hand = FakeHand(runScript = { error("the rewrite must not call the LLM") })
+        val service = QueryRewriteService(
+            model = catalogModel("bifrost/cerebras/gemma-4-31b"),
+            hand = testHandService(hand),
+            policy = HandRunPolicy(0, 300_000),
+        )
+        assertFailsWith<IllegalArgumentException> { service.rewriteQuery(emptyList(), 0) }
+        assertFailsWith<IllegalArgumentException> { service.rewriteQuery(emptyList(), -1) }
+        assertTrue(hand.requests.isEmpty(), "no hand request must be made")
+    }
+
+    @Test
     fun `a failed rewrite fails the run without storing`() {
         val outcome = run(
             rewriteScript = { errorRunFlow("upstream", "boom") },
@@ -1117,8 +1125,7 @@ class PersistChatServiceTest {
         val service = QueryRewriteService(
             model = catalogModel("bifrost/cerebras/gpt-oss-120b"),
             hand = testHandService(hand),
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         val chat = listOf(
             ChatMessage(
@@ -1506,14 +1513,12 @@ class PersistChatServiceTest {
         val compactionService = ChatCompactionService(
             model = model,
             hand = handService,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         val rewriteService = QueryRewriteService(
             model = model,
             hand = handService,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         val callback = RecordingCallback()
         val store = InMemoryChatStore(crowdedSeed())
@@ -1529,23 +1534,20 @@ class PersistChatServiceTest {
                     memoryExtractionService = MemoryExtractionService(
                         extractModel = model,
                         hand = handService,
-                        maxRetries = 0,
-                        streamIdleTimeoutMs = 300_000,
+                        policy = HandRunPolicy(0, 300_000),
                         eltmWriterService = EltmWriterService(
                             writerModel = model,
                             hand = handService,
                             eltmService = eltm,
                             maxWriterRounds = 150,
-                            maxRetries = 0,
-                            streamIdleTimeoutMs = 300_000,
+                            policy = HandRunPolicy(0, 300_000),
                         ),
                     ),
                     rewriteRounds = 5,
                     relatedEntitiesLimit = 5,
                     relatedNotesLimit = 5,
                     maxRounds = 64,
-                    maxRetries = 0,
-                    streamIdleTimeoutMs = 300_000,
+                    policy = HandRunPolicy(0, 300_000),
                 ).runChat(
                     chatId = "chat-1",
                     model = model,
@@ -1691,21 +1693,18 @@ class PersistChatServiceTest {
         val compactionService = ChatCompactionService(
             model = model,
             hand = handService,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
         val extractionService = MemoryExtractionService(
             extractModel = model,
             hand = handService,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
             eltmWriterService = EltmWriterService(
                 writerModel = model,
                 hand = handService,
                 eltmService = eltm,
                 maxWriterRounds = 150,
-                maxRetries = 0,
-                streamIdleTimeoutMs = 300_000,
+                policy = HandRunPolicy(0, 300_000),
             ),
         )
         val chatStore = ConcurrentChatStore()
@@ -1715,8 +1714,7 @@ class PersistChatServiceTest {
             queryRewriteService = QueryRewriteService(
                 model = model,
                 hand = handService,
-                maxRetries = 0,
-                streamIdleTimeoutMs = 300_000,
+                policy = HandRunPolicy(0, 300_000),
             ),
             hand = handService,
             compactionService = compactionService,
@@ -1726,8 +1724,7 @@ class PersistChatServiceTest {
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
             maxRounds = 64,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 300_000,
+            policy = HandRunPolicy(0, 300_000),
         )
 
         val chats = listOf(

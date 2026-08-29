@@ -11,6 +11,7 @@ import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandEvent
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandUpstreamException
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.errorRunFlow
@@ -51,8 +52,7 @@ class InvestigatorServiceTest {
         hand = testHandService(hand),
         toolProvider = eltmProvider(eltm),
         maxRounds = maxRounds,
-        maxRetries = 0,
-        streamIdleTimeoutMs = 0,
+        policy = HandRunPolicy(0, 0),
     )
 
     private fun searchRound(id: String, query: String): ChatMessage = assistantMessage(

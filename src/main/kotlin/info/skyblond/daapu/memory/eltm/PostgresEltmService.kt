@@ -3,6 +3,7 @@ package info.skyblond.daapu.memory.eltm
 import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
 import info.skyblond.daapu.db.*
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
 import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.core.Function
@@ -40,8 +41,7 @@ class PostgresEltmService(
     private val hand: HandService,
     private val entityMatchThreshold: Double,
     private val noteSearchThreshold: Double,
-    private val maxRetries: Int,
-    private val timeoutMs: Long,
+    private val policy: HandRunPolicy,
 ) : EltmService {
 
     // ------------------------------------------------------------------
@@ -965,7 +965,7 @@ class PostgresEltmService(
     // ------------------------------------------------------------------
 
     private suspend fun embedText(text: String): List<Float> {
-        val vectors = hand.embed(embeddingModel, listOf(text), maxRetries, timeoutMs).vectors
+        val vectors = hand.embed(embeddingModel, listOf(text), policy).vectors
         return padVector(vectors.single(), MAX_VECTOR_DIMENSIONS)
     }
 

@@ -22,8 +22,7 @@ class ChatCompactionServiceTest {
     ) = ChatCompactionService(
         model = model,
         hand = testHandService(hand),
-        maxRetries = 0,
-        streamIdleTimeoutMs = 0,
+        policy = HandRunPolicy(0, 0),
     )
 
     private fun user(text: String) =

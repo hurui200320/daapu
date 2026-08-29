@@ -5,12 +5,9 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
-import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE
-import info.skyblond.daapu.hand.HandRunRequest
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.toHandModelSpec
-import kotlinx.coroutines.CancellationException
 
 class TitleGenerator(
     private val model: LLM,
@@ -24,8 +21,7 @@ class TitleGenerator(
     private val lastNRound: Int = 0,
     // the hand's /v1/run policy knobs for this one-shot (config `hand.*`):
     // transient failures retry with the same budget/backoff as the chat loop
-    private val maxRetries: Int,
-    private val streamIdleTimeoutMs: Long,
+    private val policy: HandRunPolicy,
 ) {
     /**
      * Generate a session title from [history]. An empty history returns the
@@ -44,36 +40,20 @@ class TitleGenerator(
         // image history, which is a `title.model` configuration error
         model.checkPromptContentCapabilities(truncated)
 
-        return try {
-            hand.runCollect(
-                HandRunRequest(
-                    model = model.toHandModelSpec(),
-                    messages = truncated + ChatMessage(
-                        role = ChatMessageRole.User,
-                        parts = listOf(
-                            ChatMessagePart.Text(
-                                "Generate a title according to the system prompt."
-                            )
-                        )
-                    ),
-                    systemPrompt = renderSystemPrompt(15),
-                    maxTokens = model.maxOutputTokens,
-                    // 0 = no round cap, safe here: no tools are declared
-                    // (a tool-less run attaches no tool URLs, so a stray
-                    // model tool call fails the run), the loop ends on the
-                    // first stop
-                    maxRounds = 0,
-                    maxRetries = maxRetries,
-                    streamIdleTimeoutMs = streamIdleTimeoutMs,
-                ),
-                toolProvider = EmptyToolProvider,
-                model = model,
-            ).lastMessageText()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw IllegalStateException("Title generation failed", e)
-        }
+        return hand.runOneShotText(
+            model = model,
+            messages = truncated + ChatMessage(
+                role = ChatMessageRole.User,
+                parts = listOf(
+                    ChatMessagePart.Text(
+                        "Generate a title according to the system prompt."
+                    )
+                )
+            ),
+            systemPrompt = renderSystemPrompt(15),
+            policy = policy,
+            label = "Title generation",
+        )
     }
 
     companion object {
@@ -89,12 +69,8 @@ class TitleGenerator(
             chat: List<ChatMessage>,
             lastNRound: Int,
         ): List<ChatMessage> {
-            if (lastNRound <= 0) return chat
-            val userIndexes = chat.mapIndexedNotNull { index, message ->
-                if (message.role == ChatMessageRole.User) index else null
-            }
-            if (userIndexes.size <= lastNRound) return chat
-            return chat.subList(userIndexes[userIndexes.size - lastNRound], chat.size)
+            if (lastNRound <= 0 || chat.roundCount() <= lastNRound) return chat
+            return chat.takeLastNRound(lastNRound)
         }
 
         private fun renderSystemPrompt(words: Int): String = """

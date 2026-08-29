@@ -93,8 +93,7 @@ class PersistChatService(
     // defaults, every parameter is REQUIRED per request, so the brain
     // sources them here
     private val maxRounds: Int,
-    private val maxRetries: Int,
-    private val streamIdleTimeoutMs: Long,
+    private val policy: HandRunPolicy,
 ) {
     suspend fun runChat(
         chatId: String,
@@ -375,8 +374,8 @@ class PersistChatService(
             systemPrompt = systemPrompt,
             maxTokens = model.maxOutputTokens,
             maxRounds = maxRounds,
-            maxRetries = maxRetries,
-            streamIdleTimeoutMs = streamIdleTimeoutMs,
+            maxRetries = policy.maxRetries,
+            streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
         )
         var newChat = chat
         var terminal: HandTerminal? = null

@@ -9,6 +9,7 @@ import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
 import info.skyblond.daapu.hand.FakeHand
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.errorRunFlow
 import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.testutil.FakeEltmService
@@ -45,8 +46,7 @@ class GsgToolProviderTest {
             hand = testHandService(hand),
             toolProvider = eltmProvider(eltm),
             maxRounds = 150,
-            maxRetries = 0,
-            streamIdleTimeoutMs = 0,
+            policy = HandRunPolicy(0, 0),
         )
     )
 

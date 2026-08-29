@@ -12,6 +12,7 @@ import info.skyblond.daapu.db.MemoryMetaNumber
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.di.appModule
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.memory.eltm.PostgresEltmService
 import info.skyblond.daapu.memory.eltm.entityEmbeddingText
@@ -82,11 +83,10 @@ private suspend fun reembedAll(
         ?: throw IllegalArgumentException(
             "memory.eltm.embeddingModel '${config.memory.eltm.embeddingModel}' is not in the model catalog"
         )
-    val maxRetries = config.hand.maxRetries
-    val timeoutMs = config.hand.streamIdleTimeoutMs
+    val policy = HandRunPolicy(config.hand.maxRetries, config.hand.streamIdleTimeoutMs)
 
-    val entityCount = reembedEntities(hand, model, maxRetries, timeoutMs)
-    val noteCount = reembedNotes(hand, model, maxRetries, timeoutMs)
+    val entityCount = reembedEntities(hand, model, policy)
+    val noteCount = reembedNotes(hand, model, policy)
 
     if (entityCount + noteCount == 0L) {
         logger.info { "nothing to re-embed, the ELTM is empty; version counter left untouched" }
@@ -110,8 +110,7 @@ private suspend fun reembedAll(
 private suspend fun reembedEntities(
     hand: HandService,
     model: EmbeddingModel,
-    maxRetries: Int,
-    timeoutMs: Long,
+    policy: HandRunPolicy,
 ): Long {
     var lastId = 0L
     var done = 0L
@@ -142,7 +141,7 @@ private suspend fun reembedEntities(
             }
         }
         if (page.isEmpty()) break
-        page.writeEachBatch(hand, model, maxRetries, timeoutMs) { id, vector ->
+        page.writeEachBatch(hand, model, policy) { id, vector ->
             EltmEntities.update({ EltmEntities.id eq id }) {
                 it[EltmEntities.embedding] = vector
             }
@@ -158,8 +157,7 @@ private suspend fun reembedEntities(
 private suspend fun reembedNotes(
     hand: HandService,
     model: EmbeddingModel,
-    maxRetries: Int,
-    timeoutMs: Long,
+    policy: HandRunPolicy,
 ): Long {
     var lastId = 0L
     var done = 0L
@@ -174,7 +172,7 @@ private suspend fun reembedNotes(
                 }
         }
         if (page.isEmpty()) break
-        page.writeEachBatch(hand, model, maxRetries, timeoutMs) { id, vector ->
+        page.writeEachBatch(hand, model, policy) { id, vector ->
             EltmNotes.update({ EltmNotes.id eq id }) {
                 it[EltmNotes.embedding] = vector
             }
@@ -195,12 +193,11 @@ private suspend fun reembedNotes(
 private suspend fun List<Pair<Long, String>>.writeEachBatch(
     hand: HandService,
     model: EmbeddingModel,
-    maxRetries: Int,
-    timeoutMs: Long,
+    policy: HandRunPolicy,
     update: suspend (id: Long, vector: List<Float>) -> Unit,
 ) {
     chunked(EMBED_BATCH_SIZE).forEach { batch ->
-        val vectors = hand.embed(model, batch.map { it.second }, maxRetries, timeoutMs)
+        val vectors = hand.embed(model, batch.map { it.second }, policy)
             .vectors
             .map { padVector(it, MAX_VECTOR_DIMENSIONS) }
         withTransaction {

@@ -25,6 +25,7 @@ import info.skyblond.daapu.agent.tool.filesystem.FsToolProvider
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
@@ -51,6 +52,11 @@ import org.koin.plugin.module.dsl.single
  * seams with fakes (see `testutil/TestDi.kt`).
  */
 fun appModule(config: AppConfig): Module = module {
+    // the hand's per-request run policy (`hand.maxRetries` +
+    // `hand.streamIdleTimeoutMs`): shared by the chat loop, every one-shot
+    // service and the ELTM embeddings
+    val handPolicy = HandRunPolicy(config.hand.maxRetries, config.hand.streamIdleTimeoutMs)
+
     // the hand-pi client plus the callback wiring (the in-flight run
     // registry the hand's tool callbacks resolve through); the callback and
     // tool-list URLs are loopback PoC values derived from the server port
@@ -97,8 +103,7 @@ fun appModule(config: AppConfig): Module = module {
             hand = get(),
             entityMatchThreshold = config.memory.eltm.entityMatchThreshold,
             noteSearchThreshold = config.memory.eltm.noteSearchThreshold,
-            maxRetries = config.hand.maxRetries,
-            timeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
         )
     }
 
@@ -131,8 +136,7 @@ fun appModule(config: AppConfig): Module = module {
         ChatCompactionService(
             model = requiredLlm("memory.compactModel", config.memory.compactModel),
             hand = get(),
-            maxRetries = config.hand.maxRetries,
-            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
         )
     }
     single<TitleGenerator> {
@@ -140,8 +144,7 @@ fun appModule(config: AppConfig): Module = module {
             model = requiredLlm("title.model", config.title.model),
             hand = get(),
             lastNRound = config.title.lastNRound,
-            maxRetries = config.hand.maxRetries,
-            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
         )
     }
 
@@ -214,8 +217,7 @@ fun appModule(config: AppConfig): Module = module {
             hand = get(),
             toolProvider = toolProvider,
             maxRounds = investigator.maxRounds,
-            maxRetries = config.hand.maxRetries,
-            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
         )
     }
     single<EltmWriterService> {
@@ -227,8 +229,7 @@ fun appModule(config: AppConfig): Module = module {
             hand = get(),
             eltmService = get(),
             maxWriterRounds = config.memory.eltm.maxWriterRounds,
-            maxRetries = config.hand.maxRetries,
-            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
         )
     }
     single<MemoryExtractionService> {
@@ -238,8 +239,7 @@ fun appModule(config: AppConfig): Module = module {
                 config.memory.eltm.extractionModel
             ),
             hand = get(),
-            maxRetries = config.hand.maxRetries,
-            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
             eltmWriterService = get(),
         )
     }
@@ -248,8 +248,7 @@ fun appModule(config: AppConfig): Module = module {
         QueryRewriteService(
             model = requiredLlm("memory.eltm.rewriteModel", config.memory.eltm.rewriteModel),
             hand = get(),
-            maxRetries = config.hand.maxRetries,
-            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
         )
     }
 
@@ -272,8 +271,7 @@ fun appModule(config: AppConfig): Module = module {
             relatedEntitiesLimit = config.memory.eltm.relatedEntitiesLimit,
             relatedNotesLimit = config.memory.eltm.relatedNotesLimit,
             maxRounds = config.hand.maxRounds,
-            maxRetries = config.hand.maxRetries,
-            streamIdleTimeoutMs = config.hand.streamIdleTimeoutMs,
+            policy = handPolicy,
         )
     }
 

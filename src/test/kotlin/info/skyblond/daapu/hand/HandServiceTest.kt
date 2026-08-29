@@ -433,7 +433,7 @@ class HandServiceTest {
         val service =
             HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
-        val result = service.embed(embeddingModel(), listOf("hello", "world"), maxRetries = 2, timeoutMs = 30_000)
+        val result = service.embed(embeddingModel(), listOf("hello", "world"), HandRunPolicy(maxRetries = 2, streamIdleTimeoutMs = 30_000))
 
         assertEquals(2, result.vectors.size, "one vector per input item")
         assertEquals(1536, result.dimensions)
@@ -460,7 +460,7 @@ class HandServiceTest {
             additionalProperties = buildJsonObject { put("service_tier", "priority") },
         )
 
-        service.embed(model, listOf("hello"), maxRetries = 2, timeoutMs = 30_000)
+        service.embed(model, listOf("hello"), HandRunPolicy(maxRetries = 2, streamIdleTimeoutMs = 30_000))
 
         val request = hand.embedRequests.single()
         assertEquals(
@@ -502,7 +502,7 @@ class HandServiceTest {
                 "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
             )
             val e = assertFailsWith<EmbeddingException> {
-                service.embed(embeddingModel(), listOf("x"), maxRetries = 0, timeoutMs = 0)
+                service.embed(embeddingModel(), listOf("x"), HandRunPolicy(maxRetries = 0, streamIdleTimeoutMs = 0))
             }
             assertEquals(type, e.type)
         }
@@ -516,7 +516,7 @@ class HandServiceTest {
             HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
         val e = assertFailsWith<EmbeddingException> {
-            service.embed(embeddingModel(), listOf("x"), maxRetries = 0, timeoutMs = 0)
+            service.embed(embeddingModel(), listOf("x"), HandRunPolicy(maxRetries = 0, streamIdleTimeoutMs = 0))
         }
         assertEquals("upstream", e.type)
         assertEquals(transport, e.cause, "the wrapped transport failure must be preserved as the cause")
@@ -540,7 +540,7 @@ class HandServiceTest {
             "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
         )
         val e = assertFailsWith<IllegalStateException> {
-            driftedService.embed(model, listOf("x"), maxRetries = 0, timeoutMs = 0)
+            driftedService.embed(model, listOf("x"), HandRunPolicy(maxRetries = 0, streamIdleTimeoutMs = 0))
         }
         assertTrue(e.message!!.contains("1536"), "the error must name the expected dimensions: ${e.message}")
     }
@@ -565,7 +565,7 @@ class HandServiceTest {
         val e = assertFailsWith<IllegalStateException> {
             truncatedService.embed(
                 embeddingModel(dimensions = 1), listOf("x", "y"),
-                maxRetries = 0, timeoutMs = 0,
+                HandRunPolicy(maxRetries = 0, streamIdleTimeoutMs = 0),
             )
         }
         assertTrue(
@@ -580,8 +580,16 @@ class HandServiceTest {
         val service =
             HandService(hand, HandCallbackService("test-token"), "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools")
 
-        val e = runCatching { service.embed(embeddingModel(), listOf("x"), maxRetries = 0, timeoutMs = 0) }
+        val e = runCatching { service.embed(embeddingModel(), listOf("x"), HandRunPolicy(maxRetries = 0, streamIdleTimeoutMs = 0)) }
             .exceptionOrNull()
         assertIs<CancellationException>(e)
+    }
+
+    @Test
+    fun `HandRunPolicy fails fast on a negative knob`() {
+        val negativeRetries = assertFailsWith<IllegalArgumentException> { HandRunPolicy(-1, 0) }
+        assertTrue(negativeRetries.message!!.contains("maxRetries"), negativeRetries.message)
+        val negativeTimeout = assertFailsWith<IllegalArgumentException> { HandRunPolicy(0, -1) }
+        assertTrue(negativeTimeout.message!!.contains("streamIdleTimeoutMs"), negativeTimeout.message)
     }
 }

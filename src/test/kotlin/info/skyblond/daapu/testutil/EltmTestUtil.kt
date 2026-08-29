@@ -3,6 +3,7 @@ package info.skyblond.daapu.testutil
 import info.skyblond.daapu.agent.oneshot.eltm.EltmWriterService
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.memory.eltm.*
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -452,7 +453,6 @@ fun testEltmWriterService(
         hand = testHandService(hand),
         eltmService = eltmService,
         maxWriterRounds = maxWriterRounds,
-        maxRetries = 0,
-        streamIdleTimeoutMs = 0,
+        policy = HandRunPolicy(0, 0),
     )
 }

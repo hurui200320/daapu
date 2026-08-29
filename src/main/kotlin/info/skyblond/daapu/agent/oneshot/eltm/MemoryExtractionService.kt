@@ -4,14 +4,11 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.oneshot.lastMessageText
+import info.skyblond.daapu.agent.oneshot.runOneShotText
 import info.skyblond.daapu.agent.persist.ContextInjection
-import info.skyblond.daapu.agent.tool.EmptyToolProvider
-import info.skyblond.daapu.hand.HandRunRequest
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.toHandModelSpec
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CancellationException
 import java.time.LocalDate
 
 /**
@@ -54,8 +51,7 @@ class MemoryExtractionService(
     // the hand's /v1/run policy knobs for the one-shot calls (config
     // `hand.*`): transient failures retry with the same budget/backoff as
     // the chat loop, the writer rounds are capped inside EltmWriterService
-    private val maxRetries: Int,
-    private val streamIdleTimeoutMs: Long,
+    private val policy: HandRunPolicy,
     // the ELTM write path: the extracted facts are written into the ELTM
     // diary directly (config `memory.eltm.writerModel`, `maxWriterRounds`);
     // REQUIRED — `memory.eltm` is mandatory config
@@ -135,29 +131,13 @@ class MemoryExtractionService(
             spec = null,
         )
 
-        return try {
-            hand.runCollect(
-                HandRunRequest(
-                    model = extractModel.toHandModelSpec(),
-                    messages = chat,
-                    systemPrompt = renderExtractorSystemPrompt(),
-                    maxTokens = extractModel.maxOutputTokens,
-                    // 0 = no round cap, safe here: no tools are declared
-                    // (a tool-less run attaches no tool URLs, so a stray
-                    // model tool call fails the run), the loop ends on the
-                    // first stop
-                    maxRounds = 0,
-                    maxRetries = maxRetries,
-                    streamIdleTimeoutMs = streamIdleTimeoutMs,
-                ),
-                toolProvider = EmptyToolProvider,
-                model = extractModel,
-            ).lastMessageText()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw IllegalStateException("Memory extraction failed", e)
-        }
+        return hand.runOneShotText(
+            model = extractModel,
+            messages = chat,
+            systemPrompt = renderExtractorSystemPrompt(),
+            policy = policy,
+            label = "Memory extraction",
+        )
     }
 
     companion object {

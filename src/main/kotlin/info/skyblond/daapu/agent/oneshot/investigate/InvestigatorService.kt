@@ -8,6 +8,7 @@ import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.oneshot.lastMessageText
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HandUpstreamException
@@ -42,8 +43,7 @@ class InvestigatorService(
     private val toolProvider: ToolProvider,
     /** Round cap for the investigation tool loop; `0` = unlimited. */
     private val maxRounds: Int,
-    private val maxRetries: Int,
-    private val streamIdleTimeoutMs: Long,
+    private val policy: HandRunPolicy,
 ) {
     suspend fun runInvestigate(query: String): InvestigateOutcome {
         require(query.isNotBlank()) { "cannot investigate a blank query" }
@@ -65,8 +65,8 @@ class InvestigatorService(
                     systemPrompt = renderInvestigatorSystemPrompt(),
                     maxTokens = model.maxOutputTokens,
                     maxRounds = maxRounds,
-                    maxRetries = maxRetries,
-                    streamIdleTimeoutMs = streamIdleTimeoutMs,
+                    maxRetries = policy.maxRetries,
+                    streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
                 ),
                 toolProvider = toolProvider,
                 model = model,
@@ -128,8 +128,8 @@ class InvestigatorService(
                     systemPrompt = renderSummarySystemPrompt(),
                     maxTokens = model.maxOutputTokens,
                     maxRounds = 0,
-                    maxRetries = maxRetries,
-                    streamIdleTimeoutMs = streamIdleTimeoutMs,
+                    maxRetries = policy.maxRetries,
+                    streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
                 ),
                 toolProvider = EmptyToolProvider,
                 model = model,

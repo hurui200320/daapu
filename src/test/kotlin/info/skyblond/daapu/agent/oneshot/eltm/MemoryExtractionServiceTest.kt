@@ -55,8 +55,7 @@ class MemoryExtractionServiceTest {
     ) = MemoryExtractionService(
         extractModel = extractModel,
         hand = testHandService(hand),
-        maxRetries = 0,
-        streamIdleTimeoutMs = 0,
+        policy = HandRunPolicy(0, 0),
         eltmWriterService = testEltmWriterService(hand, eltmService, maxWriterRounds),
     )
 

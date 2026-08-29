@@ -3,6 +3,14 @@ package info.skyblond.daapu.agent.oneshot
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.tool.EmptyToolProvider
+import info.skyblond.daapu.agent.tool.ToolProvider
+import info.skyblond.daapu.hand.HandRunPolicy
+import info.skyblond.daapu.hand.HandRunRequest
+import info.skyblond.daapu.hand.HandService
+import info.skyblond.daapu.hand.toHandModelSpec
+import kotlinx.coroutines.CancellationException
 
 /**
  * The current prompt size in tokens: the last assistant message's measured
@@ -40,4 +48,91 @@ fun List<ChatMessage>.lastMessageText(): String {
         .trim()
         .takeIf { it.isNotBlank() }
         ?: error("One-shot call produced no text")
+}
+
+/**
+ * One hand `/v1/run` collect for the one-shot services: builds the request
+ * (the model's own output budget, no tools unless [toolProvider] says
+ * otherwise, round-capped by [maxRounds]), collects the run's messages, and
+ * wraps every non-cancellation failure into an [IllegalStateException]
+ * labelled with [label] — the uniform one-shot failure contract (a failed
+ * one-shot fails the run; the label names the pipeline stage). The text
+ * one-shots use [runOneShotText] on top of this.
+ */
+suspend fun HandService.runOneShotCollect(
+    model: LLM,
+    messages: List<ChatMessage>,
+    systemPrompt: String,
+    policy: HandRunPolicy,
+    label: String,
+    maxRounds: Int = 0,
+    toolProvider: ToolProvider = EmptyToolProvider,
+): List<ChatMessage> = try {
+    runCollect(
+        HandRunRequest(
+            model = model.toHandModelSpec(),
+            messages = messages,
+            systemPrompt = systemPrompt,
+            maxTokens = model.maxOutputTokens,
+            maxRounds = maxRounds,
+            maxRetries = policy.maxRetries,
+            streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
+        ),
+        toolProvider = toolProvider,
+        model = model,
+    )
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    throw IllegalStateException("$label failed", e)
+}
+
+/**
+ * The text one-shot: [runOneShotCollect] plus the final-message text
+ * extraction ([lastMessageText]) — the "one LLM call, one text answer"
+ * shape shared by the title/compaction/rewrite/extraction one-shots. The
+ * extraction runs INSIDE the same labelled wrap as the collect: its
+ * defensive backstop failures ("produced no text" etc.) carry the stage
+ * label too, one [IllegalStateException] family per pipeline stage.
+ */
+suspend fun HandService.runOneShotText(
+    model: LLM,
+    messages: List<ChatMessage>,
+    systemPrompt: String,
+    policy: HandRunPolicy,
+    label: String,
+    maxRounds: Int = 0,
+    toolProvider: ToolProvider = EmptyToolProvider,
+): String {
+    val collected = runOneShotCollect(model, messages, systemPrompt, policy, label, maxRounds, toolProvider)
+    return try {
+        collected.lastMessageText()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw IllegalStateException("$label failed", e)
+    }
+}
+
+/**
+ * The number of user rounds in the chat (a round is one user message
+ * through to the next user message).
+ */
+fun List<ChatMessage>.roundCount(): Int =
+    count { it.role == ChatMessageRole.User }
+
+/**
+ * Take trailing [n] user rounds, cut at user-message boundaries so every
+ * tool_call/tool_result pair stays whole. The round count is clamped to the
+ * chat's own round count: with fewer rounds, everything from the FIRST user
+ * message on is returned. Empty when [n] is <= 0 or the chat has no user
+ * message at all.
+ */
+fun List<ChatMessage>.takeLastNRound(n: Int): List<ChatMessage> {
+    if (n <= 0) return emptyList()
+    val userIndexes = mapIndexedNotNull { index, message ->
+        if (message.role == ChatMessageRole.User) index else null
+    }
+    if (userIndexes.isEmpty()) return emptyList()
+    return subList(userIndexes[userIndexes.size - minOf(n, userIndexes.size)], size)
 }

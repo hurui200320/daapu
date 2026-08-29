@@ -23,8 +23,7 @@ class TitleGeneratorTest {
         model = model,
         hand = testHandService(hand),
         lastNRound = lastNRound,
-        maxRetries = 0,
-        streamIdleTimeoutMs = 0,
+        policy = HandRunPolicy(0, 0),
     )
 
     private fun user(text: String) =

@@ -5,12 +5,11 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
-import info.skyblond.daapu.hand.HandRunRequest
+import info.skyblond.daapu.agent.oneshot.runOneShotCollect
+import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.toHandModelSpec
 import info.skyblond.daapu.memory.eltm.EltmService
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.CancellationException
 import java.time.LocalDate
 
 /**
@@ -29,8 +28,7 @@ class EltmWriterService(
     private val eltmService: EltmService,
     /** Round cap for the writer tool loop; `0` = unlimited. */
     private val maxWriterRounds: Int,
-    private val maxRetries: Int,
-    private val streamIdleTimeoutMs: Long,
+    private val policy: HandRunPolicy,
 ) {
     suspend fun writeToEltm(
         facts: String,
@@ -47,25 +45,15 @@ class EltmWriterService(
                 listOf(ChatMessagePart.Text(buildWriterInput(facts, date))),
             ),
         )
-        try {
-            hand.runCollect(
-                HandRunRequest(
-                    model = writerModel.toHandModelSpec(),
-                    messages = chat,
-                    systemPrompt = renderWriterSystemPrompt(),
-                    maxTokens = writerModel.maxOutputTokens,
-                    maxRounds = maxWriterRounds,
-                    maxRetries = maxRetries,
-                    streamIdleTimeoutMs = streamIdleTimeoutMs,
-                ),
-                toolProvider = toolProvider,
-                model = writerModel,
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw IllegalStateException("ELTM write failed", e)
-        }
+        hand.runOneShotCollect(
+            model = writerModel,
+            messages = chat,
+            systemPrompt = renderWriterSystemPrompt(),
+            policy = policy,
+            label = "ELTM write",
+            maxRounds = maxWriterRounds,
+            toolProvider = toolProvider,
+        )
     }
 
     companion object {
