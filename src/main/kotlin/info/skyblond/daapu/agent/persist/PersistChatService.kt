@@ -137,11 +137,7 @@ class PersistChatService(
             currentPromptTokens(chat) > model.contextLength * model.compactionTriggerFraction
         ) {
             logger.info { "Compacting chat $chatId" }
-            val result = compactionService.compactChat(chat, model.compactionKeepRounds)
-            memoryExtractionService.processDiscardedMessages(result.droppedMessages)
-            // the compacted history reaches the client via the post-run
-            // resync; no dedicated event is emitted
-            chat = result.newChat
+            chat = compactAndExtract(chat, model)
             logger.info { "Finished compacting chat $chatId" }
         }
 
@@ -197,17 +193,20 @@ class PersistChatService(
             } ?: Pair(emptyList(), emptyList())
         }
 
-        chat = contextInjection.injectContext(
-            chat,
-            InjectionSpec(
-                time = ZonedDateTime.now(),
-                // null for a persona without gsg access: the time-only
-                // simple injection, no ELTM content at all
-                eltmUpdated = if (gsgAccess) chatEltmVersion != eltmVersion else null,
-                relatedEntities = if (gsgAccess) relatedEntities else null,
-                relatedNotes = if (gsgAccess) relatedNotes else null,
-            )
+        // the injection spec for the CURRENT eltmVersion snapshot: the ELTM
+        // fields are gated on gsgAccess (all-null = the time-only simple
+        // injection, no ELTM content at all), and the related entities/notes
+        // were retrieved for THIS run's input. A local function, not a val,
+        // so the reactive `context_exhausted` recovery below re-reads the
+        // refreshed eltmVersion.
+        fun buildInjectionSpec(): InjectionSpec = InjectionSpec(
+            time = ZonedDateTime.now(),
+            eltmUpdated = if (gsgAccess) chatEltmVersion != eltmVersion else null,
+            relatedEntities = if (gsgAccess) relatedEntities else null,
+            relatedNotes = if (gsgAccess) relatedNotes else null,
         )
+
+        chat = contextInjection.injectContext(chat, buildInjectionSpec())
 
         while (true) {
             // the prompt is complete (history + the out-of-band system prompt +
@@ -236,10 +235,8 @@ class PersistChatService(
                     chat = chat.take(attemptStartSize)
                     if (terminal.type == "context_exhausted") {
                         logger.info { "Hand reports context exhaustion, compacting chat $chatId" }
-                        val result = compactionService.compactChat(chat, model.compactionKeepRounds)
-                        memoryExtractionService.processDiscardedMessages(result.droppedMessages)
                         // the compacted chat history does not contain injection
-                        chat = result.newChat
+                        chat = compactAndExtract(chat, model)
                         // The compaction replaces the whole chat with the
                         // summary when the keep count collapses to zero, so the
                         // run's own user message may be gone. The latest user
@@ -264,15 +261,7 @@ class PersistChatService(
                         // pre-round search results stay valid — no re-search,
                         // no mid-loop rewrite/embed call.
                         eltmVersion = eltmService.version()
-                        chat = contextInjection.injectContext(
-                            chat,
-                            InjectionSpec(
-                                time = ZonedDateTime.now(),
-                                eltmUpdated = if (gsgAccess) chatEltmVersion != eltmVersion else null,
-                                relatedEntities = if (gsgAccess) relatedEntities else null,
-                                relatedNotes = if (gsgAccess) relatedNotes else null,
-                            )
-                        )
+                        chat = contextInjection.injectContext(chat, buildInjectionSpec())
                         // fall through: the next loop iteration starts a fresh
                         // hand run with the compacted prompt
                     } else {
@@ -296,6 +285,25 @@ class PersistChatService(
         data object Done : HandTerminal
 
         data class RunError(val type: String, val message: String) : HandTerminal
+    }
+
+    /**
+     * Compact the chat and run the memory extraction over the dropped
+     * messages BEFORE they are discarded (see
+     * `agent/persist/MainAgentSystemPromptService.kt`'s memory
+     * architecture); returns the compacted history (no injection). The
+     * compacted history reaches the client via the post-run resync; no
+     * dedicated event is emitted. Both the proactive trigger and the
+     * reactive `context_exhausted` recovery go through here — the two
+     * paths differ only in their logging and what they re-inject after.
+     */
+    private suspend fun compactAndExtract(
+        chat: List<ChatMessage>,
+        model: LLM,
+    ): List<ChatMessage> {
+        val result = compactionService.compactChat(chat, model.compactionKeepRounds)
+        memoryExtractionService.processDiscardedMessages(result.droppedMessages)
+        return result.newChat
     }
 
     /**
@@ -368,14 +376,12 @@ class PersistChatService(
         toolProvider: ToolProvider,
         callback: StreamingExecutionCallback,
     ): Pair<List<ChatMessage>, HandTerminal> {
-        val request = HandRunRequest(
-            model = model.toHandModelSpec(),
+        val request = handRunRequest(
+            model = model,
             messages = chat,
             systemPrompt = systemPrompt,
-            maxTokens = model.maxOutputTokens,
+            policy = policy,
             maxRounds = maxRounds,
-            maxRetries = policy.maxRetries,
-            streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
         )
         var newChat = chat
         var terminal: HandTerminal? = null

@@ -65,28 +65,19 @@ class PostgresEltmService(
         } else {
             val embedding = embedText(entityEmbeddingText(canonical, cat, emptyMap()))
             val id = withTransaction {
-                try {
-                    val inserted = EltmEntities.insert {
-                        it[EltmEntities.canonicalName] = canonical
-                        it[EltmEntities.category] = cat
-                        it[EltmEntities.embedding] = embedding
-                    } get EltmEntities.id
-                    // bump the write counter atomically with the insert (only
-                    // on a real insert; a collision below must not flag a change)
-                    bumpWriteVersion()
-                    inserted
-                } catch (e: Exception) {
-                    if (!isUniqueViolation(e)) throw e
-                    // a concurrent run inserted the same (name, category)
-                    // first: true create-or-fetch semantics — adopt the
-                    // existing row
-                    // (an unhandled violation would escape the tool callback
-                    // and fail the whole run as tool_transport)
-                    withTransaction { findEntityByKey(canonical, cat)?.get(EltmEntities.id) }
-                        ?: throw IllegalStateException(
-                            "unique violation but the existing entity is not visible", e
-                        )
-                }
+                insertOrFetchId(
+                    what = "existing entity",
+                    insert = {
+                        EltmEntities.insert {
+                            it[EltmEntities.canonicalName] = canonical
+                            it[EltmEntities.category] = cat
+                            it[EltmEntities.embedding] = embedding
+                        } get EltmEntities.id
+                    },
+                    fetchExistingId = {
+                        withTransaction { findEntityByKey(canonical, cat)?.get(EltmEntities.id) }
+                    },
+                )
             }
             withTransaction { findEntityRowById(id)!! }
         }
@@ -139,14 +130,7 @@ class PostgresEltmService(
             // (name, category) is already another entity's key — the caller
             // must merge the two instead (an unhandled unique violation on
             // the UPDATE below would escape as a raw SQL error)
-            findEntityByKey(newCanonical, newCat)?.let { existing ->
-                if (existing[EltmEntities.id] != entityId) {
-                    throw IllegalArgumentException(
-                        "an entity \"$newCanonical\" (category $newCat) already exists " +
-                            "as entity ${existing[EltmEntities.id]}: merge the two instead"
-                    )
-                }
-            }
+            checkNoNameCollision(entityId, newCanonical, newCat)
             // EmbeddingException (e.g. invalid_request) propagates for the
             // tool layer to map to a model-visible error (rolled back)
             val embedding = embedText(
@@ -168,14 +152,7 @@ class PostgresEltmService(
                 // between the check above and the UPDATE: the update rolled
                 // back — re-raise the same collision error the pre-check
                 // would have given (never a raw SQL error)
-                findEntityByKey(newCanonical, newCat)?.let { existing ->
-                    if (existing[EltmEntities.id] != entityId) {
-                        throw IllegalArgumentException(
-                            "an entity \"$newCanonical\" (category $newCat) already exists " +
-                                "as entity ${existing[EltmEntities.id]}: merge the two instead"
-                        )
-                    }
-                }
+                checkNoNameCollision(entityId, newCanonical, newCat)
                 throw e
             }
             bumpWriteVersion()
@@ -202,36 +179,22 @@ class PostgresEltmService(
             // existing row (active OR invalidated) is a pure read returned
             // as-is; validity only moves with a diary event
             // (attachNoteToRelationship's valid flag), never here
-            val existing = findRelationshipByTriple(srcId, v, dstId)
-            if (existing != null) {
-                existing[EltmRelationships.id]
-            } else {
-                try {
-                    val inserted = EltmRelationships.insert {
-                        it[EltmRelationships.srcId] = srcId
-                        it[EltmRelationships.dstId] = dstId
-                        it[EltmRelationships.verb] = v
-                    } get EltmRelationships.id
-                    // bump the write counter atomically with the insert
-                    // (only on a real insert; a collision below must not
-                    // flag a change)
-                    bumpWriteVersion()
-                    inserted
-                } catch (e: Exception) {
-                    if (!isUniqueViolation(e)) throw e
-                    // a concurrent run inserted the same triple first: true
-                    // create-or-fetch semantics — adopt the existing row (an
-                    // unhandled violation would escape the tool callback
-                    // and fail the whole run as tool_transport)
-                    withTransaction {
-                        findRelationshipByTriple(srcId, v, dstId)?.get(
-                            EltmRelationships.id
-                        )
-                    } ?: throw IllegalStateException(
-                        "unique violation but the relationship is not visible", e
-                    )
-                }
-            }
+            findRelationshipByTriple(srcId, v, dstId)?.get(EltmRelationships.id)
+                ?: insertOrFetchId(
+                    what = "relationship",
+                    insert = {
+                        EltmRelationships.insert {
+                            it[EltmRelationships.srcId] = srcId
+                            it[EltmRelationships.dstId] = dstId
+                            it[EltmRelationships.verb] = v
+                        } get EltmRelationships.id
+                    },
+                    fetchExistingId = {
+                        withTransaction {
+                            findRelationshipByTriple(srcId, v, dstId)?.get(EltmRelationships.id)
+                        }
+                    },
+                )
         }
         return withTransaction { findRelationshipById(id)!! }
     }
@@ -601,9 +564,9 @@ class PostgresEltmService(
         val entity = findEntityById(id) ?: return@withTransaction null
         EntityView(
             entity = entity,
-            noteCount = countNotesForEntity(id),
+            noteCount = countNotes(EltmNotes.entityId, id),
             relationshipCount = countRelationshipsForEntity(id),
-            latestNote = latestNoteForEntity(id),
+            latestNote = latestNote(EltmNotes.entityId, id),
             attributes = attributesOf(id),
         )
     }
@@ -638,8 +601,8 @@ class PostgresEltmService(
             ?: "<deleted entity ${rel.srcId}>",
         dstName = findEntityById(rel.dstId)?.canonicalName
             ?: "<deleted entity ${rel.dstId}>",
-        noteCount = countNotesForRelationship(rel.id),
-        latestNote = latestNoteForRelationship(rel.id),
+        noteCount = countNotes(EltmNotes.relationshipId, rel.id),
+        latestNote = latestNote(EltmNotes.relationshipId, rel.id),
     )
 
     private suspend fun noteQuery(
@@ -748,6 +711,51 @@ class PostgresEltmService(
             .where { MemoryMetaNumber.key eq ELTM_VERSION_KEY }
             .singleOrNull()?.get(MemoryMetaNumber.value) ?: 0L
 
+    /**
+     * Insert-or-fetch for the unique-keyed writes ([createEntity],
+     * [createRelationship]): run [insert] and bump the write counter on
+     * success (only a real insert flags a change; a collision must not); on
+     * a unique violation — a concurrent run inserted the same key first —
+     * adopt the existing row via [fetchExistingId]: true create-or-fetch
+     * semantics (an unhandled violation would escape the tool callback and
+     * fail the whole run as tool_transport). [what] completes the
+     * not-visible error (e.g. "existing entity" / "relationship"). Ambient
+     * transaction (called inside withTransaction); [fetchExistingId]
+     * re-selects in its own transaction, mirroring the original per-table
+     * recovery.
+     */
+    private suspend fun insertOrFetchId(
+        what: String,
+        insert: () -> Long,
+        fetchExistingId: suspend () -> Long?,
+    ): Long = try {
+        val inserted = insert()
+        bumpWriteVersion()
+        inserted
+    } catch (e: Exception) {
+        if (!isUniqueViolation(e)) throw e
+        fetchExistingId() ?: throw IllegalStateException(
+            "unique violation but the $what is not visible", e
+        )
+    }
+
+    /**
+     * Fail with the merge-instead collision error when the target
+     * (name, category) belongs to a DIFFERENT entity than [entityId] (the
+     * entity's own row is not a collision — [refineEntity] may echo its
+     * current identity). Ambient transaction.
+     */
+    private fun checkNoNameCollision(entityId: Long, name: String, category: String) {
+        findEntityByKey(name, category)?.let { existing ->
+            if (existing[EltmEntities.id] != entityId) {
+                throw IllegalArgumentException(
+                    "an entity \"$name\" (category $category) already exists " +
+                            "as entity ${existing[EltmEntities.id]}: merge the two instead"
+                )
+            }
+        }
+    }
+
     private fun findEntityByKey(canonicalName: String, category: String): ResultRow? =
         EltmEntities.selectAll().where {
             (EltmEntities.canonicalName eq canonicalName) and (EltmEntities.category eq category)
@@ -785,26 +793,28 @@ class PostgresEltmService(
     private fun findNoteById(id: Long): EltmNote? =
         EltmNotes.selectAll().where { EltmNotes.id eq id }.singleOrNull()?.toNote()
 
-    private fun latestNoteForEntity(entityId: Long): EltmNote? =
-        EltmNotes.selectAll().where { EltmNotes.entityId eq entityId }
+    /**
+     * The subject's newest note (event date, then id — the same ordering as
+     * [noteQuery]). The subject is ONE of the two note columns (the
+     * migration CHECK), so callers pass the matching column. Ambient
+     * transaction.
+     */
+    private fun latestNote(column: Column<Long?>, subjectId: Long): EltmNote? =
+        EltmNotes.selectAll().where { column eq subjectId }
             .orderBy(EltmNotes.eventDate to SortOrder.DESC, EltmNotes.id to SortOrder.DESC)
             .limit(1).singleOrNull()?.toNote()
 
-    private fun latestNoteForRelationship(relationshipId: Long): EltmNote? =
-        EltmNotes.selectAll().where { EltmNotes.relationshipId eq relationshipId }
-            .orderBy(EltmNotes.eventDate to SortOrder.DESC, EltmNotes.id to SortOrder.DESC)
-            .limit(1).singleOrNull()?.toNote()
+    /** The subject's diary-note count. Ambient transaction. */
+    private fun countNotes(column: Column<Long?>, subjectId: Long): Int =
+        EltmNotes.selectAll().where { column eq subjectId }.count().toInt()
 
-    private fun countNotesForEntity(entityId: Long): Int =
-        EltmNotes.selectAll().where { EltmNotes.entityId eq entityId }.count().toInt()
-
-    private fun countNotesForRelationship(relationshipId: Long): Int =
-        EltmNotes.selectAll().where { EltmNotes.relationshipId eq relationshipId }.count().toInt()
-
+    /**
+     * The relationships of ONE entity (src OR dst, self-loops counted once —
+     * [relationshipCountsFor]'s rule), delegated to the batch helper so the
+     * counting rule exists in exactly one place. Ambient transaction.
+     */
     private fun countRelationshipsForEntity(entityId: Long): Int =
-        EltmRelationships.selectAll().where {
-            (EltmRelationships.srcId eq entityId) or (EltmRelationships.dstId eq entityId)
-        }.count().toInt()
+        relationshipCountsFor(listOf(entityId))[entityId] ?: 0
 
     /**
      * Per-subject note counts and latest notes (by event date, then id — the

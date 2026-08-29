@@ -4,6 +4,8 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.roundCount
+import info.skyblond.daapu.agent.chat.takeLastNRound
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandEvent
 import info.skyblond.daapu.hand.HandRunException

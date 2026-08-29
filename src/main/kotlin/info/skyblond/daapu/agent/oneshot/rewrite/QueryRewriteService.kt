@@ -1,9 +1,9 @@
 package info.skyblond.daapu.agent.oneshot.rewrite
 
 import info.skyblond.daapu.agent.chat.ChatMessage
+import info.skyblond.daapu.agent.chat.takeLastNRound
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.oneshot.runOneShotText
-import info.skyblond.daapu.agent.oneshot.takeLastNRound
 import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.agent.persist.InjectionSpec
 import info.skyblond.daapu.hand.HandRunPolicy

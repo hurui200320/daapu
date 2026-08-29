@@ -1,6 +1,7 @@
 package info.skyblond.daapu.agent.tool
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.joinedText
 
 /**
  * A `ToolProvider` decorator that caps the total text of every successful
@@ -68,10 +69,12 @@ class LengthSafeToolProvider(
 
         // similar to opencode: merge all text parts into one, truncate and
         // put it as the last part (attachments keep their original order,
-        // ahead of the merged text). The parts' `.text` is joined, never
-        // their toString() — a data class toString would leak the
-        // "Text(text=...)" wrapper into the model's context.
-        val text = textParts.joinToString("\n") { it.text }
+        // ahead of the merged text). joinedText() is the ONE definition of
+        // the join, so the boundary above (which counts the '\n'
+        // separators it would add) matches it exactly. The parts' `.text`
+        // is joined, never their toString() — a data class toString would
+        // leak the "Text(text=...)" wrapper into the model's context.
+        val text = textParts.joinedText()
 
         // the marker is budgeted INSIDE the cap: subtracting its own length
         // from the kept prefix makes the merged text fit maxLength exactly —

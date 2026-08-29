@@ -1,15 +1,14 @@
 package info.skyblond.daapu.agent.oneshot
 
 import info.skyblond.daapu.agent.chat.ChatMessage
-import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.textContent
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.hand.HandRunPolicy
-import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.hand.toHandModelSpec
+import info.skyblond.daapu.hand.handRunRequest
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -43,9 +42,7 @@ fun List<ChatMessage>.lastMessageText(): String {
     if (assistant.finishReason != "stop") {
         error("One-shot call ended with finish_reason=${assistant.finishReason}, not a clean stop")
     }
-    return assistant.parts.filterIsInstance<ChatMessagePart.Text>()
-        .joinToString("\n") { it.text }
-        .trim()
+    return assistant.parts.textContent()
         .takeIf { it.isNotBlank() }
         ?: error("One-shot call produced no text")
 }
@@ -69,14 +66,12 @@ suspend fun HandService.runOneShotCollect(
     toolProvider: ToolProvider = EmptyToolProvider,
 ): List<ChatMessage> = try {
     runCollect(
-        HandRunRequest(
-            model = model.toHandModelSpec(),
+        handRunRequest(
+            model = model,
             messages = messages,
             systemPrompt = systemPrompt,
-            maxTokens = model.maxOutputTokens,
+            policy = policy,
             maxRounds = maxRounds,
-            maxRetries = policy.maxRetries,
-            streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
         ),
         toolProvider = toolProvider,
         model = model,
@@ -112,27 +107,4 @@ suspend fun HandService.runOneShotText(
     } catch (e: Exception) {
         throw IllegalStateException("$label failed", e)
     }
-}
-
-/**
- * The number of user rounds in the chat (a round is one user message
- * through to the next user message).
- */
-fun List<ChatMessage>.roundCount(): Int =
-    count { it.role == ChatMessageRole.User }
-
-/**
- * Take trailing [n] user rounds, cut at user-message boundaries so every
- * tool_call/tool_result pair stays whole. The round count is clamped to the
- * chat's own round count: with fewer rounds, everything from the FIRST user
- * message on is returned. Empty when [n] is <= 0 or the chat has no user
- * message at all.
- */
-fun List<ChatMessage>.takeLastNRound(n: Int): List<ChatMessage> {
-    if (n <= 0) return emptyList()
-    val userIndexes = mapIndexedNotNull { index, message ->
-        if (message.role == ChatMessageRole.User) index else null
-    }
-    if (userIndexes.isEmpty()) return emptyList()
-    return subList(userIndexes[userIndexes.size - minOf(n, userIndexes.size)], size)
 }

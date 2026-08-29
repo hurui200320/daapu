@@ -3,10 +3,10 @@ package info.skyblond.daapu.agent.oneshot.compaction
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.roundCount
+import info.skyblond.daapu.agent.chat.takeLastNRound
 import info.skyblond.daapu.agent.model.LLM
-import info.skyblond.daapu.agent.oneshot.roundCount
 import info.skyblond.daapu.agent.oneshot.runOneShotText
-import info.skyblond.daapu.agent.oneshot.takeLastNRound
 import info.skyblond.daapu.agent.persist.ContextInjection
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService

@@ -3,16 +3,16 @@ package info.skyblond.daapu.agent.oneshot.investigate
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.textContent
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.oneshot.lastMessageText
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.hand.HandRunPolicy
-import info.skyblond.daapu.hand.HandRunRequest
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HandUpstreamException
-import info.skyblond.daapu.hand.toHandModelSpec
+import info.skyblond.daapu.hand.handRunRequest
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import java.time.ZonedDateTime
@@ -59,14 +59,12 @@ class InvestigatorService(
         model.checkPromptContentCapabilities(chat)
         val result = try {
             hand.runCollectPartial(
-                HandRunRequest(
-                    model = model.toHandModelSpec(),
+                handRunRequest(
+                    model = model,
                     messages = chat,
                     systemPrompt = renderInvestigatorSystemPrompt(),
-                    maxTokens = model.maxOutputTokens,
+                    policy = policy,
                     maxRounds = maxRounds,
-                    maxRetries = policy.maxRetries,
-                    streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
                 ),
                 toolProvider = toolProvider,
                 model = model,
@@ -94,9 +92,7 @@ class InvestigatorService(
         val assistant = messages.lastOrNull { it.role == ChatMessageRole.Assistant }
         if (assistant != null && assistant.finishReason == "stop") {
             val parts = assistant.parts.filterIsInstance<ChatMessagePart.ContentPart>()
-            val text = parts.filterIsInstance<ChatMessagePart.Text>()
-                .joinToString("\n") { it.text }
-                .trim()
+            val text = parts.textContent()
             if (text.isNotBlank()) return InvestigateOutcome(parts)
         }
         // a "clean" run without a final assistant text is as broken as a
@@ -118,18 +114,17 @@ class InvestigatorService(
     private suspend fun summarizePartial(messages: List<ChatMessage>): String {
         return try {
             model.checkPromptContentCapabilities(messages)
+            val summaryInput = messages + ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text(SUMMARY_INSTRUCTION)),
+            )
             hand.runCollect(
-                HandRunRequest(
-                    model = model.toHandModelSpec(),
-                    messages = messages + ChatMessage(
-                        ChatMessageRole.User,
-                        listOf(ChatMessagePart.Text(SUMMARY_INSTRUCTION)),
-                    ),
+                handRunRequest(
+                    model = model,
+                    messages = summaryInput,
                     systemPrompt = renderSummarySystemPrompt(),
-                    maxTokens = model.maxOutputTokens,
+                    policy = policy,
                     maxRounds = 0,
-                    maxRetries = policy.maxRetries,
-                    streamIdleTimeoutMs = policy.streamIdleTimeoutMs,
                 ),
                 toolProvider = EmptyToolProvider,
                 model = model,
@@ -141,9 +136,8 @@ class InvestigatorService(
             messages.asSequence()
                 .filter { it.role == ChatMessageRole.Assistant }
                 .flatMap { it.parts.asSequence() }
-                .filterIsInstance<ChatMessagePart.Text>()
-                .joinToString("\n") { it.text }
-                .trim()
+                .toList()
+                .textContent()
                 .takeIf { it.isNotBlank() }
                 ?: "No partial findings were recorded before the stop."
         }
@@ -228,9 +222,7 @@ data class InvestigateOutcome(
 ) {
     /** The flattened text of the report's text parts. */
     val text: String
-        get() = report.filterIsInstance<ChatMessagePart.Text>()
-            .joinToString("\n") { it.text }
-            .trim()
+        get() = report.textContent()
 
     companion object {
         /** A report consisting of a single text part. */

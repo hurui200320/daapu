@@ -355,23 +355,15 @@ class ChatRunService(
     /**
      * Run [block] while holding the per-chat lock, or throw
      * [ChatRunConflictException] when the chat is locked by a run or another
-     * history-mutating operation in progress. The lock entry is taken
-     * atomically with the `tryLock` ([ConcurrentHashMap.compute] serializes
-     * both map ops); [releaseChatLock] removes the entry BEFORE the unlock,
-     * so the block's holder keeps working on its mutex while the next
-     * acquirer gets a fresh one — never two concurrent holders.
+     * history-mutating operation in progress. Acquires via [acquireChatLock]
+     * (the ONE take-the-lock path: [ConcurrentHashMap.compute] serializes the
+     * create+tryLock with the map op) and always releases via
+     * [releaseChatLock], which removes the entry BEFORE the unlock, so the
+     * block's holder keeps working on its mutex while the next acquirer gets
+     * a fresh one — never two concurrent holders.
      */
     private suspend fun <T> withChatLock(chatId: String, block: suspend () -> T): T {
-        var lock: Mutex? = null
-        chatLocks.compute(chatId) { _, existing ->
-            val mutex = existing ?: Mutex()
-            if (!mutex.tryLock()) {
-                throw ChatRunConflictException("Chat '$chatId' is currently locked")
-            }
-            lock = mutex
-            mutex
-        }
-        val mutex = lock!!
+        val mutex = acquireChatLock(chatId)
         try {
             return block()
         } finally {

@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.tool.*
 import info.skyblond.daapu.config.TOOL_RESERVED_NAMESPACES
 import info.skyblond.daapu.config.validateToolNamespaceSyntax
 import info.skyblond.daapu.hand.EmbeddingException
+import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.normalizeAttributeKey
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -227,8 +228,7 @@ class EltmToolProvider(
                     val query = args.textArg("query") ?: return errorResult(
                         request, "query is required and must not be blank"
                     )
-                    val limit = args.intArg("limit") ?: 5
-                    if (limit < 1) return errorResult(request, "limit must be >= 1")
+                    val limit = args.limitArg()
                     val hits = eltmService.searchEntities(query, limit)
                     if (hits.isEmpty()) {
                         textResult(request, "No matching entities.")
@@ -236,14 +236,9 @@ class EltmToolProvider(
                         val lines = mutableListOf<String>()
                         for (hit in hits) {
                             lines += buildString {
-                                append("# Entity ${hit.entity.id} - \"${hit.entity.canonicalName}\" (${hit.entity.category})")
+                                append(entityHeader(hit.entity.id, hit.entity.canonicalName, hit.entity.category))
                                 append(" - similarity ${"%.3f".format(hit.score)}, notes ${hit.noteCount}, relations ${hit.relationshipCount}")
-                                if (hit.attributes.isNotEmpty()) {
-                                    append("\nAttributes:\n")
-                                    append(hit.attributes.toSortedMap().entries.joinToString("\n") {
-                                        "  ${it.key}: ${it.value}"
-                                    })
-                                }
+                                appendAttributesBlock(hit.attributes)
                                 hit.latestNote?.let {
                                     append("\nLatest note (${it.eventDate}): ${it.note}")
                                 }
@@ -257,9 +252,7 @@ class EltmToolProvider(
                     val id = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
-                    if (!eltmService.entityExists(id)) {
-                        return errorResult(request, "entity $id does not exist")
-                    }
+                    requireEntity(id)
                     val includeInvalid = args.boolArg("include_invalid") ?: false
                     val views = eltmService.getRelationships(id, includeInvalid)
                     if (views.isEmpty()) textResult(request, "No relationships.")
@@ -278,36 +271,14 @@ class EltmToolProvider(
                     val entityId = args.longArg("entity_id") ?: return errorResult(
                         request, "entity_id is required and must be a number"
                     )
-                    if (!eltmService.entityExists(entityId)) {
-                        return errorResult(request, "entity $entityId does not exist")
-                    }
-                    val (from, to) = args.strictDateRange()
-                    val limit = args.intArg("limit") ?: 5
-                    val offset = args.intArg("offset") ?: 0
-                    if (limit < 1) return errorResult(request, "limit must be >= 1")
-                    if (offset < 0) return errorResult(request, "offset must be >= 0")
-                    val notes = eltmService.getEntityNotes(entityId, from, to, limit, offset)
-                    if (notes.isEmpty()) textResult(request, "No notes.")
-                    else notes.joinToString("\n\n") { "## ${it.eventDate} (note ${it.id})\n${it.note}" }
-                        .let { textResult(request, it) }
+                    noteDiaryPage(request, args, entityId = entityId, relationshipId = null)
                 }
 
                 "get_relationship_notes" -> {
                     val relId = args.longArg("relationship_id") ?: return errorResult(
                         request, "relationship_id is required and must be a number"
                     )
-                    if (!eltmService.relationshipExists(relId)) {
-                        return errorResult(request, "relationship $relId does not exist")
-                    }
-                    val (from, to) = args.strictDateRange()
-                    val limit = args.intArg("limit") ?: 5
-                    val offset = args.intArg("offset") ?: 0
-                    if (limit < 1) return errorResult(request, "limit must be >= 1")
-                    if (offset < 0) return errorResult(request, "offset must be >= 0")
-                    val notes = eltmService.getRelationshipNotes(relId, from, to, limit, offset)
-                    if (notes.isEmpty()) textResult(request, "No notes.")
-                    else notes.joinToString("\n\n") { "## ${it.eventDate} (note ${it.id})\n${it.note}" }
-                        .let { textResult(request, it) }
+                    noteDiaryPage(request, args, entityId = null, relationshipId = relId)
                 }
 
                 "search_notes" -> {
@@ -321,19 +292,13 @@ class EltmToolProvider(
                             request, "a note search accepts at most one subject"
                         )
                     }
-                    if (entityId != null && !eltmService.entityExists(entityId)) {
-                        return errorResult(request, "entity $entityId does not exist")
-                    }
-                    if (relId != null && !eltmService.relationshipExists(relId)) {
-                        return errorResult(request, "relationship $relId does not exist")
-                    }
+                    if (entityId != null) requireEntity(entityId)
+                    if (relId != null) requireRelationship(relId)
                     val (from, to) = args.strictDateRange()
-                    val limit = args.intArg("limit") ?: 5
-                    if (limit < 1) return errorResult(request, "limit must be >= 1")
+                    val limit = args.limitArg()
                     val notes = eltmService.searchNotes(query, entityId, relId, from, to, limit)
                     if (notes.isEmpty()) textResult(request, "No matching notes.")
-                    else notes.joinToString("\n\n") { "## ${it.eventDate} (note ${it.id})\n${it.note}" }
-                        .let { textResult(request, it) }
+                    else textResult(request, renderNotes(notes))
                 }
 
                 "create_entity" -> {
@@ -345,27 +310,17 @@ class EltmToolProvider(
                     val view = eltmService.getEntity(result.entity.id)
                     val entity = view?.entity ?: result.entity
                     buildString {
-                        append("# Entity ${entity.id} - \"${entity.canonicalName}\" (${entity.category})")
+                        append(entityHeader(entity.id, entity.canonicalName, entity.category))
                         append(" - notes ${view?.noteCount ?: 0}, relations ${view?.relationshipCount ?: 0}")
-                        if (view != null && view.attributes.isNotEmpty()) {
-                            append("\nAttributes:\n")
-                            append(view.attributes.toSortedMap().entries.joinToString("\n") {
-                                "  ${it.key}: ${it.value}"
-                            })
-                        }
+                        appendAttributesBlock(view?.attributes ?: emptyMap())
                         if (result.nearMatches.isEmpty()) {
                             append("\nNo near matches.")
                         } else {
                             append("\nNear matches (check for duplicates):")
                             result.nearMatches.forEach { match ->
-                                append("\n- Entity ${match.entity.id} - \"${match.entity.canonicalName}\" (${match.entity.category})")
+                                append("\n- ${entityHeader(match.entity.id, match.entity.canonicalName, match.entity.category)}")
                                 append(" - similarity ${"%.3f".format(match.score)}, notes ${match.noteCount}, relations ${match.relationshipCount}")
-                                if (match.attributes.isNotEmpty()) {
-                                    append("\n  Attributes:\n")
-                                    append(match.attributes.toSortedMap().entries.joinToString("\n") {
-                                        "    ${it.key}: ${it.value}"
-                                    })
-                                }
+                                appendAttributesBlock(match.attributes, indent = "  ")
                             }
                         }
                     }.let { textResult(request, it) }
@@ -386,14 +341,9 @@ class EltmToolProvider(
                     val refined = eltmService.refineEntity(entityId, newName, newCategory)
                     val view = eltmService.getEntity(refined.id)
                     buildString {
-                        append("# Entity ${refined.id} - \"${refined.canonicalName}\" (${refined.category})")
+                        append(entityHeader(refined.id, refined.canonicalName, refined.category))
                         append(" - notes ${view?.noteCount ?: 0}, relations ${view?.relationshipCount ?: 0}")
-                        if (view != null && view.attributes.isNotEmpty()) {
-                            append("\nAttributes:\n")
-                            append(view.attributes.toSortedMap().entries.joinToString("\n") {
-                                "  ${it.key}: ${it.value}"
-                            })
-                        }
+                        appendAttributesBlock(view?.attributes ?: emptyMap())
                     }.let { textResult(request, it) }
                 }
 
@@ -579,6 +529,103 @@ class EltmToolProvider(
         } catch (e: DateTimeParseException) {
             throw IllegalArgumentException("$key must be a valid date in YYYY-MM-DD format")
         }
+    }
+
+    // ---------- shared rendering & validation helpers ----------
+
+    /** The `# Entity ...` header line shared by every entity-rendering tool. */
+    private fun entityHeader(id: Long, canonicalName: String, category: String): String =
+        "# Entity $id - \"$canonicalName\" ($category)"
+
+    /**
+     * The alphabetized `Attributes:` block of an entity render ([indent]
+     * nests it, e.g. under a near match); empty attributes append nothing.
+     * The shared shape keeps the model's view of an entity identical across
+     * search_entities, create_entity and refine_entity.
+     */
+    private fun StringBuilder.appendAttributesBlock(
+        attributes: Map<String, String>,
+        indent: String = "",
+    ) {
+        if (attributes.isEmpty()) return
+        append("\n${indent}Attributes:\n")
+        append(attributes.toSortedMap().entries.joinToString("\n") {
+            "$indent  ${it.key}: ${it.value}"
+        })
+    }
+
+    /** The diary rendering shared by the note read tools: one `## date (note id)` header per note. */
+    private fun renderNotes(notes: List<EltmNote>): String =
+        notes.joinToString("\n\n") { "## ${it.eventDate} (note ${it.id})\n${it.note}" }
+
+    /**
+     * The paginated-read `limit` argument (default 5, must be >= 1).
+     * Invalid values throw [IllegalArgumentException] — execute's catch
+     * maps it onto the same model-visible error the former inline checks
+     * produced.
+     */
+    private fun JsonObject.limitArg(): Int {
+        val limit = intArg("limit") ?: 5
+        require(limit >= 1) { "limit must be >= 1" }
+        return limit
+    }
+
+    /**
+     * [limitArg] plus the `offset` argument (default 0, must be >= 0) — the
+     * pagination pair of the diary read tools.
+     */
+    private fun JsonObject.limitOffsetArgs(): Pair<Int, Int> {
+        val limit = limitArg()
+        val offset = intArg("offset") ?: 0
+        require(offset >= 0) { "offset must be >= 0" }
+        return limit to offset
+    }
+
+    /**
+     * Fail with a model-visible error when the subject does not exist: the
+     * tools refuse a nonexistent subject instead of answering a silent
+     * empty result (or an opaque FK error). Throws
+     * [IllegalArgumentException] — execute's catch maps it onto the same
+     * error result the former inline checks produced.
+     */
+    private suspend fun requireEntity(id: Long) {
+        if (!eltmService.entityExists(id)) {
+            throw IllegalArgumentException("entity $id does not exist")
+        }
+    }
+
+    /** [requireEntity] for relationships. */
+    private suspend fun requireRelationship(id: Long) {
+        if (!eltmService.relationshipExists(id)) {
+            throw IllegalArgumentException("relationship $id does not exist")
+        }
+    }
+
+    /**
+     * The paginated diary read shared by get_entity_notes and
+     * get_relationship_notes: subject existence check, the strict
+     * date-range filter, pagination, then the shared note rendering.
+     * Exactly one subject id is non-null (each call site parses its own id
+     * argument, so the "required and must be a number" errors keep naming
+     * the tool's own argument).
+     */
+    private suspend fun noteDiaryPage(
+        request: ToolCallRequest,
+        args: JsonObject,
+        entityId: Long?,
+        relationshipId: Long?,
+    ): ChatMessagePart.ToolResult {
+        if (entityId != null) requireEntity(entityId)
+        if (relationshipId != null) requireRelationship(relationshipId)
+        val (from, to) = args.strictDateRange()
+        val (limit, offset) = args.limitOffsetArgs()
+        val notes = if (entityId != null) {
+            eltmService.getEntityNotes(entityId, from, to, limit, offset)
+        } else {
+            eltmService.getRelationshipNotes(relationshipId!!, from, to, limit, offset)
+        }
+        return if (notes.isEmpty()) textResult(request, "No notes.")
+        else textResult(request, renderNotes(notes))
     }
 
     companion object {

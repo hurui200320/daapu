@@ -3,6 +3,8 @@ package info.skyblond.daapu.agent.oneshot
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.roundCount
+import info.skyblond.daapu.agent.chat.takeLastNRound
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.db.DEFAULT_CHAT_TITLE

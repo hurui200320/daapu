@@ -178,9 +178,7 @@ class FsToolProvider(
         }
         if (head != null && head < 1) return errorResult(request, "head must be >= 1")
         if (tail != null && tail < 1) return errorResult(request, "tail must be >= 1")
-        val target = resolveTarget(request, path)
-        if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
-        if (!Files.isRegularFile(target)) return errorResult(request, "'$path' is not a file")
+        val target = resolveExisting(path, ResolveKind.FILE)
         // decode with replacement (like the server's UTF-8 read): a binary
         // file yields replacement chars instead of failing the whole read
         val content = Files.readAllBytes(target).toString(Charsets.UTF_8)
@@ -204,9 +202,7 @@ class FsToolProvider(
         val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
-        val target = resolveTarget(request, path)
-        if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
-        if (!Files.isRegularFile(target)) return errorResult(request, "'$path' is not a file")
+        val target = resolveExisting(path, ResolveKind.FILE)
         val bytes = Files.readAllBytes(target)
         val extension = "." + target.fileName.toString().substringAfterLast('.', "").lowercase()
         val mimeType = MIME_TYPES[extension] ?: "application/octet-stream"
@@ -237,9 +233,7 @@ class FsToolProvider(
         // semantics); the errors are reported inline per file
         val results = paths.map { filePath ->
             try {
-                val target = resolveTarget(request, filePath)
-                if (!Files.exists(target)) throw IllegalArgumentException("path '$filePath' does not exist")
-                if (!Files.isRegularFile(target)) throw IllegalArgumentException("'$filePath' is not a file")
+                val target = resolveExisting(filePath, ResolveKind.FILE)
                 val content = Files.readAllBytes(target).toString(Charsets.UTF_8)
                 "$filePath:\n$content\n"
             } catch (e: CancellationException) {
@@ -256,9 +250,7 @@ class FsToolProvider(
         val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
-        val target = resolveTarget(request, path)
-        if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
-        if (!Files.isDirectory(target)) return errorResult(request, "'$path' is not a directory")
+        val target = resolveExisting(path, ResolveKind.DIRECTORY)
         val entries = listEntries(target).sortedBy { it.second.fileName.toString() }
         val text = entries.joinToString("\n") { (_, entry) ->
             "${if (isDirectoryEntry(entry)) "[DIR]" else "[FILE]"} ${entry.fileName}"
@@ -275,9 +267,7 @@ class FsToolProvider(
         if (sortBy != "name" && sortBy != "size") {
             return errorResult(request, "sortBy must be either 'name' or 'size', got '$sortBy'")
         }
-        val target = resolveTarget(request, path)
-        if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
-        if (!Files.isDirectory(target)) return errorResult(request, "'$path' is not a directory")
+        val target = resolveExisting(path, ResolveKind.DIRECTORY)
         val detailed = listEntries(target).map { (canonical, entry) ->
             DetailedEntry(
                 displayName = entry.fileName.toString(),
@@ -317,9 +307,7 @@ class FsToolProvider(
             request, "path is required and must not be blank"
         )
         val excludePatterns = args.stringArrayArg("excludePatterns").orEmpty()
-        val target = resolveTarget(request, path)
-        if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
-        if (!Files.isDirectory(target)) return errorResult(request, "'$path' is not a directory")
+        val target = resolveExisting(path, ResolveKind.DIRECTORY)
         // a pattern without '*' also matches as a path prefix and as any
         // ancestor/descendant (the server's three-variant rule); lenient —
         // an invalid pattern excludes nothing (minimatch treats it literally)
@@ -345,9 +333,7 @@ class FsToolProvider(
             request, "pattern is required and must not be blank"
         )
         val excludePatterns = args.stringArrayArg("excludePatterns").orEmpty()
-        val target = resolveTarget(request, path)
-        if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
-        if (!Files.isDirectory(target)) return errorResult(request, "'$path' is not a directory")
+        val target = resolveExisting(path, ResolveKind.DIRECTORY)
         // lenient: an invalid pattern matches nothing (minimatch treats a
         // malformed pattern as a literal string, so it never errors)
         val patternMatcher = GlobMatcher.lenient(pattern)
@@ -390,8 +376,7 @@ class FsToolProvider(
         val path = args.textArg("path", strict = true) ?: return errorResult(
             request, "path is required and must not be blank"
         )
-        val target = resolveTarget(request, path)
-        if (!Files.exists(target)) return errorResult(request, "path '$path' does not exist")
+        val target = resolveExisting(path)
         val attrs = Files.readAttributes(target, BasicFileAttributes::class.java)
         // unix:mode is POSIX-only; on other filesystems (Windows) fall back
         // to the DOS read-only bit — mirroring Node's Windows stat.mode
@@ -422,7 +407,7 @@ class FsToolProvider(
      * blacklist pattern. Throws [IllegalArgumentException] with the
      * model-visible reason; the callers catch it as an `isError` result.
      */
-    private fun resolveTarget(request: ToolCallRequest, requested: String): Path {
+    private fun resolveTarget(requested: String): Path {
         val expanded = expandHome(requested)
         val absolute = Path.of(expanded).let { path ->
             if (path.isAbsolute) path else roots.first().resolve(path)
@@ -440,6 +425,29 @@ class FsToolProvider(
             throw IllegalArgumentException("Access denied: path '$requested' matches a blacklist pattern")
         }
         return canonical
+    }
+
+    private enum class ResolveKind {
+        FILE, DIRECTORY
+    }
+
+    /**
+     * [resolveTarget] plus the existence/kind checks the path-taking tools
+     * share: the target must exist and, when [kind] says so, be a regular
+     * "file" or a "directory" (null = either). Throws
+     * [IllegalArgumentException] with the model-facing messages — the
+     * callers' catch answers it as an `isError` result (identical text to
+     * the former per-tool inline checks).
+     */
+    private fun resolveExisting(path: String, kind: ResolveKind? = null): Path {
+        val target = resolveTarget(path)
+        if (!Files.exists(target)) throw IllegalArgumentException("path '$path' does not exist")
+        when (kind) {
+            ResolveKind.FILE -> if (!Files.isRegularFile(target)) throw IllegalArgumentException("'$path' is not a file")
+            ResolveKind.DIRECTORY -> if (!Files.isDirectory(target)) throw IllegalArgumentException("'$path' is not a directory")
+            else -> Unit // nop
+        }
+        return target
     }
 
     /**

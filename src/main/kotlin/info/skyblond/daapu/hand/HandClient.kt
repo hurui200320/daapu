@@ -190,9 +190,7 @@ class HttpHandClient(
         if (response.status.isSuccess()) {
             return json.decodeFromString(HandEmbedResult.serializer(), response.bodyAsText())
         }
-        val error = runCatching {
-            json.decodeFromString(HandErrorResponse.serializer(), response.bodyAsText()).error
-        }.getOrNull()
+        val error = decodeHandError(response.bodyAsText())
         if (error != null) {
             throw EmbeddingException(error.type, error.message)
         }
@@ -203,11 +201,18 @@ class HttpHandClient(
         client.close()
     }
 
+    /**
+     * Decode the hand's `{ok:false,error:{...}}` failure envelope (the one
+     * failure shape shared by `/v1/run` and `/v1/embed`), or null when the
+     * body is not that shape.
+     */
+    private fun decodeHandError(text: String): HandError? = runCatching {
+        json.decodeFromString(HandErrorResponse.serializer(), text).error
+    }.getOrNull()
+
     /** Maps a non-200 hand response onto a typed failure when it carries the hand's error shape. */
     private fun parseHandFailure(status: Int, text: String): Exception {
-        val error = runCatching {
-            json.decodeFromString(HandErrorResponse.serializer(), text).error
-        }.getOrNull()
+        val error = decodeHandError(text)
         if (error != null) {
             return HandRunException(error.type, error.message)
         }
