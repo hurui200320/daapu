@@ -5,12 +5,16 @@ import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.PostgresChatStore
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.context.ContextInjection
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.*
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.addEntityNoteRound
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import info.skyblond.daapu.testutil.chatService
 import info.skyblond.daapu.testutil.createEntityRound
 import info.skyblond.daapu.testutil.writerRunFlow
@@ -24,7 +28,7 @@ import kotlin.test.*
  * lock is held, and a failed extraction keeps the row (a retry re-extracts
  * and the ELTM writer skips already-recorded content).
  */
-class ChatServiceDeleteTest {
+class ChatServiceDeleteTest : DbTestBase() {
 
     private fun user(text: String) =
         ChatMessage(
@@ -40,7 +44,7 @@ class ChatServiceDeleteTest {
      * fails the test.
      */
     private fun oneShotHand(
-        eltm: FakeEltmService,
+        eltm: EltmService,
         extraction: suspend (HandRunRequest) -> List<HandEvent> = { textRunFlow("likes coffee") },
         writer: suspend (HandRunRequest) -> List<HandEvent> = { writerRunFlow(eltm) },
     ) = FakeHand(
@@ -55,17 +59,19 @@ class ChatServiceDeleteTest {
 
     @Test
     fun `delete extracts memories from the chat history before removing the row`() = runBlocking {
-        val store = FakeChatStore()
-        val history = listOf(user("u1"), assistantMessage("a1"), user("u2"))
-        store.seed("chat-1", chat = history)
-        val eltm = FakeEltmService()
+        val store = PostgresChatStore()
+        // a COMPLETE stored chat: the real store validates on load, so the
+        // seed must be a history the production writer could have stored
+        val history = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2"))
+        TestDb.seedChatRow("chat-1", messages = history)
+        val eltm = testPostgresEltmService(FakeHand())
         val hand = oneShotHand(eltm)
         val service =
             chatService(testAppConfig(), hand = hand, chatStore = store, eltmService = eltm)
 
         assertTrue(service.deleteChat("chat-1"))
         assertNull(store.load("chat-1"), "the row is deleted only after extraction")
-        val notes = eltm.notes.values.map { it.note }
+        val notes = TestDb.allEltmNotes().map { it.note }
         assertTrue(notes.contains("likes coffee"), "the extracted fact lands in the ELTM")
         assertEquals(2, hand.requests.size, "extractor run + writer run")
         // the extractor call carried the stored history with every user
@@ -96,10 +102,10 @@ class ChatServiceDeleteTest {
 
     @Test
     fun `a failed extraction fails the delete and keeps the row for a retry`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
         var rounds = 0
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val hand = oneShotHand(
             eltm = eltm,
             extraction = {
@@ -117,13 +123,13 @@ class ChatServiceDeleteTest {
 
         assertFailsWith<IllegalStateException> { service.deleteChat("chat-1") }
         assertTrue(store.load("chat-1") != null, "a failed extraction must keep the row")
-        assertTrue(eltm.notes.isEmpty(), "a failed extraction must not write anything")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a failed extraction must not write anything")
 
         // the retried delete re-extracts the same history; the ELTM writer
         // deduplicates against whatever was already recorded
         assertTrue(service.deleteChat("chat-1"))
         assertNull(store.load("chat-1"))
-        val notes = eltm.notes.values.map { it.note }
+        val notes = TestDb.allEltmNotes().map { it.note }
         assertTrue(notes.contains("likes coffee"))
     }
 
@@ -132,9 +138,9 @@ class ChatServiceDeleteTest {
         // the writer run hits the round cap: the failed write must fail the
         // delete — the row survives, and a retry re-extracts the full
         // history instead of discarding unwritten memories
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
-        val eltm = FakeEltmService()
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
+        val eltm = testPostgresEltmService(FakeHand())
         // the writer's first, capped round already knows the user entity
         // (created by the real writer flow on a retry); the note tool call
         // targets it
@@ -164,7 +170,7 @@ class ChatServiceDeleteTest {
         assertEquals("round_limit", cause.type)
         assertTrue(store.load("chat-1") != null, "a failed writer must keep the row")
         // the note applied before the cap stays; a retry deduplicates it
-        val notes = eltm.notes.values.map { it.note }
+        val notes = TestDb.allEltmNotes().map { it.note }
         assertTrue(notes.contains("likes coffee"))
     }
 
@@ -174,8 +180,6 @@ class ChatServiceDeleteTest {
         val service = chatService(
             testAppConfig(),
             hand = hand,
-            chatStore = FakeChatStore(),
-            eltmService = FakeEltmService(),
         )
 
         assertFalse(service.deleteChat("nope"))
@@ -184,14 +188,13 @@ class ChatServiceDeleteTest {
 
     @Test
     fun `delete of an empty chat skips extraction`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1")
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1")
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         val service = chatService(
             testAppConfig(),
             hand = hand,
             chatStore = store,
-            eltmService = FakeEltmService(),
         )
 
         assertTrue(service.deleteChat("chat-1"))
@@ -201,11 +204,11 @@ class ChatServiceDeleteTest {
 
     @Test
     fun `the chat lock is held across extraction and released after the delete`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
         var concurrentAcquireConflicted = false
         lateinit var service: ChatService
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val hand = oneShotHand(
             eltm = eltm,
             extraction = {

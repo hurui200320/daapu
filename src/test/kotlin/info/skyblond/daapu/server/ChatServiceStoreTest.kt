@@ -8,6 +8,8 @@ import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.chatService
 import kotlinx.coroutines.runBlocking
 import java.time.Instant
@@ -15,12 +17,13 @@ import kotlin.test.*
 
 /**
  * Pins [ChatService]'s chat-row operations against the [ChatStore] seam:
- * the service must hold no raw DB calls, so every path is exercised through
- * an in-memory store (and a scripted [FakeHand] for the title generator).
+ * the service must hold no raw DB calls, so every path runs through the
+ * real [PostgresChatStore] over the test database (and a scripted
+ * [FakeHand] for the title generator).
  */
-class ChatServiceStoreTest {
+class ChatServiceStoreTest : DbTestBase() {
 
-    private val store = FakeChatStore()
+    private val store = PostgresChatStore()
     private val hand = FakeHand(
         runScript = { textRunFlow("Generated title") }
     )
@@ -45,62 +48,60 @@ class ChatServiceStoreTest {
     }
 
     @Test
-    fun `an empty chat returns its current title without calling the LLM`() {
-        store.seed("chat-1", title = "My custom title")
+    fun `an empty chat returns its current title without calling the LLM`() = runBlocking {
+        TestDb.seedChatRow("chat-1", title = "My custom title")
 
-        val result = runBlocking { service().generateTitle("chat-1") }
+        val result = service().generateTitle("chat-1")
 
         assertEquals(ChatInfo("chat-1", "My custom title", DEFAULT_PERSONA_ID), result)
         assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
         assertEquals(
             "My custom title",
-            store.title("chat-1"),
+            store.load("chat-1")?.info?.title,
             "a custom title must never be clobbered"
         )
     }
 
     @Test
-    fun `generateTitle persists the generated title`() {
-        store.seed("chat-1", chat = listOf(user("hi"), assistantMessage("hello")))
+    fun `generateTitle persists the generated title`() = runBlocking {
+        TestDb.seedChatRow("chat-1", messages = listOf(user("hi"), assistantMessage("hello")))
 
-        val result = runBlocking { service().generateTitle("chat-1") }
+        val result = service().generateTitle("chat-1")
 
         assertEquals(ChatInfo("chat-1", "Generated title", DEFAULT_PERSONA_ID), result)
-        assertEquals("Generated title", store.title("chat-1"))
+        assertEquals("Generated title", store.load("chat-1")?.info?.title)
         assertEquals(1, hand.requests.size)
     }
 
     @Test
-    fun `a chat deleted mid-generation returns null`() {
-        store.seed("chat-1", chat = listOf(user("hi"), assistantMessage("hello")))
+    fun `a chat deleted mid-generation returns null`() = runBlocking {
+        TestDb.seedChatRow("chat-1", messages = listOf(user("hi"), assistantMessage("hello")))
         val deletingHand = FakeHand(
             runScript = {
-                store.deleteRow("chat-1")
+                store.delete("chat-1")
                 textRunFlow("Generated title")
             }
         )
 
-        val result = runBlocking {
-            chatService(
-                testAppConfig(),
-                hand = deletingHand,
-                chatStore = store
-            ).generateTitle("chat-1")
-        }
+        val result = chatService(
+            testAppConfig(),
+            hand = deletingHand,
+            chatStore = store
+        ).generateTitle("chat-1")
 
         assertNull(result, "a chat that vanished before the rename must not be resurrected")
-        assertNull(store.title("chat-1"))
+        assertNull(store.load("chat-1"))
     }
 
     @Test
-    fun `renameChat delegates to the store`() {
-        store.seed("chat-1")
+    fun `renameChat delegates to the store`() = runBlocking {
+        TestDb.seedChatRow("chat-1")
 
         assertEquals(
             ChatInfo("chat-1", "renamed", DEFAULT_PERSONA_ID),
-            runBlocking { service().renameChat("chat-1", "renamed") })
-        assertEquals("renamed", store.title("chat-1"))
-        assertNull(runBlocking { service().renameChat("nope", "x") })
+            service().renameChat("chat-1", "renamed"))
+        assertEquals("renamed", store.load("chat-1")?.info?.title)
+        assertNull(service().renameChat("nope", "x"))
     }
 
     @Test
@@ -111,17 +112,17 @@ class ChatServiceStoreTest {
 
     @Test
     fun `deleteChat returns whether a row existed`() {
-        store.seed("chat-1")
+        TestDb.seedChatRow("chat-1")
         assertTrue(runBlocking { service().deleteChat("chat-1") })
         assertFalse(runBlocking { service().deleteChat("chat-1") })
     }
 
     @Test
-    fun `listChats returns the stored rows`() {
-        store.seed("a", title = "A")
-        store.seed("b", title = "B")
+    fun `listChats returns the stored rows newest-first`() {
+        TestDb.seedChatRow("a", title = "A")
+        TestDb.seedChatRow("b", title = "B")
         assertEquals(
-            listOf(ChatInfo("a", "A", DEFAULT_PERSONA_ID), ChatInfo("b", "B", DEFAULT_PERSONA_ID)),
+            listOf(ChatInfo("b", "B", DEFAULT_PERSONA_ID), ChatInfo("a", "A", DEFAULT_PERSONA_ID)),
             runBlocking { service().listChats() }
         )
     }

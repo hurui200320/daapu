@@ -32,8 +32,8 @@ import java.time.LocalDate
  * zero-padding.
  *
  * Decision logic worth unit-testing (normalization, merge/collision
- * planning) lives outside the SQL; the queries stay covered only by
- * fakes until DB-backed integration tests exist.
+ * planning) lives outside the SQL; the SQL paths are covered by the
+ * DB-backed `PostgresEltmServiceTest` (throwaway testcontainers database).
  */
 // TODO: split this to EltmStore, the service should own the embedded text construction, etc.
 class PostgresEltmService(
@@ -64,22 +64,45 @@ class PostgresEltmService(
             existing
         } else {
             val embedding = embedText(entityEmbeddingText(canonical, cat, emptyMap()))
-            val id = withTransaction {
-                insertOrFetchId(
-                    what = "existing entity",
-                    insert = {
-                        EltmEntities.insert {
-                            it[EltmEntities.canonicalName] = canonical
-                            it[EltmEntities.category] = cat
-                            it[EltmEntities.embedding] = embedding
-                        } get EltmEntities.id
-                    },
-                    fetchExistingId = {
-                        withTransaction { findEntityByKey(canonical, cat)?.get(EltmEntities.id) }
-                    },
-                )
+            // create-or-fetch in ONE transaction: INSERT ... ON CONFLICT DO
+            // NOTHING RETURNING (`insertReturning(ignoreErrors = true)` on
+            // Postgres) never aborts the transaction — a null result means a
+            // concurrent run inserted the same (name, category) first, and
+            // since a same-key insert blocks until the winner resolves, the
+            // conflicting row is committed and visible to the re-select in
+            // the SAME transaction (no nested transaction, no SQLState
+            // handling). Only a real insert bumps the write counter.
+            //
+            // The CONFLICT clause is untargeted (Exposed's API offers no
+            // conflict target here), so it swallows a violation of ANY unique
+            // constraint on the table. That is safe only while the table's
+            // unique constraints are exactly the intended (name, category)
+            // key plus the BIGSERIAL PK (collision effectively impossible): a
+            // future index must revisit this or the violation would be
+            // misread as a same-key race (the re-select then fails with the
+            // "not visible" error below — misleading, but fail-fast).
+            withTransaction {
+                val inserted = EltmEntities.insertReturning(
+                    returning = listOf(
+                        EltmEntities.id,
+                        EltmEntities.canonicalName,
+                        EltmEntities.category,
+                        EltmEntities.embedding,
+                    ),
+                    ignoreErrors = true,
+                ) {
+                    it[EltmEntities.canonicalName] = canonical
+                    it[EltmEntities.category] = cat
+                    it[EltmEntities.embedding] = embedding
+                }.singleOrNull()
+                if (inserted != null) {
+                    bumpWriteVersion()
+                    inserted
+                } else {
+                    findEntityByKey(canonical, cat)
+                        ?: error("unique conflict but the entity ($canonical, $cat) is not visible")
+                }
             }
-            withTransaction { findEntityRowById(id)!! }
         }
 
         val entity = row.toEntity()
@@ -150,10 +173,21 @@ class PostgresEltmService(
                 if (!isUniqueViolation(e)) throw e
                 // a concurrent run created the target (name, category)
                 // between the check above and the UPDATE: the update rolled
-                // back — re-raise the same collision error the pre-check
-                // would have given (never a raw SQL error)
-                checkNoNameCollision(entityId, newCanonical, newCat)
-                throw e
+                // back AND the transaction is now aborted (PostgreSQL refuses
+                // every further statement in it, so no re-check is possible
+                // here) — raise the merge-instead error DIRECTLY (the racing
+                // row's id cannot be included: it is not queryable from an
+                // aborted transaction). NEVER let a raw SQLException escape:
+                // one that escapes this withTransaction block makes Exposed
+                // re-run the whole block (the hand embed call included) up to
+                // defaultMaxAttempts (3) times; an IllegalArgumentException
+                // is terminal and maps to the tool layer's model-visible
+                // error.
+                throw IllegalArgumentException(
+                    "an entity \"$newCanonical\" (category $newCat) already exists " +
+                            "as another entity: merge the two instead",
+                    e,
+                )
             }
             bumpWriteVersion()
             EltmEntity(entityId, newCanonical, newCat)
@@ -166,35 +200,47 @@ class PostgresEltmService(
         val v = normalizeVerb(verb)
         require(v.isNotBlank()) { "relationship verb must not be blank" }
         // fail fast on missing endpoints before the transaction (the FK
-        // would catch them later with a raw SQL error)
-        require(withTransaction { findEntityById(srcId) != null }) {
-            "entity $srcId does not exist"
+        // would catch them later with a raw SQL error); both checks ride
+        // ONE transaction, which also decides the missing id — no second
+        // re-query, and the message matches the state that failed the check
+        val missingEntityId: Long? = withTransaction {
+            when {
+                findEntityById(srcId) == null -> srcId
+                findEntityById(dstId) == null -> dstId
+                else -> null
+            }
         }
-        require(withTransaction { findEntityById(dstId) != null }) {
-            "entity $dstId does not exist"
-        }
+        require(missingEntityId == null) { "entity $missingEntityId does not exist" }
 
         val id = withTransaction {
             // exactly ONE row per triple: the row IS the relationship — an
             // existing row (active OR invalidated) is a pure read returned
             // as-is; validity only moves with a diary event
-            // (attachNoteToRelationship's valid flag), never here
-            findRelationshipByTriple(srcId, v, dstId)?.get(EltmRelationships.id)
-                ?: insertOrFetchId(
-                    what = "relationship",
-                    insert = {
-                        EltmRelationships.insert {
-                            it[EltmRelationships.srcId] = srcId
-                            it[EltmRelationships.dstId] = dstId
-                            it[EltmRelationships.verb] = v
-                        } get EltmRelationships.id
-                    },
-                    fetchExistingId = {
-                        withTransaction {
-                            findRelationshipByTriple(srcId, v, dstId)?.get(EltmRelationships.id)
-                        }
-                    },
-                )
+            // (attachNoteToRelationship's valid flag), never here.
+            // The insert rides ON CONFLICT DO NOTHING RETURNING (see
+            // createEntity for the full rationale AND the untargeted-clause
+            // caveat: the triple is the table's only unique index besides
+            // the PK, so the swallowed violation can only be a same-key
+            // race), so a concurrent same-triple insert never aborts
+            // the transaction, and the re-select below stays in it.
+            val existingId = findRelationshipByTriple(srcId, v, dstId)?.get(EltmRelationships.id)
+            existingId ?: run {
+                val insertedId = EltmRelationships.insertReturning(
+                    returning = listOf(EltmRelationships.id),
+                    ignoreErrors = true,
+                ) {
+                    it[EltmRelationships.srcId] = srcId
+                    it[EltmRelationships.dstId] = dstId
+                    it[EltmRelationships.verb] = v
+                }.singleOrNull()?.get(EltmRelationships.id)
+                if (insertedId != null) {
+                    bumpWriteVersion()
+                    insertedId
+                } else {
+                    findRelationshipByTriple(srcId, v, dstId)?.get(EltmRelationships.id)
+                        ?: error("unique conflict but the relationship ($srcId -[$v]-> $dstId) is not visible")
+                }
+            }
         }
         return withTransaction { findRelationshipById(id)!! }
     }
@@ -387,8 +433,7 @@ class PostgresEltmService(
         val loserAttrs = attributesOf(loserId)
         // the fold plan is the shared decision logic (the loser's unique
         // keys fold in, the colliding ones keep the winner's value), so the
-        // writes below and the re-embed decision can never drift from the
-        // fakes' behavior
+        // writes below and the re-embed decision can never disagree
         val foldPlan = planAttributeFold(winnerAttrs, loserAttrs)
         // only re-embed when the fold actually changed the winner's
         // attribute text — an attribute-less merge reuses the stored vector
@@ -401,6 +446,14 @@ class PostgresEltmService(
         val loserRels = EltmRelationships.selectAll().where {
             (EltmRelationships.srcId eq loserId) or (EltmRelationships.dstId eq loserId)
         }.toList()
+        // The relationship-fold decision tree below (self-loop → invalidate,
+        // triple collision → fold duplicate away, else re-point) has NO
+        // shared pure planner — unlike the attribute fold above — and the
+        // loop interleaves DB lookups with its own mutations (earlier
+        // iterations create/delete rows the survivor lookup must see), so
+        // planner extraction needs care to simulate that in-loop state.
+        // The tree's behavior is pinned by PostgresEltmServiceTest's
+        // mergeEntities tests.
         for (rel in loserRels) {
             val newSrc =
                 if (rel[EltmRelationships.srcId] == loserId) winnerId
@@ -499,6 +552,17 @@ class PostgresEltmService(
     // reads
     // ------------------------------------------------------------------
 
+    /**
+     * Shared paging guards for every paginated read. The HTTP boundary
+     * mirrors these as 400s (`server/endpoint/Params.kt`); the service-side
+     * check stays because the tools and the pipeline call the service
+     * directly.
+     */
+    private fun requirePaging(limit: Int, offset: Int) {
+        require(limit >= 1) { "limit must be >= 1, got $limit" }
+        require(offset >= 0) { "offset must be >= 0, got $offset" }
+    }
+
     override suspend fun searchEntities(query: String, limit: Int): List<EntityWithScore> {
         require(query.isNotBlank()) { "query must not be blank" }
         require(limit >= 1) { "limit must be >= 1, got $limit" }
@@ -509,8 +573,7 @@ class PostgresEltmService(
     }
 
     override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> = withTransaction {
-        require(limit >= 1) { "limit must be >= 1, got $limit" }
-        require(offset >= 0) { "offset must be >= 0, got $offset" }
+        requirePaging(limit, offset)
         val entities = EltmEntities.selectAll()
             .orderBy(EltmEntities.id to SortOrder.ASC)
             .limit(limit)
@@ -535,8 +598,7 @@ class PostgresEltmService(
 
     override suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView> =
         withTransaction {
-            require(limit >= 1) { "limit must be >= 1, got $limit" }
-            require(offset >= 0) { "offset must be >= 0, got $offset" }
+            requirePaging(limit, offset)
             val rels = EltmRelationships.selectAll()
                 .orderBy(EltmRelationships.id to SortOrder.ASC)
                 .limit(limit)
@@ -605,6 +667,12 @@ class PostgresEltmService(
         latestNote = latestNote(EltmNotes.relationshipId, rel.id),
     )
 
+    /**
+     * Paginated notes of ONE subject, newest event first. The diary ordering
+     * rule is `event_date DESC, id DESC` and exists in exactly three SQL
+     * spots ([noteQuery], [latestNote], [noteCountsAndLatest]) — update
+     * them together or the single-subject and batch views disagree.
+     */
     private suspend fun noteQuery(
         column: Column<Long?>,
         subjectId: Long,
@@ -613,11 +681,10 @@ class PostgresEltmService(
         limit: Int,
         offset: Int,
     ): List<EltmNote> {
-        require(limit >= 1) { "limit must be >= 1, got $limit" }
-        require(offset >= 0) { "offset must be >= 0, got $offset" }
         require(from == null || to == null || !from.isAfter(to)) {
             "from must not be after to"
         }
+        requirePaging(limit, offset)
         return withTransaction {
             EltmNotes.selectAll().where {
                 (column eq subjectId)
@@ -666,6 +733,11 @@ class PostgresEltmService(
         val q = embedText(query)
         return withTransaction {
             val dist = cosineDistance(EltmNotes.embedding, q)
+            // pgvector's HNSW index post-filters: a selective WHERE (subject
+            // or date range) can end the index scan early, so this can
+            // return FEWER than [limit] rows even when further matches
+            // exist (pgvector <=0.7 behavior; iterative scans would fix it).
+            // The exact match (similarity 1.0) always survives in practice.
             EltmNotes.selectAll().where {
                 (dist lessEq 1.0 - noteSearchThreshold)
                     .and(EltmNotes.embedding.isNotNull())
@@ -693,51 +765,15 @@ class PostgresEltmService(
 
     /**
      * Atomically bump the global ELTM write counter
-     * (`memory_meta_number.eltm_version`) by one. Called inside the same
-     * transaction as every visible-state write, so the bump commits with the
-     * write — the digest fingerprint moves exactly when the ELTM changes.
-     * The `value = value + 1` assignment is an SQL expression on the column
-     * itself, so the bump is atomic (no read-modify-write race).
+     * (`memory_meta_number.eltm_version`, see `db/MetaCounter.kt`) by one.
+     * Called inside the same transaction as every visible-state write, so
+     * the bump commits with the write — the digest fingerprint moves
+     * exactly when the ELTM changes.
      */
-    private fun bumpWriteVersion() {
-        MemoryMetaNumber.update({ MemoryMetaNumber.key eq ELTM_VERSION_KEY }) {
-            it[MemoryMetaNumber.value] = MemoryMetaNumber.value + 1L
-        }
-    }
+    private fun bumpWriteVersion() = bumpMetaCounter(ELTM_VERSION_KEY)
 
     /** Read the global ELTM write counter (the write version). Ambient transaction. */
-    private fun currentWriteVersion(): Long =
-        MemoryMetaNumber.selectAll()
-            .where { MemoryMetaNumber.key eq ELTM_VERSION_KEY }
-            .singleOrNull()?.get(MemoryMetaNumber.value) ?: 0L
-
-    /**
-     * Insert-or-fetch for the unique-keyed writes ([createEntity],
-     * [createRelationship]): run [insert] and bump the write counter on
-     * success (only a real insert flags a change; a collision must not); on
-     * a unique violation — a concurrent run inserted the same key first —
-     * adopt the existing row via [fetchExistingId]: true create-or-fetch
-     * semantics (an unhandled violation would escape the tool callback and
-     * fail the whole run as tool_transport). [what] completes the
-     * not-visible error (e.g. "existing entity" / "relationship"). Ambient
-     * transaction (called inside withTransaction); [fetchExistingId]
-     * re-selects in its own transaction, mirroring the original per-table
-     * recovery.
-     */
-    private suspend fun insertOrFetchId(
-        what: String,
-        insert: () -> Long,
-        fetchExistingId: suspend () -> Long?,
-    ): Long = try {
-        val inserted = insert()
-        bumpWriteVersion()
-        inserted
-    } catch (e: Exception) {
-        if (!isUniqueViolation(e)) throw e
-        fetchExistingId() ?: throw IllegalStateException(
-            "unique violation but the $what is not visible", e
-        )
-    }
+    private fun currentWriteVersion(): Long = readMetaCounter(ELTM_VERSION_KEY)
 
     /**
      * Fail with the merge-instead collision error when the target
@@ -795,7 +831,9 @@ class PostgresEltmService(
 
     /**
      * The subject's newest note (event date, then id — the same ordering as
-     * [noteQuery]). The subject is ONE of the two note columns (the
+     * [noteQuery] and [noteCountsAndLatest]; the diary ordering rule lives
+     * in exactly those three SQL spots).
+     * The subject is ONE of the two note columns (the
      * migration CHECK), so callers pass the matching column. Ambient
      * transaction.
      */
@@ -818,8 +856,9 @@ class PostgresEltmService(
 
     /**
      * Per-subject note counts and latest notes (by event date, then id — the
-     * same ordering as the single-subject helpers' `LIMIT 1` queries) for a
-     * whole page of subjects, in ONE query. Ambient transaction.
+     * same ordering as [noteQuery]/[latestNote]; the diary ordering rule
+     * lives in exactly those three SQL spots) for a whole page of subjects,
+     * in ONE query. Ambient transaction.
      *
      * TODO: materializes every note of the page's subjects in memory; a
      * `GROUP BY` subject + window-function (or `DISTINCT ON`) variant would
@@ -892,6 +931,13 @@ class PostgresEltmService(
      * Cosine-similarity search over stored entity embeddings, most similar
      * first, at or above [threshold], capped at [limit]; [excludeId] (used
      * for near matches) skips the row itself. Ambient transaction.
+     *
+     * pgvector's HNSW index post-filters: the WHERE above (threshold,
+     * `excludeId`) can end the index scan early, so this can return FEWER
+     * than [limit] rows even when further matches exist (pgvector <=0.7
+     * behavior; iterative scans would fix it). The threshold only ever
+     * DROPS candidates (distance is exact per visited row), so a returned
+     * hit is always genuinely above [threshold].
      *
      * The count, latest-note and attribute columns of the original
      * correlated-subquery SQL come from batch queries over the candidate
@@ -990,8 +1036,6 @@ class PostgresEltmService(
 
     companion object {
         private const val NEAR_MATCH_LIMIT = 5
-        /** The `memory_meta_number` key of the global ELTM write counter (see [MemoryMetaNumber]). */
-        internal const val ELTM_VERSION_KEY = "eltm_version"
 
         /** The pgvector cosine distance `column <=> vector` as an Exposed expression. */
         private fun cosineDistance(

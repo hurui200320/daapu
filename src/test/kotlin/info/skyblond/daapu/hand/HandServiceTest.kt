@@ -582,7 +582,8 @@ class HandServiceTest {
 
         val e = runCatching { service.embed(embeddingModel(), listOf("x"), HandRunPolicy(maxRetries = 0, streamIdleTimeoutMs = 0)) }
             .exceptionOrNull()
-        assertIs<CancellationException>(e)
+        val cancellation = assertIs<CancellationException>(e)
+        assertEquals("cancelled", cancellation.message, "the original cancellation is rethrown")
     }
 
     @Test

@@ -27,7 +27,11 @@ import info.skyblond.daapu.memory.eltm.EltmEntity
 import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.db.ELTM_VERSION_KEY
+import info.skyblond.daapu.db.bumpMetaCounterTx
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.testutil.testLlm
 import info.skyblond.daapu.testutil.writerRunFlow
@@ -55,7 +59,7 @@ import kotlin.test.*
  * path (hand `context_exhausted` →
  * compact → extract → refresh injection → fresh run, with no attempt cap).
  */
-class PersistChatServiceTest {
+class PersistChatServiceTest : DbTestBase() {
 
     private val mainAgentSystemPromptService = MainAgentSystemPromptService()
 
@@ -90,7 +94,7 @@ class PersistChatServiceTest {
         modelId: String = "bifrost/cerebras/gemma-4-31b",
         userParts: List<ChatMessagePart> = listOf(ChatMessagePart.Text("hello")),
         store: InMemoryChatStore = InMemoryChatStore(),
-        eltmService: EltmService = FakeEltmService(),
+        eltmService: EltmService = testPostgresEltmService(FakeHand()),
         toolProvider: ToolProvider = EmptyToolProvider,
         memoryExtractionService: MemoryExtractionService? = null,
         compactionKeepRounds: Int = 3,
@@ -326,7 +330,7 @@ class PersistChatServiceTest {
     @Test
     fun `eltm version is persisted on the chat and the eltm-updated flag tracks changes`() {
         val store = InMemoryChatStore()
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
 
         // a fresh chat has no stored version, so the first run must flag
         // the ELTM as updated and persist the version it saw
@@ -348,7 +352,7 @@ class PersistChatServiceTest {
         assertEquals("0", store.storedEltmVersion)
 
         // an ELTM write bumps the version: the next run must flag again
-        eltm.writeVersion = 1
+        runBlocking { bumpMetaCounterTx(ELTM_VERSION_KEY) }
         outcome = run(store = store, eltmService = eltm)
         assertNull(outcome.error)
         assertTrue(
@@ -361,14 +365,14 @@ class PersistChatServiceTest {
     @Test
     fun `eltm version is not persisted on a failed run`() {
         val store = InMemoryChatStore()
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val outcome = run(store = store, eltmService = eltm)
         assertNull(outcome.error)
         assertEquals("0", store.storedEltmVersion)
 
         // a failed run must not touch the stored version: history stays
         // at the last good state
-        eltm.writeVersion = 1
+        runBlocking { bumpMetaCounterTx(ELTM_VERSION_KEY) }
         val failed = run(
             store = store,
             eltmService = eltm,
@@ -388,7 +392,7 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `an extraction during reactive compaction bumps the ELTM version the re-injected flag sees`() {
+    fun `an extraction during reactive compaction bumps the ELTM version the re-injected flag sees`() = runBlocking {
         // the reactive compaction's extraction writes the dropped facts
         // straight into the ELTM (the writer run creates an entity), bumping
         // the ELTM version BETWEEN the initial injection and the
@@ -397,7 +401,7 @@ class PersistChatServiceTest {
         // false, the retried round's must count the write, and the run
         // stores the bumped version
         val store = InMemoryChatStore()
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val writerProvider = EltmToolProvider(eltm)
 
         // run 1: a normal turn stores the ELTM version it saw
@@ -442,7 +446,7 @@ class PersistChatServiceTest {
 
         // the extraction really wrote into the ELTM, bumping its version
         assertTrue(
-            eltm.entities.values.any { it.canonicalName == "alice" },
+            TestDb.allEltmEntities().any { it.canonicalName == "alice" },
             "the extraction must write the facts into the ELTM",
         )
         // request order: rewrite, exhausted chat, compactor, extractor, writer, fresh run
@@ -822,7 +826,7 @@ class PersistChatServiceTest {
             // namespaced set; a round where the model queries the ELTM
             // routes to the local provider and stores the paired call/result
             // like any other tool round
-            val eltm = FakeEltmService()
+            val eltm = testPostgresEltmService(FakeHand())
             eltm.createEntity("Alice", "person")
             val eltmProvider = EltmToolProvider(eltm, readOnly = true, namespace = "eltm")
             val mcpServer = MockMcpServer(listOf(mcpAddTool()))
@@ -1150,36 +1154,27 @@ class PersistChatServiceTest {
     // ------------------------------------------------------------------
 
     /**
-     * A fake ELTM whose substring search matches "alice": one person entity
+     * A real ELTM store seeded for the "alice" search: one person entity
      * with an attribute, one company entity, one relationship
      * (alice→works_at→acme), and two diary notes (one per subject kind)
-     * whose texts mention alice.
+     * whose texts mention alice. The ids are deterministic (the per-test
+     * reset restarts every sequence): alice=1, bob=2, acme=3,
+     * relationship=1, notes 1 and 2 in insert order.
      */
-    private fun eltmSeededForAliceSearch() = FakeEltmService().apply {
-        val alice = EltmEntity(id = 1, canonicalName = "alice", category = "person")
-        entities[1] = alice
-        attributes[1] = mutableMapOf("real_name" to "Alice Smith")
-        entities[2] = EltmEntity(id = 2, canonicalName = "bob", category = "person")
-        entities[3] = EltmEntity(id = 3, canonicalName = "acme", category = "company")
-        relationships[1] = EltmRelationship(
-            id = 1, srcId = 1, dstId = 3, verb = "works_at", valid = true,
-        )
-        notes[1] = EltmNote(
-            id = 1, entityId = 1, relationshipId = null,
-            eventDate = LocalDate.of(2026, 8, 1),
-            note = "alice met bob at the conference",
-            createdAt = OffsetDateTime.parse("2026-08-01T12:00:00Z"),
-        )
-        notes[2] = EltmNote(
-            id = 2, entityId = null, relationshipId = 1,
-            eventDate = LocalDate.of(2026, 7, 15),
-            note = "alice joined acme as an engineer",
-            createdAt = OffsetDateTime.parse("2026-07-15T12:00:00Z"),
-        )
+    private suspend fun eltmSeededForAliceSearch(): EltmService {
+        val eltm = testPostgresEltmService(FakeHand())
+        val alice = eltm.createEntity("alice", "person").entity
+        val bob = eltm.createEntity("bob", "person").entity
+        val acme = eltm.createEntity("acme", "company").entity
+        eltm.setEntityAttribute(alice.id, "real_name", "Alice Smith")
+        val rel = eltm.createRelationship(alice.id, acme.id, "works_at")
+        eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 8, 1), "alice met bob at the conference")
+        eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 7, 15), "alice joined acme as an engineer")
+        return eltm
     }
 
     @Test
-    fun `the eltm context injection carries the searched entities and notes`() {
+    fun `the eltm context injection carries the searched entities and notes`() = runBlocking {
         val outcome = run(
             eltmService = eltmSeededForAliceSearch(),
             rewriteScript = { textRunFlow("alice") },
@@ -1214,7 +1209,7 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `the nothing-to-query sentinel leaves the related sections empty`() {
+    fun `the nothing-to-query sentinel leaves the related sections empty`() = runBlocking {
         // a matching ELTM is seeded, but the rewrite answers with the
         // sentinel: no search runs, both sections stay empty
         val outcome = run(
@@ -1228,7 +1223,7 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `a zero related-notes limit skips the note search but keeps the entity search`() {
+    fun `a zero related-notes limit skips the note search but keeps the entity search`() = runBlocking {
         val outcome = run(
             eltmService = eltmSeededForAliceSearch(),
             relatedNotesLimit = 0,
@@ -1244,7 +1239,7 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `both related limits zero skip the rewrite and the searches entirely`() {
+    fun `both related limits zero skip the rewrite and the searches entirely`() = runBlocking {
         val outcome = run(
             eltmService = eltmSeededForAliceSearch(),
             relatedEntitiesLimit = 0,
@@ -1262,7 +1257,7 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `a reactive compaction keeps the pre-round related context in the refreshed injection`() {
+    fun `a reactive compaction keeps the pre-round related context in the refreshed injection`() = runBlocking {
         val outcome = run(
             store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
             eltmService = eltmSeededForAliceSearch(),
@@ -1490,8 +1485,8 @@ class PersistChatServiceTest {
     }
 
     @Test
-    fun `pre-round compaction extracts memories into the ELTM from the dropped messages`() {
-        val eltm = FakeEltmService()
+    fun `pre-round compaction extracts memories into the ELTM from the dropped messages`() = runBlocking {
+        val eltm = testPostgresEltmService(FakeHand())
         val model = catalogModel("bifrost/cerebras/gemma-4-31b", compactionKeepRounds = 3)
         val hand = FakeHand(
             runScript = { request ->
@@ -1592,7 +1587,7 @@ class PersistChatServiceTest {
 
         // the writer run recorded the extracted fact into the ELTM diary
         assertTrue(
-            eltm.notes.values.map { it.note }.contains("likes coffee"),
+            TestDb.allEltmNotes().map { it.note }.contains("likes coffee"),
             "the extracted fact lands in the ELTM",
         )
 
@@ -1671,7 +1666,7 @@ class PersistChatServiceTest {
         // this pins the statelessness claim of the shared services under
         // concurrent calls. Distinct chat content makes any cross-talk
         // visible in the stores.
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val hand = FakeHand(
             runScript = { request ->
                 when {
@@ -1796,7 +1791,7 @@ class PersistChatServiceTest {
         // rewrite + chat round
         assertEquals(
             2,
-            eltm.notes.values.count { it.note == "likes coffee" },
+            TestDb.allEltmNotes().count { it.note == "likes coffee" },
             "both extractions applied their note",
         )
         assertEquals(

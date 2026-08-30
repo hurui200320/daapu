@@ -7,9 +7,12 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.chatService
 import info.skyblond.daapu.agent.chat.ChatValidationException
 import kotlinx.coroutines.runBlocking
@@ -25,7 +28,7 @@ import kotlin.test.*
  * to a naturally finished assistant message into a new chat). Neither calls
  * the LLM, and truncate runs under the per-chat lock like a delete.
  */
-class ChatServiceHistoryEditTest {
+class ChatServiceHistoryEditTest : DbTestBase() {
 
     private fun user(text: String) = ChatMessage(
         ChatMessageRole.User,
@@ -70,7 +73,7 @@ class ChatServiceHistoryEditTest {
     )
 
     private fun service(
-        store: FakeChatStore,
+        store: PostgresChatStore = PostgresChatStore(),
         hand: FakeHand = FakeHand(runScript = { error("the LLM must not be called") }),
     ) = chatService(testAppConfig(), hand = hand, chatStore = store)
 
@@ -79,8 +82,8 @@ class ChatServiceHistoryEditTest {
     @Test
     fun `truncate drops the target user message and everything after, resetting the eltm version`() =
         runBlocking {
-            val store = FakeChatStore()
-            store.seed("chat-1", chat = threeRounds(), eltmVersion = "e1")
+            val store = PostgresChatStore()
+            TestDb.seedChatRow("chat-1", messages = threeRounds(), eltmVersion = "e1")
             val srv = service(store)
 
             // u2 sits at index 2: keep u1/a1, drop u2/a2/u3/a3
@@ -97,15 +100,15 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `truncate at the first message empties the chat`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds(), personaId = 1L)
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds(), personaId = 1L)
         val srv = service(store)
 
         assertTrue(srv.truncateChat("chat-1", 0))
         val entry = store.load("chat-1")!!
         assertTrue(entry.content.messages.isEmpty())
         // the title survives (the upsert never touches it)
-        assertEquals(DEFAULT_CHAT_TITLE, store.title("chat-1"))
+        assertEquals(DEFAULT_CHAT_TITLE, store.load("chat-1")!!.info.title)
         // the persona record survives too: truncation drops messages, not
         // the chat's identity
         assertEquals(1L, entry.info.personaId)
@@ -113,14 +116,14 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `truncate of a missing chat returns false without calling the LLM`() = runBlocking {
-        val srv = service(FakeChatStore())
+        val srv = service()
         assertFalse(srv.truncateChat("nope", 0))
     }
 
     @Test
     fun `truncate rejects an out of bounds index`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds())
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds())
         val srv = service(store)
 
         assertFailsWith<ChatValidationException> { srv.truncateChat("chat-1", -1) }
@@ -131,8 +134,8 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `truncate on an empty chat rejects any index`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1")
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1")
         val srv = service(store)
 
         assertFailsWith<ChatValidationException> { srv.truncateChat("chat-1", 0) }
@@ -141,8 +144,8 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `truncate rejects an index that is not a user message`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds())
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds())
         val srv = service(store)
 
         // index 1 is the assistant reply to u1
@@ -152,13 +155,15 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `truncate at a user message keeps a preceding tool chain intact`() = runBlocking {
-        val store = FakeChatStore()
+        val store = PostgresChatStore()
         // u1 -> a1(tool_calls) -> r1 -> a2(stop) -> u2: truncating at u2
         // (index 4) keeps the whole paired chain; splitting it would violate
         // the call/result pairing that validateChat enforces
         val chain = toolChainRound()
-        val history = listOf(user("u1"), chain[0], chain[1], assistant("a2"), user("u2"))
-        store.seed("chat-1", chat = history)
+        // the stored chat must be complete (load validates): the trailing
+        // u2/a2 pair gives the truncation target its natural position
+        val history = listOf(user("u1"), chain[0], chain[1], assistant("a2"), user("u2"), assistant("a2"))
+        TestDb.seedChatRow("chat-1", messages = history)
         val srv = service(store)
 
         assertTrue(srv.truncateChat("chat-1", 4))
@@ -182,8 +187,8 @@ class ChatServiceHistoryEditTest {
                 user("CONTEXT COMPACTION: earlier rounds summarized"),
                 user("u2"), assistant("a2"),
             )
-            val store = FakeChatStore()
-            store.seed("chat-1", chat = history)
+            val store = PostgresChatStore()
+            TestDb.seedChatRow("chat-1", messages = history)
             val srv = service(store)
 
             assertFailsWith<ChatValidationException> { srv.truncateChat("chat-1", 1) }
@@ -195,8 +200,8 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `truncate is rejected while a run holds the chat lock`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds())
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds())
         val srv = service(store)
         val lock = srv.acquireChatLock("chat-1")
         try {
@@ -213,8 +218,8 @@ class ChatServiceHistoryEditTest {
     @Test
     fun `fork copies the history prefix up to the assistant stop message into a new chat`() =
         runBlocking {
-            val store = FakeChatStore()
-            store.seed("chat-1", chat = threeRounds(), eltmVersion = "e1")
+            val store = PostgresChatStore()
+            TestDb.seedChatRow("chat-1", messages = threeRounds(), eltmVersion = "e1")
             val srv = service(store)
 
             // fork at index 3 (a2): the new chat carries u1/a1/u2/a2
@@ -237,8 +242,8 @@ class ChatServiceHistoryEditTest {
         // the persona record is part of the chat's identity: a fork of a
         // conversation continues that conversation's persona (the user can
         // switch it later — the record is never authoritative for runs)
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds(), personaId = 1L)
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds(), personaId = 1L)
         val srv = service(store)
 
         val forked = srv.forkChat("chat-1", 3)!!
@@ -249,14 +254,14 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `fork of a missing chat returns null without calling the LLM`() = runBlocking {
-        val srv = service(FakeChatStore())
+        val srv = service()
         assertNull(srv.forkChat("nope", 0))
     }
 
     @Test
     fun `fork on an empty chat rejects any index`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1")
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1")
         val srv = service(store)
 
         assertFailsWith<ChatValidationException> { srv.forkChat("chat-1", 0) }
@@ -265,8 +270,8 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `fork rejects an out of bounds index`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds())
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds())
         val srv = service(store)
 
         assertFailsWith<ChatValidationException> { srv.forkChat("chat-1", -1) }
@@ -276,36 +281,42 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `fork rejects an index that is not a naturally finished assistant message`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds())
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds())
         val srv = service(store)
 
         // index 0 is a user message
         assertFailsWith<ChatValidationException> { srv.forkChat("chat-1", 0) }
-        // index 2 is a user message too; a tool_calls assistant (not "stop")
-        // must be refused as well — it sits mid-tool-chain and forking there
-        // would split a call/result pair
-        val store2 = FakeChatStore()
-        store2.seed(
-            "chat-1",
-            chat = listOf(
+        // a tool_calls assistant (not "stop") must be refused — it sits
+        // mid-tool-chain and forking there would split a call/result pair.
+        // The stored chat must still be a complete one (load validates), so
+        // the tool_calls message sits mid-history, closed by its result and
+        // a later stop message
+        val chain = toolChainRound()
+        TestDb.seedChatRow(
+            "chat-2",
+            messages = listOf(
                 user("u1"),
-                assistant("a1", finish = "tool_calls"),
+                chain[0], chain[1],
+                assistant("a2"),
             ),
         )
-        assertFailsWith<ChatValidationException> { service(store2).forkChat("chat-1", 1) }
-        assertTrue(store.listChats().size == 1 && store2.listChats().size == 1)
+        assertFailsWith<ChatValidationException> { srv.forkChat("chat-2", 1) }
+        assertTrue(
+            store.listChats().size == 2,
+            "the rejected forks must not create chats: ${store.listChats()}"
+        )
     }
 
     @Test
     fun `fork at the stop message after a tool chain copies the paired chain`() = runBlocking {
-        val store = FakeChatStore()
+        val store = PostgresChatStore()
         // u1 -> a1(tool_calls) -> r1 -> a2(stop): forking at index 3 (a2)
         // copies the whole chain into the new chat — the call/result pair
         // must survive the prefix copy (validateChat would reject a split)
         val chain = toolChainRound()
         val history = listOf(user("u1"), chain[0], chain[1], assistant("a2"))
-        store.seed("chat-1", chat = history)
+        TestDb.seedChatRow("chat-1", messages = history)
         val srv = service(store)
 
         val forked = srv.forkChat("chat-1", 3)!!
@@ -314,8 +325,8 @@ class ChatServiceHistoryEditTest {
 
     @Test
     fun `fork succeeds while the source chat is locked by a run`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = threeRounds())
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = threeRounds())
         val srv = service(store)
         val lock = srv.acquireChatLock("chat-1")
         try {

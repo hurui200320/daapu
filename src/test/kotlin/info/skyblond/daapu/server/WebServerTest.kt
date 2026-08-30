@@ -7,15 +7,17 @@ import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
-import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.textRunFlow
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.testKoinApp
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -36,14 +38,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Pins the HTTP status mapping of the `/api` routes. Only the DB-free paths
- * are exercised: every request below fails validation or the chat lock before
- * any `withTransaction` runs (a chat run or a successful delete would need a
- * live database, which unit tests deliberately avoid). The title route is the
- * exception: it goes through an injected in-memory [ChatStore] and a scripted
- * [FakeHand], so it needs no database either.
+ * Pins the HTTP status mapping of the `/api` routes. Most requests below
+ * fail validation or the chat lock before any store write; the ones that do
+ * write (truncate, fork, title, personas, the ELTM browse routes) run the
+ * production stores against the testcontainers database (see `TestDb`), with
+ * a scripted [FakeHand] wherever a one-shot would fire.
  */
-class WebServerTest {
+class WebServerTest : DbTestBase() {
 
     private val model = "bifrost/cerebras/gpt-oss-120b"
 
@@ -184,10 +185,10 @@ class WebServerTest {
 
     @Test
     fun `truncate drops the tail and answers 204`() {
-        val store = FakeChatStore()
-        store.seed(
+        val store = PostgresChatStore()
+        TestDb.seedChatRow(
             "chat-1",
-            chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2"))
+            messages = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2"))
         )
         testApplication {
             application {
@@ -206,7 +207,7 @@ class WebServerTest {
     fun `truncate on a missing chat is 404`() {
         testApplication {
             application {
-                module(testKoinApp(testAppConfig(), chatStore = FakeChatStore()).koin)
+                module(testKoinApp(testAppConfig()).koin)
             }
             val response = client.delete("/api/chats/nope/messages/0")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -215,8 +216,8 @@ class WebServerTest {
 
     @Test
     fun `truncate with a bad index is 400`() {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
         testApplication {
             application {
                 module(testKoinApp(testAppConfig(), chatStore = store).koin)
@@ -256,10 +257,10 @@ class WebServerTest {
 
     @Test
     fun `fork copies the prefix into a new chat and answers 201 with its info`() {
-        val store = FakeChatStore()
-        store.seed(
+        val store = PostgresChatStore()
+        TestDb.seedChatRow(
             "chat-1",
-            chat = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2"))
+            messages = listOf(user("u1"), assistantMessage("a1"), user("u2"), assistantMessage("a2"))
         )
         testApplication {
             application {
@@ -284,7 +285,7 @@ class WebServerTest {
     fun `fork on a missing chat is 404`() {
         testApplication {
             application {
-                module(testKoinApp(testAppConfig(), chatStore = FakeChatStore()).koin)
+                module(testKoinApp(testAppConfig()).koin)
             }
             val response = client.post("/api/chats/nope/fork/0")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -293,8 +294,8 @@ class WebServerTest {
 
     @Test
     fun `fork with a bad index is 400`() {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
         testApplication {
             application {
                 module(testKoinApp(testAppConfig(), chatStore = store).koin)
@@ -395,7 +396,7 @@ class WebServerTest {
 
     @Test
     fun `eltm missing subjects are 404`() {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
             listOf(
@@ -413,13 +414,13 @@ class WebServerTest {
 
     @Test
     fun `eltm entities list returns seeded entities with counts and latest notes`() {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         runBlocking {
-            eltm.createEntity("Alice", "person")
+            val alice = eltm.createEntity("Alice", "person").entity
             eltm.createEntity("Bob", "person")
-            eltm.attachNoteToEntity(1, LocalDate.of(2026, 1, 1), "first note")
-            eltm.attachNoteToEntity(1, LocalDate.of(2026, 2, 1), "second note")
-            eltm.setEntityAttribute(1, "nickname", "Ali")
+            eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 1, 1), "first note")
+            eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 2, 1), "second note")
+            eltm.setEntityAttribute(alice.id, "nickname", "Ali")
         }
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
@@ -455,7 +456,7 @@ class WebServerTest {
 
     @Test
     fun `eltm entities list paginates`() {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         runBlocking {
             eltm.createEntity("Alice", "person")
             eltm.createEntity("Bob", "person")
@@ -473,11 +474,11 @@ class WebServerTest {
 
     @Test
     fun `eltm relationships list returns seeded relationships`() {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         runBlocking {
-            eltm.createEntity("Alice", "person")
-            eltm.createEntity("Bob", "person")
-            eltm.createRelationship(1, 2, "works with")
+            val alice = eltm.createEntity("Alice", "person").entity
+            val bob = eltm.createEntity("Bob", "person").entity
+            eltm.createRelationship(alice.id, bob.id, "works with")
         }
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
@@ -495,29 +496,30 @@ class WebServerTest {
 
     @Test
     fun `eltm entity drill-down serves relationships and notes`() {
-        val eltm = FakeEltmService()
-        runBlocking {
-            eltm.createEntity("Alice", "person")
-            eltm.createEntity("Bob", "person")
-            eltm.createRelationship(1, 2, "works with")
-            eltm.attachNoteToEntity(1, LocalDate.of(2026, 1, 1), "note text")
-            eltm.attachNoteToRelationship(1, LocalDate.of(2026, 1, 2), "collaborate")
+        val eltm = testPostgresEltmService(FakeHand())
+        val (aliceId, relId) = runBlocking {
+            val alice = eltm.createEntity("Alice", "person").entity
+            val bob = eltm.createEntity("Bob", "person").entity
+            val rel = eltm.createRelationship(alice.id, bob.id, "works with")
+            eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 1, 1), "note text")
+            eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 1, 2), "collaborate")
+            alice.id to rel.id
         }
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
-            val notes = client.get("/api/eltm/entities/1/notes")
+            val notes = client.get("/api/eltm/entities/$aliceId/notes")
             assertEquals(HttpStatusCode.OK, notes.status)
             val notesBody = json.parseToJsonElement(notes.bodyAsText()).jsonArray
             assertEquals(1, notesBody.size)
             assertEquals("note text", notesBody[0].jsonObject["note"]?.jsonPrimitive?.content)
 
-            val rels = client.get("/api/eltm/entities/1/relationships")
+            val rels = client.get("/api/eltm/entities/$aliceId/relationships")
             assertEquals(HttpStatusCode.OK, rels.status)
             val relsBody = json.parseToJsonElement(rels.bodyAsText()).jsonArray
             assertEquals(1, relsBody.size)
             assertEquals(1, relsBody[0].jsonObject["noteCount"]?.jsonPrimitive?.content?.toInt())
 
-            val relNotes = client.get("/api/eltm/relationships/1/notes")
+            val relNotes = client.get("/api/eltm/relationships/$relId/notes")
             assertEquals(HttpStatusCode.OK, relNotes.status)
             val relNotesBody = json.parseToJsonElement(relNotes.bodyAsText()).jsonArray
             assertEquals(1, relNotesBody.size)
@@ -527,21 +529,22 @@ class WebServerTest {
 
     @Test
     fun `eltm entity drill-down hides invalidated relationships unless requested`() {
-        val eltm = FakeEltmService()
-        runBlocking {
-            eltm.createEntity("Alice", "person")
-            eltm.createEntity("Bob", "person")
-            eltm.createRelationship(1, 2, "works with")
-            eltm.attachNoteToRelationship(1, LocalDate.of(2026, 3, 1), "left", valid = false)
+        val eltm = testPostgresEltmService(FakeHand())
+        val aliceId = runBlocking {
+            val alice = eltm.createEntity("Alice", "person").entity
+            val bob = eltm.createEntity("Bob", "person").entity
+            val rel = eltm.createRelationship(alice.id, bob.id, "works with")
+            eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 3, 1), "left", valid = false)
+            alice.id
         }
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
-            val hidden = client.get("/api/eltm/entities/1/relationships")
+            val hidden = client.get("/api/eltm/entities/$aliceId/relationships")
             assertEquals(HttpStatusCode.OK, hidden.status)
             val hiddenBody = json.parseToJsonElement(hidden.bodyAsText()).jsonArray
             assertEquals(0, hiddenBody.size)
 
-            val shown = client.get("/api/eltm/entities/1/relationships?includeInvalid=true")
+            val shown = client.get("/api/eltm/entities/$aliceId/relationships?includeInvalid=true")
             assertEquals(HttpStatusCode.OK, shown.status)
             val shownBody = json.parseToJsonElement(shown.bodyAsText()).jsonArray
             assertEquals(1, shownBody.size)
@@ -554,12 +557,12 @@ class WebServerTest {
 
     @Test
     fun `eltm relationships list includes invalidated relationships`() {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         runBlocking {
-            eltm.createEntity("Alice", "person")
-            eltm.createEntity("Bob", "person")
-            eltm.createRelationship(1, 2, "works with")
-            eltm.attachNoteToRelationship(1, LocalDate.of(2026, 3, 1), "left", valid = false)
+            val alice = eltm.createEntity("Alice", "person").entity
+            val bob = eltm.createEntity("Bob", "person").entity
+            val rel = eltm.createRelationship(alice.id, bob.id, "works with")
+            eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 3, 1), "left", valid = false)
         }
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
@@ -576,16 +579,17 @@ class WebServerTest {
 
     @Test
     fun `eltm notes are filtered by date range`() {
-        val eltm = FakeEltmService()
-        runBlocking {
-            eltm.createEntity("Alice", "person")
-            eltm.attachNoteToEntity(1, LocalDate.of(2026, 1, 1), "jan")
-            eltm.attachNoteToEntity(1, LocalDate.of(2026, 2, 1), "feb")
-            eltm.attachNoteToEntity(1, LocalDate.of(2026, 3, 1), "mar")
+        val eltm = testPostgresEltmService(FakeHand())
+        val aliceId = runBlocking {
+            val alice = eltm.createEntity("Alice", "person").entity
+            eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 1, 1), "jan")
+            eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 2, 1), "feb")
+            eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 3, 1), "mar")
+            alice.id
         }
         testApplication {
             application { module(testKoinApp(eltmService = eltm).koin) }
-            val response = client.get("/api/eltm/entities/1/notes?from=2026-02-01&to=2026-02-28")
+            val response = client.get("/api/eltm/entities/$aliceId/notes?from=2026-02-01&to=2026-02-28")
             assertEquals(HttpStatusCode.OK, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonArray
             assertEquals(1, body.size)
@@ -624,9 +628,9 @@ class WebServerTest {
     }
 
     @Test
-    fun `generate title persists and returns the generated title`() {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("hi"), assistantMessage("hello")))
+    fun `generate title persists and returns the generated title`() = runBlocking {
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("hi"), assistantMessage("hello")))
         val hand = FakeHand(
             runScript = { textRunFlow("Generated title") }
         )
@@ -640,7 +644,7 @@ class WebServerTest {
             assertEquals("chat-1", body["id"]?.jsonPrimitive?.content)
             assertEquals("Generated title", body["title"]?.jsonPrimitive?.content)
         }
-        assertEquals("Generated title", store.title("chat-1"))
+        assertEquals("Generated title", store.load("chat-1")!!.info.title)
         assertEquals(1, hand.requests.size)
     }
 
@@ -649,7 +653,7 @@ class WebServerTest {
         val hand = FakeHand()
         testApplication {
             application {
-                module(testKoinApp(testAppConfig(), hand = hand, chatStore = FakeChatStore()).koin)
+                module(testKoinApp(testAppConfig(), hand = hand).koin)
             }
             val response = client.post("/api/chats/nope/title")
             assertEquals(HttpStatusCode.NotFound, response.status)
@@ -658,9 +662,9 @@ class WebServerTest {
     }
 
     @Test
-    fun `generate title on an empty chat is a no-op`() {
-        val store = FakeChatStore()
-        store.seed("chat-1", title = "My custom title")
+    fun `generate title on an empty chat is a no-op`() = runBlocking {
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", title = "My custom title")
         val hand = FakeHand()
         testApplication {
             application {
@@ -674,19 +678,19 @@ class WebServerTest {
         assertTrue(hand.requests.isEmpty(), "an empty chat must not call the LLM")
         assertEquals(
             "My custom title",
-            store.title("chat-1"),
+            store.load("chat-1")!!.info.title,
             "a custom title must never be clobbered"
         )
     }
 
     @Test
-    fun `generate title with a title model that cannot see the history is 400`() {
+    fun `generate title with a title model that cannot see the history is 400`() = runBlocking {
         // a text-only title model with image history: a configuration error,
         // surfaced as a 400 with the reason instead of an opaque 500
-        val store = FakeChatStore()
-        store.seed(
+        val store = PostgresChatStore()
+        TestDb.seedChatRow(
             "chat-1",
-            chat = listOf(
+            messages = listOf(
                 user("hi"),
                 ChatMessage(
                     ChatMessageRole.User,
@@ -699,6 +703,7 @@ class WebServerTest {
                     ),
                     createdAt = Instant.parse("2026-08-17T09:00:00Z"),
                 ),
+                assistantMessage("here you go"),
             ),
         )
         val hand = FakeHand()
@@ -727,11 +732,10 @@ class WebServerTest {
 
     @Test
     fun `personas list leads with the code default and includes the rows`() {
-        val personaStore = FakePersonaStore()
-        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        runBlocking { TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg")) }
         testApplication {
             application {
-                module(testKoinApp(personaStore = personaStore).koin)
+                module(testKoinApp().koin)
             }
             val response = client.get("/api/personas")
             assertEquals(HttpStatusCode.OK, response.status)
@@ -748,10 +752,9 @@ class WebServerTest {
 
     @Test
     fun `creating a persona validates and returns the row`() {
-        val personaStore = FakePersonaStore()
         testApplication {
             application {
-                module(testKoinApp(personaStore = personaStore).koin)
+                module(testKoinApp().koin)
             }
             val created = client.post("/api/personas") {
                 contentType(ContentType.Application.Json)
@@ -763,8 +766,14 @@ class WebServerTest {
             val body = json.parseToJsonElement(created.bodyAsText()).jsonObject
             val id = assertNotNull(body["id"]?.jsonPrimitive?.long)
             assertEquals("Writer", body["name"]?.jsonPrimitive?.content)
-            assertEquals(1, personaStore.rows().size)
-            assertEquals(listOf("gsg"), personaStore.findById(id)?.allowedNamespaces)
+            val personas = json.parseToJsonElement(client.get("/api/personas").bodyAsText()).jsonArray
+            assertEquals(2, personas.size, "the code default plus the created row")
+            assertEquals(
+                listOf("gsg"),
+                Json.parseToJsonElement(client.get("/api/personas").bodyAsText())
+                    .jsonArray.first { it.jsonObject["id"]!!.jsonPrimitive.long == id }
+                    .jsonObject["allowedNamespaces"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
         }
     }
 
@@ -790,23 +799,28 @@ class WebServerTest {
 
     @Test
     fun `updating a persona persists the new text and whitelist`() {
-        val personaStore = FakePersonaStore()
-        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        val writer = runBlocking {
+            TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+        }
         testApplication {
             application {
-                module(testKoinApp(personaStore = personaStore).koin)
+                module(testKoinApp().koin)
             }
-            val response = client.put("/api/personas/1") {
+            val response = client.put("/api/personas/${writer.id}") {
                 contentType(ContentType.Application.Json)
                 setBody(
                     """{"name":"Poet","systemPrompt":"You are a poet.","allowedNamespaces":[]}"""
                 )
             }
             assertEquals(HttpStatusCode.OK, response.status)
-            val updated = assertNotNull(personaStore.findById(1L))
-            assertEquals("Poet", updated.name)
-            assertEquals("You are a poet.", updated.systemPrompt)
-            assertEquals(emptyList(), updated.allowedNamespaces, "[] = all namespaces")
+            val updated = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("Poet", updated["name"]?.jsonPrimitive?.content)
+            assertEquals("You are a poet.", updated["systemPrompt"]?.jsonPrimitive?.content)
+            assertEquals(
+                emptyList(),
+                updated["allowedNamespaces"]?.jsonArray?.map { it.jsonPrimitive.content },
+                "[] = all namespaces",
+            )
         }
     }
 
@@ -860,15 +874,22 @@ class WebServerTest {
 
     @Test
     fun `deleting a persona answers 204 and removes the row`() {
-        val personaStore = FakePersonaStore()
-        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        val writer = runBlocking {
+            TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+        }
         testApplication {
             application {
-                module(testKoinApp(personaStore = personaStore).koin)
+                module(testKoinApp().koin)
             }
-            val response = client.delete("/api/personas/1")
+            val response = client.delete("/api/personas/${writer.id}")
             assertEquals(HttpStatusCode.NoContent, response.status)
-            assertNull(personaStore.findById(1L))
+            // there is no GET-by-id route: verify the removal through the list
+            val remaining = json.parseToJsonElement(client.get("/api/personas").bodyAsText()).jsonArray
+            assertEquals(1, remaining.size, "only the code default remains")
+            assertEquals(
+                DEFAULT_PERSONA_ID,
+                remaining.single().jsonObject["id"]?.jsonPrimitive?.long,
+            )
         }
     }
 }

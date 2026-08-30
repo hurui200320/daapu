@@ -151,8 +151,8 @@ class EltmServiceTest {
         private var writeVersion: Long,
     ) : EltmService {
         override suspend fun version(): String = writeVersion.toString()
-        // the store operations are exercised through FakeEltmService in the
-        // writer tests
+        // the store operations are exercised through the real
+        // PostgresEltmService (test database) in the writer tests
         override suspend fun createEntity(name: String, category: String): CreateEntityResult =
             error("unused")
 

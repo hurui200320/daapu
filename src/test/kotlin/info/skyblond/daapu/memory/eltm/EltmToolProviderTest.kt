@@ -5,8 +5,12 @@ import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.DeterministicEmbeddings
+import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.testEltmWriterService
+import info.skyblond.daapu.testutil.testAxisVector
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -16,17 +20,35 @@ import kotlinx.serialization.json.put
 import java.time.LocalDate
 import kotlin.test.*
 
-class EltmToolProviderTest {
+class EltmToolProviderTest : DbTestBase() {
 
     private fun toolCall(id: String, name: String, arguments: JsonObject) =
         ToolCallRequest(id = id, name = name, args = arguments)
+
+    /**
+     * A real [PostgresEltmService] over the test database. The embeddings
+     * ride the hand seam: pass [embeddings] for exact similarity control in
+     * the search tests, or a failing script to pin the tool layer's error
+     * mapping.
+     */
+    private fun eltm(embeddings: DeterministicEmbeddings? = null): PostgresEltmService =
+        testPostgresEltmService(
+            if (embeddings == null) FakeHand()
+            else FakeHand(embedScript = embeddings.script)
+        )
+
+    /** A service whose hand fails every embed with [type]. */
+    private fun failingEltm(type: String, message: String): PostgresEltmService =
+        testPostgresEltmService(FakeHand(embedScript = { _ ->
+            throw EmbeddingException(type, message)
+        }))
 
     private fun textOf(result: ChatMessagePart.ToolResult) =
         (result.parts.single() as ChatMessagePart.Text).text
 
     @Test
     fun `the writer advertises the thirteen eltm tools in order with integer ids`() {
-        val provider = EltmToolProvider(FakeEltmService())
+        val provider = EltmToolProvider(eltm())
         val specs = runBlocking { provider.specifications() }
         assertEquals(
             listOf(
@@ -61,7 +83,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `the read-only provider advertises exactly the five read tools`() {
-        val provider = EltmToolProvider(FakeEltmService(), readOnly = true)
+        val provider = EltmToolProvider(eltm(), readOnly = true)
         val specs = runBlocking { provider.specifications() }
         assertEquals(
             listOf(
@@ -77,7 +99,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `the read-only provider rejects write tools`() = runBlocking {
-        val provider = EltmToolProvider(FakeEltmService(), readOnly = true)
+        val provider = EltmToolProvider(eltm(), readOnly = true)
         val result = provider.execute(
             toolCall("c1", "create_entity", buildJsonObject { put("name", "Alice") }),
         )
@@ -106,7 +128,13 @@ class EltmToolProviderTest {
 
     @Test
     fun `search_entities returns the hits with their similarity`() = runBlocking {
-        val eltm = FakeEltmService()
+        val embeddings = DeterministicEmbeddings()
+        // the query "ali" is pinned to the alice entity's embedding text
+        // ("alice person"); bob's embedding text is orthogonal to it
+        embeddings.register("alice person", testAxisVector(0))
+        embeddings.register("ali", testAxisVector(0))
+        embeddings.register("bob person", testAxisVector(1))
+        val eltm = eltm(embeddings)
         eltm.createEntity("Alice", "person")
         eltm.createEntity("Bob", "person")
         val provider = EltmToolProvider(eltm)
@@ -117,14 +145,14 @@ class EltmToolProviderTest {
         assertFalse(result.isError)
         val text = textOf(result)
         assertTrue(text.contains("alice"), text)
-        assertFalse(text.contains("bob"), "substring match on the canonical name only")
+        assertFalse(text.contains("bob"), "the orthogonal entity does not surface")
         assertTrue(text.contains("similarity"), text)
     }
 
     @Test
     fun `get_relationships returns both directions with endpoint names and the latest note`() =
         runBlocking {
-            val eltm = FakeEltmService()
+            val eltm = eltm()
             val alice = eltm.createEntity("Alice", "person").entity
             val bob = eltm.createEntity("Bob", "person").entity
             val rel = eltm.createRelationship(alice.id, bob.id, "colleague of")
@@ -143,7 +171,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `get_relationships errors on a missing entity`() = runBlocking {
-        val provider = EltmToolProvider(FakeEltmService())
+        val provider = EltmToolProvider(eltm())
         val result = provider.execute(
             toolCall("c1", "get_relationships", buildJsonObject { put("entity_id", 999) }),
         )
@@ -153,7 +181,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `get_entity_notes pages latest-first`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-01"), "early")
         eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-10"), "late")
@@ -182,7 +210,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `get_relationship_notes pages latest-first`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val bob = eltm.createEntity("Bob", "person").entity
         val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
@@ -213,7 +241,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `note tools narrow by an inclusive date range and page with offset`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-01"), "early")
         eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-05"), "middle")
@@ -253,7 +281,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `note tools error on malformed dates`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val bob = eltm.createEntity("Bob", "person").entity
         val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
@@ -288,7 +316,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `note tools error when from is after to`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val provider = EltmToolProvider(eltm)
 
@@ -309,7 +337,13 @@ class EltmToolProviderTest {
 
     @Test
     fun `search_notes returns matching notes newest-first and validates the subject`() = runBlocking {
-        val eltm = FakeEltmService()
+        val embeddings = DeterministicEmbeddings()
+        // the query "coffee" is pinned to the coffee note's own text; the
+        // tea note's text is pinned to an orthogonal vector
+        embeddings.register("likes coffee", testAxisVector(0))
+        embeddings.register("coffee", testAxisVector(0))
+        embeddings.register("likes tea", testAxisVector(1))
+        val eltm = eltm(embeddings)
         val alice = eltm.createEntity("Alice", "person").entity
         eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-01"), "likes coffee")
         eltm.attachNoteToEntity(alice.id, LocalDate.parse("2026-08-10"), "likes tea")
@@ -346,7 +380,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `search_notes errors on a missing subject and malformed dates`() = runBlocking {
-        val provider = EltmToolProvider(FakeEltmService())
+        val provider = EltmToolProvider(eltm())
 
         val missingEntity = provider.execute(
             toolCall(
@@ -377,7 +411,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `create_entity creates or fetches the entity and reports near matches`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val provider = EltmToolProvider(eltm)
 
         val created = provider.execute(
@@ -392,8 +426,8 @@ class EltmToolProviderTest {
             toolCall("c2", "create_entity", buildJsonObject { put("name", "Alice") }),
         )
         assertFalse(again.isError)
-        assertEquals(1, eltm.entities.size, "an exact match is a fetch, not a new row")
-        assertEquals(1, eltm.writeVersion, "an exact match touches nothing")
+        assertEquals(1, TestDb.allEltmEntities().size, "an exact match is a fetch, not a new row")
+        assertEquals(1L, eltm.version().toLong(), "an exact match touches nothing")
         val againText = textOf(again)
         assertTrue(againText.contains("notes 0") && againText.contains("relations 0"), againText)
         // a different category disambiguates: it is a NEW entity
@@ -404,19 +438,19 @@ class EltmToolProviderTest {
             }),
         )
         assertFalse(other.isError)
-        assertEquals(2, eltm.entities.size, "category separates homonyms")
-        assertEquals(2, eltm.writeVersion, "only real inserts bump the version")
+        assertEquals(2, TestDb.allEltmEntities().size, "category separates homonyms")
+        assertEquals(2L, eltm.version().toLong(), "only real inserts bump the version")
     }
 
     @Test
     fun `refine_entity renames the entity in place keeping its id and content`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val friend = eltm.createEntity("friend", "person").entity
         eltm.attachNoteToEntity(friend.id, LocalDate.parse("2026-08-01"), "met at a party")
         val bob = eltm.createEntity("Bob", "person").entity
         eltm.createRelationship(friend.id, bob.id, "colleague_of")
         eltm.setEntityAttribute(friend.id, "nickname", "buddy")
-        val versionBefore = eltm.writeVersion
+        val versionBefore = eltm.version().toLong()
         val provider = EltmToolProvider(eltm)
 
         val result = provider.execute(
@@ -430,23 +464,23 @@ class EltmToolProviderTest {
         assertTrue(text.contains("\"alice smith\" (person)"), "the refined identity renders: $text")
         assertTrue(text.contains("notes 1") && text.contains("relations 1"), text)
         assertTrue(text.contains("nickname: buddy"), "attributes survive the refine: $text")
-        assertEquals("alice smith", eltm.entities[friend.id]!!.canonicalName)
-        assertEquals("person", eltm.entities[friend.id]!!.category)
-        assertEquals(versionBefore + 1, eltm.writeVersion, "a real refine bumps the version")
-        assertEquals(1, eltm.notes.size, "the diary note stays attached")
+        assertEquals("alice smith", eltm.getEntity(friend.id)!!.entity.canonicalName)
+        assertEquals("person", eltm.getEntity(friend.id)!!.entity.category)
+        assertEquals(versionBefore + 1, eltm.version().toLong(), "a real refine bumps the version")
+        assertEquals(1, TestDb.allEltmNotes().size, "the diary note stays attached")
         assertTrue(
-            eltm.relationships.values.single().srcId == friend.id,
+            TestDb.allEltmRelationships().single().srcId == friend.id,
             "relationships keep pointing at the same id"
         )
         assertNull(
-            eltm.entities.values.firstOrNull { it.canonicalName == "friend" },
+            TestDb.allEltmEntities().firstOrNull { it.canonicalName == "friend" },
             "the placeholder name is gone"
         )
     }
 
     @Test
     fun `refine_entity changes the category optionally and canonicalizes`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val friend = eltm.createEntity("friend", "general").entity
         val provider = EltmToolProvider(eltm)
 
@@ -458,7 +492,7 @@ class EltmToolProviderTest {
         )
         assertFalse(keepCat.isError, textOf(keepCat))
         assertEquals(
-            "general", eltm.entities[friend.id]!!.category,
+            "general", eltm.getEntity(friend.id)!!.entity.category,
             "an omitted category keeps the current one"
         )
 
@@ -478,9 +512,9 @@ class EltmToolProviderTest {
 
     @Test
     fun `refine_entity is a no-op when nothing changes`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
-        val versionBefore = eltm.writeVersion
+        val versionBefore = eltm.version().toLong()
         val provider = EltmToolProvider(eltm)
 
         val result = provider.execute(
@@ -492,12 +526,12 @@ class EltmToolProviderTest {
         )
         assertFalse(result.isError, textOf(result))
         assertTrue(textOf(result).contains("\"alice\" (person)"), textOf(result))
-        assertEquals(versionBefore, eltm.writeVersion, "a no-op refine touches nothing")
+        assertEquals(versionBefore, eltm.version().toLong(), "a no-op refine touches nothing")
     }
 
     @Test
     fun `refine_entity fails fast on a missing entity and an empty call`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val provider = EltmToolProvider(eltm)
 
@@ -519,8 +553,8 @@ class EltmToolProviderTest {
         )
         assertTrue(empty.isError)
         assertTrue(textOf(empty).contains("new_name or new_category"), textOf(empty))
-        assertEquals("alice", eltm.entities[alice.id]!!.canonicalName, "nothing mutates")
-        assertEquals("person", eltm.entities[alice.id]!!.category)
+        assertEquals("alice", eltm.getEntity(alice.id)!!.entity.canonicalName, "nothing mutates")
+        assertEquals("person", eltm.getEntity(alice.id)!!.entity.category)
 
         // a blank new_name alone is the same degenerate call
         val blank = provider.execute(
@@ -535,9 +569,9 @@ class EltmToolProviderTest {
 
     @Test
     fun `refine_entity can change only the category keeping the name`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val friend = eltm.createEntity("friend", "general").entity
-        val versionBefore = eltm.writeVersion
+        val versionBefore = eltm.version().toLong()
         val provider = EltmToolProvider(eltm)
 
         val result = provider.execute(
@@ -551,17 +585,17 @@ class EltmToolProviderTest {
             textOf(result).contains("\"friend\" (person)"),
             "the name is untouched and the category renders: ${textOf(result)}"
         )
-        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName, "the name is kept")
-        assertEquals("person", eltm.entities[friend.id]!!.category)
-        assertEquals(versionBefore + 1, eltm.writeVersion, "a real category change bumps")
+        assertEquals("friend", eltm.getEntity(friend.id)!!.entity.canonicalName, "the name is kept")
+        assertEquals("person", eltm.getEntity(friend.id)!!.entity.category)
+        assertEquals(versionBefore + 1, eltm.version().toLong(), "a real category change bumps")
     }
 
     @Test
     fun `refine_entity errors when another entity holds the target name`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val friend = eltm.createEntity("friend", "person").entity
         val alice = eltm.createEntity("Alice", "person").entity
-        val versionBefore = eltm.writeVersion
+        val versionBefore = eltm.version().toLong()
         val provider = EltmToolProvider(eltm)
 
         val result = provider.execute(
@@ -574,17 +608,16 @@ class EltmToolProviderTest {
         val text = textOf(result)
         assertTrue(text.contains(alice.id.toString()), "the error names the existing entity: $text")
         assertTrue(text.contains("merge"), "the model is told to merge instead: $text")
-        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName, "nothing changed")
-        assertEquals(versionBefore, eltm.writeVersion, "a collision bumps nothing")
+        assertEquals("friend", eltm.getEntity(friend.id)!!.entity.canonicalName, "nothing changed")
+        assertEquals(versionBefore, eltm.version().toLong(), "a collision bumps nothing")
     }
 
     @Test
     fun `refine_entity fails on an embedding failure without mutating`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val friend = eltm.createEntity("friend", "person").entity
-        val versionBefore = eltm.writeVersion
-        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
-        val provider = EltmToolProvider(eltm)
+        val versionBefore = eltm.version().toLong()
+        val provider = EltmToolProvider(failingEltm("upstream", "gateway timeout"))
 
         val result = provider.execute(
             toolCall("c1", "refine_entity", buildJsonObject {
@@ -594,15 +627,15 @@ class EltmToolProviderTest {
         )
         assertTrue(result.isError)
         assertTrue(textOf(result).contains("embedding failed"), textOf(result))
-        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName)
-        assertEquals(versionBefore, eltm.writeVersion, "a failed embed leaves the store untouched")
+        assertEquals("friend", eltm.getEntity(friend.id)!!.entity.canonicalName)
+        assertEquals(versionBefore, eltm.version().toLong(), "a failed embed leaves the store untouched")
 
         // a too-large error tells the model to shorten the name or delete
         // an attribute: a refine re-embeds the name+category+attributes
-        eltm.embedFailure = EmbeddingException(
-            "invalid_request", "input too large for the embedding model"
+        val tooLargeProvider = EltmToolProvider(
+            failingEltm("invalid_request", "input too large for the embedding model")
         )
-        val tooLarge = provider.execute(
+        val tooLarge = tooLargeProvider.execute(
             toolCall("c2", "refine_entity", buildJsonObject {
                 put("entity_id", friend.id)
                 put("new_name", "a very long name")
@@ -615,12 +648,12 @@ class EltmToolProviderTest {
             text.contains("split it into several smaller notes"),
             "a name cannot be split, it must be shortened: $text"
         )
-        assertEquals("friend", eltm.entities[friend.id]!!.canonicalName)
+        assertEquals("friend", eltm.getEntity(friend.id)!!.entity.canonicalName)
     }
 
     @Test
     fun `create_relationship inserts and fetches existing rows`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val bob = eltm.createEntity("Bob", "person").entity
         val provider = EltmToolProvider(eltm)
@@ -635,7 +668,7 @@ class EltmToolProviderTest {
         assertFalse(created.isError)
         assertTrue(textOf(created).contains("works_at"), textOf(created))
         assertTrue(textOf(created).contains("alice"), "the endpoint names render: ${textOf(created)}")
-        val versionAfterCreate = eltm.writeVersion
+        val versionAfterCreate = eltm.version().toLong()
 
         // re-creating an active triple fetches the row instead of inserting
         val fetched = provider.execute(
@@ -646,11 +679,11 @@ class EltmToolProviderTest {
             }),
         )
         assertFalse(fetched.isError, "a fetch is a success: ${textOf(fetched)}")
-        assertEquals(1, eltm.relationships.size, "an active triple is fetched, not duplicated")
-        assertEquals(versionAfterCreate, eltm.writeVersion, "a fetch touches nothing")
+        assertEquals(1, TestDb.allEltmRelationships().size, "an active triple is fetched, not duplicated")
+        assertEquals(versionAfterCreate, eltm.version().toLong(), "a fetch touches nothing")
 
         // an ended triple is ALSO fetched as-is: validity never changes here
-        val relId = eltm.relationships.values.single().id
+        val relId = TestDb.allEltmRelationships().single().id
         provider.execute(
             toolCall("c3", "add_relationship_note", buildJsonObject {
                 put("relationship_id", relId)
@@ -659,7 +692,7 @@ class EltmToolProviderTest {
                 put("valid", false)
             }),
         )
-        val versionAfterEnd = eltm.writeVersion
+        val versionAfterEnd = eltm.version().toLong()
         val refetched = provider.execute(
             toolCall("c4", "create_relationship", buildJsonObject {
                 put("src_id", alice.id)
@@ -672,13 +705,13 @@ class EltmToolProviderTest {
             textOf(refetched).contains("invalidated"),
             "the fetched state is visible: ${textOf(refetched)}"
         )
-        assertFalse(eltm.relationships.values.single().valid, "the fetch never flips validity")
-        assertEquals(versionAfterEnd, eltm.writeVersion, "the fetch touches nothing")
+        assertFalse(TestDb.allEltmRelationships().single().valid, "the fetch never flips validity")
+        assertEquals(versionAfterEnd, eltm.version().toLong(), "the fetch touches nothing")
     }
 
     @Test
     fun `create_relationship fails fast on a missing endpoint`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val provider = EltmToolProvider(eltm)
 
@@ -696,7 +729,7 @@ class EltmToolProviderTest {
     @Test
     fun `add_relationship_note's valid flag closes and revives the relationship idempotently`() =
         runBlocking {
-            val eltm = FakeEltmService()
+            val eltm = eltm()
             val alice = eltm.createEntity("Alice", "person").entity
             val bob = eltm.createEntity("Bob", "person").entity
             val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
@@ -711,8 +744,8 @@ class EltmToolProviderTest {
                 }),
             )
             assertFalse(ok.isError, textOf(ok))
-            assertFalse(eltm.relationships[rel.id]!!.valid, "the ending note closes the relationship")
-            assertEquals(1, eltm.notes.size, "the ending note is recorded")
+            assertFalse(eltm.getRelationship(rel.id)!!.relationship.valid, "the ending note closes the relationship")
+            assertEquals(1, TestDb.allEltmNotes().size, "the ending note is recorded")
 
             // an already-closed relationship still accepts the note (the diary
             // is content truth): the close is idempotent, NOT an error
@@ -725,8 +758,8 @@ class EltmToolProviderTest {
                 }),
             )
             assertFalse(again.isError, "a note on an already-closed relationship still attaches: ${textOf(again)}")
-            assertEquals(2, eltm.notes.size)
-            assertFalse(eltm.relationships[rel.id]!!.valid)
+            assertEquals(2, TestDb.allEltmNotes().size)
+            assertFalse(eltm.getRelationship(rel.id)!!.relationship.valid)
 
             // a revival event re-opens the SAME row
             val revived = provider.execute(
@@ -738,8 +771,8 @@ class EltmToolProviderTest {
                 }),
             )
             assertFalse(revived.isError, textOf(revived))
-            assertTrue(eltm.relationships[rel.id]!!.valid, "the revival event re-opens the edge")
-            assertEquals(3, eltm.notes.size)
+            assertTrue(eltm.getRelationship(rel.id)!!.relationship.valid, "the revival event re-opens the edge")
+            assertEquals(3, TestDb.allEltmNotes().size)
 
             // setting the current state again is a no-op, not an error
             val noop = provider.execute(
@@ -751,7 +784,7 @@ class EltmToolProviderTest {
                 }),
             )
             assertFalse(noop.isError, textOf(noop))
-            assertTrue(eltm.relationships[rel.id]!!.valid)
+            assertTrue(eltm.getRelationship(rel.id)!!.relationship.valid)
 
             // a missing relationship fails before the embed
             val missing = provider.execute(
@@ -768,7 +801,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `add_relationship_note renders the current state label`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val bob = eltm.createEntity("Bob", "person").entity
         val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
@@ -809,7 +842,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `add_entity_note appends add-only and rejects a stray valid arg`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val provider = EltmToolProvider(eltm)
 
@@ -831,7 +864,7 @@ class EltmToolProviderTest {
             }),
         )
         assertFalse(added.isError)
-        val note = eltm.notes.values.single()
+        val note = TestDb.allEltmNotes().single()
         assertTrue(note.entityId == alice.id && note.relationshipId == null)
         assertEquals(LocalDate.parse("2026-08-18"), note.eventDate)
 
@@ -847,7 +880,7 @@ class EltmToolProviderTest {
         )
         assertTrue(strayValid.isError)
         assertTrue(textOf(strayValid).contains("valid only applies"), textOf(strayValid))
-        assertEquals(1, eltm.notes.size, "the rejected call appends nothing")
+        assertEquals(1, TestDb.allEltmNotes().size, "the rejected call appends nothing")
 
         val missing = provider.execute(
             toolCall("c4", "add_entity_note", buildJsonObject {
@@ -863,7 +896,7 @@ class EltmToolProviderTest {
     @Test
     fun `merge_entities folds a re-pointed triple into the one existing row and folds the validity`() =
         runBlocking {
-            val eltm = FakeEltmService()
+            val eltm = eltm()
             val acme = eltm.createEntity("Acme", "company").entity
             val acmeInc = eltm.createEntity("Acme Inc", "company").entity
             val bob = eltm.createEntity("Bob", "person").entity
@@ -887,21 +920,21 @@ class EltmToolProviderTest {
                 }),
             )
             assertFalse(result.isError, textOf(result))
-            val remaining = eltm.relationships.values.single()
+            val remaining = TestDb.allEltmRelationships().single()
             assertTrue(
                 remaining.valid,
                 "the survivor holds the edge because either row held it"
             )
-            assertEquals(2, eltm.notes.size, "both diary notes survive the fold")
+            assertEquals(2, TestDb.allEltmNotes().size, "both diary notes survive the fold")
             assertTrue(
-                eltm.notes.values.all { it.relationshipId == remaining.id },
+                TestDb.allEltmNotes().all { it.relationshipId == remaining.id },
                 "the duplicate's notes re-point to the survivor, never cascade-deleted"
             )
         }
 
     @Test
     fun `merge_entities folds the loser into the winner`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val winner = eltm.createEntity("Apple", "company").entity
         val loser = eltm.createEntity("Apple Inc", "company").entity
         val provider = EltmToolProvider(eltm)
@@ -914,14 +947,13 @@ class EltmToolProviderTest {
         )
         assertFalse(result.isError)
         assertTrue(textOf(result).contains("merged"), textOf(result))
-        assertEquals(listOf(winner.id to loser.id), eltm.merged)
-        assertNull(eltm.entities[loser.id], "the loser row is gone")
-        assertNotNull(eltm.entities[winner.id])
+        assertFalse(eltm.entityExists(loser.id), "the loser row is gone")
+        assertTrue(eltm.entityExists(winner.id))
     }
 
     @Test
     fun `set_entity_attribute sets, no-ops and overwrites`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val kindle = eltm.createEntity("kindle", "device").entity
         val provider = EltmToolProvider(eltm)
 
@@ -934,8 +966,8 @@ class EltmToolProviderTest {
         )
         assertFalse(set.isError, textOf(set))
         assertTrue(textOf(set).contains("Attribute \"model\" set on entity"), textOf(set))
-        assertEquals<Map<String, String>?>(mapOf("model" to "Paperwhite 6"), eltm.attributes[kindle.id])
-        val versionAfterSet = eltm.writeVersion
+        assertEquals(mapOf("model" to "Paperwhite 6"), eltm.getEntity(kindle.id)?.attributes)
+        val versionAfterSet = eltm.version().toLong()
 
         // the same value again is a no-op: nothing bumps
         val noop = provider.execute(
@@ -947,7 +979,7 @@ class EltmToolProviderTest {
         )
         assertFalse(noop.isError, textOf(noop))
         assertTrue(textOf(noop).contains("already set"), textOf(noop))
-        assertEquals(versionAfterSet, eltm.writeVersion, "a no-op set touches nothing")
+        assertEquals(versionAfterSet, eltm.version().toLong(), "a no-op set touches nothing")
 
         // a different value overwrites and bumps
         val overwrite = provider.execute(
@@ -958,8 +990,8 @@ class EltmToolProviderTest {
             }),
         )
         assertFalse(overwrite.isError, textOf(overwrite))
-        assertEquals(versionAfterSet + 1, eltm.writeVersion)
-        assertEquals<Map<String, String>?>(mapOf("model" to "Paperwhite 7"), eltm.attributes[kindle.id])
+        assertEquals(versionAfterSet + 1, eltm.version().toLong())
+        assertEquals(mapOf("model" to "Paperwhite 7"), eltm.getEntity(kindle.id)?.attributes)
 
         // a missing entity fails fast
         val missing = provider.execute(
@@ -975,7 +1007,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `set_entity_attribute canonicalizes the key and rejects multi-line values`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val kindle = eltm.createEntity("kindle", "device").entity
         val provider = EltmToolProvider(eltm)
 
@@ -988,7 +1020,7 @@ class EltmToolProviderTest {
         )
         assertFalse(set.isError, textOf(set))
         assertTrue(textOf(set).contains("Attribute \"real_name\" set on entity"), textOf(set))
-        assertEquals<Map<String, String>?>(mapOf("real_name" to "Alice"), eltm.attributes[kindle.id])
+        assertEquals(mapOf("real_name" to "Alice"), eltm.getEntity(kindle.id)?.attributes)
 
         val multiLine = provider.execute(
             toolCall("c2", "set_entity_attribute", buildJsonObject {
@@ -999,16 +1031,16 @@ class EltmToolProviderTest {
         )
         assertTrue(multiLine.isError)
         assertTrue(textOf(multiLine).contains("single line"), textOf(multiLine))
-        assertEquals<Map<String, String>?>(mapOf("real_name" to "Alice"), eltm.attributes[kindle.id], "nothing mutates")
+        assertEquals(mapOf("real_name" to "Alice"), eltm.getEntity(kindle.id)?.attributes, "nothing mutates")
     }
 
     @Test
     fun `delete_entity_attribute removes the fact and fails fast on a missing key`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val kindle = eltm.createEntity("kindle", "device").entity
         eltm.setEntityAttribute(kindle.id, "model", "Paperwhite 6")
         eltm.setEntityAttribute(kindle.id, "nickname", "reader")
-        val versionAfterSet = eltm.writeVersion
+        val versionAfterSet = eltm.version().toLong()
         val provider = EltmToolProvider(eltm)
 
         val removed = provider.execute(
@@ -1019,8 +1051,8 @@ class EltmToolProviderTest {
         )
         assertFalse(removed.isError, textOf(removed))
         assertTrue(textOf(removed).contains("Attribute \"model\" removed"), textOf(removed))
-        assertEquals(versionAfterSet + 1, eltm.writeVersion, "a delete bumps")
-        assertEquals<Map<String, String>?>(mapOf("nickname" to "reader"), eltm.attributes[kindle.id])
+        assertEquals(versionAfterSet + 1, eltm.version().toLong(), "a delete bumps")
+        assertEquals(mapOf("nickname" to "reader"), eltm.getEntity(kindle.id)?.attributes)
 
         val missingKey = provider.execute(
             toolCall("c2", "delete_entity_attribute", buildJsonObject {
@@ -1043,7 +1075,16 @@ class EltmToolProviderTest {
 
     @Test
     fun `search_entities renders the entity attributes alphabetically`() = runBlocking {
-        val eltm = FakeEltmService()
+        val embeddings = DeterministicEmbeddings()
+        // the query "kindle" is pinned to the entity's post-attribute
+        // embedding text, so the search hits it exactly
+        val storedText = entityEmbeddingText(
+            "kindle", "device",
+            mapOf("realname" to "Alice", "model" to "Paperwhite 6"),
+        )
+        embeddings.register(storedText, testAxisVector(0))
+        embeddings.register("kindle", testAxisVector(0))
+        val eltm = eltm(embeddings)
         val kindle = eltm.createEntity("kindle", "device").entity
         eltm.setEntityAttribute(kindle.id, "realname", "Alice")
         eltm.setEntityAttribute(kindle.id, "model", "Paperwhite 6")
@@ -1062,7 +1103,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `merge_entities folds the loser's attributes into the winner`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val winner = eltm.createEntity("Apple", "company").entity
         val loser = eltm.createEntity("Apple Inc", "company").entity
         eltm.setEntityAttribute(winner.id, "ticker", "AAPL")
@@ -1078,25 +1119,24 @@ class EltmToolProviderTest {
             }),
         )
         assertFalse(result.isError, textOf(result))
-        assertEquals<Map<String, String>?>(
+        assertEquals(
             mapOf("ticker" to "AAPL", "hq" to "Cupertino", "founded" to "1976"),
-            eltm.attributes[winner.id],
+            eltm.getEntity(winner.id)?.attributes,
             "the winner keeps its value on a colliding key, the loser's unique key folds in",
         )
-        assertNull(eltm.attributes[loser.id], "the loser's attribute rows are gone with the merge")
+        assertFalse(eltm.entityExists(loser.id), "the loser's rows are gone with the merge")
     }
 
     @Test
     fun `a merge whose fold re-embed fails rolls back without mutating`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val winner = eltm.createEntity("Apple", "company").entity
         val loser = eltm.createEntity("Apple Inc", "company").entity
         eltm.setEntityAttribute(loser.id, "founded", "1976")
-        val versionBefore = eltm.writeVersion
-        eltm.embedFailure = EmbeddingException(
-            "invalid_request", "input too large for the embedding model"
+        val versionBefore = eltm.version().toLong()
+        val provider = EltmToolProvider(
+            failingEltm("invalid_request", "input too large for the embedding model")
         )
-        val provider = EltmToolProvider(eltm)
 
         val result = provider.execute(
             toolCall("c1", "merge_entities", buildJsonObject {
@@ -1111,21 +1151,20 @@ class EltmToolProviderTest {
             text.contains("split it into several smaller notes"),
             "an attribute cannot be split, the merge must be fixed by its attributes: $text"
         )
-        assertEquals(versionBefore, eltm.writeVersion, "a failed merge bumps nothing")
-        assertNotNull(eltm.entities[loser.id], "the loser row survives a failed merge")
-        assertEquals<Map<String, String>?>(
+        assertEquals(versionBefore, eltm.version().toLong(), "a failed merge bumps nothing")
+        assertTrue(eltm.entityExists(loser.id), "the loser row survives a failed merge")
+        assertEquals(
             mapOf("founded" to "1976"),
-            eltm.attributes[loser.id],
+            eltm.getEntity(loser.id)?.attributes,
             "the loser's attributes survive a failed merge",
         )
     }
 
     @Test
     fun `attribute writes fail on an embedding failure without mutating`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val kindle = eltm.createEntity("kindle", "device").entity
-        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
-        val provider = EltmToolProvider(eltm)
+        val provider = EltmToolProvider(failingEltm("upstream", "gateway timeout"))
 
         val result = provider.execute(
             toolCall("c1", "set_entity_attribute", buildJsonObject {
@@ -1136,16 +1175,18 @@ class EltmToolProviderTest {
         )
         assertTrue(result.isError)
         assertTrue(textOf(result).contains("embedding failed"), textOf(result))
-        assertNull(eltm.attributes[kindle.id], "a failed embed leaves the store untouched")
+        assertTrue(
+            eltm.getEntity(kindle.id)?.attributes.isNullOrEmpty(),
+            "a failed embed leaves the store untouched",
+        )
     }
 
     @Test
     fun `delete_entity_attribute fails on an embedding failure without mutating`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val kindle = eltm.createEntity("kindle", "device").entity
         eltm.setEntityAttribute(kindle.id, "model", "Paperwhite 6")
-        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
-        val provider = EltmToolProvider(eltm)
+        val provider = EltmToolProvider(failingEltm("upstream", "gateway timeout"))
 
         val result = provider.execute(
             toolCall("c1", "delete_entity_attribute", buildJsonObject {
@@ -1155,21 +1196,20 @@ class EltmToolProviderTest {
         )
         assertTrue(result.isError)
         assertTrue(textOf(result).contains("embedding failed"), textOf(result))
-        assertEquals<Map<String, String>?>(
+        assertEquals(
             mapOf("model" to "Paperwhite 6"),
-            eltm.attributes[kindle.id],
+            eltm.getEntity(kindle.id)?.attributes,
             "a failed embed leaves the store untouched",
         )
     }
 
     @Test
     fun `an embedding too-large error tells the model to split the content`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
-        eltm.embedFailure = EmbeddingException(
-            "invalid_request", "input too large for the embedding model"
+        val provider = EltmToolProvider(
+            failingEltm("invalid_request", "input too large for the embedding model")
         )
-        val provider = EltmToolProvider(eltm)
 
         val result = provider.execute(
             toolCall("c1", "add_entity_note", buildJsonObject {
@@ -1184,8 +1224,8 @@ class EltmToolProviderTest {
         assertFalse(text.contains("embedding failed"), "the too-large case has its own message")
 
         // other embedding failures are generic errors the loop may retry
-        eltm.embedFailure = EmbeddingException("upstream", "gateway timeout")
-        val retryable = provider.execute(
+        val retryableProvider = EltmToolProvider(failingEltm("upstream", "gateway timeout"))
+        val retryable = retryableProvider.execute(
             toolCall("c2", "add_entity_note", buildJsonObject {
                 put("entity_id", alice.id)
                 put("event_date", "2026-08-18")
@@ -1198,12 +1238,11 @@ class EltmToolProviderTest {
 
     @Test
     fun `an embedding too-large error on an attribute tells the model to shorten the value`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = eltm()
         val kindle = eltm.createEntity("kindle", "device").entity
-        eltm.embedFailure = EmbeddingException(
-            "invalid_request", "input too large for the embedding model"
+        val provider = EltmToolProvider(
+            failingEltm("invalid_request", "input too large for the embedding model")
         )
-        val provider = EltmToolProvider(eltm)
 
         val result = provider.execute(
             toolCall("c1", "set_entity_attribute", buildJsonObject {
@@ -1219,7 +1258,10 @@ class EltmToolProviderTest {
             text.contains("split it into several smaller notes"),
             "an attribute is a single fact, it cannot be split: $text"
         )
-        assertNull(eltm.attributes[kindle.id], "a failed embed leaves the store untouched")
+        assertTrue(
+            eltm.getEntity(kindle.id)?.attributes.isNullOrEmpty(),
+            "a failed embed leaves the store untouched",
+        )
     }
 
     @Test
@@ -1236,7 +1278,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `a namespaced provider advertises the prefixed tool names and its namespace`() {
-        val provider = EltmToolProvider(FakeEltmService(), namespace = "eltm")
+        val provider = EltmToolProvider(eltm(), namespace = "eltm")
         assertEquals(setOf("eltm"), provider.namespaces())
         val specs = runBlocking { provider.specifications() }
         assertEquals(13, specs.size)
@@ -1249,12 +1291,17 @@ class EltmToolProviderTest {
             specs.take(2).map { it.name },
         )
         // the blank provider is the one-shot shape: bare names, no namespace
-        assertEquals(emptySet(), EltmToolProvider(FakeEltmService()).namespaces())
+        assertEquals(emptySet(), EltmToolProvider(eltm()).namespaces())
     }
 
     @Test
     fun `a namespaced provider executes its prefixed calls`() = runBlocking {
-        val eltm = FakeEltmService()
+        val embeddings = DeterministicEmbeddings()
+        // create_entity defaults the category to "general": the embedding
+        // text is "alice general"
+        embeddings.register("alice general", testAxisVector(0))
+        embeddings.register("ali", testAxisVector(0))
+        val eltm = eltm(embeddings)
         val provider = EltmToolProvider(eltm, namespace = "eltm")
 
         val created = provider.execute(
@@ -1272,7 +1319,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `a namespaced provider rejects unprefixed and wrong-prefixed calls`() = runBlocking {
-        val provider = EltmToolProvider(FakeEltmService(), namespace = "eltm")
+        val provider = EltmToolProvider(eltm(), namespace = "eltm")
 
         val bare = provider.execute(
             toolCall("c1", "search_entities", buildJsonObject { put("query", "ali") }),
@@ -1289,7 +1336,7 @@ class EltmToolProviderTest {
 
     @Test
     fun `a namespaced read-only provider checks the stripped name`() = runBlocking {
-        val provider = EltmToolProvider(FakeEltmService(), readOnly = true, namespace = "eltm")
+        val provider = EltmToolProvider(eltm(), readOnly = true, namespace = "eltm")
 
         val write = provider.execute(
             toolCall("c1", "eltm__create_entity", buildJsonObject { put("name", "Alice") }),
@@ -1308,18 +1355,18 @@ class EltmToolProviderTest {
         // uppercase fails the SAFE_ID_REGEX charset; `__` is the separator;
         // a leading/trailing `_` would blur the separator boundary
         assertFailsWith<IllegalArgumentException> {
-            EltmToolProvider(FakeEltmService(), namespace = "ElTm")
+            EltmToolProvider(eltm(), namespace = "ElTm")
         }
         assertFailsWith<IllegalArgumentException> {
-            EltmToolProvider(FakeEltmService(), namespace = "a__b")
+            EltmToolProvider(eltm(), namespace = "a__b")
         }
         assertFailsWith<IllegalArgumentException> {
-            EltmToolProvider(FakeEltmService(), namespace = "a_")
+            EltmToolProvider(eltm(), namespace = "a_")
         }
         assertFailsWith<IllegalArgumentException> {
-            EltmToolProvider(FakeEltmService(), namespace = "_a")
+            EltmToolProvider(eltm(), namespace = "_a")
         }
         // blank stays legal: the one-shot shape
-        EltmToolProvider(FakeEltmService(), namespace = "")
+        EltmToolProvider(eltm(), namespace = "")
     }
 }

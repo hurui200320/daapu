@@ -1,9 +1,11 @@
 package info.skyblond.daapu.agent.context
 
+import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.memory.eltm.EltmEntity
 import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EntityWithScore
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.runBlocking
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -17,11 +19,13 @@ import kotlin.test.assertFailsWith
  * the ELTM `getEntity` fallback, a relationship subject resolves through
  * `getRelationship` (endpoint names + verb), and a note whose subject cannot
  * be resolved is skipped (never rendered with partial ids) while an
- * impossible one (no subject at all) fails loudly.
+ * impossible one (no subject at all) fails loudly. Runs against the real
+ * test PostgreSQL; the notes themselves stay synthetic (the function reads
+ * only the subjects through the service).
  */
-class RelatedNotesTest {
+class RelatedNotesTest : DbTestBase() {
 
-    private val eltm = FakeEltmService()
+    private val eltm = testPostgresEltmService(FakeHand())
 
     private fun hit(entity: EltmEntity) = EntityWithScore(
         entity = entity,
@@ -43,13 +47,12 @@ class RelatedNotesTest {
 
     @Test
     fun `an entity subject is resolved from the search hits`() = runBlocking {
-        eltm.createEntity("alice", "person")
-        eltm.attachNoteToEntity(1, LocalDate.of(2026, 8, 1), "Met Bob at the conference")
-        val alice = eltm.entities.getValue(1)
+        val alice = eltm.createEntity("alice", "person").entity
+        eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 8, 1), "Met Bob at the conference")
 
         val views = resolveRelatedNotes(
             eltm,
-            notes = listOf(note(1, null, 10, "Met Bob at the conference")),
+            notes = listOf(note(alice.id, null, 10, "Met Bob at the conference")),
             knownEntities = listOf(hit(alice)),
         )
 
@@ -65,14 +68,13 @@ class RelatedNotesTest {
 
     @Test
     fun `an entity subject outside the search hits falls back to getEntity`() = runBlocking {
-        eltm.createEntity("bob", "person")
-        eltm.attachNoteToEntity(1, LocalDate.of(2026, 8, 1), "Met Alice at the conference")
-        val bob = eltm.entities.getValue(1)
+        val bob = eltm.createEntity("bob", "person").entity
+        eltm.attachNoteToEntity(bob.id, LocalDate.of(2026, 8, 1), "Met Alice at the conference")
 
         // bob carries the note but is NOT among the search hits
         val views = resolveRelatedNotes(
             eltm,
-            notes = listOf(note(1, null, 11, "Met Alice at the conference")),
+            notes = listOf(note(bob.id, null, 11, "Met Alice at the conference")),
             knownEntities = emptyList(),
         )
 
@@ -86,14 +88,13 @@ class RelatedNotesTest {
 
     @Test
     fun `a note whose subject cannot be resolved is skipped`() = runBlocking {
-        eltm.createEntity("alice", "person")
-        val alice = eltm.entities.getValue(1)
+        val alice = eltm.createEntity("alice", "person").entity
 
         val views = resolveRelatedNotes(
             eltm,
             notes = listOf(
                 note(99, null, 12, "ghost entity note"),
-                note(1, null, 13, "real note"),
+                note(alice.id, null, 13, "real note"),
                 note(null, 99, 14, "ghost relationship note"),
             ),
             knownEntities = listOf(hit(alice)),
@@ -106,14 +107,14 @@ class RelatedNotesTest {
 
     @Test
     fun `a relationship subject resolves to the endpoint names and the verb`() = runBlocking {
-        eltm.createEntity("alice", "person")
-        eltm.createEntity("acme", "company")
-        eltm.createRelationship(1, 2, "works at")
-        eltm.attachNoteToRelationship(1, LocalDate.of(2026, 7, 15), "Joined Acme as an engineer")
+        val alice = eltm.createEntity("alice", "person").entity
+        val acme = eltm.createEntity("acme", "company").entity
+        val rel = eltm.createRelationship(alice.id, acme.id, "works at")
+        eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 7, 15), "Joined Acme as an engineer")
 
         val views = resolveRelatedNotes(
             eltm,
-            notes = listOf(note(null, 1, 15, "Joined Acme as an engineer")),
+            notes = listOf(note(null, rel.id, 15, "Joined Acme as an engineer")),
             knownEntities = emptyList(),
         )
 

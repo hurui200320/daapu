@@ -1,6 +1,7 @@
 package info.skyblond.daapu.agent.persona
 
-import info.skyblond.daapu.server.FakePersonaStore
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
 import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
@@ -10,42 +11,42 @@ import kotlin.test.*
  * the create/update/delete validation (blank name/prompt, whitelist syntax,
  * whitelist entries the chat loop does not serve, the reserved id 0).
  */
-class PersonaServiceTest {
+class PersonaServiceTest : DbTestBase() {
 
     // the servable-namespace snapshot: the chat loop's combined set (the
     // MCP namespaces plus `gsg`; the granular `eltm` tools are NOT loop
     // namespaces and must be rejected)
     private val served = setOf("gsg", "web")
 
-    private fun service(store: PersonaStore = FakePersonaStore()) =
+    private fun service(store: PersonaStore = PostgresPersonaStore()) =
         PersonaService(store, served)
 
     @Test
     fun `list returns the code default first, then the rows`() = runBlocking {
-        val store = FakePersonaStore()
-        store.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        val store = PostgresPersonaStore()
+        val writer = TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
         val personas = service(store).list()
         assertEquals(2, personas.size)
         assertEquals(DEFAULT_PERSONA_ID, personas[0].id, "the code default leads the list")
         assertEquals(DEFAULT_PERSONA_SYSTEM_PROMPT, personas[0].systemPrompt)
         assertEquals(emptyList(), personas[0].allowedNamespaces, "default whitelist = all")
-        assertEquals(1L, personas[1].id)
+        assertEquals(writer.id, personas[1].id)
     }
 
     @Test
     fun `the default persona resolves from code with an empty store`() = runBlocking {
         // the default never touches the store: no seeding, no sync
-        val persona = assertNotNull(service(FakePersonaStore()).resolveForRequest(DEFAULT_PERSONA_ID))
+        val persona = assertNotNull(service(PostgresPersonaStore()).resolveForRequest(DEFAULT_PERSONA_ID))
         assertEquals(DEFAULT_PERSONA_ID, persona.id)
         assertEquals(DEFAULT_PERSONA_SYSTEM_PROMPT, persona.systemPrompt)
     }
 
     @Test
     fun `a stored persona resolves from the store`() = runBlocking {
-        val store = FakePersonaStore()
-        store.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
-        val persona = assertNotNull(service(store).resolveForRequest(1L))
-        assertEquals(1L, persona.id)
+        val store = PostgresPersonaStore()
+        val writer = TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+        val persona = assertNotNull(service(store).resolveForRequest(writer.id))
+        assertEquals(writer.id, persona.id)
         assertEquals(listOf("gsg"), persona.allowedNamespaces)
     }
 
@@ -59,19 +60,30 @@ class PersonaServiceTest {
     @Test
     fun `create rejects a blank name or system prompt`() = runBlocking {
         val service = service()
-        assertFailsWith<IllegalArgumentException> { service.create("  ", "prompt", emptyList()) }
-        assertFailsWith<IllegalArgumentException> { service.create("name", "   ", emptyList()) }
+        val blankName = assertFailsWith<IllegalArgumentException> {
+            service.create("  ", "prompt", emptyList())
+        }
+        val blankPrompt = assertFailsWith<IllegalArgumentException> {
+            service.create("name", "   ", emptyList())
+        }
+        assertTrue(blankName.message!!.contains("name must not be blank"), blankName.message)
+        assertTrue(blankPrompt.message!!.contains("prompt must not be blank"), blankPrompt.message)
     }
 
     @Test
     fun `create rejects malformed whitelist entries`() = runBlocking {
         val service = service()
-        assertFailsWith<IllegalArgumentException> {
+        val blank = assertFailsWith<IllegalArgumentException> {
             service.create("name", "prompt", listOf(" "))
         }
-        assertFailsWith<IllegalArgumentException> {
+        val doubleUnderscore = assertFailsWith<IllegalArgumentException> {
             service.create("name", "prompt", listOf("a__b"))
         }
+        assertTrue(blank.message!!.contains("must not be blank"), blank.message)
+        assertTrue(
+            doubleUnderscore.message!!.contains("must not contain '__'"),
+            doubleUnderscore.message,
+        )
     }
 
     @Test
@@ -85,9 +97,10 @@ class PersonaServiceTest {
             service().create("name", "prompt", listOf("gsg", "gsg"))
         }
         assertTrue(e.message!!.contains("must be unique"))
-        assertFailsWith<IllegalArgumentException> {
+        val padded = assertFailsWith<IllegalArgumentException> {
             service().create("name", "prompt", listOf("gsg", " gsg "))
         }
+        assertTrue(padded.message!!.contains("must be unique"))
     }
 
     @Test
@@ -105,7 +118,7 @@ class PersonaServiceTest {
 
     @Test
     fun `create trims name, prompt and whitelist entries and stores them`() = runBlocking {
-        val store = FakePersonaStore()
+        val store = PostgresPersonaStore()
         val persona = service(store).create(
             "  Writer  ",
             "  You are a writer.  ",
@@ -137,15 +150,15 @@ class PersonaServiceTest {
 
     @Test
     fun `update and delete pass through to the store`() = runBlocking {
-        val store = FakePersonaStore()
-        store.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        val store = PostgresPersonaStore()
+        val writer = TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
         val service = service(store)
 
-        val updated = assertNotNull(service.update(1L, "Poet", "You are a poet.", emptyList()))
+        val updated = assertNotNull(service.update(writer.id, "Poet", "You are a poet.", emptyList()))
         assertEquals("Poet", updated.name)
         assertNull(service.update(999L, "x", "y", emptyList()), "unknown id → null")
 
-        assertTrue(service.delete(1L))
-        assertFalse(service.delete(1L), "already deleted → false")
+        assertTrue(service.delete(writer.id))
+        assertFalse(service.delete(writer.id), "already deleted → false")
     }
 }

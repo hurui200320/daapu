@@ -6,6 +6,7 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.chat.ChatRunSetup
+import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatValidationException
 import info.skyblond.daapu.agent.pipeline.investigate.InvestigatorService
@@ -30,7 +31,8 @@ import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
 import info.skyblond.daapu.mcp.MockToolReply
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.assertFailsFast
 import info.skyblond.daapu.testutil.chatService
 import info.skyblond.daapu.testutil.testKoinApp
@@ -44,7 +46,7 @@ import kotlin.test.*
 /**
  * Pins the request → neutral parts mapping done by [ChatService.prepareRun].
  */
-class ChatServiceTest {
+class ChatServiceTest : DbTestBase() {
 
     private val service = chatService(testAppConfig())
 
@@ -184,24 +186,20 @@ class ChatServiceTest {
     }
 
     @Test
-    fun `a stored persona resolves from the store`() {
-        val personaStore = FakePersonaStore()
-        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
-        val service = chatService(testAppConfig(), personaStore = personaStore)
-        val setup = runBlocking {
-            val req = request(text = "hi", personaId = 1L)
-            service.prepareRun("chat-1", req.text, req.imageDataUrls, req.model, req.personaId)
-        }
-        assertEquals(1L, setup.persona.id)
+    fun `a stored persona resolves from the store`() = runBlocking {
+        val writer = TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+        val service = chatService(testAppConfig())
+        val req = request(text = "hi", personaId = writer.id)
+        val setup = service.prepareRun("chat-1", req.text, req.imageDataUrls, req.model, req.personaId)
+        assertEquals(writer.id, setup.persona.id)
         assertEquals("You are a writer.", setup.persona.systemPrompt)
     }
 
     @Test
     fun `a chat run renders the persona prompt and stamps the chat record`() = runBlocking {
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
-        val personaStore = FakePersonaStore()
-        personaStore.seed(Persona(1L, "Writer", "You are a writer.", listOf("gsg")))
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
+        val writer = TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
         val hand = FakeHand(
             runScript = { request ->
                 when {
@@ -217,10 +215,8 @@ class ChatServiceTest {
             testAppConfig(),
             hand = hand,
             chatStore = store,
-            eltmService = FakeEltmService(),
-            personaStore = personaStore,
         )
-        val req = request(text = "write something", personaId = 1L)
+        val req = request(text = "write something", personaId = writer.id)
         val setup = service.prepareRun("chat-1", req.text, req.imageDataUrls, req.model, req.personaId)
         service.runChat(setup, NoopStreamingCallback)
         val chatRequest = hand.requests.last()
@@ -236,7 +232,7 @@ class ChatServiceTest {
         // (incl. the gsg__investigate documentation) is rendered
         assertTrue(chatRequest.systemPrompt.contains("gsg__investigate"))
         // the successful run stamps the chat's persona record
-        assertEquals(1L, store.personaId("chat-1"))
+        assertEquals(writer.id, store.load("chat-1")?.info?.personaId)
     }
 
     @Test
@@ -254,10 +250,9 @@ class ChatServiceTest {
                 )
             )
         )
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
-        val personaStore = FakePersonaStore()
-        personaStore.seed(Persona(1L, "Plain", "You are a plain assistant.", listOf("calc")))
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
+        val plain = TestDb.seedPersonaRow("Plain", "You are a plain assistant.", listOf("calc"))
         val hand = FakeHand(
             runScript = { request ->
                 when {
@@ -272,13 +267,11 @@ class ChatServiceTest {
             testAppConfig(),
             hand = hand,
             chatStore = store,
-            eltmService = FakeEltmService(),
-            personaStore = personaStore,
             mcpToolProvider = mcp,
         )
         val service = koinApp.koin.get<ChatService>()
         try {
-            val req = request(text = "hi", personaId = 1L)
+            val req = request(text = "hi", personaId = plain.id)
             val setup = service.prepareRun("chat-1", req.text, req.imageDataUrls, req.model, req.personaId)
             service.runChat(setup, NoopStreamingCallback)
             val prompt = hand.requests.last().systemPrompt!!
@@ -296,7 +289,7 @@ class ChatServiceTest {
                 prompt.contains("# Policy"),
                 "the policy is part of the DEFAULT persona's text only",
             )
-            assertEquals(1L, store.personaId("chat-1"))
+            assertEquals(plain.id, store.load("chat-1")?.info?.personaId)
         } finally {
             koinApp.close()
             server.close()
@@ -311,21 +304,18 @@ class ChatServiceTest {
         // WhitelistedToolProvider construction invariant fails the REQUEST in
         // prepareRun (before the lock, before any stream) with a clear error
         // instead of silently dropping the namespace
-        val store = FakeChatStore()
-        store.seed("chat-1", chat = listOf(user("u1"), assistantMessage("a1")))
-        val personaStore = FakePersonaStore()
-        personaStore.seed(Persona(1L, "Stale", "You are stale.", listOf("gsg", "web")))
+        val store = PostgresChatStore()
+        TestDb.seedChatRow("chat-1", messages = listOf(user("u1"), assistantMessage("a1")))
+        val stale = TestDb.seedPersonaRow("Stale", "You are stale.", listOf("gsg", "web"))
         val hand = FakeHand(runScript = { error("the request must fail before the hand is called") })
         val service = chatService(
             testAppConfig(),
             hand = hand,
             chatStore = store,
-            eltmService = FakeEltmService(),
-            personaStore = personaStore,
         )
         val e = assertFailsWith<ChatValidationException> {
             runBlocking {
-                val req = request(text = "hi", personaId = 1L)
+                val req = request(text = "hi", personaId = stale.id)
                 service.prepareRun("chat-1", req.text, req.imageDataUrls, req.model, req.personaId)
             }
         }

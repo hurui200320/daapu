@@ -343,6 +343,7 @@ class ChatCompactionServiceTest {
         }
         assertTrue(e.message!!.contains("failed"), "the error should name the cause: ${e.message}")
         assertNotNull(e.cause, "the original LLM failure must be kept as the cause")
+        assertTrue(e.cause is HandUpstreamException, "the cause is the LLM failure: ${e.cause}")
     }
 
     @Test

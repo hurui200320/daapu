@@ -5,16 +5,16 @@ import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
 import info.skyblond.daapu.config.loadConfig
+import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.EltmEntities
 import info.skyblond.daapu.db.EltmEntityAttributes
 import info.skyblond.daapu.db.EltmNotes
-import info.skyblond.daapu.db.MemoryMetaNumber
+import info.skyblond.daapu.db.bumpMetaCounterTx
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.memory.eltm.PostgresEltmService
 import info.skyblond.daapu.memory.eltm.entityEmbeddingText
 import info.skyblond.daapu.memory.eltm.noteEmbeddingText
 import info.skyblond.daapu.memory.eltm.padVector
@@ -45,7 +45,7 @@ import org.koin.dsl.koinApplication
  * written batches stay written, a failed run is safely re-runnable.
  *
  * On full success the global ELTM write counter (`memory_meta_number.
- * eltm_version`, [PostgresEltmService.ELTM_VERSION_KEY]) is bumped ONCE, so
+ * eltm_version`, `db/MetaCounter.kt`'s [ELTM_VERSION_KEY]) is bumped ONCE, so
  * every chat's next run flags `eltm-updated` — the retrieval results are
  * different under the new model.
  *
@@ -92,11 +92,9 @@ private suspend fun reembedAll(
         logger.info { "nothing to re-embed, the ELTM is empty; version counter left untouched" }
         return
     }
-    withTransaction {
-        MemoryMetaNumber.update({ MemoryMetaNumber.key eq PostgresEltmService.ELTM_VERSION_KEY }) {
-            it[MemoryMetaNumber.value] = MemoryMetaNumber.value + 1L
-        }
-    }
+    // ONE bump for the whole successful refresh (so the next chat run flags
+    // eltm-updated), via the same helper the service's write path uses
+    bumpMetaCounterTx(ELTM_VERSION_KEY)
     logger.info { "done: re-embedded $entityCount entities and $noteCount notes " +
             "(eltm_version bumped so the next chat run flags eltm-updated)" }
 }

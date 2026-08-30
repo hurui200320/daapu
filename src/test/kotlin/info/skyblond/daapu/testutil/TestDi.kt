@@ -9,7 +9,6 @@ import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.server.FakePersonaStore
 import kotlin.test.assertFails
 import org.koin.core.KoinApplication
 import org.koin.core.error.InstanceCreationException
@@ -18,8 +17,8 @@ import org.koin.dsl.koinApplication
 import org.koin.dsl.module
 
 /**
- * The test seam for the Koin container ([appModule]): override the
- * store/client definitions with fakes, then resolve the graph root.
+ * The test seam for the Koin container ([appModule]): optionally override
+ * the store/client definitions, then resolve the graph root.
  *
  * The overrides mirror the pre-Koin `ChatService(...)` constructor
  * parameters (`hand = ...`, `chatStore = ...`, ...), so a call site swap
@@ -35,9 +34,12 @@ import org.koin.dsl.module
  * production provider connects eagerly at construction — tests must never
  * touch the network. Pass a provider explicitly to exercise MCP wiring.
  *
- * [personaStore] defaults to a [FakePersonaStore]: the production
- * [PostgresPersonaStore] would need a live database, and the persona
- * service resolves eagerly with the graph root.
+ * The stores ([ChatStore], [PersonaStore], [EltmService]) are the PRODUCTION
+ * Postgres implementations against a throwaway testcontainers database
+ * (`testutil/TestDb.kt`) — the DB-backed tests run real SQL, no in-memory
+ * fakes. [testKoinApp] starts the container; the per-test table reset is
+ * the test class's job ([DbTestBase]). Pass an override explicitly to
+ * inject a stub above the real store.
  */
 fun testKoinApp(
     config: AppConfig = testAppConfig(),
@@ -46,17 +48,22 @@ fun testKoinApp(
     eltmService: EltmService? = null,
     mcpToolProvider: McpToolProvider? = null,
     personaStore: PersonaStore? = null,
-): KoinApplication = koinApplication {
-    modules(
-        appModule(config),
-        testOverrides(
-            hand,
-            chatStore,
-            eltmService,
-            mcpToolProvider ?: EMPTY_MCP_TOOL_PROVIDER,
-            personaStore ?: FakePersonaStore(),
-        ),
-    )
+): KoinApplication {
+    // the production stores resolve against the test database: connect it
+    // (fail fast with the start-the-container hint) before the graph builds
+    TestDb.init()
+    return koinApplication {
+        modules(
+            appModule(config),
+            testOverrides(
+                hand,
+                chatStore,
+                eltmService,
+                mcpToolProvider ?: EMPTY_MCP_TOOL_PROVIDER,
+                personaStore,
+            ),
+        )
+    }
 }
 
 fun chatService(
@@ -78,14 +85,14 @@ fun chatService(
 private val EMPTY_MCP_TOOL_PROVIDER: McpToolProvider = McpToolProvider(emptyMap())
 
 /**
- * Declare fake definitions over the production module. The override module
- * comes after `AppModule(...)` and Koin 4 allows overrides by default, so
- * a definition here replaces the production one of the same type; anything
- * null stays on the production definition. The MCP provider is always
- * overridden ([testKoinApp] defaults it to an empty provider — never the
- * production one, which connects to the live exa server eagerly). The
- * persona store defaults to an in-memory fake the same way (the production
- * store needs a live database).
+ * Declare override definitions over the production module. The override
+ * module comes after `AppModule(...)` and Koin 4 allows overrides by
+ * default, so a definition here replaces the production one of the same
+ * type; anything null stays on the production definition. The MCP provider
+ * is always overridden ([testKoinApp] defaults it to an empty provider —
+ * never the production one, which connects to the live exa server
+ * eagerly). The stores default to the production Postgres implementations
+ * over the test database.
  */
 fun testOverrides(
     hand: HandClient? = null,

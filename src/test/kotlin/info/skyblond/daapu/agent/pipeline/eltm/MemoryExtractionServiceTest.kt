@@ -4,11 +4,14 @@ import info.skyblond.daapu.agent.chat.*
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.context.ContextInjection
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.tool.EmptyToolProvider
 import info.skyblond.daapu.hand.*
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
+import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.createEntityRound
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import info.skyblond.daapu.testutil.testEltmWriterService
 import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.testutil.testLlm
@@ -27,7 +30,7 @@ import kotlin.test.*
  * failure semantics that must fail the run instead of silently losing
  * memories (a retry re-extracts and the writer deduplicates).
  */
-class MemoryExtractionServiceTest {
+class MemoryExtractionServiceTest : DbTestBase() {
 
     private fun model(id: String) = testLlm(id)
 
@@ -50,7 +53,7 @@ class MemoryExtractionServiceTest {
 
     private fun service(
         hand: FakeHand,
-        eltmService: FakeEltmService = FakeEltmService(),
+        eltmService: EltmService = testPostgresEltmService(FakeHand()),
         maxWriterRounds: Int = 150,
         extractModel: LLM = model("bifrost/cerebras/gemma-4-31b"),
     ) = MemoryExtractionService(
@@ -66,7 +69,7 @@ class MemoryExtractionServiceTest {
         // one create_entity + add_entity_note round (executed through the
         // real EltmToolProvider, standing in for the hand's tool callback)
         // then the final confirmation
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val hand = FakeHand(
             runScript = { request ->
                 when {
@@ -84,7 +87,7 @@ class MemoryExtractionServiceTest {
         // the extracted facts land in the ELTM diary (the writer run created
         // the canonical user entity and attached the note)
         assertTrue(
-            eltm.notes.values.map { it.note }.contains("likes coffee"),
+            TestDb.allEltmNotes().map { it.note }.contains("likes coffee"),
             "the extracted fact must be recorded into the ELTM diary",
         )
         assertEquals(2, hand.requests.size, "extractor run + one writer run")
@@ -154,11 +157,11 @@ class MemoryExtractionServiceTest {
         val hand = FakeHand(
             runScript = { textRunFlow("Nothing worth remember.") },
         )
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val extractor = service(hand, eltm)
         extractor.processDiscardedMessages(listOf(userMessage("u1")))
         assertEquals(1, hand.requests.size, "only the extractor run happened")
-        assertTrue(eltm.notes.isEmpty(), "a skipped extraction must not write the ELTM")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a skipped extraction must not write the ELTM")
     }
 
     @Test
@@ -189,7 +192,7 @@ class MemoryExtractionServiceTest {
                 errorRunFlow("output_budget_exhausted", "output hit the token budget")
             },
         )
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val extractor = service(hand, eltm)
         val e = assertFailsWith<IllegalStateException> {
             extractor.processDiscardedMessages(listOf(userMessage("u1")))
@@ -199,7 +202,7 @@ class MemoryExtractionServiceTest {
         val cause = assertIs<HandRunException>(e.cause)
         assertEquals("output_budget_exhausted", cause.type)
         assertEquals(1, hand.requests.size, "only the extractor run happened")
-        assertTrue(eltm.notes.isEmpty(), "a truncated extraction must not reach the writer")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a truncated extraction must not reach the writer")
     }
 
     @Test
@@ -230,7 +233,7 @@ class MemoryExtractionServiceTest {
                         )
             },
         )
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val extractor = service(hand, eltm)
         val e = assertFailsWith<IllegalStateException> {
             extractor.processDiscardedMessages(listOf(userMessage("u1")))
@@ -238,7 +241,7 @@ class MemoryExtractionServiceTest {
         val cause = assertIs<HandRunException>(e.cause)
         assertEquals("empty_response", cause.type)
         assertEquals(1, hand.requests.size, "only the extractor run happened")
-        assertTrue(eltm.notes.isEmpty(), "a failed extraction must not write the ELTM")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a failed extraction must not write the ELTM")
     }
 
     @Test
@@ -247,7 +250,7 @@ class MemoryExtractionServiceTest {
         // calls after one executed round: the run loop fails it as
         // empty_response, and the failed write must fail the whole pipeline
         var calls = 0
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val hand = FakeHand(
             runScript = {
                 when (++calls) {
@@ -275,6 +278,6 @@ class MemoryExtractionServiceTest {
         assertEquals("empty_response", cause.type)
         // the write applied before the failure stays; a retry re-extracts
         // and the writer deduplicates against the store
-        assertTrue(eltm.entities.values.any { it.canonicalName == "alice" })
+        assertTrue(TestDb.allEltmEntities().any { it.canonicalName == "alice" })
     }
 }

@@ -2,6 +2,7 @@ package info.skyblond.daapu.agent.persist
 
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.pipeline.investigate.InvestigatorService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
@@ -12,9 +13,10 @@ import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.errorRunFlow
 import info.skyblond.daapu.hand.textRunFlow
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.testutil.testLlm
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -24,21 +26,23 @@ import kotlin.test.*
  * Pins [GsgToolProvider]'s packaging contract: the single `gsg__investigate`
  * advertisement, the `execute` → `InvestigatorService.runInvestigate` →
  * `ToolResult` mapping (the clean report's parts travel verbatim, the
- * outcome's `isError` passes through), and the argument validation.
+ * outcome's `isError` passes through), and the argument validation. The
+ * ELTM read tools are only advertised here (never executed), but the
+ * service is the real one over the test database.
  */
-class GsgToolProviderTest {
+class GsgToolProviderTest : DbTestBase() {
 
     private fun model(id: String) = testLlm(id)
 
     /** The whitelisted read-only ELTM tool set the service runs with. */
-    private fun eltmProvider(eltm: FakeEltmService): ToolProvider {
+    private fun eltmProvider(eltm: EltmService): ToolProvider {
         val eltmProvider = EltmToolProvider(eltm, readOnly = true, namespace = "eltm")
         return WhitelistedToolProvider(CombinedToolProvider(listOf(eltmProvider)), setOf("eltm"))
     }
 
     private fun provider(
         hand: FakeHand,
-        eltm: FakeEltmService = FakeEltmService(),
+        eltm: EltmService = testPostgresEltmService(FakeHand()),
         investigateModel: LLM = model("bifrost/cerebras/gemma-4-31b"),
     ) = GsgToolProvider(
         InvestigatorService(

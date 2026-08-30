@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelProvider
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
@@ -17,9 +18,10 @@ import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.errorRunFlow
 import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.hand.toolRoundEvents
-import info.skyblond.daapu.testutil.FakeEltmService
+import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.testutil.testLlm
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -32,19 +34,19 @@ import kotlin.test.*
  * (the tool-call trace only, no summary call), the classified-error passthrough,
  * and the fail-fast capability check.
  */
-class InvestigatorServiceTest {
+class InvestigatorServiceTest : DbTestBase() {
 
     private fun model(id: String) = testLlm(id)
 
     /** The whitelisted read-only ELTM tool set the service runs with. */
-    private fun eltmProvider(eltm: FakeEltmService): ToolProvider {
+    private fun eltmProvider(eltm: EltmService): ToolProvider {
         val eltmProvider = EltmToolProvider(eltm, readOnly = true, namespace = "eltm")
         return WhitelistedToolProvider(CombinedToolProvider(listOf(eltmProvider)), setOf("eltm"))
     }
 
     private fun service(
         hand: FakeHand,
-        eltm: FakeEltmService = FakeEltmService(),
+        eltm: EltmService = testPostgresEltmService(FakeHand()),
         maxRounds: Int = 150,
         investigateModel: LLM = model("bifrost/cerebras/gemma-4-31b"),
     ) = InvestigatorService(
@@ -68,7 +70,7 @@ class InvestigatorServiceTest {
 
     @Test
     fun `a successful investigate run returns the final report`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val provider = eltmProvider(eltm)
         val round = searchRound("c1", "alice")
         val hand = FakeHand(
@@ -107,7 +109,7 @@ class InvestigatorServiceTest {
 
     @Test
     fun `a round-limit stop summarizes the whole partial history`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val provider = eltmProvider(eltm)
         val round = searchRound("c1", "alice")
         val hand = FakeHand(
@@ -186,7 +188,7 @@ class InvestigatorServiceTest {
 
     @Test
     fun `a context-exhausted stop reports the tool-call trace without a summary`() = runBlocking {
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val provider = eltmProvider(eltm)
         val round = searchRound("c1", "alice")
         val hand = FakeHand(
@@ -239,7 +241,7 @@ class InvestigatorServiceTest {
         // "clean" run that never produced a report text is as broken as a
         // context-exhausted one: the defensive backstop hands the caller the
         // tool-call trace instead of a blank report
-        val eltm = FakeEltmService()
+        val eltm = testPostgresEltmService(FakeHand())
         val provider = eltmProvider(eltm)
         val round = searchRound("c1", "alice")
         val hand = FakeHand(

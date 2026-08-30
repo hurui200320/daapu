@@ -109,9 +109,10 @@ frontend + Node/TS "hand-pi" service.
     `HandService`/`McpToolProvider` at JVM shutdown (`koinApp.close()`).
     `startWebServer` resolves the root BEFORE server start (fail-fast +
     eager MCP connect). Tests: `testutil/TestDi.kt`
-    `testKoinApp`/`chatService` with overrides (`personaStore` defaults
-    to `FakePersonaStore`); `assertFailsFast` unwraps
-    `InstanceCreationException`.
+    `testKoinApp`/`chatService` with optional overrides — the stores default
+    to the PRODUCTION Postgres implementations over a throwaway
+    testcontainers test database (`testutil/TestDb.kt`, no in-memory fakes);
+    `assertFailsFast` unwraps `InstanceCreationException`.
   - **ELTM** (`memory/eltm/EltmService.kt` + `PostgresEltmService.kt`,
     diary model): entities `(id, name, category)` + attributes
     `(entity_id, key, value)` (current-state, one row per (entity, key))
@@ -423,12 +424,17 @@ frontend + Node/TS "hand-pi" service.
 ## Verification commands
 
 ```bash
-./gradlew test
+./gradlew test   # starts its own testcontainers PostgreSQL; Docker must be available
 cd hand-pi && npm test && npm run build && npm run typecheck && npm run lint
 cd frontend && npm run check && npm run build && npm test
 ```
 
-Run them after any relevant source change. They must exit clean.
+Run them after any relevant source change. They must exit clean. The JVM
+tests run the production stores against a throwaway testcontainers
+PostgreSQL (`testutil/TestDb.kt`, one `pgvector/pgvector:pg18-trixie`
+container — the same tag `compose.yaml`'s dev database uses — per test
+JVM): Docker must be reachable — without it the tests FAIL FAST
+with a clear error, never silently skip.
 
 ## Code quality and style rules
 
@@ -437,6 +443,13 @@ When writing or reviewing code, looking for bugs with the following perspectives
 
 + Bug detection and correctness: Logic errors, off-by-one mistakes, race conditions, unhandled edge cases, incorrect assumptions, regressions.
 + Test coverage and test quality: Coverage gaps, weak assertions, tautological tests, missing scenarios. Are key code paths tested? Do tests actually validate correct behavior? Are unit tests well-structured with meaningful assertions?
+  JUnit Jupiter silently DROPS a `@Test` method whose Kotlin return type is
+  non-`Unit`: an expression-bodied `= runBlocking { ... }` test whose last
+  statement returns a value (e.g. `assertFailsWith`, `assertIs`, `assertNotNull`)
+  compiles to a non-void method and is never discovered — no error, no report
+  entry. Keep the last statement a `Unit` assertion (bind the value and assert
+  on it), and treat a class whose executed-test count is lower than its
+  `@Test` count as a bug.
 + Performance and security: Inefficiencies, resource leaks, injection risks, insecure defaults, exposed secrets, missing input validation.
 + Code quality and style: follow existing pattern (project conventions), no dark magic, no hacky solution/workaround, no complex logic without comments. Maintainability is the first priority.
 + Config models and their schema: `config.schema.json` mirrors the config

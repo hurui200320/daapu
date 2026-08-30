@@ -61,6 +61,10 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host-jvm:$ktorVersion")
+    // the DB-backed tests start their own throwaway PostgreSQL (pgvector
+    // included) — see testutil/TestDb.kt; the singleton container lives for
+    // the whole test JVM and Ryuk reaps it on exit
+    testImplementation("org.testcontainers:postgresql:1.21.3")
 }
 
 kotlin {
@@ -78,6 +82,12 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    // docker-java (bundled by testcontainers) falls back to API 1.32, which
+    // Docker Engine 29 rejects ("Minimum supported API version is 1.40"):
+    // pin a version inside the daemon's window — 1.40 is the Engine's new
+    // floor and every daemon since 2019 accepts it. Override with
+    // -Dapi.version=... if a specific daemon needs it.
+    jvmArgs("-Dapi.version=1.40")
 }
 
 koinCompiler {
