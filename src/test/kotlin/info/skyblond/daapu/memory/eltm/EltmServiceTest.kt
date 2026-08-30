@@ -1,5 +1,6 @@
 package info.skyblond.daapu.memory.eltm
 
+import info.skyblond.daapu.db.padVector
 import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 

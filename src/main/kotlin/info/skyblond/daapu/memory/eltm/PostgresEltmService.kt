@@ -6,12 +6,8 @@ import info.skyblond.daapu.db.*
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
 import org.jetbrains.exposed.v1.core.*
-import org.jetbrains.exposed.v1.core.Function
-import org.jetbrains.exposed.v1.core.functions.vector.VectorDistance
-import org.jetbrains.exposed.v1.core.functions.vector.VectorDistanceMetric
 import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.*
-import java.sql.SQLException
 import java.time.LocalDate
 
 /**
@@ -26,9 +22,9 @@ import java.time.LocalDate
  *
  * Embeddings go through the hand ([HandService.embed]) and are zero-padded
  * to the fixed column width ([MAX_VECTOR_DIMENSIONS]) on write; similarity
- * queries use Exposed's built-in pgvector support ([VectorDistance] with
- * [VectorDistanceMetric.COSINE], rendered as the `<=>` operator) with the
- * query vector padded identically — cosine similarity is invariant under
+ * queries use the pgvector cosine distance helper
+ * ([VectorColumnType.cosineDistance], rendered as the `<=>` operator) with
+ * the query vector padded identically — cosine similarity is invariant under
  * zero-padding.
  *
  * Decision logic worth unit-testing (normalization, merge/collision
@@ -170,7 +166,7 @@ class PostgresEltmService(
                     it[EltmEntities.embedding] = embedding
                 }
             } catch (e: Exception) {
-                if (!isUniqueViolation(e)) throw e
+                if (!e.isUniqueViolation()) throw e
                 // a concurrent run created the target (name, category)
                 // between the check above and the UPDATE: the update rolled
                 // back AND the transaction is now aborted (PostgreSQL refuses
@@ -732,7 +728,7 @@ class PostgresEltmService(
         }
         val q = embedText(query)
         return withTransaction {
-            val dist = cosineDistance(EltmNotes.embedding, q)
+            val dist = VectorColumnType.cosineDistance(EltmNotes.embedding, q)
             // pgvector's HNSW index post-filters: a selective WHERE (subject
             // or date range) can end the index scan early, so this can
             // return FEWER than [limit] rows even when further matches
@@ -951,7 +947,7 @@ class PostgresEltmService(
         threshold: Double,
         limit: Int,
     ): List<EntityWithScore> {
-        val dist = cosineDistance(EltmEntities.embedding, queryVector)
+        val dist = VectorColumnType.cosineDistance(EltmEntities.embedding, queryVector)
         val candidates = EltmEntities.select(
             EltmEntities.id,
             EltmEntities.canonicalName,
@@ -1025,26 +1021,7 @@ class PostgresEltmService(
         return padVector(vectors.single(), MAX_VECTOR_DIMENSIONS)
     }
 
-    private fun isUniqueViolation(e: Throwable): Boolean {
-        var cause: Throwable? = e
-        while (cause != null) {
-            if (cause is SQLException && cause.sqlState == "23505") return true
-            cause = cause.cause
-        }
-        return false
-    }
-
     companion object {
         private const val NEAR_MATCH_LIMIT = 5
-
-        /** The pgvector cosine distance `column <=> vector` as an Exposed expression. */
-        private fun cosineDistance(
-            column: Column<List<Float>?>,
-            vector: List<Float>,
-        ): Function<Double> = VectorDistance(
-            column,
-            QueryParameter<List<Float>?>(vector, VectorColumnType(MAX_VECTOR_DIMENSIONS)),
-            VectorDistanceMetric.COSINE,
-        )
     }
 }

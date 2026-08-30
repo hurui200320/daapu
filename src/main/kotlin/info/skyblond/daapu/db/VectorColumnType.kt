@@ -1,6 +1,12 @@
 package info.skyblond.daapu.db
 
+import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
+import org.jetbrains.exposed.v1.core.Column
 import org.jetbrains.exposed.v1.core.ColumnType
+import org.jetbrains.exposed.v1.core.Function
+import org.jetbrains.exposed.v1.core.QueryParameter
+import org.jetbrains.exposed.v1.core.functions.vector.VectorDistance
+import org.jetbrains.exposed.v1.core.functions.vector.VectorDistanceMetric
 import org.postgresql.util.PGobject
 
 /**
@@ -56,4 +62,34 @@ class VectorColumnType(
             .split(",")
             .map { it.trim().toFloat() }
     }
+
+    companion object {
+        /**
+         * The pgvector cosine distance `column <=> vector` as an Exposed
+         * expression. The query vector is bound as a [VectorColumnType]
+         * parameter at the full [MAX_VECTOR_DIMENSIONS] column width — callers
+         * zero-pad it with [padVector] before the call, so it always fits
+         * (cosine similarity is invariant under zero-padding).
+         */
+        fun cosineDistance(
+            column: Column<List<Float>?>,
+            vector: List<Float>,
+        ): Function<Double> = VectorDistance(
+            column,
+            QueryParameter(vector, VectorColumnType(MAX_VECTOR_DIMENSIONS)),
+            VectorDistanceMetric.COSINE,
+        )
+    }
+}
+
+/**
+ * Zero-pad a vector to [width] — the width of the [VectorColumnType] column it
+ * is written to or queried against. The extra zero dimensions contribute
+ * nothing to dot products or norms, so cosine similarity is preserved exactly
+ * and the stored width never depends on the embedding model in use.
+ */
+internal fun padVector(vector: List<Float>, width: Int): List<Float> {
+    require(vector.size <= width) { "vector has ${vector.size} dimensions, width is $width" }
+    if (vector.size == width) return vector
+    return vector + List(width - vector.size) { 0f }
 }

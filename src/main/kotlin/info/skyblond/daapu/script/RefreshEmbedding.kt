@@ -11,13 +11,13 @@ import info.skyblond.daapu.db.EltmEntityAttributes
 import info.skyblond.daapu.db.EltmNotes
 import info.skyblond.daapu.db.bumpMetaCounterTx
 import info.skyblond.daapu.db.initDatabase
+import info.skyblond.daapu.db.padVector
 import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.memory.eltm.entityEmbeddingText
 import info.skyblond.daapu.memory.eltm.noteEmbeddingText
-import info.skyblond.daapu.memory.eltm.padVector
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.core.*

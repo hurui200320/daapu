@@ -209,17 +209,6 @@ fun planAttributeFold(
 private val WHITESPACE_REGEX = Regex("\\s+")
 
 /**
- * Zero-pad a vector to [width]. The extra zero dimensions contribute nothing to
- * dot products or norms, so cosine similarity is preserved exactly and the
- * stored width never depends on the embedding model in use.
- */
-internal fun padVector(vector: List<Float>, width: Int): List<Float> {
-    require(vector.size <= width) { "vector has ${vector.size} dimensions, width is $width" }
-    if (vector.size == width) return vector
-    return vector + List(width - vector.size) { 0f }
-}
-
-/**
  * The ELTM (external long-term memory) store: entities, attributes,
  * relationships, and diary notes (the diary model, see `V1__init.sql`).
  * Written by the extraction pipeline only
