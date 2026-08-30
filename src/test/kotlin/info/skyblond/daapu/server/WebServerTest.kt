@@ -1,6 +1,5 @@
 package info.skyblond.daapu.server
 
-import info.skyblond.daapu.agent.chat.ChatRunConflictException
 import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
@@ -34,7 +33,6 @@ import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -149,7 +147,7 @@ class WebServerTest : DbTestBase() {
         val koinApp = testKoinApp()
         val chatService = koinApp.koin.get<ChatService>()
         val chatId = "chat-running"
-        val lock = chatService.acquireChatLock(chatId)
+        val lock = runBlocking { chatService.acquireChatLock(chatId) }
         try {
             testApplication {
                 application { module(koinApp.koin) }
@@ -160,7 +158,38 @@ class WebServerTest : DbTestBase() {
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
         } finally {
-            chatService.releaseChatLock(chatId, lock)
+            runBlocking { lock.release() }
+        }
+    }
+
+    @Test
+    fun `an exhausted chat-lock pool is rejected with 503`() {
+        // a pool of ONE whose only connection is pinned: the next acquire
+        // cannot get a pool connection within the budget — a capacity limit
+        // (503, any chat id), NOT a per-chat conflict (409). The budget is
+        // generous (see the matching ChatServiceLockTest): the holder's
+        // FIRST acquire pays the fresh-connection setup out of it, which
+        // must not flake against a loaded CI — the exhaustion itself stays
+        // deterministic (a pool at max can only queue, never serve)
+        val base = testAppConfig()
+        val koinApp = testKoinApp(
+            base.copy(
+                database = base.database.copy(lockPoolSize = 1, lockConnectionTimeout = 5_000)
+            )
+        )
+        val chatService = koinApp.koin.get<ChatService>()
+        val holder = runBlocking { chatService.acquireChatLock("chat-holder") }
+        try {
+            testApplication {
+                application { module(koinApp.koin) }
+                val response = client.post("/api/chats/chat-other/messages") {
+                    contentType(ContentType.Application.Json)
+                    setBody(messageBody())
+                }
+                assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
+            }
+        } finally {
+            runBlocking { holder.release() }
         }
     }
 
@@ -169,7 +198,7 @@ class WebServerTest : DbTestBase() {
         val koinApp = testKoinApp()
         val chatService = koinApp.koin.get<ChatService>()
         val chatId = "chat-running"
-        val lock = chatService.acquireChatLock(chatId)
+        val lock = runBlocking { chatService.acquireChatLock(chatId) }
         try {
             testApplication {
                 application { module(koinApp.koin) }
@@ -177,7 +206,7 @@ class WebServerTest : DbTestBase() {
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
         } finally {
-            chatService.releaseChatLock(chatId, lock)
+            runBlocking { lock.release() }
         }
     }
 
@@ -241,7 +270,7 @@ class WebServerTest : DbTestBase() {
         val koinApp = testKoinApp()
         val chatService = koinApp.koin.get<ChatService>()
         val chatId = "chat-running"
-        val lock = chatService.acquireChatLock(chatId)
+        val lock = runBlocking { chatService.acquireChatLock(chatId) }
         try {
             testApplication {
                 application { module(koinApp.koin) }
@@ -249,7 +278,7 @@ class WebServerTest : DbTestBase() {
                 assertEquals(HttpStatusCode.Conflict, response.status)
             }
         } finally {
-            chatService.releaseChatLock(chatId, lock)
+            runBlocking { lock.release() }
         }
     }
 

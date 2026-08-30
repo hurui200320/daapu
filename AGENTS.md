@@ -179,12 +179,30 @@ frontend + Node/TS "hand-pi" service.
     (mixed rejected at construction). Compaction/extraction/rewrite
     sanitize then re-anchor, never double-injecting; `TitleGenerator`
     needs neither.
-  - **Locks**: per-chat `Mutex` guards concurrent runs (409) and deletes
-    (`store` is an upsert — deleting mid-run would resurrect the row).
-    `deleteChat` runs extraction over the full history BEFORE deleting,
-    holding the lock; failed extraction fails the delete (retry
-    re-extracts). Entries via `ConcurrentHashMap.compute`, evicted on
-    completion/delete.
+  - **Locks**: per-chat PostgreSQL session-level advisory locks
+    (`db/AdvisoryChatLockManager.kt`, key = SHA-256 of
+    `daapu-chat-lock:<chatId>` first 8 bytes) guard concurrent runs (409)
+    and deletes (`store` is an upsert — deleting mid-run would resurrect
+    the row). `pg_try_advisory_lock` = immediate 409, non-reentrant, and
+    held across instances (crash-safe: a dead session releases it).
+    REQUIREMENT: `database.url` must be a DIRECT connection (or a
+    session-pooling proxy) — a transaction-pooling proxy would drop the
+    session-level lock mid-run. Each holder pins ONE connection from a
+    DEDICATED pool (`database.lockPoolSize`, default 10 — its size caps
+    concurrent chat runs; any lock-pool connection timeout — full pool OR
+    an unreachable database, the same Hikari timeout, indistinguishable
+    here — → `ChatLockPoolExhaustedException` → 503) for the whole
+    operation. Acquire AND release are
+    non-cancellable (a cancelled waiter gets the lock back and releases it
+    — no leaked connection; client disconnects still unlock); a failed
+    unlock EVICTS the connection (logged; session killed, never re-pooled
+    holding a lock), and the lock connections carry
+    `SET statement_timeout = lockConnectionTimeout` (a hung session fails
+    fast into the ordinary error paths — Hikari's timeout covers only the
+    pool wait). `deleteChat` runs extraction over the full history
+    BEFORE deleting, holding the lock; failed extraction fails the delete
+    (retry re-extracts). Transaction-level `pg_advisory_xact_lock` is not
+    viable — a run spans many short transactions.
   - **ChatStore** (`agent/chat/ChatStore.kt`): all `chats` access behind
     it; `ChatService` holds no raw DB calls. `load` → full
     `ChatEntry`; `ChatInfo` is the wire shape only. `renameChat`/

@@ -174,6 +174,35 @@ class ConfigTest {
     }
 
     @Test
+    fun `database lock pool settings default and must be positive`() {
+        val config = decodeAppConfig(
+            """
+            {
+                "database": { "url": "u", "user": "p", "password": "p" },
+                "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                "title": { "model": "t" },
+            }
+            """.trimIndent()
+        )
+        assertEquals(10, config.database.lockPoolSize)
+        assertEquals(3_000, config.database.lockConnectionTimeout)
+        // validate() checks every field: a bad lock pool setting fails the
+        // whole config
+        DatabaseConfig("u", "p", "p", lockPoolSize = 1, lockConnectionTimeout = 1).validate()
+        val e = assertFailsWith<IllegalArgumentException> {
+            DatabaseConfig("u", "p", "p", lockPoolSize = 0).validate()
+        }
+        assertTrue("lockPoolSize" in e.message!!)
+        val timeoutError = assertFailsWith<IllegalArgumentException> {
+            DatabaseConfig("u", "p", "p", lockConnectionTimeout = 0).validate()
+        }
+        assertTrue("lockConnectionTimeout" in timeoutError.message!!)
+    }
+
+    @Test
     fun `multiple providers are keyed by their id`() {
         val config = decodeAppConfig(
             """

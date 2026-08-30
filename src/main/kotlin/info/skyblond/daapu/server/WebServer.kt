@@ -1,6 +1,7 @@
 package info.skyblond.daapu.server
 
 import info.skyblond.daapu.agent.ModelCatalog
+import info.skyblond.daapu.agent.chat.ChatLockPoolExhaustedException
 import info.skyblond.daapu.agent.chat.ChatRunConflictException
 import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatValidationException
@@ -90,6 +91,16 @@ internal fun Application.module(koin: Koin) {
         }
         exception<ChatRunConflictException> { call, cause ->
             call.respond(HttpStatusCode.Conflict, ErrorResponse(cause.message ?: "Conflict"))
+        }
+        // the chat-lock pool gave out no connection (exhausted by concurrent
+        // runs/history mutations, or the database unreachable — both land on
+        // the same Hikari timeout, db/AdvisoryChatLockManager.kt): not a
+        // per-chat conflict — 503, client should retry later
+        exception<ChatLockPoolExhaustedException> { call, cause ->
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                ErrorResponse(cause.message ?: "Chat lock pool timed out")
+            )
         }
         exception<ChatValidationException> { call, cause ->
             call.respond(HttpStatusCode.BadRequest, ErrorResponse(cause.message ?: "Bad request"))

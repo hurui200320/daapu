@@ -24,6 +24,7 @@ import info.skyblond.daapu.agent.tool.LengthSafeToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
 import info.skyblond.daapu.agent.tool.filesystem.FsToolProvider
 import info.skyblond.daapu.config.AppConfig
+import info.skyblond.daapu.db.AdvisoryChatLockManager
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HandRunPolicy
@@ -78,6 +79,16 @@ fun appModule(config: AppConfig): Module = module {
     // LLM list, a duplicated composite id, or a gateway-contract violation
     // in an embedding entry fails fast here at boot
     single<ModelCatalog> { ModelCatalog.fromConfig(config.providers) }
+
+    // the per-chat lock: PostgreSQL session-level advisory locks over a
+    // DEDICATED connection pool (`db/AdvisoryChatLockManager.kt`), one
+    // connection per holder for the whole run/delete — its size
+    // (`database.lockPoolSize`) doubles as the cap on concurrent chat runs.
+    // Closed through the onClose callback when the shutdown hook closes the
+    // Koin application.
+    single<AdvisoryChatLockManager> {
+        AdvisoryChatLockManager(config.database)
+    } withOptions { onClose { it?.close() } }
 
     // the stores: all chats-table access and the ELTM tables live
     // behind these seams, so tests override them with fakes

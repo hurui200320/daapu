@@ -11,8 +11,10 @@ import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.agent.tool.LengthSafeToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
-import kotlinx.coroutines.sync.Mutex
-import java.util.concurrent.ConcurrentHashMap
+import info.skyblond.daapu.db.AdvisoryChatLock
+import info.skyblond.daapu.db.AdvisoryChatLockManager
+import info.skyblond.daapu.db.AdvisoryLockConflictException
+import info.skyblond.daapu.db.AdvisoryLockPoolExhaustedException
 import kotlin.io.encoding.Base64
 
 /**
@@ -26,7 +28,18 @@ class ChatValidationException(message: String) : Exception(message)
 /**
  * The chat is locked by a run or a deletion in progress. Mapped to HTTP 409.
  */
-class ChatRunConflictException(message: String) : Exception(message)
+class ChatRunConflictException(message: String, cause: Throwable? = null) :
+    Exception(message, cause)
+
+/**
+ * The chat-lock pool gave out no connection within
+ * `database.lockConnectionTimeout` — exhausted by concurrent runs/history
+ * mutations, or the database unreachable (both land on the same Hikari
+ * timeout; see `db/AdvisoryChatLockManager.kt`). A server-side
+ * capacity/availability limit, not a per-chat conflict. Mapped to HTTP 503.
+ */
+class ChatLockPoolExhaustedException(message: String, cause: Throwable? = null) :
+    Exception(message, cause)
 
 /**
  * One prepared chat run: everything validated and mapped, ready to execute.
@@ -111,17 +124,15 @@ class ChatService(
     private val personaService: PersonaService,
     private val memoryExtractionService: MemoryExtractionService,
     private val persistService: PersistChatService,
+    /**
+     * The per-chat lock over PostgreSQL session-level advisory locks
+     * (`db/AdvisoryChatLockManager.kt`): one dedicated connection per
+     * holder for the whole run/delete, crash-safe and shared across
+     * instances. The lock pool's size doubles as the cap on concurrent
+     * chat runs (exhaustion → [ChatLockPoolExhaustedException] → 503).
+     */
+    private val chatLockManager: AdvisoryChatLockManager,
 ) {
-
-    // one run per chat at a time: a chat's history is loaded and stored as a
-    // whole, so concurrent runs would corrupt each other.
-    // Entries exist only while a run is active or a history-mutating operation
-    // (delete/truncate) is in progress: [acquireChatLock] and [withChatLock]
-    // create them atomically, and [releaseChatLock] — the one eviction path
-    // both go through — removes them, so arbitrary/deleted chat ids don't
-    // accumulate.
-    // TODO: distributed lock in production
-    private val chatLocks = ConcurrentHashMap<String, Mutex>()
 
     suspend fun listChats(): List<ChatInfo> = chatStore.listChats()
 
@@ -348,63 +359,61 @@ class ChatService(
     }
 
     /**
-     * Take the per-chat run lock, or throw [ChatRunConflictException] when the
-     * chat is locked by a run or a deletion in progress. The caller must
-     * unlock the result via [releaseChatLock].
+     * Take the per-chat run lock, or throw [ChatRunConflictException] when
+     * the chat is locked by a run or a deletion in progress (in this
+     * process or ANY other instance sharing the database). The caller must
+     * release the result via [AdvisoryChatLock.release].
+     *
+     * The lock is a PostgreSQL session-level advisory lock
+     * (`db/AdvisoryChatLockManager.kt`): the returned [AdvisoryChatLock]
+     * pins one lock-pool connection for the whole hold. The pool's size
+     * caps concurrent holders — a pool connection timeout throws
+     * [ChatLockPoolExhaustedException] (HTTP 503): exhaustion and an
+     * unreachable database land on the same Hikari timeout and are
+     * indistinguishable here (a dead DB breaks the app's reads anyway).
      *
      * Prefer [withChatLock] (the scoped acquire/release pair) — this is the
      * low-level primitive, internal so only tests (same Gradle module) can
      * simulate an active run by holding the lock.
      */
-    internal fun acquireChatLock(chatId: String): Mutex {
-        var acquired: Mutex? = null
-        // create+tryLock atomically with the map op, so a concurrent
-        // deleteChat can never pair a run with a lock that is not in the map
-        chatLocks.compute(chatId) { _, existing ->
-            val mutex = existing ?: Mutex()
-            if (!mutex.tryLock()) {
-                throw ChatRunConflictException("Chat '$chatId' is currently locked")
-            }
-            acquired = mutex
-            mutex
+    internal suspend fun acquireChatLock(chatId: String): AdvisoryChatLock =
+        try {
+            chatLockManager.acquireChatLock(chatId)
+        } catch (e: AdvisoryLockConflictException) {
+            // the cause is chained for the logs: the manager's message pins
+            // WHICH failure fired (lock conflict vs pool timeout)
+            throw ChatRunConflictException("Chat '$chatId' is currently locked", e)
+        } catch (e: AdvisoryLockPoolExhaustedException) {
+            throw ChatLockPoolExhaustedException(
+                "Chat lock pool timed out: too many concurrent chat runs or " +
+                        "history edits, or the database is unreachable",
+                e,
+            )
         }
-        return acquired!!
-    }
 
     /**
      * Run [block] while holding the per-chat lock, or throw
      * [ChatRunConflictException] when the chat is locked by a run or another
-     * history-mutating operation in progress. Acquires via [acquireChatLock]
-     * (the ONE take-the-lock path: [ConcurrentHashMap.compute] serializes the
-     * create+tryLock with the map op) and always releases via
-     * [releaseChatLock], which removes the entry BEFORE the unlock, so the
-     * block's holder keeps working on its mutex while the next acquirer gets
-     * a fresh one — never two concurrent holders.
+     * history-mutating operation in progress. Acquires via
+     * [acquireChatLock] and always releases via [AdvisoryChatLock.release] —
+     * the release runs non-cancellable, so even a cancelled holder (an SSE
+     * client disconnecting mid-stream) completes the unlock. The acquire's
+     * blocking part is non-cancellable too (db/AdvisoryChatLockManager.kt):
+     * a caller cancelled mid-acquire takes the lock and gives it back inside
+     * the manager instead of dropping a pinned connection, and the `finally`
+     * below releases whatever the acquire actually handed over.
      *
      * The scoped acquire/release pair is the ONLY path callers should use:
      * the release cannot be forgotten (the streaming route wraps its whole
      * response in this).
      */
     internal suspend fun <T> withChatLock(chatId: String, block: suspend () -> T): T {
-        val mutex = acquireChatLock(chatId)
+        val lock = acquireChatLock(chatId)
         try {
             return block()
         } finally {
-            releaseChatLock(chatId, mutex)
+            lock.release()
         }
-    }
-
-    /**
-     * Release a run lock obtained from [acquireChatLock] and evict its map
-     * entry. The entry is removed BEFORE the unlock, so a run that acquired
-     * the mutex earlier keeps working on it while the next acquirer gets a
-     * fresh mutex — never two concurrent runs on the same chat.
-     */
-    internal fun releaseChatLock(chatId: String, mutex: Mutex) {
-        chatLocks.compute(chatId) { _, existing ->
-            if (existing === mutex) null else existing
-        }
-        mutex.unlock()
     }
 
     /**

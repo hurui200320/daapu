@@ -207,7 +207,7 @@ class ChatServiceHistoryEditTest : DbTestBase() {
         try {
             assertFailsWith<ChatRunConflictException> { srv.truncateChat("chat-1", 2) }
         } finally {
-            srv.releaseChatLock("chat-1", lock)
+            lock.release()
         }
         // the chat is untouched by a rejected truncation
         assertEquals(threeRounds(), store.load("chat-1")!!.content.messages)
@@ -338,7 +338,7 @@ class ChatServiceHistoryEditTest : DbTestBase() {
                 store.load(forked.id)!!.content.messages
             )
         } finally {
-            srv.releaseChatLock("chat-1", lock)
+            lock.release()
         }
     }
 }

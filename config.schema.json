@@ -41,6 +41,18 @@
           "type": "string",
           "minLength": 1,
           "description": "Database password."
+        },
+        "lockPoolSize": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Size of the DEDICATED advisory-lock connection pool (db/AdvisoryChatLockManager.kt): one connection per chat run/history mutation, held for the whole operation so the session-level pg_try_advisory_lock stays taken. Separate from the main pool by design — sharing it would let as many lock holders as the main pool size starve every query (livelock) — and it doubles as the cap on concurrent chat runs; a pool connection timeout answers the waiting request with 503 after lockConnectionTimeout ms."
+        },
+        "lockConnectionTimeout": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3000,
+          "description": "How long (ms) a request may wait for a lock-pool connection before failing, far below Hikari's 30s default so a contended pool answers fast instead of hanging (every waiting waiter pins a Dispatchers.IO thread — the dispatcher ALL database access runs on). A timeout (a full pool OR an unreachable database — the same Hikari transient timeout, indistinguishable) answers 503 (ChatLockPoolExhaustedException); an unreachable database breaks the app's DB-fronted reads anyway. A third, rarer cause shares this budget: the lock pool keeps no idle connections, so every acquire also pays the fresh-connection setup (TCP + auth + TLS handshake) — a remote database with a slow handshake eats into the timeout even when the pool is neither full nor unreachable. Also applied as the lock connections' statement_timeout (SET at connection init): Hikari's timeout covers only the pool wait, and the non-cancellable advisory-lock statements must never hang on a blackhole network."
         }
       }
     },

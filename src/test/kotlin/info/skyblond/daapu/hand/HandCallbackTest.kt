@@ -37,12 +37,18 @@ class HandCallbackTest {
         block: suspend (ChatService, HandCallbackService) -> Unit,
     ) {
         val koinApp = testKoinApp()
-        val service = koinApp.koin.get<ChatService>()
-        val handCallback = koinApp.koin.get<HandCallbackService>()
-        application {
-            module(koinApp.koin)
+        try {
+            val service = koinApp.koin.get<ChatService>()
+            val handCallback = koinApp.koin.get<HandCallbackService>()
+            application {
+                module(koinApp.koin)
+            }
+            runBlocking { block(service, handCallback) }
+        } finally {
+            // this class does not extend DbTestBase: close the container
+            // itself so its onClose callbacks (the lock-manager pool) run
+            koinApp.close()
         }
-        kotlinx.coroutines.runBlocking { block(service, handCallback) }
     }
 
     private suspend fun io.ktor.client.HttpClient.callback(

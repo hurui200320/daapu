@@ -16,7 +16,6 @@ import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.addEntityNoteRound
 import info.skyblond.daapu.testutil.testPostgresEltmService
 import info.skyblond.daapu.testutil.chatService
-import info.skyblond.daapu.testutil.createEntityRound
 import info.skyblond.daapu.testutil.writerRunFlow
 import kotlinx.coroutines.runBlocking
 import java.time.Instant
@@ -215,7 +214,11 @@ class ChatServiceDeleteTest : DbTestBase() {
                 // mid-extraction: a new run must be rejected (409), the
                 // delete still holds the lock
                 try {
-                    service.acquireChatLock("chat-1")
+                    val stray = service.acquireChatLock("chat-1")
+                    // a successful acquire here means the delete does NOT
+                    // hold the lock (a bug the assertion below pins): give
+                    // the stray lock back so nothing stays pinned
+                    stray.release()
                 } catch (_: ChatRunConflictException) {
                     concurrentAcquireConflicted = true
                 }
@@ -234,8 +237,8 @@ class ChatServiceDeleteTest : DbTestBase() {
             concurrentAcquireConflicted,
             "a run must not start while the delete's extraction runs"
         )
-        // the lock entry was evicted with the delete: the chat is acquirable again
+        // the delete's release freed the chat: it is acquirable again
         val lock = service.acquireChatLock("chat-1")
-        service.releaseChatLock("chat-1", lock)
+        lock.release()
     }
 }

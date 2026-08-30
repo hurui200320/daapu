@@ -40,7 +40,32 @@ import org.koin.dsl.module
  * fakes. [testKoinApp] starts the container; the per-test table reset is
  * the test class's job ([DbTestBase]). Pass an override explicitly to
  * inject a stub above the real store.
+ *
+ * Every container created here is TRACKED (the advisory-lock manager's
+ * Hikari pool closes only through the container's `onClose` callback, so an
+ * unclosed app now leaks a real connection pool, not just in-memory
+ * objects). [DbTestBase] tears the tracked containers down after each test
+ * via [closeTestKoinApps]; a test class that does NOT extend [DbTestBase]
+ * must close its containers itself — either hold the returned
+ * [KoinApplication] and call `close()` on it, or call [closeTestKoinApps]
+ * in its own teardown. Closing is idempotent.
  */
+private val openTestApps = mutableSetOf<KoinApplication>()
+
+/**
+ * Close every Koin application [testKoinApp] has created and not yet
+ * closed: runs the container's `onClose` callbacks (the advisory-lock
+ * manager's pool shutdown, the hand/MCP cleanup), then clears the registry.
+ * Called by [DbTestBase] after each test; standalone (non-[DbTestBase])
+ * test classes must call it in their own teardown. Idempotent.
+ */
+fun closeTestKoinApps() {
+    synchronized(openTestApps) {
+        openTestApps.forEach { runCatching { it.close() } }
+        openTestApps.clear()
+    }
+}
+
 fun testKoinApp(
     config: AppConfig = testAppConfig(),
     hand: HandClient? = null,
@@ -52,9 +77,19 @@ fun testKoinApp(
     // the production stores resolve against the test database: connect it
     // (fail fast with the start-the-container hint) before the graph builds
     TestDb.init()
+    // the advisory-lock manager builds its own pool from config.database
+    // (db/AdvisoryChatLockManager.kt) — point it at the testcontainers
+    // database too (testAppConfig's placeholder URL would never work)
+    val dbBackedConfig = config.copy(
+        database = config.database.copy(
+            url = TestDb.url,
+            user = TestDb.user,
+            password = TestDb.password,
+        )
+    )
     return koinApplication {
         modules(
-            appModule(config),
+            appModule(dbBackedConfig),
             testOverrides(
                 hand,
                 chatStore,
@@ -63,6 +98,8 @@ fun testKoinApp(
                 personaStore,
             ),
         )
+    }.also { app ->
+        synchronized(openTestApps) { openTestApps += app }
     }
 }
 
