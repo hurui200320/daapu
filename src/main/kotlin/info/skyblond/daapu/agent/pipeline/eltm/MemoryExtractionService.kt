@@ -48,9 +48,8 @@ import java.time.LocalDate
 class MemoryExtractionService(
     private val extractModel: LLM,
     private val hand: HandService,
-    // the hand's /v1/run policy knobs for the one-shot calls (config
-    // `hand.*`): transient failures retry with the same budget/backoff as
-    // the chat loop, the writer rounds are capped inside EltmWriterService
+    // config `hand.*` — see [HandRunPolicy]; the writer rounds are capped
+    // inside EltmWriterService
     private val policy: HandRunPolicy,
     // the ELTM write path: the extracted facts are written into the ELTM
     // diary directly (config `memory.eltm.writerModel`, `maxWriterRounds`);
@@ -98,9 +97,6 @@ class MemoryExtractionService(
         require(droppedMessages.isNotEmpty()) {
             "cannot extract memories from an empty message list"
         }
-        // fail fast on a capability mismatch before the LLM call: the same
-        // prompt would fail identically forever (the loop's per-round check
-        // semantics, applied to the configured extraction model)
         extractModel.checkPromptContentCapabilities(droppedMessages)
         val extraction = extract(droppedMessages)
         logger.info { "Extracted memories:\n${extraction}" }

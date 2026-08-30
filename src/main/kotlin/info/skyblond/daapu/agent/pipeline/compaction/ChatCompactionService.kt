@@ -16,8 +16,7 @@ import java.time.Instant
 class ChatCompactionService(
     private val model: LLM,
     private val hand: HandService,
-    // the hand's /v1/run policy knobs for this one-shot (config `hand.*`):
-    // transient failures retry with the same budget/backoff as the chat loop
+    // config `hand.*` — see [HandRunPolicy]
     private val policy: HandRunPolicy,
     // the harness context: sanitize the input (it may be the chat loop's
     // injected in-loop chat) and re-anchor the history user messages so the
@@ -67,9 +66,6 @@ class ChatCompactionService(
         // dropped region the memory extraction sees is clean too.
         val clean = contextInjection.removeInjection(fullChat)
         val (chatToCompact, chatToPreserve) = splitMessage(clean, excludeLastNRound)
-        // fail fast on a capability mismatch before the LLM call: the same
-        // prompt would fail identically forever (see the loop's per-round
-        // check, which this reuses)
         model.checkPromptContentCapabilities(fullChat)
         // chat to feed into summary llm:
         // First contains the part to compact,

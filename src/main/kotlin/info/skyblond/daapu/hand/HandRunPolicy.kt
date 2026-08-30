@@ -7,6 +7,10 @@ package info.skyblond.daapu.hand
  * [streamIdleTimeoutMs] is the per-round stream idle timeout on `/v1/run`
  * and doubles as the per-attempt `timeoutMs` on `/v1/embed` (the same
  * `hand.streamIdleTimeoutMs` config knob feeds both — see `HandConfig`).
+ * The chat loop, every one-shot pipeline (compaction, extraction, query
+ * rewrite, title, the investigator, the ELTM writer) and the ELTM
+ * embeddings share this policy, so transient failures retry with the
+ * same budget/backoff as the chat loop.
  * The wire request DTOs keep their own fields (`HandRunRequest`,
  * `HandEmbedRequest`); this type is the brain-side carrier only.
  */

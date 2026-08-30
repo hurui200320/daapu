@@ -88,9 +88,9 @@ export async function loadChat(chatId: string): Promise<ChatMessage[]> {
 interface SendMessageRequest {
   text?: string
   images?: { dataUrl: string }[]
-  /** required by the server: no default model exists (the UI picks one per message) */
+  /** server-required (see `agent/chat/ChatService.kt` `prepareRun`) */
   model: string
-  /** required by the server: the persona travels with the request like the model */
+  /** server-required (see `agent/chat/ChatService.kt` `prepareRun`) */
   personaId: number
 }
 
@@ -99,7 +99,7 @@ interface SendMessageRequest {
 export interface PersonaSaveBody {
   name: string
   systemPrompt: string
-  /** namespace whitelist over the chat loop's tools; [] = all namespaces */
+  /** see `Persona.allowedNamespaces` (types.ts) */
   allowedNamespaces: string[]
 }
 

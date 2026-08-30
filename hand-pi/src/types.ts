@@ -12,16 +12,18 @@
  * The hand trusts Kotlin to send valid messages (Kotlin is the format's
  * authority and validates on encode): request handlers only check the
  * request envelope, never the message shapes.
+ *
+ * Field semantics are documented at the Kotlin authority (`hand/HandDtos.kt`,
+ * `agent/chat/ChatMessage.kt`) — this file does not restate them; comments
+ * here cover only hand-side behavior this service implements.
  */
 
 export type ChatMessageRole = "user" | "assistant" | "tool_result";
 
 export interface ChatMessageMeta {
   /**
-   * The FULL prompt size (`prompt_tokens`), never pi-ai's cache-subtracted
-   * input count — the Kotlin classifier and the proactive compaction
-   * trigger depend on it. Required on every response the hand produces:
-   * `assembleAssistantMessage` fails when the provider reported no usage.
+   * The FULL prompt size (`prompt_tokens`); semantics owned by Kotlin —
+   * see `ChatMessageMeta` (`agent/chat/ChatMessage.kt`).
    */
   inputTokens: number;
   outputTokens: number;
@@ -33,14 +35,12 @@ export interface ChatMessage {
   role: ChatMessageRole;
   parts: ChatMessagePart[];
   /**
-   * User messages only: when the message was sent (UTC ISO instant). The
-   * brain stamps it and regenerates the per-request `<meta>` time anchors
-   * from it; the hand is unaware of it and ignores it (converters only
-   * read known fields).
+   * User messages only; semantics owned by Kotlin —
+   * see `ChatMessage` (`agent/chat/ChatMessage.kt`).
    */
   createdAt?: string;
   meta?: ChatMessageMeta;
-  /** Assistant messages only; required non-blank there. */
+  /** Assistant messages only — see `agent/chat/ChatMessage.kt`. */
   finishReason?: string;
 }
 
@@ -51,7 +51,7 @@ export type AttachmentContent = { type: "base64"; base64: string };
 export type ChatMessagePart =
   | { type: "text"; text: string }
   | { type: "reasoning"; content: string }
-  /** `id` is non-blank. */
+  /** non-blank — see `ChatMessagePart.ToolCall.id` (`agent/chat/ChatMessage.kt`). */
   | { type: "tool_call"; id: string; tool: string; args: Record<string, unknown> }
   | { type: "tool_result"; id: string; tool: string; parts: ContentPart[]; isError: boolean }
   | { type: "attachment"; kind: AttachmentKind; content: AttachmentContent; mimeType: string };
@@ -60,7 +60,7 @@ export type ContentPart =
   | { type: "text"; text: string }
   | { type: "attachment"; kind: AttachmentKind; content: AttachmentContent; mimeType: string };
 
-/** Per-request model description; the hand has no catalog. */
+/** See `HandModelSpec` (`hand/HandDtos.kt`): the hand has no catalog. */
 export interface ModelSpec {
   /** Full OpenAI-compatible base URL, e.g. `http://10.233.1.8:8002/v1`. */
   baseUrl: string;
@@ -69,7 +69,7 @@ export interface ModelSpec {
   contextWindow: number;
   maxOutputTokens: number;
   reasoning: boolean;
-  /** e.g. "high"; reasoning models only (omitted otherwise). */
+  /** See `HandModelSpec.reasoningEffort` (`hand/HandDtos.kt`). */
   reasoningEffort?: string;
   // TODO: the wire carries text and image only; audio/video/document
   //       attachments are declared by the brain's capability model but not
@@ -82,10 +82,9 @@ export interface ModelSpec {
 export type JsonSchema = Record<string, unknown>;
 
 /**
- * One tool advertisement in the neutral format: pure advertisement —
- * the name/description/schema the model sees. The execution budget is a
- * brain-side concern (the brain enforces it on the callback route); the
- * hand never sees or enforces it.
+ * One tool advertisement in the neutral format: the name/description/schema
+ * the model sees. The hand never sees or enforces the execution budget
+ * (see `HandRunRequest.toolListUrl` in `hand/HandDtos.kt`).
  */
 export interface ToolSpec {
   name: string;
@@ -113,16 +112,14 @@ export interface HandError {
 export interface RunRequest {
   model: ModelSpec;
   messages: ChatMessage[];
-  /** The system prompt; never a message in the chat. */
+  /** No `system` role — see `agent/chat/ChatMessage.kt`. */
   systemPrompt?: string;
   /**
-   * The brain's tool-listing endpoint (`GET {toolListUrl}?runId=...`):
-   * the hand queries it BEFORE every LLM request and uses the returned
-   * set for that round — the tool set is never captured statically in the
-   * request, so the run always sees the provider's latest advertisements.
-   * Omitted = no tools at all: the hand makes NO brain-side HTTP call for
-   * the run (no tool-list GET, and no callback can fire — a tool-less run
-   * works without any HTTP server next to it).
+   * The brain's tool-listing endpoint (`GET {toolListUrl}?runId=...`);
+   * contract semantics at `HandRunRequest.toolListUrl`
+   * (`hand/HandDtos.kt`). Omitted: the hand makes NO brain-side HTTP call
+   * for the run (no tool-list GET, no callback), so a tool-less run works
+   * without any HTTP server next to it.
    */
   toolListUrl?: string;
   /** The output budget for this call; always explicit. */
@@ -130,14 +127,11 @@ export interface RunRequest {
   runId: string;
   /** Required iff `toolListUrl` is present (tools may be advertised). */
   toolCallbackUrl?: string;
-  /** Round cap; 0 = unlimited. */
+  /** See `HandRunRequest` (`hand/HandDtos.kt`). */
   maxRounds: number;
-  /**
-   * Total transient attempts per round (a `maxRetries` of 1 allows a single
-   * attempt); 0 = unlimited. Mirrors `/v1/embed`'s `maxRetries` semantics.
-   */
+  /** See `HandRunRequest` (`hand/HandDtos.kt`). */
   maxRetries: number;
-  /** Idle timeout per streamed round in ms; 0 = disabled. */
+  /** See `HandRunRequest` (`hand/HandDtos.kt`). */
   streamIdleTimeoutMs: number;
 }
 
@@ -153,18 +147,14 @@ export class HandFailure extends Error {
 }
 
 /**
- * The `/v1/embed` request: one OpenAI-compatible embedding call, fully
- * described per request (the hand holds no catalog and no defaults). The
- * run-policy knobs mirror `/v1/run`'s: `maxRetries` (0 = unlimited) and
- * `timeoutMs` (0 = disabled) are the brain's per-call budget.
+ * The `/v1/embed` request; contract semantics at `HandEmbedRequest`
+ * (`hand/HandDtos.kt`).
  */
 export interface EmbedRequest {
   model: { baseUrl: string; apiKey: string; modelId: string };
   /**
-   * The output dimensionality the brain's catalog entry pins; the hand
-   * sends it to the gateway and the brain verifies the response against
-   * it (never silently truncated — a gateway that cannot honor it answers
-   * an error).
+   * See `HandEmbedRequest` (`hand/HandDtos.kt`): never silently
+   * truncated — a gateway that cannot honor it answers an error.
    */
   dimensions: number;
   /** Non-empty, non-blank strings. */
@@ -173,10 +163,7 @@ export interface EmbedRequest {
   timeoutMs: number;
   /**
    * Extra root-level fields merged into the `{baseUrl}/embeddings` request
-   * body (gateway-specific knobs the contract does not model, e.g.
-   * deepinfra's `service_tier: "priority"`). Must not collide with the
-   * hand-managed fields (`model`, `input`, `dimensions`). Omitted = no
-   * extra fields.
+   * body — semantics at `HandEmbedRequest` (`hand/HandDtos.kt`).
    */
   additionalProperties?: Record<string, unknown>;
 }
@@ -186,11 +173,10 @@ export interface EmbedUsage {
   totalTokens: number;
 }
 
+/** See `HandEmbedResult` (`hand/HandDtos.kt`). */
 export interface EmbedResult {
-  /** One vector per input item, in order. */
   vectors: number[][];
   /** `vectors[0].length`. */
   dimensions: number;
-  /** Passed through when the provider reports it; omitted otherwise. */
   usage?: EmbedUsage;
 }

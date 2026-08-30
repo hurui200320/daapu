@@ -93,8 +93,8 @@ class LLM(
      * results too (e.g. an MCP tool returning an image), so the scan
      * descends into result parts.
      *
-     * The failure is deterministic: the same prompt with the same model
-     * fails identically forever, so callers fail fast before any LLM call.
+     * The failure is deterministic (see [ModelCapabilityException]), so
+     * callers may fail fast before any LLM call.
      */
     fun checkPromptContentCapabilities(chat: List<ChatMessage>) {
         chat.flatMap { message ->

@@ -116,8 +116,7 @@ class MemoryExtractionServiceTest : DbTestBase() {
         )
         val anchor = extractorMessages[0].parts.first() as ChatMessagePart.Text
         assertTrue(contextInjection.hasMetaPart(extractorMessages[0]))
-        // the anchor renders the message's own instant in the system zone,
-        // so the expected date is computed from it (never hard-coded)
+        // expected date computed from the anchor's own instant (never hard-coded)
         val anchorDate = java.time.ZonedDateTime.ofInstant(
             Instant.parse("2026-08-17T09:00:00Z"),
             java.time.ZoneId.systemDefault(),
@@ -197,7 +196,6 @@ class MemoryExtractionServiceTest : DbTestBase() {
         val e = assertFailsWith<IllegalStateException> {
             extractor.processDiscardedMessages(listOf(userMessage("u1")))
         }
-        // the outer message names the wrapper only; the detail lives on the cause
         assertEquals("Memory extraction failed", e.message)
         val cause = assertIs<HandRunException>(e.cause)
         assertEquals("output_budget_exhausted", cause.type)

@@ -127,8 +127,6 @@ class FsToolProvider(
     override suspend fun specifications(): List<ToolSpec> = specs
 
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
-        // in namespaced mode only `{namespace}__{tool}` names are accepted:
-        // anything else is not advertised by this provider
         val name = splitNsToolName(request.name)
             ?.takeIf { it.first == FS_NAMESPACE }?.second
         if (name == null) {

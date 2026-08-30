@@ -113,25 +113,13 @@ class McpToolProvider(
         return advertised
     }
 
-    override fun executionTimeoutSeconds(toolName: String): Long {
-        // the advertised name is `namespace__tool`: neither part can
-        // contain `__` (namespaces are validated, tool names are sanitized
-        // in specifications), so anything else — a bare name, or a name
-        // with a second `__` — cannot be an advertised name and has no
-        // budget ([splitStrictNsToolName] rejects it)
-        return splitStrictNsToolName(toolName)?.let { (namespace, _) ->
+    override fun executionTimeoutSeconds(toolName: String): Long =
+        splitStrictNsToolName(toolName)?.let { (namespace, _) ->
             entries[namespace]?.timeoutSeconds
         } ?: 0
-    }
 
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val advertisedName = request.name
-        // the advertised name is `namespace__tool`: neither part can
-        // contain `__` (namespaces are validated, tool names are sanitized
-        // in specifications), so anything else — a bare name, or a name
-        // with a second `__` — cannot be an advertised name;
-        // [splitStrictNsToolName] rejects it with the "invalid tool name"
-        // error
         val namespace = splitStrictNsToolName(advertisedName)?.first
             ?: return errorResult(request.id, advertisedName, "invalid tool name")
         val entry = entries[namespace] ?: return errorResult(

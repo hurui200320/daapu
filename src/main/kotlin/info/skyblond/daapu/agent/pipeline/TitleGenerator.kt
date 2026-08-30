@@ -14,15 +14,9 @@ import info.skyblond.daapu.hand.HandService
 class TitleGenerator(
     private val model: LLM,
     private val hand: HandService,
-    /**
-     * How many trailing user rounds of the history feed the title generator;
-     * `0` means the whole history. One round is one user message plus the
-     * assistant/tool messages until the next user message, so cutting at a
-     * user-message boundary never splits tool_call/tool_result pairs.
-     */
+    /** Config `title.lastNRound` (`config/TitleConfig.kt`). */
     private val lastNRound: Int = 0,
-    // the hand's /v1/run policy knobs for this one-shot (config `hand.*`):
-    // transient failures retry with the same budget/backoff as the chat loop
+    // config `hand.*` — see [HandRunPolicy]
     private val policy: HandRunPolicy,
 ) {
     /**
@@ -37,9 +31,8 @@ class TitleGenerator(
     ): String {
         if (history.isEmpty()) return DEFAULT_CHAT_TITLE
         val truncated = truncateToLastNRounds(history, lastNRound)
-        // fail fast on a capability mismatch before the LLM call (same as the
-        // compaction/extraction services): a text-only title model cannot see
-        // image history, which is a `title.model` configuration error
+        // a text-only title model cannot see image history — a
+        // `title.model` configuration error
         model.checkPromptContentCapabilities(truncated)
 
         return hand.runOneShotText(

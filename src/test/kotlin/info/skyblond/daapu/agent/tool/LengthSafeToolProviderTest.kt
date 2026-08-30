@@ -190,13 +190,10 @@ class LengthSafeToolProviderTest {
 
     @Test
     fun `the cut never splits a surrogate pair`() = runBlocking {
-        // the cap counts UTF-16 code units: a naive take at the cap could
-        // cut between an emoji's surrogate halves and leave a lone high
-        // surrogate at the end of the kept prefix — malformed text the
-        // model would see. The marker is 70 units for a 105-unit result
-        // capped at 100, so the kept prefix is 30 units; the emoji sits
-        // with its high half at index 29, exactly the cut — it must be
-        // dropped, not kept.
+        // rationale lives on the implementation (`LengthSafeToolProvider`);
+        // here: the marker is 70 units for a 105-unit result capped at 100,
+        // so the kept prefix is 30 units; the emoji sits with its high half
+        // at index 29, exactly the cut — it must be dropped, not kept.
         val emoji = "\uD83D\uDE00"
         val original = "x".repeat(29) + emoji + "x".repeat(74)
         assertEquals(105, original.length, "the fixture must land the cut inside the pair")

@@ -140,7 +140,7 @@ export interface Persona {
   id: number
   name: string
   systemPrompt: string
-  /** namespace whitelist over the chat loop's tools; [] = all namespaces */
+  /** namespace whitelist over the chat loop's tools; [] = all namespaces (authority: `agent/persona/Persona.kt`) */
   allowedNamespaces: string[]
 }
 

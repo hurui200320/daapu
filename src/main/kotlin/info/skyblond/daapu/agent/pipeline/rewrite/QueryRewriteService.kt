@@ -38,10 +38,7 @@ class QueryRewriteService(
         if (historyClipped.isEmpty()) {
             return null
         }
-        // fail fast on a capability mismatch before the LLM call: the same
-        // prompt would fail identically forever (the run loop's per-round
-        // check semantics, applied to the configured rewrite model — a
-        // `memory.eltm.rewriteModel` config error)
+        // a `memory.eltm.rewriteModel` config error
         model.checkPromptContentCapabilities(historyClipped)
         val chat = contextInjection.injectContext(
             contextInjection.removeInjection(historyClipped),

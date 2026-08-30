@@ -2,6 +2,10 @@
 
 Guidance for AI agents (and humans) working in this project.
 
+> This file acts as the TOC and a map of the repo.
+> Its purpose is to help humans and LLMs quickly locate related components without exploring the whole codebase.
+> It MUST NOT repeat comments from the code or explain things that are obvious by just taking a look at the code.
+
 ## Project
 
 PoC of a chatbot with a memory system: Kotlin/JVM (Gradle) brain + Svelte
@@ -470,6 +474,8 @@ When writing or reviewing code, looking for bugs with the following perspectives
   `@Test` count as a bug.
 + Performance and security: Inefficiencies, resource leaks, injection risks, insecure defaults, exposed secrets, missing input validation.
 + Code quality and style: follow existing pattern (project conventions), no dark magic, no hacky solution/workaround, no complex logic without comments. Maintainability is the first priority.
+  + Single Source of Truth for Comments: Only explain logic at its original/primary location. Other places referencing this logic MUST use pointers (e.g., `see [Component/File]`) and MUST NOT repeat the same explanation.
+  + Wire Protocol Documentation: Kotlin owns the authoritative comments for any shared wire protocol. Other components MUST only reference the Kotlin definitions, *unless* a component has special/different parsing or unique working behavior that requires component-specific explanation.
 + Config models and their schema: `config.schema.json` mirrors the config
   models in `config/Config.kt` (and the checked-in `config.example.jsonc`
   documents the shape). Treat the schema as documentation: when the config

@@ -91,7 +91,6 @@ class TitleGeneratorTest {
         val e = assertFailsWith<IllegalStateException> {
             runBlocking { generator.generateTitle(turns(1)) }
         }
-        // the outer message names the wrapper only; the detail lives on the cause
         assertEquals("Title generation failed", e.message)
         val cause = assertIs<HandRunException>(e.cause)
         assertEquals("output_budget_exhausted", cause.type)

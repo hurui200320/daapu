@@ -48,9 +48,7 @@ export const MODEL_STORAGE_KEY = 'daapu.model'
  * is a module-scope singleton, and `$effect` runes are only valid inside a
  * component.
  *
- * Which chat is open is owned by the URL (router.svelte.ts): the App.svelte
- * route effect translates hash changes into pickChat/closeChat, and actions
- * that change the open chat (create/fork/delete) navigate the hash.
+ * Which chat is open is owned by the URL (see router.svelte.ts).
  */
 class ChatStore {
   chatId = $state('')
@@ -176,7 +174,6 @@ class ChatStore {
     } catch (e) {
       toastStore.pushError(e)
     }
-    // app-lifetime store: the disposer is intentionally ignored
     onIntervalAndFocus(30_000, () => void this.resyncChats())
   }
 
@@ -455,13 +452,12 @@ class ChatStore {
   }
 
   /**
-   * Fork: copy the history up to and including the message at `index` (an
-   * assistant message that ended naturally) into a new chat and switch to it.
-   * The new chat starts as "New chat" with an empty ELTM state (its first
-   * run flags `eltm-updated`), so the original chat stays untouched. The
-   * switch happens only while still on the source chat: a chat switch during
-   * the request must not hijack the view (the fork chat is still added to
-   * the list either way).
+   * Fork the history through `index` (API semantics in `api.ts`
+   * `forkChat`) and switch to it. The new chat starts as "New chat" with
+   * an empty ELTM state (its first run flags `eltm-updated`), so the
+   * original chat stays untouched. The switch happens only while still on
+   * the source chat: a chat switch during the request must not hijack the
+   * view (the fork chat is still added to the list either way).
    */
   async forkChat(index: number): Promise<void> {
     const id = this.chatId.trim()

@@ -90,8 +90,8 @@ fun Route.registerEltmEndpoints(eltmService: EltmService) {
         }
         get("/relationships/{relationshipId}/notes") {
             val id = call.longParam("relationshipId")
-            // parse the filters before the existence check: a bad
-            // range is a 400 even when the subject is gone
+            // as in the entity-notes route: parse the filters before the
+            // existence check, so a bad range is a 400 even when gone
             val from = call.dateParam("from")
             val to = call.dateParam("to")
             val limit = call.pageLimitParam(DEFAULT_ELTM_PAGE_LIMIT, MAX_ELTM_PAGE_LIMIT)

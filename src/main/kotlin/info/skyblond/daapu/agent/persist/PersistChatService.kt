@@ -72,27 +72,15 @@ class PersistChatService(
      * because the writer deduplicates against the store.
      */
     private val memoryExtractionService: MemoryExtractionService,
-    /**
-     * How many trailing user rounds of the chat feed the query rewrite
-     * one-shot (config `memory.eltm.rewriteRounds`).
-     */
+    /** Config `memory.eltm.rewriteRounds` (`config/MemoryConfig.kt`). */
     private val rewriteRounds: Int,
-    /**
-     * How many related entities the ELTM context injection puts into the
-     * `<memories>`' `<related-entities>` (config
-     * `memory.eltm.relatedEntitiesLimit`); `0` skips the entity search.
-     */
+    /** Config `memory.eltm.relatedEntitiesLimit` (`config/MemoryConfig.kt`). */
     private val relatedEntitiesLimit: Int,
-    /**
-     * How many related diary notes the ELTM context injection puts into the
-     * `<memories>`' `<related-notes>` (config `memory.eltm.relatedNotesLimit`);
-     * `0` skips the note search, and with both limits `0` the query rewrite
-     * one-shot is skipped too (it exists only to feed these searches).
-     */
+    /** Config `memory.eltm.relatedNotesLimit` (`config/MemoryConfig.kt`). */
     private val relatedNotesLimit: Int,
-    // the hand's /v1/run policy knobs (config `hand.*`): the hand holds no
-    // defaults, every parameter is REQUIRED per request, so the brain
-    // sources them here
+    // the hand holds no defaults, every run parameter is REQUIRED per
+    // request: the retry/idle pair travels as [HandRunPolicy], `maxRounds`
+    // is the direct `hand.maxRounds` knob
     private val maxRounds: Int,
     private val policy: HandRunPolicy,
 ) {

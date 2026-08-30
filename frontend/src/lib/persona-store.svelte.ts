@@ -19,7 +19,6 @@ class PersonaStore {
     if (this.started) return
     this.started = true
     await this.resync()
-    // app-lifetime store: the disposer is intentionally ignored
     onIntervalAndFocus(30_000, () => void this.resync())
   }
 

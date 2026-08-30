@@ -28,12 +28,10 @@ typealias EntityAttributes = Map<String, String>
 
 /**
  * One ELTM relationship: a directed edge (source entity, verb, destination
- * entity) with a structural [valid] state. There is exactly ONE row per
- * triple (full unique index): `valid=false` is a flag — an ending
- * invalidates it, a re-establishment is a diary event (a note with
- * `valid=true`). The diary notes
- * are the content truth — the flag is only an index on whether the edge
- * currently holds.
+ * entity) with a structural [valid] state. Storage semantics (one row per
+ * triple, the flag vs the content-bearing diary notes) in
+ * [info.skyblond.daapu.db.EltmRelationships]; an ending invalidates it, and
+ * a re-establishment is a diary event (a note with `valid=true`).
  */
 data class EltmRelationship(
     val id: Long,

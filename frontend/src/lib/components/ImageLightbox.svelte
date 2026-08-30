@@ -41,8 +41,6 @@
     ty: number
   } | null = null
   // live pointer positions plus their gesture-start positions (the latter
-  // feed the tap-movement tolerance)
-  // live pointer positions plus their gesture-start positions (the latter
   // feed the tap-movement tolerance). SvelteMap: the linter requires it over
   // a raw Map, and gesture state must not be reactive — nothing renders from
   // this map (dragging/pinch flags below own the visuals)

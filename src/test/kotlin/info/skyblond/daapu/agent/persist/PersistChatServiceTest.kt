@@ -88,7 +88,8 @@ class PersistChatServiceTest : DbTestBase() {
      * Runs one turn; returns the outcome for assertions. The fake hand
      * dispatches on the out-of-band system prompt, standing in for the four
      * one-shot roles (compactor / extractor / writer / query rewriter) plus
-     * the chat loop.
+     * the chat loop. Within a [chatScript] it plays the model AND the
+     * hand's callback POST (the script answers the brain-side callback).
      */
     private fun run(
         modelId: String = "bifrost/cerebras/gemma-4-31b",
@@ -650,8 +651,7 @@ class PersistChatServiceTest : DbTestBase() {
     fun `tool call round executes the empty registry and completes the next round`() {
         val outcome = run(
             chatScript = {
-                // the fake hand plays the model AND the hand's callback
-                // POST: the hand would HTTP-POST the call to the brain,
+                // the hand would HTTP-POST the call to the brain,
                 // which answers through the same empty registry
                 val call = ChatMessagePart.ToolCall(
                     id = "call_1",
@@ -735,11 +735,10 @@ class PersistChatServiceTest : DbTestBase() {
             val outcome = run(
                 toolProvider = mcpProvider,
                 chatScript = {
-                    // the fake hand plays the model AND the hand's callback
-                    // POST (the HTTP contract is pinned by HandCallbackTest);
-                    // like the real hand it lists the tools first (the
-                    // brain's GET /api/hand/tools) before executing calls,
-                    // which populates the provider's name mapping
+                    // the HTTP contract is pinned by HandCallbackTest; like
+                    // the real hand it lists the tools first (the brain's
+                    // GET /api/hand/tools) before executing calls, which
+                    // populates the provider's name mapping
                     mcpProvider.specifications()
                     val call = ChatMessagePart.ToolCall(
                         id = "call_1",
@@ -951,8 +950,7 @@ class PersistChatServiceTest : DbTestBase() {
         )
         val historicalMeta = sent[0].parts.first() as ChatMessagePart.Text
         assertTrue(contextInjection.hasMetaPart(sent[0]))
-        // the anchor renders the message's own instant in the system zone,
-        // so the expected date is computed from it (never hard-coded)
+        // expected date computed from the anchor's own instant (never hard-coded)
         val anchorDate = java.time.ZonedDateTime.ofInstant(
             Instant.parse("2026-08-17T09:00:00Z"),
             java.time.ZoneId.systemDefault(),
@@ -1472,7 +1470,6 @@ class PersistChatServiceTest : DbTestBase() {
             },
         )
         val e = assertIs<IllegalStateException>(outcome.error)
-        // the outer message names the wrapper only; the detail lives on the cause
         assertEquals("Compaction summarization failed", e.message)
         val cause = assertIs<HandRunException>(e.cause)
         assertEquals("output_budget_exhausted", cause.type)

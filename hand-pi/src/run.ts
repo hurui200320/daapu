@@ -25,9 +25,7 @@ import { HandFailure, type ChatMessage, type ChatMessagePart, type RunRequest, t
 type Emit = (event: SseEventName, payload: unknown) => boolean;
 
 /**
- * `/v1/run`: the chat round loop. Writes named SSE events; exactly one of
- * `done`/`error` closes the run. The hand holds no state beyond this
- * function: everything it needs arrives in the request.
+ * `/v1/run` entry point — the round loop described in the module header.
  */
 export async function executeRun(
   res: ServerResponse,

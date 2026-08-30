@@ -150,8 +150,6 @@ class PostgresEltmService(
             // must merge the two instead (an unhandled unique violation on
             // the UPDATE below would escape as a raw SQL error)
             checkNoNameCollision(entityId, newCanonical, newCat)
-            // EmbeddingException (e.g. invalid_request) propagates for the
-            // tool layer to map to a model-visible error (rolled back)
             val embedding = embedText(
                 entityEmbeddingText(
                     newCanonical,
@@ -251,8 +249,6 @@ class PostgresEltmService(
         require(withTransaction { findEntityById(entityId) != null }) {
             "entity $entityId does not exist"
         }
-        // EmbeddingException (e.g. invalid_request: content too large)
-        // propagates for the tool layer to map to a model-visible error
         val embedding = embedText(noteEmbeddingText(trimmed))
         val id = withTransaction {
             val inserted = EltmNotes.insert {
@@ -272,13 +268,9 @@ class PostgresEltmService(
     ): EltmNote {
         val trimmed = note.trim()
         require(trimmed.isNotBlank()) { "note must not be blank" }
-        // fail fast on a missing subject with a clear message before the
-        // embed call (the FK would catch it later with a SQL error)
         require(withTransaction { findRelationshipById(relationshipId) != null }) {
             "relationship $relationshipId does not exist"
         }
-        // EmbeddingException (e.g. invalid_request: content too large)
-        // propagates for the tool layer to map to a model-visible error
         val embedding = embedText(noteEmbeddingText(trimmed))
         val id = insertNoteWithValidity(relationshipId, eventDate, trimmed, embedding, valid)
         return withTransaction { findNoteById(id)!! }
@@ -433,8 +425,6 @@ class PostgresEltmService(
         val foldPlan = planAttributeFold(winnerAttrs, loserAttrs)
         // only re-embed when the fold actually changed the winner's
         // attribute text — an attribute-less merge reuses the stored vector
-        // (an EmbeddingException propagates for the tool layer to map,
-        // rolled back before anything moved)
         val winnerEmbedding = if (foldPlan.changesText) {
             embedText(entityEmbeddingText(winnerName, winnerCat, foldPlan.winnerAttributes))
         } else null

@@ -203,8 +203,6 @@ class EltmToolProvider(
 
     override suspend fun execute(request: ToolCallRequest): ChatMessagePart.ToolResult {
         val args = request.args
-        // in namespaced mode only `{namespace}__{tool}` names are accepted:
-        // anything else is not advertised by this provider
         val name = bareName(request.name)
         if (name == null) {
             return errorResult(

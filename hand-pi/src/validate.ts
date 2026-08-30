@@ -167,7 +167,7 @@ export function validateTools(value: unknown): ToolSpec[] {
   });
 }
 
-/** The fields the hand itself puts into the `{baseUrl}/embeddings` request body. */
+/** Mirrors `EmbeddingModel.RESERVED_GATEWAY_FIELDS` (`agent/model/EmbeddingModel.kt`). */
 const RESERVED_GATEWAY_FIELDS = ["model", "input", "dimensions"] as const;
 
 export function validateEmbedRequest(body: string): EmbedRequest {

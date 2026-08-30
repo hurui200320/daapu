@@ -251,8 +251,7 @@ class ChatCompactionServiceTest {
                     "expected a meta anchor, got: ${message.parts.firstOrNull()}",
                 )
             }
-        // the anchor renders the message's own instant in the system zone,
-        // so the expected date is computed from it (never hard-coded)
+        // expected date computed from the anchor's own instant (never hard-coded)
         val oldestDate = java.time.ZonedDateTime.ofInstant(
             java.time.Instant.parse("2026-08-16T09:00:00Z"),
             java.time.ZoneId.systemDefault(),
@@ -312,7 +311,6 @@ class ChatCompactionServiceTest {
         val e = assertFailsWith<IllegalStateException> {
             compactor(hand).compactChat(longTurns(5), excludeLastNRound = 3)
         }
-        // the outer message names the wrapper only; the detail lives on the cause
         assertEquals("Compaction summarization failed", e.message)
         val cause = assertIs<HandRunException>(e.cause)
         assertEquals("empty_response", cause.type)
