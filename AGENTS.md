@@ -294,7 +294,13 @@ frontend + Node/TS "hand-pi" service.
     store. `upstream` retries with hand backoff; ANY terminal failure
     fails the run (nothing lost; recorded content sticks — no duplicate
     diary entries). `event_date` = extraction (or compaction) day, never
-    later.
+    later. The extractor prompt has two flavors (`ExtractionInput`):
+    `CONVERSATION` for the discard pipeline (pinned byte-identical) and
+    `TEXT` for the import path (the `/api/eltm/import` entry point is
+    `MemoryExtractionService.processUserText`; shared body, no
+    conversation-only lines). The import route answers 201 Created with an
+    empty body — a pasted sentinel or an empty extraction is an
+    indistinguishable no-op success (no `recorded` flag).
   - Models: `memory.compactModel`, `memory.eltm.extractionModel/
     embeddingModel/writerModel/rewriteModel`, `agent.investigator.model`,
     and `title.model` are ALL REQUIRED, resolved once at boot by DI
@@ -390,12 +396,17 @@ frontend + Node/TS "hand-pi" service.
     (names + validity badge, lazy notes). Load-more pagination (100
     rows/page, oldest first); resync refetches the loaded window
     (appends survive, server-side shrinks shrink). Import tab (the manual
-    write path): a fact batch + optional fallback event date POSTed to
-    `POST /api/eltm/import` (blocked, minutes-long writer tool loop; 400
-    on blank facts/bad/future dates, the extractor's "Nothing worth
-    remember." sentinel = no-op 204, failed writer = 502 with the reason —
-    see `EltmRoute.kt`); a notice pins the required extractor-tone input
-    (the writer records verbatim).
+    write path): a piece of text (raw notes, prose, pre-digested facts) +
+    optional reference date POSTed to `POST /api/eltm/import`, which runs
+    `MemoryExtractionService.processUserText` (one synthetic message
+    anchored at the reference date — first-person pronouns → "the user",
+    relative dates resolve against it — then the writer tool loop on the
+    extracted facts; blocked, minutes are normal; 400 on blank text/bad/
+    future dates, success — including a pasted "Nothing worth remember."
+    sentinel (tolerant match) or an empty extraction, an indistinguishable
+    no-op — = 201 Created empty body, a failed stage = 502 with the reason
+    — see `EltmRoute.kt`); the draft clears and the lists resync on
+    success; a notice pins what the extraction stage does with the text.
   - Messages: user = plain-text pills (`whitespace-pre-wrap`); assistant
     = full-width markdown (marked + DOMPurify + highlight.js via
     `lib/markdown-renderer.ts`). Reasoning/tool parts in collapsible

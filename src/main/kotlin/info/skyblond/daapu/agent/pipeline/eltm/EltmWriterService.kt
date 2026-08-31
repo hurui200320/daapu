@@ -63,20 +63,31 @@ class EltmWriterService(
         /**
          * The writer's input: the current date plus the extracted facts
          * verbatim (the only source the writer may record — it must never
-         * invent details).
+         * invent details). The framing is input-neutral: the facts may come
+         * from a discarded conversation (the discard pipeline) or from
+         * caller-supplied text (the import path, see
+         * [MemoryExtractionService.processUserText]). The fence is
+         * FOUR backticks so a three-backtick run inside the facts (the
+         * extractor copies code content into facts) cannot break the
+         * enclosure.
          */
         internal fun buildWriterInput(facts: String, date: LocalDate): String {
             return "Current date: ${formatDate(date)}\n\n" +
-                    "Candidate facts extracted from a discarded conversation:\n```\n$facts\n```"
+                    "Candidate facts for long-term memory:\n````\n$facts\n````"
         }
 
         // the bare ISO date (yyyy-MM-dd): the model only needs the day resolution,
         // the zone has already been applied at the call site
         internal fun formatDate(date: LocalDate): String = date.toString()
 
-        private fun renderWriterSystemPrompt(): String = """
+        /**
+         * The writer's system prompt (shared by both write paths, see
+         * [buildWriterInput]): internal so the prompt pin in
+         * MemoryExtractionServiceTest can hold it byte-identical.
+         */
+        internal fun renderWriterSystemPrompt(): String = """
 You're maintaining an external long-term memory (ELTM) knowledge store.
-You are given candidate facts extracted from a discarded conversation. Preserve their information by writing it into the ELTM.
+You are given candidate facts for long-term memory. Preserve their information by writing it into the ELTM.
 
 The ELTM has four kinds of records:
 - Entities: a named thing with a category (e.g. name "Apple" with category "fruit" vs "company"). A group of people can be one entity.
@@ -86,6 +97,7 @@ The ELTM has four kinds of records:
 
 Rules:
 - Record only information explicitly present in the input. Never invent details.
+- If the input is only the skip sentinel "${MemoryExtractionService.NOTHING_TO_REMEMBER_TEXT}" (any casing or trivial rewording), there is nothing to record: reply with a short confirmation and make no tool calls.
 - "The user" maps to the canonical entity with name "user" (category "person").
 - When new entity should be created but without a defined name, include words like "unknown", "unspecified" in the name with some description. E.g. "unknown chinese company", or "unspecified female friend", etc.
 - Timeless structured facts about an entity (model, realname, nickname, serial numbers, etc.) are ATTRIBUTES (set_entity_attribute), not notes. Use notes only for dated events and narrative. Attribute values must be a single line. Before setting an attribute, check the entity's current attributes (search_entities renders them in the hits) and skip facts already recorded.

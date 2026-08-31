@@ -7,6 +7,7 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.chat.PostgresChatStore
+import info.skyblond.daapu.agent.context.ContextInjection
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
@@ -634,19 +635,23 @@ class WebServerTest : DbTestBase() {
     // ---- ELTM import route (`POST /api/eltm/import`, the manual write path) ----
 
     /**
-     * A fake hand dispatching on the writer's system prompt: the fact batch
-     * runs [info.skyblond.daapu.testutil.writerRunFlow] against [eltm] (one
-     * create_entity + add_entity_note round, executed through the real
-     * [info.skyblond.daapu.memory.eltm.EltmToolProvider], then the
-     * confirmation). The import endpoint never calls anything else, so any
-     * other request fails the test.
+     * A fake hand dispatching on the one-shot system prompts: the
+     * extraction one-shot answers [extraction] (the default echoes one
+     * ready-made fact, the way the real extractor normalizes the text),
+     * the writer runs [info.skyblond.daapu.testutil.writerRunFlow] against
+     * [eltm] (one create_entity + add_entity_note round, executed through
+     * the real [info.skyblond.daapu.memory.eltm.EltmToolProvider], then
+     * the confirmation). The import endpoint never calls anything else, so
+     * any other request fails the test.
      */
     private fun importHand(
         eltm: EltmService,
+        extraction: suspend (HandRunRequest) -> List<HandEvent> = { textRunFlow("likes coffee") },
         writer: suspend (HandRunRequest) -> List<HandEvent> = { writerRunFlow(eltm) },
     ) = FakeHand(
         runScript = { request ->
             when {
+                request.systemPrompt?.startsWith("You're extracting") == true -> extraction(request)
                 request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
                     writer(request)
 
@@ -655,10 +660,10 @@ class WebServerTest : DbTestBase() {
         },
     )
 
-    private fun importBody(facts: String, date: String? = null): String =
+    private fun importBody(text: String, date: String? = null): String =
         buildString {
-            append("""{"facts":""")
-            append(json.encodeToString(facts))
+            append("""{"text":""")
+            append(json.encodeToString(text))
             if (date != null) {
                 append(""","date":""")
                 append(json.encodeToString(date))
@@ -667,14 +672,14 @@ class WebServerTest : DbTestBase() {
         }
 
     @Test
-    fun `eltm import rejects a blank fact batch with 400`() {
+    fun `eltm import rejects a blank text with 400`() {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
             listOf(
                 """{}""",
-                """{"facts":""}""",
-                """{"facts":"   "}""",
+                """{"text":""}""",
+                """{"text":"   "}""",
             ).forEach { body ->
                 val response = client.post("/api/eltm/import") {
                     contentType(ContentType.Application.Json)
@@ -683,7 +688,7 @@ class WebServerTest : DbTestBase() {
                 assertEquals(HttpStatusCode.BadRequest, response.status, "body: $body")
             }
         }
-        assertTrue(hand.requests.isEmpty(), "a rejected batch must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "a rejected text must not call the LLM")
     }
 
     @Test
@@ -707,7 +712,7 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import writes the fact batch through the ELTM writer`() {
+    fun `eltm import extracts the text and writes the facts through the ELTM writer`() {
         val eltm = testPostgresEltmService(FakeHand())
         val hand = importHand(eltm)
         testApplication {
@@ -718,14 +723,33 @@ class WebServerTest : DbTestBase() {
             val before = LocalDate.now()
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("User likes coffee"))
+                setBody(importBody("I like coffee"))
             }
             val after = LocalDate.now()
-            assertEquals(HttpStatusCode.NoContent, response.status)
-            assertEquals(1, hand.requests.size, "one writer run")
+            assertEquals(HttpStatusCode.Created, response.status)
+            assertEquals("", response.bodyAsText(), "201 Created carries no body")
+            assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
+            assertTrue(
+                hand.requests[0].systemPrompt!!.startsWith("You're extracting memories from a piece of text"),
+                "the import extraction uses the text-flavored prompt: ${hand.requests[0].systemPrompt}",
+            )
+            // the extraction one-shot received the text as ONE user message
+            // carrying its reference-date anchor (relative dates resolve
+            // against it), followed by the extraction instruction
+            val extractionMessages = hand.requests[0].messages
+            assertEquals(2, extractionMessages.size, "the synthetic text message + the extraction instruction")
+            assertTrue(
+                ContextInjection().hasMetaPart(extractionMessages[0]),
+                "the synthetic message carries its reference-date anchor",
+            )
+            assertEquals(
+                listOf(ChatMessagePart.Text("I like coffee")),
+                extractionMessages[0].parts.drop(1),
+                "the anchor is prepended, the text untouched",
+            )
             // no explicit date: the writer input carries the server's today
             // (the same default the extraction pipeline writes with)
-            val input = hand.requests[0].messages.single().parts
+            val input = hand.requests[1].messages.single().parts
                 .filterIsInstance<ChatMessagePart.Text>().single().text
             val inputDate = LocalDate.parse(
                 Regex("Current date: (\\d{4}-\\d{2}-\\d{2})").find(input)!!.groupValues[1]
@@ -734,6 +758,10 @@ class WebServerTest : DbTestBase() {
                 inputDate in before..after,
                 "the absent date must default to the server's today (got $inputDate)",
             )
+            assertTrue(
+                input.contains("likes coffee"),
+                "the writer receives the extractor's output, not the raw text: $input",
+            )
         }
         // the writer run landed the fact in the ELTM diary
         val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
@@ -741,10 +769,13 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import passes the optional event date to the writer`() {
+    fun `eltm import anchors the extraction at the optional date while the writer stamps today`() {
         val eltm = testPostgresEltmService(FakeHand())
-        // the scripted writer reads the date off its input the way the real
-        // model does, so the recorded note stamps the date the request sent
+        // the scripted writer reads the "current date" off its input the
+        // way the real model does, so the recorded note stamps the write
+        // day: the reference date only anchors the extraction — the writer
+        // always writes with the server's today (the same write day the
+        // discard pipeline uses)
         val hand = importHand(
             eltm,
             writer = { request ->
@@ -754,35 +785,107 @@ class WebServerTest : DbTestBase() {
                 writerRunFlow(eltm, date = date)
             },
         )
+        val before = LocalDate.now()
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("User likes coffee", date = "2026-01-01"))
+                setBody(importBody("I like coffee", date = "2026-01-01"))
             }
-            assertEquals(HttpStatusCode.NoContent, response.status)
+            assertEquals(HttpStatusCode.Created, response.status)
+            // the reference date also anchors the synthetic text message, so
+            // the extractor resolves the text's relative dates against it
+            // (start of day, rendered in the server's zone)
+            val anchor = hand.requests[0].messages[0].parts.first() as ChatMessagePart.Text
+            assertTrue(
+                anchor.text.contains("2026-01-01T00:00:00"),
+                "the synthetic message is anchored at the reference date: ${anchor.text}",
+            )
+            // the writer's "current date" is the server's today — never the
+            // reference date (whose event dates must not run ahead of the
+            // write day)
+            val writerInput = hand.requests[1].messages.single().parts
+                .filterIsInstance<ChatMessagePart.Text>().single().text
+            val writeDate = LocalDate.parse(
+                Regex("Current date: (\\d{4}-\\d{2}-\\d{2})").find(writerInput)!!.groupValues[1]
+            )
+            assertTrue(
+                !writeDate.isBefore(before) && !writeDate.isAfter(LocalDate.now()),
+                "the writer must write with the server's today (got $writeDate, not the reference date)",
+            )
         }
-        assertEquals(
-            "2026-01-01",
-            runBlocking { TestDb.allEltmNotes().single().eventDate }.toString(),
-            "the writer received the request's date",
+        // the scripted writer stamped the note with the write day it read
+        // off its input — never the past reference date
+        val noteDate = runBlocking { TestDb.allEltmNotes().single().eventDate }
+        assertTrue(
+            !noteDate.isBefore(before) && !noteDate.isAfter(LocalDate.now()),
+            "the note must stamp the write day (the server's today), got $noteDate",
         )
     }
 
     @Test
-    fun `eltm import treats the extraction sentinel as an empty batch`() {
+    fun `eltm import no-ops a pasted skip sentinel without an LLM call`() {
         val eltm = testPostgresEltmService(FakeHand())
         val hand = importHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            // the exact sentence and a casing/punctuation near-miss both hit
+            // the tolerant input fast path (MemoryExtractionService
+            // .isNothingToRemember, via processUserText) without any LLM
+            // call, answered by the same 201 as a real import
+            listOf("Nothing worth remember.", "nothing worth remember").forEach { paste ->
+                val response = client.post("/api/eltm/import") {
+                    contentType(ContentType.Application.Json)
+                    setBody(importBody(paste))
+                }
+                assertEquals(HttpStatusCode.Created, response.status, "paste: $paste")
+            }
+        }
+        assertTrue(hand.requests.isEmpty(), "the sentinel fast path makes no LLM call")
+        assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "the sentinel itself must never be recorded")
+    }
+
+    @Test
+    fun `eltm import no-ops when the extractor finds nothing worth remembering`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = importHand(
+            eltm,
+            extraction = { textRunFlow("Nothing worth remember.") },
+            writer = { error("the writer must not run for an empty extraction") },
+        )
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("Nothing worth remember."))
+                setBody(importBody("we just chatted about the weather"))
             }
-            assertEquals(HttpStatusCode.NoContent, response.status)
+            assertEquals(HttpStatusCode.Created, response.status)
         }
-        assertTrue(hand.requests.isEmpty(), "the sentinel is a no-op, no LLM call")
-        assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "the sentinel itself must never be recorded")
+        assertEquals(1, hand.requests.size, "only the extraction one-shot happened")
+        assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "an empty extraction must not write the ELTM")
+    }
+
+    @Test
+    fun `eltm import no-ops a near-miss extraction sentinel without the writer`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = importHand(
+            eltm,
+            // a casing-variant near-miss of the sentinel: the post-extraction
+            // check (MemoryExtractionService.processUserText) must be
+            // tolerant too
+            extraction = { textRunFlow("NOTHING WORTH REMEMBER.") },
+            writer = { error("the writer must not run for an empty extraction") },
+        )
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            val response = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(importBody("we just chatted about the weather"))
+            }
+            assertEquals(HttpStatusCode.Created, response.status)
+        }
+        assertEquals(1, hand.requests.size, "only the extraction one-shot happened")
+        assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "an empty extraction must not write the ELTM")
     }
 
     @Test
@@ -796,7 +899,7 @@ class WebServerTest : DbTestBase() {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("User likes coffee"))
+                setBody(importBody("I like coffee"))
             }
             assertEquals(HttpStatusCode.BadGateway, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -806,6 +909,30 @@ class WebServerTest : DbTestBase() {
             assertTrue(error.contains("provider exploded"), "error: $error")
         }
         assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "a failed writer must not record anything")
+    }
+
+    @Test
+    fun `eltm import surfaces a failed extraction as 502 with the reason`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = importHand(
+            eltm,
+            extraction = { errorRunFlow("upstream", "provider exploded") },
+        )
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            val response = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(importBody("I like coffee"))
+            }
+            assertEquals(HttpStatusCode.BadGateway, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            val error = body["error"]?.jsonPrimitive?.content
+            assertNotNull(error)
+            assertTrue(error.startsWith("Memory extraction failed"), "error: $error")
+            assertTrue(error.contains("provider exploded"), "error: $error")
+        }
+        assertEquals(1, hand.requests.size, "only the extraction one-shot happened")
+        assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "a failed extraction must not record anything")
     }
 
     @Test

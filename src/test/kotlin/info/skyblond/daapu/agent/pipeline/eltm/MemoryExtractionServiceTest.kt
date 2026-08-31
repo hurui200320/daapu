@@ -20,6 +20,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.time.Instant
+import java.time.LocalDate
 import kotlin.test.*
 
 /**
@@ -28,7 +29,10 @@ import kotlin.test.*
  * ELTM writer tool loop that records the extracted facts into the diary
  * directly — the sentinel skip, the fail-fast capability check, and the
  * failure semantics that must fail the run instead of silently losing
- * memories (a retry re-extracts and the writer deduplicates).
+ * memories (a retry re-extracts and the writer deduplicates). Also pins
+ * [MemoryExtractionService.processUserText], the `/api/eltm/import` entry
+ * point running the same extractor over one synthetic anchored message
+ * before writing.
  */
 class MemoryExtractionServiceTest : DbTestBase() {
 
@@ -161,6 +165,216 @@ class MemoryExtractionServiceTest : DbTestBase() {
         extractor.processDiscardedMessages(listOf(userMessage("u1")))
         assertEquals(1, hand.requests.size, "only the extractor run happened")
         assertTrue(TestDb.allEltmNotes().isEmpty(), "a skipped extraction must not write the ELTM")
+    }
+
+    @Test
+    fun `isNothingToRemember tolerates casing punctuation and whitespace runs`() {
+        // the tolerant sentinel match (see MemoryExtractionService
+        // .isNothingToRemember): a near-miss must not reach the writer as a
+        // fact batch
+        assertTrue(MemoryExtractionService.isNothingToRemember("Nothing worth remember."))
+        assertTrue(MemoryExtractionService.isNothingToRemember("nothing worth remember"))
+        assertTrue(MemoryExtractionService.isNothingToRemember("  NOTHING  WORTH REMEMBER.  "))
+        assertTrue(MemoryExtractionService.isNothingToRemember("Nothing worth remember!"))
+        // a paraphrase is not the sentinel: the writer's skip-sentinel rule
+        // is the backstop for those
+        assertFalse(MemoryExtractionService.isNothingToRemember("Nothing worth remembering."))
+        assertFalse(MemoryExtractionService.isNothingToRemember("User likes coffee"))
+        assertFalse(MemoryExtractionService.isNothingToRemember("The note says \"Nothing worth remember.\""))
+    }
+
+    @Test
+    fun `the discard skip tolerates a near-miss sentinel variant`() = runBlocking {
+        val hand = FakeHand(
+            runScript = { textRunFlow("NOTHING WORTH REMEMBER") },
+        )
+        val eltm = testPostgresEltmService(FakeHand())
+        val extractor = service(hand, eltm)
+        extractor.processDiscardedMessages(listOf(userMessage("u1")))
+        assertEquals(1, hand.requests.size, "the near-miss sentinel still skips the writer")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a near-miss sentinel must not write the ELTM")
+    }
+
+    @Test
+    fun `the conversation extractor prompt is pinned byte-identical for the discard path`() {
+        // the discard pipeline's extraction must never drift with
+        // import-path changes: editing this literal is a conscious change
+        // to the discard path
+        assertEquals(
+            """
+You're extracting memories from a discarded conversation.
+Extract **all** important information from the conversation history into a list of self-contained facts suitable for long-term memory.
+
+Every user message opens with a <meta><sent-at>...</sent-at></meta> marker carrying that message's send time.
+Resolve every relative date or time ("today", "last week", "in two months") against the send time of the message that contains it.
+The messages can be much older than the moment of extraction, so never resolve against "now".
+Assistant messages carry no marker: they reply immediately after the preceding user message.
+Write absolute dates in the facts: "User went to Paris last week" is useless 6 months later; "User went to Paris the week of May 15, 2026" is meaningful forever.
+
+Focus on:
+- The user's preferences, likes, dislikes, and personal details
+- Plans, goals, pending tasks, and unresolved questions
+- Decisions and constraints
+- Facts about people, projects, and entities: keep names, numbers, ids, and values verbatim
+- Transitions: "switched from X to Y because Z" is more valuable than "uses Y"
+- Anything a future conversation would need to know
+
+Rules:
+- Each fact must be self-contained: replace pronouns with the entity name or "the user"
+- Rich, not atomic: one fact may span 1-3 sentences when the context matters, but keep it under ~80 words
+- Write facts in the same language as the conversation
+- Do not invent details that are not present in the history
+- Merge overlapping information into one fact
+- Cover the whole conversation, not just the first topic
+- Do not extract the assistant restating what the user said as a new fact (echo extraction)
+- Extract the content of documents or code the user shared, not "the user shared a document" (meta extraction)
+- When nothing is worth remembering, output sentence "Nothing worth remember."
+""".trimIndent().trim(),
+            MemoryExtractionService.renderExtractorSystemPrompt(ExtractionInput.CONVERSATION),
+        )
+    }
+
+    @Test
+    fun `the writer system prompt is pinned byte-identical for both write paths`() {
+        // the writer serves BOTH write paths (the discard pipeline and the
+        // import route): editing this literal is a conscious change to both,
+        // the same drift guard the extractor prompt's pin above provides
+        assertEquals(
+            """
+You're maintaining an external long-term memory (ELTM) knowledge store.
+You are given candidate facts for long-term memory. Preserve their information by writing it into the ELTM.
+
+The ELTM has four kinds of records:
+- Entities: a named thing with a category (e.g. name "Apple" with category "fruit" vs "company"). A group of people can be one entity.
+- Relationships: a directed edge (source entity, verb, destination entity). Use consistent, general, timeless verbs: "colleague_of", not "became_colleague_of". Create or fetch them with create_relationship; their validity (active/ended) only changes through a diary note (add_relationship_note's valid flag).
+- Attributes: structured key-value facts about ONE entity: its current-state identity (e.g. a person's realname and nickname, a device's model). One value per (entity, key): setting the same key again overwrites. They are embedded with the entity, so facts are semantically searchable.
+- Notes: dated diary entries attached to exactly ONE entity or ONE relationship. Dated narrative events and descriptions live here. You should ONLY attach a note to a relationship if the event is related to both the entities AND the verb.
+
+Rules:
+- Record only information explicitly present in the input. Never invent details.
+- If the input is only the skip sentinel "Nothing worth remember." (any casing or trivial rewording), there is nothing to record: reply with a short confirmation and make no tool calls.
+- "The user" maps to the canonical entity with name "user" (category "person").
+- When new entity should be created but without a defined name, include words like "unknown", "unspecified" in the name with some description. E.g. "unknown chinese company", or "unspecified female friend", etc.
+- Timeless structured facts about an entity (model, realname, nickname, serial numbers, etc.) are ATTRIBUTES (set_entity_attribute), not notes. Use notes only for dated events and narrative. Attribute values must be a single line. Before setting an attribute, check the entity's current attributes (search_entities renders them in the hits) and skip facts already recorded.
+- Before creating an entity, call search_entities to find existing ones. create_entity returns near matches: if one of them is the same thing, use that id; if you discover true duplicates, call merge_entities with the better-canonical entity as winner_id. To refine an EXISTING entity's identity (e.g. a placeholder "friend" now identified as "Alice", or a re-categorization), call refine_entity with its id and the new name and/or category: the entity keeps its id, so its notes, relationships and attributes stay attached. Only merge when two entities are true duplicates.
+- A note belongs to exactly one subject. An event about a relationship (met, broke up, started working together) attaches to that relationship. An event about one entity attaches to that entity. It may mention other entities by name in the text, but must NOT be duplicated under each of them.
+- Notes are add-only. To correct or supersede older information, add a NEW note with the current fact and its date. If a relationship no longer holds, add a note to it explaining the ending and pass valid=false; if a previously-ended relationship holds again (e.g. rejoined the company), add a note about the new event and pass valid=true. Only change validity on genuine endings.
+- Before adding a note about a subject, check its recent notes with get_entity_notes / get_relationship_notes (or search_notes to find already-recorded content) and skip content that is already recorded: a retried run must not duplicate diary entries.
+- event_date is the absolute date the event happened (YYYY-MM-DD); use today's date when unknown.
+- Keep notes self-contained and concise (3-5 sentences; names, numbers, and ids verbatim). If add_entity_note or add_relationship_note fails with a "too large" embedding error, split the content into several smaller notes.
+- When everything is recorded, reply with a short confirmation and make no further tool calls.
+""".trimIndent().trim(),
+            EltmWriterService.renderWriterSystemPrompt(),
+        )
+    }
+
+    @Test
+    fun `the text extractor prompt describes one provided text without conversation-only rules`() {
+        val prompt = MemoryExtractionService.renderExtractorSystemPrompt(ExtractionInput.TEXT)
+        // the fake-hand dispatch prefix (see the pipeline tests) must hold
+        assertTrue(
+            prompt.startsWith("You're extracting memories from a piece of text the user provided"),
+            prompt,
+        )
+        // the anchor mechanics stay, reworded for a single text
+        assertTrue(prompt.contains("<meta><sent-at>"), prompt)
+        assertTrue(prompt.contains("the text's reference time"), prompt)
+        assertTrue(prompt.contains("never resolve against \"now\""), prompt)
+        // the input-neutral focus list and fact rules survive verbatim
+        assertTrue(prompt.contains("Focus on:"), prompt)
+        assertTrue(prompt.contains("replace pronouns with the entity name or \"the user\""), prompt)
+        assertTrue(prompt.contains("same language as the text"), prompt)
+        assertTrue(prompt.contains("Cover the whole text"), prompt)
+        assertTrue(
+            prompt.contains(
+                "When nothing is worth remembering, output sentence " +
+                        "\"${MemoryExtractionService.NOTHING_TO_REMEMBER_TEXT}\""
+            ),
+            prompt,
+        )
+        // the conversation-only lines are gone
+        assertFalse(prompt.contains("discarded conversation"), prompt)
+        assertFalse(prompt.contains("Assistant messages"), prompt)
+        assertFalse(prompt.contains("echo extraction"), prompt)
+    }
+
+    @Test
+    fun `processUserText anchors the text as one synthetic user message at the reference date`() = runBlocking {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = FakeHand(
+            runScript = { request ->
+                when {
+                    request.systemPrompt?.startsWith("You're extracting") == true -> textRunFlow("User likes coffee")
+                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
+                        writerRunFlow(eltm)
+
+                    else -> error("unexpected run: ${request.systemPrompt}")
+                }
+            },
+        )
+        val extractor = service(hand, eltm)
+        extractor.processUserText("I like coffee", LocalDate.parse("2026-01-01"))
+
+        assertEquals(2, hand.requests.size, "extractor run + one writer run")
+        assertTrue(
+            hand.requests[0].systemPrompt!!.startsWith("You're extracting memories from a piece of text"),
+            "the import extraction uses the text-flavored prompt: ${hand.requests[0].systemPrompt}",
+        )
+        // the extraction one-shot received the text as ONE user message
+        // carrying its reference-date anchor (relative dates resolve
+        // against it), followed by the extraction instruction
+        val messages = hand.requests[0].messages
+        assertEquals(2, messages.size, "the synthetic text message + the extraction instruction")
+        val contextInjection = ContextInjection()
+        assertTrue(
+            contextInjection.hasMetaPart(messages[0]),
+            "the synthetic message carries its reference-date anchor",
+        )
+        val anchor = messages[0].parts.first() as ChatMessagePart.Text
+        assertTrue(
+            anchor.text.contains("2026-01-01T00:00:00"),
+            "the anchor renders the reference date at start of day (server zone): ${anchor.text}",
+        )
+        assertEquals(
+            listOf(ChatMessagePart.Text("I like coffee")),
+            messages[0].parts.drop(1),
+            "the anchor is prepended, the text untouched",
+        )
+        // the extracted facts reach the writer and land in the ELTM diary
+        assertTrue(
+            (hand.requests[1].messages.single().parts.single() as ChatMessagePart.Text)
+                .text.contains("User likes coffee"),
+            "the writer receives the extractor's output",
+        )
+        assertTrue(
+            TestDb.allEltmNotes().map { it.note }.contains("likes coffee"),
+            "the extracted fact must be recorded into the ELTM diary",
+        )
+    }
+
+    @Test
+    fun `processUserText skips the writer when the extraction answers the sentinel`() = runBlocking {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = FakeHand(runScript = { textRunFlow("Nothing worth remember.") })
+        val extractor = service(hand, eltm)
+        extractor.processUserText("we just chatted about the weather", LocalDate.parse("2026-01-01"))
+        assertEquals(1, hand.requests.size, "only the extractor run happens")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a sentinel extraction must not write the ELTM")
+    }
+
+    @Test
+    fun `processUserText no-ops a blank or pasted-sentinel text without an LLM call`() = runBlocking {
+        val hand = FakeHand(runScript = { error("the LLM must not be called") })
+        val extractor = service(hand)
+        // a blank text (the route 400s first; the service guards
+        // defensively) and a pasted sentinel — exact or near-miss, the
+        // tolerant match (see MemoryExtractionService.isNothingToRemember)
+        // — are all silent no-ops without any LLM call
+        extractor.processUserText("   ", LocalDate.parse("2026-01-01"))
+        extractor.processUserText("Nothing worth remember.", LocalDate.parse("2026-01-01"))
+        extractor.processUserText("nothing worth remember", LocalDate.parse("2026-01-01"))
+        assertTrue(hand.requests.isEmpty(), "no LLM call for a blank text or a pasted sentinel")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a no-op import must not write the ELTM")
     }
 
     @Test

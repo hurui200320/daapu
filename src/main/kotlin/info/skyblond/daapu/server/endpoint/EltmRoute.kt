@@ -1,6 +1,5 @@
 package info.skyblond.daapu.server.endpoint
 
-import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
 import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.server.EltmImportRequest
@@ -27,26 +26,30 @@ private const val DEFAULT_ELTM_PAGE_LIMIT = 100
 private const val MAX_ELTM_PAGE_LIMIT = 500
 
 /**
- * A terminal failure of the ELTM writer run behind `POST /api/eltm/import`
- * ([EltmWriterService.writeToEltm] threw its [IllegalStateException]).
- * Mapped to 502 with the real failure reason (WebServer's StatusPages) —
- * the importer is interactively waiting and must know why the write failed
- * (an upstream error, the writer round cap, ...) to decide on a retry;
- * whatever the writer already recorded sticks (it deduplicates on retry).
- * [cause] carries the writer's exception for the server-side log only:
- * the response body renders the message chain, not the stack.
+ * A terminal failure of the ELTM import behind `POST /api/eltm/import`:
+ * the extraction one-shot or the writer run inside
+ * [MemoryExtractionService.processUserText] threw its
+ * [IllegalStateException]. Mapped to 502 with the real failure reason
+ * (WebServer's StatusPages) — the importer is interactively waiting and
+ * must know why the import failed (an upstream error, the writer round
+ * cap, ...) to decide on a retry; whatever the writer already recorded
+ * sticks (it deduplicates on retry). [cause] carries the stage's exception
+ * for the server-side log only: the response body renders the message
+ * chain, not the stack.
  */
-class EltmWriteException(message: String, cause: Throwable) : RuntimeException(message, cause)
+class EltmImportException(message: String, cause: Throwable) : RuntimeException(message, cause)
 
 /**
  * The `/api/eltm` routes: the browse-only reads over [EltmService] plus the
- * ONE write endpoint, `POST /import`, feeding a caller-supplied fact batch
- * through [eltmWriterService] (the same writer the extraction pipeline
- * uses; the ELTM is otherwise written only by that pipeline).
+ * ONE write endpoint, `POST /import`, feeding caller-supplied text through
+ * [memoryExtractionService] (both the extraction one-shot and the writer
+ * run inside [MemoryExtractionService.processUserText]; the same
+ * extractor/writer pair the discard pipeline uses — the ELTM is otherwise
+ * written only by that pipeline).
  */
 fun Route.registerEltmEndpoints(
     eltmService: EltmService,
-    eltmWriterService: EltmWriterService,
+    memoryExtractionService: MemoryExtractionService,
 ) {
     route("/eltm") {
         get("/entities") {
@@ -133,21 +136,33 @@ fun Route.registerEltmEndpoints(
                     .map { it.toDto() }
             )
         }
-        // the manual write path: a caller-supplied fact batch (the memory
-        // extractor's output tone — the writer records verbatim) through the
-        // ELTM writer tool loop. The request blocks for the whole loop
+        // the manual write path: caller-supplied text (raw notes, prose or
+        // pre-digested facts) runs through
+        // MemoryExtractionService.processUserText — the memory extraction
+        // one-shot first (first-person pronouns → "the user", relative
+        // dates resolve against `date`/today), then the extractor's fact
+        // batch goes through the ELTM writer tool loop exactly like the
+        // discard pipeline's does. The request blocks for both stages
         // (minutes are normal; the same blocking-LLM precedent as
-        // deleteChat's extraction). No chat lock: nothing here touches the
-        // chats table, and the ELTM store already tolerates the extraction
-        // pipeline's concurrent writers (the writer deduplicates recorded
-        // content, so a retry after a failure never duplicates entries).
-        // Accepted PoC limits, the same stance as the rest of this API's
-        // request bodies: no size cap on `facts` and no import concurrency
-        // limit (each import is one minutes-long writer loop).
+        // deleteChat's extraction). No chat lock: nothing here touches
+        // the chats table, and the ELTM store already tolerates the
+        // extraction pipeline's concurrent writers (the writer deduplicates
+        // recorded content, so a retry after a failure never duplicates
+        // entries). Response: 201 Created with an EMPTY body — a pasted
+        // skip sentinel or an empty extraction is an indistinguishable
+        // no-op success (there is no recorded flag; a terminal stage
+        // failure is the 502 EltmImportException instead). Accepted PoC
+        // limits, the same stance as the rest of this API's request
+        // bodies: no size cap on `text` and no import concurrency limit
+        // (each import is one extraction one-shot plus one minutes-long
+        // writer loop).
         post("/import") {
             val request = call.receive<EltmImportRequest>()
-            val facts = request.facts.trim()
-            if (facts.isEmpty()) throw BadRequestException("facts must not be blank")
+            val text = request.text.trim()
+            if (text.isEmpty()) throw BadRequestException("text must not be blank")
+            // "today" bound once: the future-date guard below and the default
+            // reference date must agree even if the request straddles midnight
+            val today = LocalDate.now()
             val date = request.date?.let { raw ->
                 try {
                     LocalDate.parse(raw)
@@ -155,24 +170,23 @@ fun Route.registerEltmEndpoints(
                     throw BadRequestException("date must be YYYY-MM-DD")
                 }
             }
-            // the notes' event dates never run ahead of the write day (the
-            // extraction pipeline writes its own `LocalDate.now()`)
-            if (date != null && date.isAfter(LocalDate.now())) {
+            // the reference date only anchors the extraction: a future one
+            // would resolve the text's relative dates against a future
+            // time and bake future absolute dates into the facts (the
+            // notes' event dates are always the write day, regardless of
+            // the request's `date`)
+            if (date != null && date.isAfter(today)) {
                 throw BadRequestException("date must not be in the future")
             }
-            // the extractor's skip sentinel is not a fact batch: record it
-            // verbatim and the diary would grow a "Nothing worth remember."
-            // note — answer the empty batch with the same 204, no LLM call
-            if (facts == MemoryExtractionService.NOTHING_TO_REMEMBER_TEXT) {
-                call.respond(HttpStatusCode.NoContent)
-                return@post
-            }
             try {
-                eltmWriterService.writeToEltm(facts, date ?: LocalDate.now())
+                val referenceDate = date ?: today
+                memoryExtractionService.processUserText(text, referenceDate)
             } catch (e: IllegalStateException) {
-                throw EltmWriteException(failureChainMessages(e).joinToString("\nCaused by: "), e)
+                throw EltmImportException(failureChainMessages(e).joinToString("\nCaused by: "), e)
             }
-            call.respond(HttpStatusCode.NoContent)
+            // 201 Created with an empty body — see the route comment above
+            // for the no-op/failure semantics
+            call.respond(HttpStatusCode.Created)
         }
     }
 }

@@ -6,7 +6,7 @@
     getEntityNotes,
     getEntityRelationships,
     getRelationshipNotes,
-    importEltmFacts,
+    importEltmText,
     listEntities,
     listRelationships,
   } from '../api'
@@ -118,28 +118,24 @@
     }
   }
 
-  // ---- Import tab (the manual write path): a caller-supplied fact batch
-  // fed straight into the ELTM writer agent. The request blocks for the
-  // whole writer tool loop (minutes are normal), so the form is its own
-  // state machine — `importing` disables everything and the busy label
-  // explains the wait. Lives in the always-mounted view, so the draft
-  // survives switching tabs/chats mid-write.
-  let facts = $state('')
+  // ---- Import tab (the manual write path): a caller-supplied piece of
+  // text run through the memory extraction one-shot and then the ELTM
+  // writer agent. The request blocks for both stages (minutes are normal),
+  // so the form is its own state machine — `importing` disables everything
+  // and the busy label explains the wait. Lives in the always-mounted
+  // view, so the draft survives switching tabs/chats mid-write.
+  let text = $state('')
   let importDate = $state('')
   let importing = $state(false)
   let importError = $state<string | null>(null)
   let importSuccess = $state(false)
-  // true when the batch was the extractor's skip sentinel: the server
-  // no-ops it with the same 204 as a successful write, so only the caller
-  // can tell them apart and the banner must not claim facts were written
-  let importNoop = $state(false)
 
   // the extractor's skip sentinel (MemoryExtractionService.kt owns the
-  // canonical value): the server no-ops a batch that is EXACTLY this
-  // sentence
+  // canonical value and the tolerant match, isNothingToRemember): the
+  // server no-ops a text matching this sentence without any LLM call
   const NOTHING_TO_REMEMBER = 'Nothing worth remember.'
 
-  // the fallback date picker's ceiling: the browser's local today, rendered
+  // the reference date picker's ceiling: the browser's local today, rendered
   // the way the backend parses it (YYYY-MM-DD, see EltmRoute.kt). Page-load
   // time only — the server's future-date 400 stays the authority.
   const TODAY = (() => {
@@ -149,35 +145,35 @@
     return `${d.getFullYear()}-${mm}-${dd}`
   })()
 
-  // two example facts, in the extractor's tone — the shape the textarea
-  // should be filled with (see the notice above it)
-  const FACTS_PLACEHOLDER =
-    'User went to Paris the week of May 15, 2026 for a work conference.\n' +
-    'User switched from editor A to editor B because of plugin compatibility.'
+  // two snippets of casual first-person notes — the shape the textarea
+  // encourages (any prose works; see the notice above it)
+  const TEXT_PLACEHOLDER =
+    'I went to Paris the week of May 15, 2026 for a work conference. It was amazing!\n' +
+    'Also, I switched from editor A to editor B yesterday because of plugin compatibility.'
 
   async function submitImport() {
     if (importing) return
-    const batch = facts.trim()
+    const batch = text.trim()
     if (batch.length === 0) return
     importing = true
     importError = null
     importSuccess = false
-    importNoop = false
     try {
-      // no date = the server's today (the same default the extraction
-      // pipeline writes with)
-      await importEltmFacts(batch, importDate || undefined)
-      // the batch is consumed; the optional fallback date deliberately
-      // stays — a same-day follow-up batch is the common case
-      facts = ''
-      importNoop = batch === NOTHING_TO_REMEMBER
-      importSuccess = !importNoop
-      // the browse lists pick up the new records via the background resync
+      // no date = the server's today as the reference date (it only
+      // anchors the extraction — the writer always stamps the import day)
+      await importEltmText(batch, importDate || undefined)
+      importSuccess = true
+      // the server no longer reports whether anything was recorded (the
+      // response is a bare 201): a no-op (a pasted sentinel or an empty
+      // extraction) is an indistinguishable success, so the draft always
+      // clears. The optional reference date deliberately stays — a
+      // same-day follow-up import is the common case.
+      // The browse lists pick up the new records via the background resync
       // path: unlike refresh() it keeps the loaded pages and the expanded
       // cards' drill-downs (a from-scratch load would collapse them back to
-      // page 1) and leaves the lists untouched when a fetch fails. The
-      // sentinel no-op changed nothing — skip it.
-      if (!importNoop) await resync()
+      // page 1) and leaves the lists untouched when a fetch fails.
+      text = ''
+      await resync()
     } catch (e) {
       importError = errMsg(e)
     } finally {
@@ -415,34 +411,34 @@
         </div>
       {/if}
 
-      {#if importNoop}
+      {#if importSuccess}
         <div class="rounded-lg border border-border/30 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          Empty batch — "{NOTHING_TO_REMEMBER}" records nothing; the store is unchanged.
-        </div>
-      {:else if importSuccess}
-        <div class="rounded-lg border border-border/30 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          Facts written to the ELTM — check the Entities and Relationships tabs for the new records.
+          Import finished — new records, if any, are on the Entities and Relationships tabs.
         </div>
       {/if}
 
-      <!-- The notice: the endpoint feeds the text straight into the ELTM
-           writer agent, which records it verbatim (it never rewrites), so
-           the batch must arrive in the memory extractor's output tone. -->
+      <!-- The notice: the endpoint runs the text through the memory
+           extraction one-shot and then the ELTM writer agent (see
+           EltmRoute.kt), so any prose works — the notice pins what the
+           extraction stage does with it. -->
       <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
         <div class="flex items-start gap-2">
           <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div class="min-w-0 text-sm text-muted-foreground">
             <p>
-              Import feeds your text straight into the ELTM writer agent, which records it into the store. It expects
-              fact batches in the same tone the memory extractor produces — the writer records verbatim and never
-              rewrites or invents details:
+              Import runs your text through the memory extractor, then the ELTM writer agent records the extracted facts
+              into the store. You can paste general text, raw notes, or summarized facts:
             </p>
             <ul class="mt-2 list-disc space-y-1 pl-5">
-              <li>One fact per line, self-contained: replace pronouns with entity names or "the user"</li>
-              <li>Absolute dates ("the week of May 15, 2026"), never relative ones ("last week")</li>
-              <li>1–3 sentences per fact, under ~80 words; merge overlapping information</li>
-              <li>Same language as the source conversation; only facts that are actually true</li>
-              <li>A batch that is exactly "{NOTHING_TO_REMEMBER}" is treated as empty (no-op)</li>
+              <li>First-person pronouns ("I", "my") are automatically mapped to "the user"</li>
+              <li>Entities, relationships, and diary notes are extracted and recorded automatically</li>
+              <li>Provide clear context and absolute dates ("the week of May 15, 2026") when possible</li>
+              <li>Relative dates ("yesterday") resolve against the reference date below, or today when none is set</li>
+              <li>
+                The reference date only anchors the extraction — the recorded notes are always dated the day of the
+                import
+              </li>
+              <li>A text that is just "{NOTHING_TO_REMEMBER}" is treated as empty (no-op)</li>
             </ul>
           </div>
         </div>
@@ -451,13 +447,13 @@
       <div class="flex flex-col gap-3">
         <textarea
           class="min-h-40 w-full resize-y whitespace-pre-wrap break-words rounded-xl border border-border/30 bg-background/60 p-3 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
-          aria-label="Facts to import"
-          placeholder={FACTS_PLACEHOLDER}
-          bind:value={facts}
+          aria-label="Text to import"
+          placeholder={TEXT_PLACEHOLDER}
+          bind:value={text}
           disabled={importing}></textarea>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <label class="flex items-center gap-2 text-xs text-muted-foreground">
-            Fallback event date (optional)
+            Reference date (optional)
             <input
               type="date"
               class="rounded-md border border-border/30 bg-background/60 px-2 py-1 text-sm disabled:opacity-50"
@@ -466,7 +462,7 @@
               disabled={importing}
             />
           </label>
-          <Button size="sm" disabled={importing || facts.trim().length === 0} onclick={() => void submitImport()}>
+          <Button size="sm" disabled={importing || text.trim().length === 0} onclick={() => void submitImport()}>
             {importing ? 'Writing to the ELTM… this can take a while' : 'Import'}
           </Button>
         </div>

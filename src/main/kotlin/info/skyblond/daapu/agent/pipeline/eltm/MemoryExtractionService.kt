@@ -3,13 +3,14 @@ package info.skyblond.daapu.agent.pipeline.eltm
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.context.ContextInjection
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.pipeline.runOneShotText
-import info.skyblond.daapu.agent.context.ContextInjection
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * The memory extraction pipeline (the harness's memory architecture, see the
@@ -26,10 +27,14 @@ import java.time.LocalDate
  *    The writer deduplicates against the store, so a retried run never
  *    duplicates diary entries.
  *
- * The stages are also usable separately: [extractFacts] runs the extractor
- * only and returns the fact text without writing anything (the import
- * script materializes it into a reviewable file), while
- * [EltmWriterService.writeToEltm] records a fact batch.
+ * The two public entry points pair the stages behind one call:
+ * [processDiscardedMessages] (the discard pipeline) and [processUserText]
+ * (the `/api/eltm/import` path, running the same extractor over one piece
+ * of caller-supplied text instead of a dropped history — the private
+ * [extractFactsFromText] selects the [ExtractionInput.TEXT] flavor of the
+ * extractor prompt, so the writer always receives the same fact tone
+ * regardless of how the text was written). Both write through
+ * [EltmWriterService.writeToEltm].
  *
  * A failure throws and fails the run:
  * - [info.skyblond.daapu.agent.model.ModelCapabilityException] when the
@@ -65,16 +70,17 @@ class MemoryExtractionService(
      * Extract memories from [droppedMessages] (the raw messages compaction is
      * about to discard) and write them into the ELTM. Throws per the class
      * KDoc (the extraction pipeline fails the run on failure). The
-     * [NOTHING_TO_REMEMBER_TEXT] sentinel is the only skip path for the
-     * extraction: a blank answer is a hand `empty_response` error and fails
-     * the run, it cannot silently skip the write.
+     * [NOTHING_TO_REMEMBER_TEXT] sentinel (matched tolerantly by
+     * [isNothingToRemember]) is the only skip path for the extraction: a
+     * blank answer is a hand `empty_response` error and fails the run, it
+     * cannot silently skip the write.
      */
     suspend fun processDiscardedMessages(
         droppedMessages: List<ChatMessage>,
     ) {
         if (droppedMessages.isNotEmpty()) {
             val extraction = extractFacts(droppedMessages)
-            if (extraction != NOTHING_TO_REMEMBER_TEXT) {
+            if (!isNothingToRemember(extraction)) {
                 logger.info { "Extracted memories from ${droppedMessages.size} dropped message(s), writing into the ELTM" }
                 eltmWriterService.writeToEltm(extraction, LocalDate.now())
             }
@@ -85,21 +91,76 @@ class MemoryExtractionService(
      * The extraction stage alone: run the extractor over [droppedMessages]
      * and return the free-text fact list (or the [NOTHING_TO_REMEMBER_TEXT]
      * sentinel when nothing is worth remembering) WITHOUT writing anything
-     * — the caller decides what to do with the facts. The import script
-     * uses this to materialize the facts into a reviewable file instead of
-     * recording them directly.
+     * — [processDiscardedMessages] decides whether to write.
      *
      * Throws per the class KDoc (a capability mismatch is a configuration
      * error and fails fast; a failed extraction throws
      * [IllegalStateException]). [droppedMessages] must not be empty.
      */
-    suspend fun extractFacts(droppedMessages: List<ChatMessage>): String {
+    private suspend fun extractFacts(droppedMessages: List<ChatMessage>): String {
         require(droppedMessages.isNotEmpty()) {
             "cannot extract memories from an empty message list"
         }
-        extractModel.checkPromptContentCapabilities(droppedMessages)
-        val extraction = extract(droppedMessages)
+        val extraction = extract(droppedMessages, ExtractionInput.CONVERSATION)
         logger.info { "Extracted memories:\n${extraction}" }
+        return extraction
+    }
+
+    /**
+     * The `/api/eltm/import` entry point (`POST /api/eltm/import`, see
+     * `server/endpoint/EltmRoute.kt`): run the two-stage pipeline over the
+     * caller-supplied [text] and write the extracted facts into the ELTM.
+     * [referenceDate] anchors the extraction only ([extractFactsFromText]
+     * resolves the text's relative dates against it) — the write stage
+     * always stamps the extraction day (`LocalDate.now()`, the same
+     * "current date" the discard pipeline writes with, keeping event
+     * dates from running ahead of the write day). The route's
+     * future-`date` 400 (see `EltmRoute.kt`) guards the anchor itself: a
+     * future reference date would resolve the text's relative dates
+     * against a future time and bake future absolute dates into the
+     * facts. A blank text or
+     * one matching the
+     * [NOTHING_TO_REMEMBER_TEXT] sentinel (tolerantly,
+     * [isNothingToRemember]) is a silent no-op WITHOUT any LLM call; an
+     * extraction answering the sentinel skips only the write. Throws per
+     * the class KDoc — the route maps a terminal [IllegalStateException]
+     * to a 502 (see `EltmRoute.kt`).
+     */
+    suspend fun processUserText(
+        text: String, referenceDate: LocalDate
+    ) {
+        if (text.isBlank() || isNothingToRemember(text)) {
+            return
+        }
+        val extraction = extractFactsFromText(text, referenceDate)
+        if (!isNothingToRemember(extraction)) {
+            eltmWriterService.writeToEltm(extraction, LocalDate.now())
+        }
+    }
+
+    /**
+     * The import path's extraction stage alone ([processUserText] decides
+     * whether to write): run the same extractor over ONE piece of
+     * caller-supplied [text] instead of a dropped history. The text is
+     * wrapped as a single synthetic user message stamped with
+     * [referenceDate] (start of day in the server's current zone), so the
+     * stateless extractor resolves the text's relative dates against the
+     * reference date — never against the extraction time — and maps its
+     * first-person pronouns to "the user" (a user message's author IS the
+     * user), exactly as it does for a discarded conversation. Returns the
+     * free-text fact list or the [NOTHING_TO_REMEMBER_TEXT] sentinel.
+     * Throws per the class KDoc (the text-only input can never trip the
+     * capability check that [extract] runs on every flavor).
+     */
+    private suspend fun extractFactsFromText(text: String, referenceDate: LocalDate): String {
+        require(text.isNotBlank()) { "cannot extract memories from a blank text" }
+        val message = ChatMessage(
+            ChatMessageRole.User,
+            listOf(ChatMessagePart.Text(text)),
+            createdAt = referenceDate.atStartOfDay(ZoneId.systemDefault()).toInstant(),
+        )
+        val extraction = extract(listOf(message), ExtractionInput.TEXT)
+        logger.info { "Extracted memories from imported text:\n${extraction}" }
         return extraction
     }
 
@@ -107,14 +168,20 @@ class MemoryExtractionService(
      * The extraction call: the raw dropped history plus the extraction
      * instruction. The history is treated as potentially injected (it may
      * come from the chat loop's injected in-loop chat): sanitize first, then
-     * anchor every user message with its send time. The extractor is
+     * anchor every user message with its send time. [input] selects the
+     * extractor prompt flavor (the discard pipeline always gets
+     * [ExtractionInput.CONVERSATION]; the import path's single synthetic
+     * text message gets [ExtractionInput.TEXT]). The extractor is
      * stateless — the input carries no "now" anywhere (no current date in
      * the prompt), every relative date resolves against the message's own
      * anchor, so extraction time never matters. Fails on anything but a
      * clean `stop` with text (the fail-fast semantics depend on
      * distinguishing `length` from `stop`).
      */
-    private suspend fun extract(droppedMessages: List<ChatMessage>): String {
+    private suspend fun extract(
+        droppedMessages: List<ChatMessage>,
+        input: ExtractionInput,
+    ): String {
         val chat = contextInjection.injectContext(
             contextInjection.removeInjection(droppedMessages) + ChatMessage(
                 role = ChatMessageRole.User,
@@ -126,11 +193,12 @@ class MemoryExtractionService(
             ),
             spec = null,
         )
+        extractModel.checkPromptContentCapabilities(droppedMessages)
 
         return hand.runOneShotText(
             model = extractModel,
             messages = chat,
-            systemPrompt = renderExtractorSystemPrompt(),
+            systemPrompt = renderExtractorSystemPrompt(input),
             policy = policy,
             label = "Memory extraction",
         )
@@ -141,14 +209,39 @@ class MemoryExtractionService(
 
         internal const val NOTHING_TO_REMEMBER_TEXT = "Nothing worth remember."
 
-        private fun renderExtractorSystemPrompt(): String = """
-You're extracting memories from a discarded conversation.
-Extract **all** important information from the conversation history into a list of self-contained facts suitable for long-term memory.
+        /**
+         * The tolerant sentinel match, the SINGLE SOURCE for every sentinel
+         * check: the discard pipeline's skip ([processDiscardedMessages])
+         * and the import path's input fast path plus post-extraction check
+         * ([processUserText]). Trims, ignores casing, trailing
+         * punctuation and whitespace runs — a near-miss must not reach the
+         * writer as a fact batch. Paraphrases this check cannot catch are
+         * the writer's own skip-sentinel rule's job (see
+         * [EltmWriterService]).
+         */
+        // precompiled whitespace-run matcher for [isNothingToRemember]
+        private val WHITESPACE_RUNS = Regex("\\s+")
 
-Every user message opens with a <meta><sent-at>...</sent-at></meta> marker carrying that message's send time.
-Resolve every relative date or time ("today", "last week", "in two months") against the send time of the message that contains it.
-The messages can be much older than the moment of extraction, so never resolve against "now".
-Assistant messages carry no marker: they reply immediately after the preceding user message.
+        internal fun isNothingToRemember(output: String): Boolean =
+            output.trim()
+                .replace(WHITESPACE_RUNS, " ")
+                .trimEnd('.', '!', '?')
+                .equals(NOTHING_TO_REMEMBER_TEXT.trimEnd('.', '!', '?'), ignoreCase = true)
+
+        /**
+         * The extractor system prompt for one [ExtractionInput]. The
+         * absolute-dates line, the focus list and the fact rules are
+         * input-neutral and shared verbatim below (single source); the
+         * header (framing + anchor explanation) and the few
+         * conversation-specific rule lines come from the [input]'s slots.
+         * [ExtractionInput.CONVERSATION] renders byte-identical to the
+         * prompt the discard pipeline always used (pinned by
+         * MemoryExtractionServiceTest), so the import path's
+         * [ExtractionInput.TEXT] flavor can never drift the discard
+         * path's extraction.
+         */
+        internal fun renderExtractorSystemPrompt(input: ExtractionInput): String = """
+${input.header}
 Write absolute dates in the facts: "User went to Paris last week" is useless 6 months later; "User went to Paris the week of May 15, 2026" is meaningful forever.
 
 Focus on:
@@ -162,13 +255,65 @@ Focus on:
 Rules:
 - Each fact must be self-contained: replace pronouns with the entity name or "the user"
 - Rich, not atomic: one fact may span 1-3 sentences when the context matters, but keep it under ~80 words
-- Write facts in the same language as the conversation
-- Do not invent details that are not present in the history
+- Write facts in the same language as the ${input.languageOf}
+- Do not invent details that are not present in the ${input.presentIn}
 - Merge overlapping information into one fact
-- Cover the whole conversation, not just the first topic
-- Do not extract the assistant restating what the user said as a new fact (echo extraction)
-- Extract the content of documents or code the user shared, not "the user shared a document" (meta extraction)
+- Cover the whole ${input.coverWhole}, not just the first topic
+${input.echoRule}- Extract the content of documents or code the user shared, not "the user shared a document" (meta extraction)
 - When nothing is worth remembering, output sentence "$NOTHING_TO_REMEMBER_TEXT"
 """.trimIndent().trim()
     }
+}
+
+/**
+ * Which input shape the extractor prompt describes (see
+ * [MemoryExtractionService.renderExtractorSystemPrompt]): the discard
+ * pipeline's dropped history ([CONVERSATION]) or the import path's single
+ * piece of caller-supplied text ([TEXT], see
+ * [MemoryExtractionService.extractFactsFromText]). The fields are the
+ * prompt's per-input slots; everything else in the template is shared
+ * verbatim.
+ */
+internal enum class ExtractionInput(
+    /** The header block: framing plus the anchor/relative-date explanation. */
+    val header: String,
+    /** Rules slot: what the facts' language follows. */
+    val languageOf: String,
+    /** Rules slot: what the facts must be present in. */
+    val presentIn: String,
+    /** Rules slot: what to cover whole. */
+    val coverWhole: String,
+    /**
+     * The conversation-only echo-extraction rule, rendered as a full
+     * rules-list line including its trailing newline (empty for [TEXT]).
+     */
+    val echoRule: String,
+) {
+    CONVERSATION(
+        header = """
+You're extracting memories from a discarded conversation.
+Extract **all** important information from the conversation history into a list of self-contained facts suitable for long-term memory.
+
+Every user message opens with a <meta><sent-at>...</sent-at></meta> marker carrying that message's send time.
+Resolve every relative date or time ("today", "last week", "in two months") against the send time of the message that contains it.
+The messages can be much older than the moment of extraction, so never resolve against "now".
+Assistant messages carry no marker: they reply immediately after the preceding user message.""".trimIndent(),
+        languageOf = "conversation",
+        presentIn = "history",
+        coverWhole = "conversation",
+        echoRule = "- Do not extract the assistant restating what the user said as a new fact (echo extraction)\n",
+    ),
+    TEXT(
+        header = """
+You're extracting memories from a piece of text the user provided for long-term memory.
+Extract **all** important information from the text into a list of self-contained facts suitable for long-term memory.
+
+The text opens with a <meta><sent-at>...</sent-at></meta> marker carrying the text's reference time.
+Resolve every relative date or time ("today", "last week", "in two months") against that reference time.
+The reference time can be much older than the moment of extraction, so never resolve against "now".""".trimIndent(),
+        languageOf = "text",
+        presentIn = "text",
+        coverWhole = "text",
+        echoRule = "",
+    ),
 }

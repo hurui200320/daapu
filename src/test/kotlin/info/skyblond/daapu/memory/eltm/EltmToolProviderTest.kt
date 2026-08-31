@@ -1272,8 +1272,11 @@ class EltmToolProviderTest : DbTestBase() {
             date = LocalDate.parse("2026-08-18"),
         )
         assertTrue(input.startsWith("Current date: 2026-08-18\n\n"), input)
-        assertTrue(input.contains("Candidate facts extracted from a discarded conversation"), input)
-        assertTrue(input.contains("likes coffee"), "facts verbatim: $input")
+        assertTrue(input.contains("Candidate facts for long-term memory"), input)
+        assertTrue(
+            input.contains("````\nlikes coffee\n````"),
+            "facts verbatim inside a four-backtick fence: $input",
+        )
     }
 
     @Test

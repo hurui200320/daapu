@@ -66,21 +66,23 @@ data class ModelInfo(
 // ----------------------------------------------------------------------
 // ELTM views (the `#/eltm` frontend tab): read views for the browse tabs,
 // plus the manual import write's request body (the ONLY endpoint where a
-// caller, not the extraction pipeline, feeds the ELTM writer)
+// caller, not the discard pipeline, feeds the ELTM; it answers a bare
+// 201 Created — see EltmRoute.kt)
 // ----------------------------------------------------------------------
 
 /**
- * Request body of `POST /api/eltm/import`: a manual fact batch fed straight
- * into `EltmWriterService.writeToEltm` (the same writer the extraction
- * pipeline uses). [facts] must already be written in the memory extractor's
- * output tone — self-contained facts, absolute dates; the writer records
- * verbatim, it never rewrites messy prose (the frontend's Import tab carries
- * the full notice). [date] is the optional fallback event date
- * (`YYYY-MM-DD`); the server's today when absent, and never a future day.
+ * Request body of `POST /api/eltm/import`: one piece of caller-supplied
+ * text fed through `MemoryExtractionService.processUserText` (the memory
+ * extraction one-shot — first-person pronouns resolve to "the user",
+ * relative dates resolve against [date] — then the same ELTM writer the
+ * extraction pipeline uses). [text] may be anything — raw notes, prose,
+ * pre-digested facts (the frontend's Import tab carries the full notice).
+ * [date] is the optional reference date (`YYYY-MM-DD`); the server's
+ * today when absent, and never a future day.
  */
 @Serializable
 data class EltmImportRequest(
-    val facts: String,
+    val text: String,
     val date: String? = null,
 )
 
