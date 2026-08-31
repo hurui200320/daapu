@@ -64,9 +64,25 @@ data class ModelInfo(
 )
 
 // ----------------------------------------------------------------------
-// ELTM read views (the `#/eltm` frontend tab: browse-only, writes are
-// LLM-driven via the extraction pipeline)
+// ELTM views (the `#/eltm` frontend tab): read views for the browse tabs,
+// plus the manual import write's request body (the ONLY endpoint where a
+// caller, not the extraction pipeline, feeds the ELTM writer)
 // ----------------------------------------------------------------------
+
+/**
+ * Request body of `POST /api/eltm/import`: a manual fact batch fed straight
+ * into `EltmWriterService.writeToEltm` (the same writer the extraction
+ * pipeline uses). [facts] must already be written in the memory extractor's
+ * output tone — self-contained facts, absolute dates; the writer records
+ * verbatim, it never rewrites messy prose (the frontend's Import tab carries
+ * the full notice). [date] is the optional fallback event date
+ * (`YYYY-MM-DD`); the server's today when absent, and never a future day.
+ */
+@Serializable
+data class EltmImportRequest(
+    val facts: String,
+    val date: String? = null,
+)
 
 @Serializable
 data class EltmEntityDto(

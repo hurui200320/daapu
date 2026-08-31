@@ -147,11 +147,16 @@ private fun ApplicationCall.messageIndexParam(): Int =
     parameters["index"]?.toIntOrNull()
         ?: throw BadRequestException("index must be a number")
 
+/**
+ * The SSE `error` event's data: the failure chain's root plus its FIRST
+ * cause (deeper links stay out of the client-visible message — the full
+ * chain stays in the server log), typed for the frontend's rendering.
+ * The per-link messages come from the shared [failureChainMessages]
+ * traversal; the ELTM import's 502 body (EltmRoute.kt) joins the WHOLE
+ * chain instead.
+ */
 private fun errorEventData(error: Throwable): String = buildJsonObject {
-    val rootMessage = error.message ?: error.toString()
-    val causeMessage = error.cause?.let { it.message ?: it.toString() }
-        ?.let { "\nCaused by: $it" } ?: ""
-    put("message", rootMessage + causeMessage)
+    put("message", failureChainMessages(error).take(2).joinToString("\nCaused by: "))
     put("type", error::class.simpleName ?: "Unknown")
 }.toString()
 

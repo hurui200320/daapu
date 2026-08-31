@@ -384,12 +384,18 @@ frontend + Node/TS "hand-pi" service.
     Management in `PersonaView.svelte` (`#/personas`): id/name/namespaces
     rows, edit-prompt/edit-namespaces dialogs, delete; built-in `default`
     read-only.
-  - ELTM view (`EltmView.svelte`, `#/eltm`): browse-only (writes are
+  - ELTM view (`EltmView.svelte`, `#/eltm`): browse tabs (writes are
     LLM-driven) — Entities (attribute chips, counts + latest note, lazy
     relationship/diary drill-downs via `/api/eltm`) and Relationships
     (names + validity badge, lazy notes). Load-more pagination (100
     rows/page, oldest first); resync refetches the loaded window
-    (appends survive, server-side shrinks shrink).
+    (appends survive, server-side shrinks shrink). Import tab (the manual
+    write path): a fact batch + optional fallback event date POSTed to
+    `POST /api/eltm/import` (blocked, minutes-long writer tool loop; 400
+    on blank facts/bad/future dates, the extractor's "Nothing worth
+    remember." sentinel = no-op 204, failed writer = 502 with the reason —
+    see `EltmRoute.kt`); a notice pins the required extractor-tone input
+    (the writer records verbatim).
   - Messages: user = plain-text pills (`whitespace-pre-wrap`); assistant
     = full-width markdown (marked + DOMPurify + highlight.js via
     `lib/markdown-renderer.ts`). Reasoning/tool parts in collapsible

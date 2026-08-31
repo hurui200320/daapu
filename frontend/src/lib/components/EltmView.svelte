@@ -1,11 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { ChevronDown, ChevronRight } from '@lucide/svelte'
+  import { ChevronDown, ChevronRight, Info } from '@lucide/svelte'
   import {
     ELTM_DRILLDOWN_LIMIT,
     getEntityNotes,
     getEntityRelationships,
     getRelationshipNotes,
+    importEltmFacts,
     listEntities,
     listRelationships,
   } from '../api'
@@ -16,7 +17,7 @@
   import { errMsg } from '../utils'
   import Button from './ui/button.svelte'
 
-  type Tab = 'entities' | 'relationships'
+  type Tab = 'entities' | 'relationships' | 'import'
 
   interface EntityDetails {
     relationships: RelationshipViewDto[]
@@ -36,6 +37,7 @@
   const TABS: [Tab, string][] = [
     ['entities', 'Entities'],
     ['relationships', 'Relationships'],
+    ['import', 'Import'],
   ]
 
   const entitiesTab = new PagedTab<EntityViewDto, EntityDetails>(
@@ -73,8 +75,9 @@
   let loadedOnce = false
 
   async function refresh() {
-    // every mutation ends in refresh(): clear stale errors so a failed op
-    // doesn't leave a permanent banner after later successes
+    // the first visit's from-scratch load (later visits and the import
+    // success path resync instead — see submitImport): replace both lists
+    // and clear any stale error banner
     error = null
     try {
       await Promise.all([entitiesTab.load(), relationshipsTab.load()])
@@ -112,6 +115,73 @@
       await tab.loadMore()
     } catch (e) {
       error = errMsg(e)
+    }
+  }
+
+  // ---- Import tab (the manual write path): a caller-supplied fact batch
+  // fed straight into the ELTM writer agent. The request blocks for the
+  // whole writer tool loop (minutes are normal), so the form is its own
+  // state machine — `importing` disables everything and the busy label
+  // explains the wait. Lives in the always-mounted view, so the draft
+  // survives switching tabs/chats mid-write.
+  let facts = $state('')
+  let importDate = $state('')
+  let importing = $state(false)
+  let importError = $state<string | null>(null)
+  let importSuccess = $state(false)
+  // true when the batch was the extractor's skip sentinel: the server
+  // no-ops it with the same 204 as a successful write, so only the caller
+  // can tell them apart and the banner must not claim facts were written
+  let importNoop = $state(false)
+
+  // the extractor's skip sentinel (MemoryExtractionService.kt owns the
+  // canonical value): the server no-ops a batch that is EXACTLY this
+  // sentence
+  const NOTHING_TO_REMEMBER = 'Nothing worth remember.'
+
+  // the fallback date picker's ceiling: the browser's local today, rendered
+  // the way the backend parses it (YYYY-MM-DD, see EltmRoute.kt). Page-load
+  // time only — the server's future-date 400 stays the authority.
+  const TODAY = (() => {
+    const d = new Date()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${d.getFullYear()}-${mm}-${dd}`
+  })()
+
+  // two example facts, in the extractor's tone — the shape the textarea
+  // should be filled with (see the notice above it)
+  const FACTS_PLACEHOLDER =
+    'User went to Paris the week of May 15, 2026 for a work conference.\n' +
+    'User switched from editor A to editor B because of plugin compatibility.'
+
+  async function submitImport() {
+    if (importing) return
+    const batch = facts.trim()
+    if (batch.length === 0) return
+    importing = true
+    importError = null
+    importSuccess = false
+    importNoop = false
+    try {
+      // no date = the server's today (the same default the extraction
+      // pipeline writes with)
+      await importEltmFacts(batch, importDate || undefined)
+      // the batch is consumed; the optional fallback date deliberately
+      // stays — a same-day follow-up batch is the common case
+      facts = ''
+      importNoop = batch === NOTHING_TO_REMEMBER
+      importSuccess = !importNoop
+      // the browse lists pick up the new records via the background resync
+      // path: unlike refresh() it keeps the loaded pages and the expanded
+      // cards' drill-downs (a from-scratch load would collapse them back to
+      // page 1) and leaves the lists untouched when a fetch fails. The
+      // sentinel no-op changed nothing — skip it.
+      if (!importNoop) await resync()
+    } catch (e) {
+      importError = errMsg(e)
+    } finally {
+      importing = false
     }
   }
 
@@ -185,7 +255,8 @@
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">ELTM</h1>
       <p class="text-sm text-muted-foreground">
-        External long-term memory: entities, relationships, and diary notes (read-only — writes are LLM-driven)
+        External long-term memory: entities, relationships, and diary notes (browse is read-only — the writer agent
+        writes, see Import)
       </p>
     </div>
 
@@ -286,7 +357,7 @@
         </div>
       {/each}
       {@render loadMoreButton(entitiesTab, () => void loadMore(entitiesTab))}
-    {:else}
+    {:else if tab === 'relationships'}
       {#if relationshipsTab.rows.length === 0 && !initialLoading && !error}
         <div class="py-10 text-center text-sm text-muted-foreground">no relationships yet</div>
       {/if}
@@ -335,6 +406,71 @@
         </div>
       {/each}
       {@render loadMoreButton(relationshipsTab, () => void loadMore(relationshipsTab))}
+    {:else}
+      {#if importError}
+        <div
+          class="break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          {importError}
+        </div>
+      {/if}
+
+      {#if importNoop}
+        <div class="rounded-lg border border-border/30 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          Empty batch — "{NOTHING_TO_REMEMBER}" records nothing; the store is unchanged.
+        </div>
+      {:else if importSuccess}
+        <div class="rounded-lg border border-border/30 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          Facts written to the ELTM — check the Entities and Relationships tabs for the new records.
+        </div>
+      {/if}
+
+      <!-- The notice: the endpoint feeds the text straight into the ELTM
+           writer agent, which records it verbatim (it never rewrites), so
+           the batch must arrive in the memory extractor's output tone. -->
+      <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
+        <div class="flex items-start gap-2">
+          <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <div class="min-w-0 text-sm text-muted-foreground">
+            <p>
+              Import feeds your text straight into the ELTM writer agent, which records it into the store. It expects
+              fact batches in the same tone the memory extractor produces — the writer records verbatim and never
+              rewrites or invents details:
+            </p>
+            <ul class="mt-2 list-disc space-y-1 pl-5">
+              <li>One fact per line, self-contained: replace pronouns with entity names or "the user"</li>
+              <li>Absolute dates ("the week of May 15, 2026"), never relative ones ("last week")</li>
+              <li>1–3 sentences per fact, under ~80 words; merge overlapping information</li>
+              <li>Same language as the source conversation; only facts that are actually true</li>
+              <li>A batch that is exactly "{NOTHING_TO_REMEMBER}" is treated as empty (no-op)</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-3">
+        <textarea
+          class="min-h-40 w-full resize-y whitespace-pre-wrap break-words rounded-xl border border-border/30 bg-background/60 p-3 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
+          aria-label="Facts to import"
+          placeholder={FACTS_PLACEHOLDER}
+          bind:value={facts}
+          disabled={importing}></textarea>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <label class="flex items-center gap-2 text-xs text-muted-foreground">
+            Fallback event date (optional)
+            <input
+              type="date"
+              class="rounded-md border border-border/30 bg-background/60 px-2 py-1 text-sm disabled:opacity-50"
+              max={TODAY}
+              bind:value={importDate}
+              disabled={importing}
+            />
+          </label>
+          <Button size="sm" disabled={importing || facts.trim().length === 0} onclick={() => void submitImport()}>
+            {importing ? 'Writing to the ELTM… this can take a while' : 'Import'}
+          </Button>
+        </div>
+      </div>
     {/if}
   </div>
 </div>

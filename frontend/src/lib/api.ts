@@ -213,3 +213,17 @@ export async function listRelationships(limit = 100, offset = 0): Promise<Relati
 export async function getRelationshipNotes(id: number, limit = ELTM_DRILLDOWN_LIMIT): Promise<EltmNoteDto[]> {
   return getJson(`/api/eltm/relationships/${id}/notes?limit=${limit}`)
 }
+
+// ---- ELTM import (the manual write path; see the `#/eltm` Import tab) ----
+
+/**
+ * Feed a fact batch straight into the ELTM writer agent (`POST
+ * /api/eltm/import`). `facts` must already be written in the memory
+ * extractor's output tone — the writer records verbatim, it never rewrites
+ * (the Import tab carries the full notice). `date` is the optional fallback
+ * event date (`YYYY-MM-DD`); omit it for the server's today. The request
+ * blocks for the whole writer tool loop (minutes are normal).
+ */
+export async function importEltmFacts(facts: string, date?: string): Promise<void> {
+  await request('/api/eltm/import', jsonInit('POST', { facts, date }))
+}

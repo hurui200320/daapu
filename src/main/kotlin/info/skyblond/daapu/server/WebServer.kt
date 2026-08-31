@@ -7,6 +7,7 @@ import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatValidationException
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.persona.PersonaService
+import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandCallbackService
@@ -73,6 +74,7 @@ fun startWebServer(config: AppConfig) {
 internal fun Application.module(koin: Koin) {
     val service = koin.get<ChatService>()
     val eltmService = koin.get<EltmService>()
+    val eltmWriterService = koin.get<EltmWriterService>()
     val handCallback = koin.get<HandCallbackService>()
     val personaService = koin.get<PersonaService>()
     val modelCatalog = koin.get<ModelCatalog>()
@@ -122,6 +124,20 @@ internal fun Application.module(koin: Koin) {
                 ErrorResponse(cause.message ?: "Model capability mismatch")
             )
         }
+        // a failed ELTM writer run behind `POST /api/eltm/import`: logged
+        // with the writer's stack (the 502 body carries only the failure
+        // chain, so without this a failed import leaves no server-side
+        // trace) and answered 502 with the real failure reason (upstream
+        // error, the writer round cap, ...) — the importer is interactively
+        // waiting and decides on a retry (whatever the writer already
+        // recorded sticks, see EltmRoute.kt)
+        exception<EltmWriteException> { call, cause ->
+            logger.warn(cause) { "ELTM import write failed on ${call.request.uri}" }
+            call.respond(
+                HttpStatusCode.BadGateway,
+                ErrorResponse(cause.message ?: "ELTM write failed")
+            )
+        }
         // must be registered before ContentTransformationException: StatusPages
         // picks the nearest registered class, so a directly thrown
         // UnsupportedMediaTypeException (e.g. from multipart handling) gets its
@@ -148,7 +164,7 @@ internal fun Application.module(koin: Koin) {
             registerModelsEndpoints(modelCatalog)
             registerHandEndpoints(handCallback)
             registerChatsEndpoints(service)
-            registerEltmEndpoints(eltmService)
+            registerEltmEndpoints(eltmService, eltmWriterService)
             registerPersonasEndpoints(personaService)
         }
     }
