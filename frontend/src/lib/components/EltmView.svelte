@@ -1,12 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { ChevronDown, ChevronRight, Info } from '@lucide/svelte'
+  import { ChevronDown, ChevronRight, Info, Paperclip, X } from '@lucide/svelte'
   import {
     ELTM_DRILLDOWN_LIMIT,
     getEntityNotes,
     getEntityRelationships,
     getRelationshipNotes,
-    importEltmText,
+    importEltm,
     listEntities,
     listRelationships,
   } from '../api'
@@ -14,6 +14,8 @@
   import { onIntervalAndFocus } from '../resync'
   import { PagedTab } from '../paged-tab.svelte'
   import { router } from '../router.svelte'
+  import { toastStore } from '../toast-store.svelte'
+  import { browserEncoder, imageFileToDataUrl, MAX_IMAGE_BYTES } from '../image-attachment'
   import { errMsg } from '../utils'
   import Button from './ui/button.svelte'
 
@@ -118,17 +120,22 @@
     }
   }
 
-  // ---- Import tab (the manual write path): a caller-supplied piece of
-  // text run through the memory extraction one-shot and then the ELTM
+  // ---- Import tab (the manual write path): caller-supplied text and/or
+  // images run through the memory extraction one-shot and then the ELTM
   // writer agent. The request blocks for both stages (minutes are normal),
   // so the form is its own state machine — `importing` disables everything
   // and the busy label explains the wait. Lives in the always-mounted
   // view, so the draft survives switching tabs/chats mid-write.
   let text = $state('')
+  let images = $state<{ dataUrl: string }[]>([])
   let importDate = $state('')
   let importing = $state(false)
   let importError = $state<string | null>(null)
   let importSuccess = $state(false)
+  // the hidden file input: the tab renders conditionally, so the ref is
+  // $state (the bind:this assignment re-runs on tab toggles) — see
+  // MessageList.svelte's scrollEl for the same pattern
+  let fileInput = $state<HTMLInputElement | null>(null)
 
   // the extractor's skip sentinel (MemoryExtractionService.kt owns the
   // canonical value and the tolerant match, isNothingToRemember): the
@@ -154,14 +161,14 @@
   async function submitImport() {
     if (importing) return
     const batch = text.trim()
-    if (batch.length === 0) return
+    if (batch.length === 0 && images.length === 0) return
     importing = true
     importError = null
     importSuccess = false
     try {
       // no date = the server's today as the reference date (it only
       // anchors the extraction — the writer always stamps the import day)
-      await importEltmText(batch, importDate || undefined)
+      await importEltm(batch, images, importDate || undefined)
       importSuccess = true
       // the server no longer reports whether anything was recorded (the
       // response is a bare 201): a no-op (a pasted sentinel or an empty
@@ -173,12 +180,54 @@
       // cards' drill-downs (a from-scratch load would collapse them back to
       // page 1) and leaves the lists untouched when a fetch fails.
       text = ''
+      images = []
       await resync()
     } catch (e) {
       importError = errMsg(e)
     } finally {
       importing = false
     }
+  }
+
+  // ---- Image attachments (the composer's pipeline, see image-attachment.ts
+  // and Composer.svelte): per-file budget + downscale ladder, thumbnails
+  // with remove buttons, paste onto the textarea. No per-chat draft here —
+  // the form is the single always-mounted import tab.
+
+  /** Per-attachment byte budget (lives with the pipeline in image-attachment.ts). */
+  const toastTooLarge = (name: string) =>
+    toastStore.push(`"${name}" is too large (max ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB)`, 'error')
+
+  async function addFiles(files: FileList | null) {
+    if (!files) return
+    for (const file of Array.from(files)) {
+      const result = await imageFileToDataUrl(file, browserEncoder)
+      if (!result.ok) {
+        if (result.reason === 'too-large') toastTooLarge(file.name)
+        else if (result.reason === 'unprocessable') {
+          toastStore.push(`"${file.name}" could not be processed`, 'error')
+        }
+        // 'not-an-image': silently skipped, like the paperclip's image/* filter
+        continue
+      }
+      images = [...images, { dataUrl: result.dataUrl }]
+    }
+    // a stale input value fires no change event for a re-pick of the same
+    // file: reset it so the picker always works
+    if (fileInput) fileInput.value = ''
+  }
+
+  function onPaste(e: ClipboardEvent) {
+    const files = e.clipboardData?.files
+    if (!files || files.length === 0) return
+    // consume the paste: a clipboard carrying both files and text would
+    // otherwise also insert the text into the textarea
+    e.preventDefault()
+    void addFiles(files)
+  }
+
+  function removeImage(index: number) {
+    images = images.filter((_, i) => i !== index)
   }
 
   // Fetch + poll only while the view is visible (it stays mounted, CSS-hidden
@@ -417,17 +466,18 @@
         </div>
       {/if}
 
-      <!-- The notice: the endpoint runs the text through the memory
-           extraction one-shot and then the ELTM writer agent (see
-           EltmRoute.kt), so any prose works — the notice pins what the
-           extraction stage does with it. -->
+      <!-- The notice: the endpoint runs the text and attached images
+           through the memory extraction one-shot and then the ELTM writer
+           agent (see EltmRoute.kt), so any prose works — the notice pins
+           what the extraction stage does with it. -->
       <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
         <div class="flex items-start gap-2">
           <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div class="min-w-0 text-sm text-muted-foreground">
             <p>
-              Import runs your text through the memory extractor, then the ELTM writer agent records the extracted facts
-              into the store. You can paste general text, raw notes, or summarized facts:
+              Import runs your text and attached images through the memory extractor, then the ELTM writer agent records
+              the extracted facts into the store. You can paste general text, raw notes, or summarized facts, and attach
+              images:
             </p>
             <ul class="mt-2 list-disc space-y-1 pl-5">
               <li>First-person pronouns ("I", "my") are automatically mapped to "the user"</li>
@@ -438,6 +488,10 @@
                 The reference date only anchors the extraction — the recorded notes are always dated the day of the
                 import
               </li>
+              <li>
+                Images are read by the extraction model — the server's extraction model must support vision, or the
+                import fails with a clear error
+              </li>
               <li>A text that is just "{NOTHING_TO_REMEMBER}" is treated as empty (no-op)</li>
             </ul>
           </div>
@@ -445,24 +499,66 @@
       </div>
 
       <div class="flex flex-col gap-3">
+        {#if images.length > 0}
+          <div class="flex flex-wrap gap-2">
+            {#each images as image, i (image)}
+              <div class="relative">
+                <img src={image.dataUrl} alt={`attachment ${i + 1}`} class="h-20 rounded-xl object-cover" />
+                <button
+                  type="button"
+                  onclick={() => removeImage(i)}
+                  title="remove attachment"
+                  disabled={importing}
+                  class="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-sm transition hover:bg-destructive/90"
+                >
+                  <X class="size-3" />
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
         <textarea
           class="min-h-40 w-full resize-y whitespace-pre-wrap break-words rounded-xl border border-border/30 bg-background/60 p-3 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
           aria-label="Text to import"
           placeholder={TEXT_PLACEHOLDER}
           bind:value={text}
+          onpaste={onPaste}
           disabled={importing}></textarea>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <label class="flex items-center gap-2 text-xs text-muted-foreground">
-            Reference date (optional)
-            <input
-              type="date"
-              class="rounded-md border border-border/30 bg-background/60 px-2 py-1 text-sm disabled:opacity-50"
-              max={TODAY}
-              bind:value={importDate}
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onclick={() => fileInput?.click()}
               disabled={importing}
+              title="attach image (or paste)"
+              class="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted-foreground/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Paperclip class="size-4" />
+            </button>
+            <input
+              bind:this={fileInput}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onchange={(e) => addFiles((e.currentTarget as HTMLInputElement).files)}
             />
-          </label>
-          <Button size="sm" disabled={importing || text.trim().length === 0} onclick={() => void submitImport()}>
+            <label class="flex items-center gap-2 text-xs text-muted-foreground">
+              Reference date (optional)
+              <input
+                type="date"
+                class="rounded-md border border-border/30 bg-background/60 px-2 py-1 text-sm disabled:opacity-50"
+                max={TODAY}
+                bind:value={importDate}
+                disabled={importing}
+              />
+            </label>
+          </div>
+          <Button
+            size="sm"
+            disabled={importing || (text.trim().length === 0 && images.length === 0)}
+            onclick={() => void submitImport()}
+          >
             {importing ? 'Writing to the ELTM… this can take a while' : 'Import'}
           </Button>
         </div>

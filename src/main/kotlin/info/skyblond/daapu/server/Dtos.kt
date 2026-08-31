@@ -71,18 +71,22 @@ data class ModelInfo(
 // ----------------------------------------------------------------------
 
 /**
- * Request body of `POST /api/eltm/import`: one piece of caller-supplied
- * text fed through `MemoryExtractionService.processUserText` (the memory
+ * Request body of `POST /api/eltm/import`: caller-supplied material fed
+ * through `MemoryExtractionService.processUserImport` (the memory
  * extraction one-shot — first-person pronouns resolve to "the user",
  * relative dates resolve against [date] — then the same ELTM writer the
  * extraction pipeline uses). [text] may be anything — raw notes, prose,
- * pre-digested facts (the frontend's Import tab carries the full notice).
- * [date] is the optional reference date (`YYYY-MM-DD`); the server's
- * today when absent, and never a future day.
+ * pre-digested facts (the frontend's Import tab carries the full notice);
+ * [images] are image attachments read by the extraction model, so it must
+ * support vision (a mismatch fails the import with a clear 400). At least
+ * one of [text] and [images] must be present. [date] is the optional
+ * reference date (`YYYY-MM-DD`); the server's today when absent, and never
+ * a future day.
  */
 @Serializable
 data class EltmImportRequest(
-    val text: String,
+    val text: String? = null,
+    val images: List<ImagePart> = emptyList(),
     val date: String? = null,
 )
 

@@ -660,19 +660,25 @@ class WebServerTest : DbTestBase() {
         },
     )
 
-    private fun importBody(text: String, date: String? = null): String =
-        buildString {
-            append("""{"text":""")
-            append(json.encodeToString(text))
-            if (date != null) {
-                append(""","date":""")
-                append(json.encodeToString(date))
-            }
-            append("}")
-        }
+    /**
+     * The import request body, serialized through the real DTO. A null
+     * [text] is omitted (`explicitNulls = false`), so images-only bodies
+     * are exercised the way a client would send them.
+     */
+    private fun importBody(
+        text: String? = "",
+        images: List<String> = emptyList(),
+        date: String? = null,
+    ): String = json.encodeToString(
+        EltmImportRequest(
+            text = text,
+            images = images.map { ImagePart(it) },
+            date = date,
+        )
+    )
 
     @Test
-    fun `eltm import rejects a blank text with 400`() {
+    fun `eltm import rejects a blank text without images with 400`() {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
@@ -680,6 +686,7 @@ class WebServerTest : DbTestBase() {
                 """{}""",
                 """{"text":""}""",
                 """{"text":"   "}""",
+                """{"images":[]}""",
             ).forEach { body ->
                 val response = client.post("/api/eltm/import") {
                     contentType(ContentType.Application.Json)
@@ -730,8 +737,8 @@ class WebServerTest : DbTestBase() {
             assertEquals("", response.bodyAsText(), "201 Created carries no body")
             assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
             assertTrue(
-                hand.requests[0].systemPrompt!!.startsWith("You're extracting memories from a piece of text"),
-                "the import extraction uses the text-flavored prompt: ${hand.requests[0].systemPrompt}",
+                hand.requests[0].systemPrompt!!.startsWith("You're extracting memories from a submission"),
+                "the import extraction uses the user-import-flavored prompt: ${hand.requests[0].systemPrompt}",
             )
             // the extraction one-shot received the text as ONE user message
             // carrying its reference-date anchor (relative dates resolve
@@ -831,7 +838,7 @@ class WebServerTest : DbTestBase() {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             // the exact sentence and a casing/punctuation near-miss both hit
             // the tolerant input fast path (MemoryExtractionService
-            // .isNothingToRemember, via processUserText) without any LLM
+            // .isNothingToRemember, via processUserImport) without any LLM
             // call, answered by the same 201 as a real import
             listOf("Nothing worth remember.", "nothing worth remember").forEach { paste ->
                 val response = client.post("/api/eltm/import") {
@@ -871,7 +878,7 @@ class WebServerTest : DbTestBase() {
         val hand = importHand(
             eltm,
             // a casing-variant near-miss of the sentinel: the post-extraction
-            // check (MemoryExtractionService.processUserText) must be
+            // check (MemoryExtractionService.processUserImport) must be
             // tolerant too
             extraction = { textRunFlow("NOTHING WORTH REMEMBER.") },
             writer = { error("the writer must not run for an empty extraction") },
@@ -933,6 +940,92 @@ class WebServerTest : DbTestBase() {
         }
         assertEquals(1, hand.requests.size, "only the extraction one-shot happened")
         assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "a failed extraction must not record anything")
+    }
+
+    @Test
+    fun `eltm import passes attached images to the extractor`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = importHand(eltm)
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            val response = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    importBody(
+                        "I like coffee",
+                        images = listOf("data:image/png;base64,AAAA"),
+                    )
+                )
+            }
+            assertEquals(HttpStatusCode.Created, response.status)
+            assertEquals("", response.bodyAsText(), "201 Created carries no body")
+            assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
+            // the synthetic input message carries the anchor, the text and
+            // the parsed image attachment (composer order), followed by the
+            // extraction instruction
+            val extractionMessages = hand.requests[0].messages
+            assertEquals(2, extractionMessages.size, "the synthetic input message + the extraction instruction")
+            assertTrue(
+                ContextInjection().hasMetaPart(extractionMessages[0]),
+                "the synthetic message carries its reference-date anchor",
+            )
+            val parts = extractionMessages[0].parts
+            assertEquals(ChatMessagePart.Text("I like coffee"), parts[1], "the text follows the anchor untouched")
+            val attachment = parts[2] as ChatMessagePart.Attachment
+            assertEquals(AttachmentKind.Image, attachment.kind, "the data URL parses into an image attachment")
+            assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
+            assertEquals("image/png", attachment.mimeType)
+        }
+        // the writer run landed the fact in the ELTM diary
+        val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
+        assertTrue(notes.contains("likes coffee"), "the imported fact must reach the ELTM")
+    }
+
+    @Test
+    fun `eltm import accepts an images-only request without text`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = importHand(eltm)
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            // no text field at all: images alone are a valid import (the
+            // extraction model in the test config supports vision)
+            val response = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(importBody(text = null, images = listOf("data:image/png;base64,AAAA")))
+            }
+            assertEquals(HttpStatusCode.Created, response.status)
+            assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
+            // the synthetic message carries only the anchor + the attachment
+            val parts = hand.requests[0].messages[0].parts
+            assertTrue(ContextInjection().hasMetaPart(hand.requests[0].messages[0]), "the anchor is prepended")
+            assertEquals(2, parts.size, "anchor + attachment, no text part")
+            val attachment = parts.last() as ChatMessagePart.Attachment
+            assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
+        }
+        val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
+        assertTrue(notes.contains("likes coffee"), "the imported fact must reach the ELTM")
+    }
+
+    @Test
+    fun `eltm import rejects a malformed image data URL with 400 and no LLM call`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = importHand(eltm)
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            listOf(
+                "not-a-data-url",
+                "data:text/plain;base64,AAAA",
+                "data:image/png;base64,!!!",
+            ).forEach { url ->
+                val response = client.post("/api/eltm/import") {
+                    contentType(ContentType.Application.Json)
+                    setBody(importBody("look at this", images = listOf(url)))
+                }
+                assertEquals(HttpStatusCode.BadRequest, response.status, "data URL: $url")
+            }
+        }
+        assertTrue(hand.requests.isEmpty(), "a rejected image must not call the LLM")
+        assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "nothing recorded")
     }
 
     @Test

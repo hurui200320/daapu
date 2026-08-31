@@ -3,6 +3,7 @@ package info.skyblond.daapu.agent.pipeline.eltm
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
+import info.skyblond.daapu.agent.chat.parseImageDataUrl
 import info.skyblond.daapu.agent.context.ContextInjection
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.pipeline.runOneShotText
@@ -28,19 +29,19 @@ import java.time.ZoneId
  *    duplicates diary entries.
  *
  * The two public entry points pair the stages behind one call:
- * [processDiscardedMessages] (the discard pipeline) and [processUserText]
- * (the `/api/eltm/import` path, running the same extractor over one piece
- * of caller-supplied text instead of a dropped history — the private
- * [extractFactsFromText] selects the [ExtractionInput.TEXT] flavor of the
- * extractor prompt, so the writer always receives the same fact tone
- * regardless of how the text was written). Both write through
- * [EltmWriterService.writeToEltm].
+ * [processDiscardedMessages] (the discard pipeline) and
+ * [processUserImport] (the `/api/eltm/import` path, running the same
+ * extractor over caller-supplied text and/or image attachments instead of
+ * a dropped history — the private [extractFactsFromImport] selects the
+ * [ExtractionInput.USER_IMPORT] flavor of the extractor prompt, so the
+ * writer always receives the same fact tone regardless of how the input
+ * was written). Both write through [EltmWriterService.writeToEltm].
  *
  * A failure throws and fails the run:
  * - [info.skyblond.daapu.agent.model.ModelCapabilityException] when the
- *   extraction model cannot process the dropped content (e.g. images with a
- *   text-only model), which is a configuration error
- *   (`memory.eltm.extractionModel`) and fails fast;
+ *   extraction model cannot process the prompt content (e.g. images with a
+ *   text-only model — possible on both paths), which is a configuration
+ *   error (`memory.eltm.extractionModel`) and fails fast;
  * - a failed extraction (a classified hand error such as a truncated
  *   `length` finish) or one producing tool calls or no text;
  * - any terminal writer failure: a classified hand error, an exhausted
@@ -109,58 +110,76 @@ class MemoryExtractionService(
     /**
      * The `/api/eltm/import` entry point (`POST /api/eltm/import`, see
      * `server/endpoint/EltmRoute.kt`): run the two-stage pipeline over the
-     * caller-supplied [text] and write the extracted facts into the ELTM.
-     * [referenceDate] anchors the extraction only ([extractFactsFromText]
-     * resolves the text's relative dates against it) — the write stage
-     * always stamps the extraction day (`LocalDate.now()`, the same
-     * "current date" the discard pipeline writes with, keeping event
-     * dates from running ahead of the write day). The route's
-     * future-`date` 400 (see `EltmRoute.kt`) guards the anchor itself: a
-     * future reference date would resolve the text's relative dates
-     * against a future time and bake future absolute dates into the
-     * facts. A blank text or
-     * one matching the
-     * [NOTHING_TO_REMEMBER_TEXT] sentinel (tolerantly,
-     * [isNothingToRemember]) is a silent no-op WITHOUT any LLM call; an
-     * extraction answering the sentinel skips only the write. Throws per
-     * the class KDoc — the route maps a terminal [IllegalStateException]
-     * to a 502 (see `EltmRoute.kt`).
+     * caller-supplied [text] and/or [imageDataUrls] and write the
+     * extracted facts into the ELTM. [referenceDate] anchors the
+     * extraction only ([extractFactsFromImport] resolves the input's
+     * relative dates against it) — the write stage always stamps the
+     * extraction day (`LocalDate.now()`, the same "current date" the
+     * discard pipeline writes with, keeping event dates from running ahead
+     * of the write day). The route's future-`date` 400 (see
+     * `EltmRoute.kt`) guards the anchor itself: a future reference date
+     * would resolve the input's relative dates against a future time and
+     * bake future absolute dates into the facts. A blank text with NO
+     * images, or one matching the [NOTHING_TO_REMEMBER_TEXT] sentinel
+     * (tolerantly, [isNothingToRemember]), is a silent no-op WITHOUT any
+     * LLM call — attached images must never be silently skipped, so their
+     * presence always runs the extraction; an extraction answering the
+     * sentinel skips only the write. Throws per the class KDoc — the route
+     * maps a terminal [IllegalStateException] to a 502 (see
+     * `EltmRoute.kt`), while the capability mismatch and a malformed data
+     * URL surface as 400s
+     * ([info.skyblond.daapu.agent.model.ModelCapabilityException],
+     * [info.skyblond.daapu.agent.chat.ChatValidationException] from
+     * [parseImageDataUrl], both mapped by the server module's
+     * StatusPages).
      */
-    suspend fun processUserText(
-        text: String, referenceDate: LocalDate
+    suspend fun processUserImport(
+        text: String,
+        imageDataUrls: List<String>,
+        referenceDate: LocalDate,
     ) {
-        if (text.isBlank() || isNothingToRemember(text)) {
+        val images = imageDataUrls.map { parseImageDataUrl(it) }
+        if (images.isEmpty() && (text.isBlank() || isNothingToRemember(text))) {
             return
         }
-        val extraction = extractFactsFromText(text, referenceDate)
+        val extraction = extractFactsFromImport(text, images, referenceDate)
         if (!isNothingToRemember(extraction)) {
             eltmWriterService.writeToEltm(extraction, LocalDate.now())
         }
     }
 
     /**
-     * The import path's extraction stage alone ([processUserText] decides
-     * whether to write): run the same extractor over ONE piece of
-     * caller-supplied [text] instead of a dropped history. The text is
-     * wrapped as a single synthetic user message stamped with
-     * [referenceDate] (start of day in the server's current zone), so the
-     * stateless extractor resolves the text's relative dates against the
-     * reference date — never against the extraction time — and maps its
-     * first-person pronouns to "the user" (a user message's author IS the
-     * user), exactly as it does for a discarded conversation. Returns the
+     * The import path's extraction stage alone ([processUserImport]
+     * decides whether to write): run the same extractor over
+     * caller-supplied [text] and/or pre-parsed image [images] instead of a
+     * dropped history. The input is wrapped as a single synthetic user
+     * message stamped with [referenceDate] (start of day in the server's
+     * current zone), so the stateless extractor resolves the input's
+     * relative dates against the reference date — never against the
+     * extraction time — and maps its first-person pronouns to "the user"
+     * (a user message's author IS the user), exactly as it does for a
+     * discarded conversation. At least one part is required. Returns the
      * free-text fact list or the [NOTHING_TO_REMEMBER_TEXT] sentinel.
-     * Throws per the class KDoc (the text-only input can never trip the
-     * capability check that [extract] runs on every flavor).
+     * Throws per the class KDoc (images trip the capability check
+     * [extract] runs on every flavor).
      */
-    private suspend fun extractFactsFromText(text: String, referenceDate: LocalDate): String {
-        require(text.isNotBlank()) { "cannot extract memories from a blank text" }
+    private suspend fun extractFactsFromImport(
+        text: String,
+        images: List<ChatMessagePart.Attachment>,
+        referenceDate: LocalDate,
+    ): String {
+        val parts = buildList {
+            if (text.isNotBlank()) add(ChatMessagePart.Text(text))
+            addAll(images)
+        }
+        require(parts.isNotEmpty()) { "cannot extract memories from a blank text without images" }
         val message = ChatMessage(
             ChatMessageRole.User,
-            listOf(ChatMessagePart.Text(text)),
+            parts,
             createdAt = referenceDate.atStartOfDay(ZoneId.systemDefault()).toInstant(),
         )
-        val extraction = extract(listOf(message), ExtractionInput.TEXT)
-        logger.info { "Extracted memories from imported text:\n${extraction}" }
+        val extraction = extract(listOf(message), ExtractionInput.USER_IMPORT)
+        logger.info { "Extracted memories from imported input:\n${extraction}" }
         return extraction
     }
 
@@ -171,7 +190,7 @@ class MemoryExtractionService(
      * anchor every user message with its send time. [input] selects the
      * extractor prompt flavor (the discard pipeline always gets
      * [ExtractionInput.CONVERSATION]; the import path's single synthetic
-     * text message gets [ExtractionInput.TEXT]). The extractor is
+     * message gets [ExtractionInput.USER_IMPORT]). The extractor is
      * stateless — the input carries no "now" anywhere (no current date in
      * the prompt), every relative date resolves against the message's own
      * anchor, so extraction time never matters. Fails on anything but a
@@ -211,9 +230,9 @@ class MemoryExtractionService(
 
         /**
          * The tolerant sentinel match, the SINGLE SOURCE for every sentinel
-         * check: the discard pipeline's skip ([processDiscardedMessages])
-         * and the import path's input fast path plus post-extraction check
-         * ([processUserText]). Trims, ignores casing, trailing
+          * check: the discard pipeline's skip ([processDiscardedMessages])
+          * and the import path's input fast path plus post-extraction check
+          * ([processUserImport]). Trims, ignores casing, trailing
          * punctuation and whitespace runs — a near-miss must not reach the
          * writer as a fact batch. Paraphrases this check cannot catch are
          * the writer's own skip-sentinel rule's job (see
@@ -237,7 +256,7 @@ class MemoryExtractionService(
          * [ExtractionInput.CONVERSATION] renders byte-identical to the
          * prompt the discard pipeline always used (pinned by
          * MemoryExtractionServiceTest), so the import path's
-         * [ExtractionInput.TEXT] flavor can never drift the discard
+         * [ExtractionInput.USER_IMPORT] flavor can never drift the discard
          * path's extraction.
          */
         internal fun renderExtractorSystemPrompt(input: ExtractionInput): String = """
@@ -269,10 +288,12 @@ ${input.echoRule}- Extract the content of documents or code the user shared, not
  * Which input shape the extractor prompt describes (see
  * [MemoryExtractionService.renderExtractorSystemPrompt]): the discard
  * pipeline's dropped history ([CONVERSATION]) or the import path's single
- * piece of caller-supplied text ([TEXT], see
- * [MemoryExtractionService.extractFactsFromText]). The fields are the
- * prompt's per-input slots; everything else in the template is shared
- * verbatim.
+ * synthetic message of caller-supplied text and/or image attachments
+ * ([USER_IMPORT], see `MemoryExtractionService.processUserImport`). The
+ * fields are the prompt's per-input slots; everything else in the template
+ * is shared verbatim. The [USER_IMPORT] wording covers the whole input
+ * shape — text and, when present, attached images — so the same flavor
+ * serves text-only, images-only and text+images imports.
  */
 internal enum class ExtractionInput(
     /** The header block: framing plus the anchor/relative-date explanation. */
@@ -285,7 +306,8 @@ internal enum class ExtractionInput(
     val coverWhole: String,
     /**
      * The conversation-only echo-extraction rule, rendered as a full
-     * rules-list line including its trailing newline (empty for [TEXT]).
+     * rules-list line including its trailing newline (empty for
+     * [USER_IMPORT]).
      */
     val echoRule: String,
 ) {
@@ -303,17 +325,17 @@ Assistant messages carry no marker: they reply immediately after the preceding u
         coverWhole = "conversation",
         echoRule = "- Do not extract the assistant restating what the user said as a new fact (echo extraction)\n",
     ),
-    TEXT(
+    USER_IMPORT(
         header = """
-You're extracting memories from a piece of text the user provided for long-term memory.
-Extract **all** important information from the text into a list of self-contained facts suitable for long-term memory.
+You're extracting memories from a submission the user provided for long-term memory: a piece of text and, when present, attached images.
+Extract **all** important information from the text and the images into a list of self-contained facts suitable for long-term memory.
 
-The text opens with a <meta><sent-at>...</sent-at></meta> marker carrying the text's reference time.
+The input opens with a <meta><sent-at>...</sent-at></meta> marker carrying the input's reference time.
 Resolve every relative date or time ("today", "last week", "in two months") against that reference time.
 The reference time can be much older than the moment of extraction, so never resolve against "now".""".trimIndent(),
-        languageOf = "text",
-        presentIn = "text",
-        coverWhole = "text",
+        languageOf = "text and images",
+        presentIn = "text and images",
+        coverWhole = "input",
         echoRule = "",
     ),
 }

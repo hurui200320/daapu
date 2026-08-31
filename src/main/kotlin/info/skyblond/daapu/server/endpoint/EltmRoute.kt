@@ -28,7 +28,7 @@ private const val MAX_ELTM_PAGE_LIMIT = 500
 /**
  * A terminal failure of the ELTM import behind `POST /api/eltm/import`:
  * the extraction one-shot or the writer run inside
- * [MemoryExtractionService.processUserText] threw its
+ * `MemoryExtractionService.processUserImport` threw its
  * [IllegalStateException]. Mapped to 502 with the real failure reason
  * (WebServer's StatusPages) — the importer is interactively waiting and
  * must know why the import failed (an upstream error, the writer round
@@ -41,11 +41,11 @@ class EltmImportException(message: String, cause: Throwable) : RuntimeException(
 
 /**
  * The `/api/eltm` routes: the browse-only reads over [EltmService] plus the
- * ONE write endpoint, `POST /import`, feeding caller-supplied text through
- * [memoryExtractionService] (both the extraction one-shot and the writer
- * run inside [MemoryExtractionService.processUserText]; the same
- * extractor/writer pair the discard pipeline uses — the ELTM is otherwise
- * written only by that pipeline).
+ * ONE write endpoint, `POST /import`, feeding caller-supplied text and/or
+ * images through [memoryExtractionService] (both the extraction one-shot
+ * and the writer run inside `MemoryExtractionService.processUserImport`;
+ * the same extractor/writer pair the discard pipeline uses — the ELTM is
+ * otherwise written only by that pipeline).
  */
 fun Route.registerEltmEndpoints(
     eltmService: EltmService,
@@ -136,15 +136,16 @@ fun Route.registerEltmEndpoints(
                     .map { it.toDto() }
             )
         }
-        // the manual write path: caller-supplied text (raw notes, prose or
-        // pre-digested facts) runs through
-        // MemoryExtractionService.processUserText — the memory extraction
-        // one-shot first (first-person pronouns → "the user", relative
-        // dates resolve against `date`/today), then the extractor's fact
-        // batch goes through the ELTM writer tool loop exactly like the
-        // discard pipeline's does. The request blocks for both stages
-        // (minutes are normal; the same blocking-LLM precedent as
-        // deleteChat's extraction). No chat lock: nothing here touches
+        // the manual write path: caller-supplied text and/or images (raw
+        // notes, prose or pre-digested facts, plus image attachments) run
+        // through MemoryExtractionService.processUserImport — the memory
+        // extraction one-shot first (first-person pronouns → "the user",
+        // relative dates resolve against `date`/today; the extraction model
+        // must support vision when images are attached), then the
+        // extractor's fact batch goes through the ELTM writer tool loop
+        // exactly like the discard pipeline's does. The request blocks for
+        // both stages (minutes are normal; the same blocking-LLM precedent
+        // as deleteChat's extraction). No chat lock: nothing here touches
         // the chats table, and the ELTM store already tolerates the
         // extraction pipeline's concurrent writers (the writer deduplicates
         // recorded content, so a retry after a failure never duplicates
@@ -153,13 +154,19 @@ fun Route.registerEltmEndpoints(
         // no-op success (there is no recorded flag; a terminal stage
         // failure is the 502 EltmImportException instead). Accepted PoC
         // limits, the same stance as the rest of this API's request
-        // bodies: no size cap on `text` and no import concurrency limit
-        // (each import is one extraction one-shot plus one minutes-long
-        // writer loop).
+        // bodies: no size cap on `text` or the images and no import
+        // concurrency limit (each import is one extraction one-shot plus
+        // one minutes-long writer loop).
         post("/import") {
             val request = call.receive<EltmImportRequest>()
-            val text = request.text.trim()
-            if (text.isEmpty()) throw BadRequestException("text must not be blank")
+            val text = request.text?.trim().orEmpty()
+            // the image data URLs are parsed (and 400'd when malformed)
+            // inside the service, before any LLM call — the same pattern
+            // as ChatService.prepareRun
+            val imageDataUrls = request.images.map { it.dataUrl }
+            if (text.isEmpty() && imageDataUrls.isEmpty()) {
+                throw BadRequestException("text and/or images must be present")
+            }
             // "today" bound once: the future-date guard below and the default
             // reference date must agree even if the request straddles midnight
             val today = LocalDate.now()
@@ -180,7 +187,7 @@ fun Route.registerEltmEndpoints(
             }
             try {
                 val referenceDate = date ?: today
-                memoryExtractionService.processUserText(text, referenceDate)
+                memoryExtractionService.processUserImport(text, imageDataUrls, referenceDate)
             } catch (e: IllegalStateException) {
                 throw EltmImportException(failureChainMessages(e).joinToString("\nCaused by: "), e)
             }

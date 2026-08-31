@@ -30,9 +30,9 @@ import kotlin.test.*
  * directly — the sentinel skip, the fail-fast capability check, and the
  * failure semantics that must fail the run instead of silently losing
  * memories (a retry re-extracts and the writer deduplicates). Also pins
- * [MemoryExtractionService.processUserText], the `/api/eltm/import` entry
+ * [MemoryExtractionService.processUserImport], the `/api/eltm/import` entry
  * point running the same extractor over one synthetic anchored message
- * before writing.
+ * (caller-supplied text and/or images) before writing.
  */
 class MemoryExtractionServiceTest : DbTestBase() {
 
@@ -269,22 +269,23 @@ Rules:
     }
 
     @Test
-    fun `the text extractor prompt describes one provided text without conversation-only rules`() {
-        val prompt = MemoryExtractionService.renderExtractorSystemPrompt(ExtractionInput.TEXT)
+    fun `the import extractor prompt describes the provided input without conversation-only rules`() {
+        val prompt = MemoryExtractionService.renderExtractorSystemPrompt(ExtractionInput.USER_IMPORT)
         // the fake-hand dispatch prefix (see the pipeline tests) must hold
         assertTrue(
-            prompt.startsWith("You're extracting memories from a piece of text the user provided"),
+            prompt.startsWith("You're extracting memories from a submission the user provided"),
             prompt,
         )
-        // the anchor mechanics stay, reworded for a single text
+        // the anchor mechanics stay, reworded for one submitted input
+        // (text and, when present, attached images)
         assertTrue(prompt.contains("<meta><sent-at>"), prompt)
-        assertTrue(prompt.contains("the text's reference time"), prompt)
+        assertTrue(prompt.contains("the input's reference time"), prompt)
         assertTrue(prompt.contains("never resolve against \"now\""), prompt)
         // the input-neutral focus list and fact rules survive verbatim
         assertTrue(prompt.contains("Focus on:"), prompt)
         assertTrue(prompt.contains("replace pronouns with the entity name or \"the user\""), prompt)
-        assertTrue(prompt.contains("same language as the text"), prompt)
-        assertTrue(prompt.contains("Cover the whole text"), prompt)
+        assertTrue(prompt.contains("same language as the text and images"), prompt)
+        assertTrue(prompt.contains("Cover the whole input"), prompt)
         assertTrue(
             prompt.contains(
                 "When nothing is worth remembering, output sentence " +
@@ -299,7 +300,7 @@ Rules:
     }
 
     @Test
-    fun `processUserText anchors the text as one synthetic user message at the reference date`() = runBlocking {
+    fun `processUserImport anchors the input as one synthetic user message at the reference date`() = runBlocking {
         val eltm = testPostgresEltmService(FakeHand())
         val hand = FakeHand(
             runScript = { request ->
@@ -313,12 +314,12 @@ Rules:
             },
         )
         val extractor = service(hand, eltm)
-        extractor.processUserText("I like coffee", LocalDate.parse("2026-01-01"))
+        extractor.processUserImport("I like coffee", emptyList(), LocalDate.parse("2026-01-01"))
 
         assertEquals(2, hand.requests.size, "extractor run + one writer run")
         assertTrue(
-            hand.requests[0].systemPrompt!!.startsWith("You're extracting memories from a piece of text"),
-            "the import extraction uses the text-flavored prompt: ${hand.requests[0].systemPrompt}",
+            hand.requests[0].systemPrompt!!.startsWith("You're extracting memories from a submission"),
+            "the import extraction uses the user-import-flavored prompt: ${hand.requests[0].systemPrompt}",
         )
         // the extraction one-shot received the text as ONE user message
         // carrying its reference-date anchor (relative dates resolve
@@ -353,28 +354,151 @@ Rules:
     }
 
     @Test
-    fun `processUserText skips the writer when the extraction answers the sentinel`() = runBlocking {
+    fun `processUserImport skips the writer when the extraction answers the sentinel`() = runBlocking {
         val eltm = testPostgresEltmService(FakeHand())
         val hand = FakeHand(runScript = { textRunFlow("Nothing worth remember.") })
         val extractor = service(hand, eltm)
-        extractor.processUserText("we just chatted about the weather", LocalDate.parse("2026-01-01"))
+        extractor.processUserImport("we just chatted about the weather", emptyList(), LocalDate.parse("2026-01-01"))
         assertEquals(1, hand.requests.size, "only the extractor run happens")
         assertTrue(TestDb.allEltmNotes().isEmpty(), "a sentinel extraction must not write the ELTM")
     }
 
     @Test
-    fun `processUserText no-ops a blank or pasted-sentinel text without an LLM call`() = runBlocking {
+    fun `processUserImport no-ops a blank or pasted-sentinel text without an LLM call`() = runBlocking {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         val extractor = service(hand)
         // a blank text (the route 400s first; the service guards
         // defensively) and a pasted sentinel — exact or near-miss, the
         // tolerant match (see MemoryExtractionService.isNothingToRemember)
         // — are all silent no-ops without any LLM call
-        extractor.processUserText("   ", LocalDate.parse("2026-01-01"))
-        extractor.processUserText("Nothing worth remember.", LocalDate.parse("2026-01-01"))
-        extractor.processUserText("nothing worth remember", LocalDate.parse("2026-01-01"))
+        extractor.processUserImport("   ", emptyList(), LocalDate.parse("2026-01-01"))
+        extractor.processUserImport("Nothing worth remember.", emptyList(), LocalDate.parse("2026-01-01"))
+        extractor.processUserImport("nothing worth remember", emptyList(), LocalDate.parse("2026-01-01"))
         assertTrue(hand.requests.isEmpty(), "no LLM call for a blank text or a pasted sentinel")
         assertTrue(TestDb.allEltmNotes().isEmpty(), "a no-op import must not write the ELTM")
+    }
+
+    @Test
+    fun `processUserImport passes the text and images to the extractor as one synthetic message`() = runBlocking {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = FakeHand(
+            runScript = { request ->
+                when {
+                    request.systemPrompt?.startsWith("You're extracting") == true -> textRunFlow("User likes coffee")
+                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
+                        writerRunFlow(eltm)
+
+                    else -> error("unexpected run: ${request.systemPrompt}")
+                }
+            },
+        )
+        val extractor = service(hand, eltm)
+        extractor.processUserImport(
+            "I like coffee",
+            listOf("data:image/png;base64,AAAA"),
+            LocalDate.parse("2026-01-01"),
+        )
+
+        assertEquals(2, hand.requests.size, "extractor run + one writer run")
+        // the synthetic input message carries the reference-date anchor, the
+        // text and the parsed image attachment (composer order: text, then
+        // images), followed by the extraction instruction
+        val messages = hand.requests[0].messages
+        assertEquals(2, messages.size, "the synthetic input message + the extraction instruction")
+        val parts = messages[0].parts
+        assertTrue(ContextInjection().hasMetaPart(messages[0]), "the anchor is prepended")
+        assertEquals(ChatMessagePart.Text("I like coffee"), parts[1], "the text follows the anchor untouched")
+        val attachment = assertIs<ChatMessagePart.Attachment>(parts[2])
+        assertEquals(AttachmentKind.Image, attachment.kind, "the data URL parses into an image attachment")
+        assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
+        assertEquals("image/png", attachment.mimeType)
+        // the extracted facts reach the writer and land in the ELTM diary
+        assertTrue(
+            TestDb.allEltmNotes().map { it.note }.contains("likes coffee"),
+            "the extracted fact must be recorded into the ELTM diary",
+        )
+    }
+
+    @Test
+    fun `processUserImport runs the extraction for a blank text when images are attached`() = runBlocking {
+        // images must never be silently skipped: an images-only import (no
+        // text) runs the pipeline exactly like a text import
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = FakeHand(
+            runScript = { request ->
+                when {
+                    request.systemPrompt?.startsWith("You're extracting") == true -> textRunFlow("User likes coffee")
+                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
+                        writerRunFlow(eltm)
+
+                    else -> error("unexpected run: ${request.systemPrompt}")
+                }
+            },
+        )
+        val extractor = service(hand, eltm)
+        extractor.processUserImport("   ", listOf("data:image/png;base64,AAAA"), LocalDate.parse("2026-01-01"))
+        assertEquals(2, hand.requests.size, "the images force the extractor + writer runs")
+        // no text part: the synthetic message carries only the anchor + the attachment
+        val parts = hand.requests[0].messages[0].parts
+        assertTrue(ContextInjection().hasMetaPart(hand.requests[0].messages[0]), "the anchor is prepended")
+        assertIs<ChatMessagePart.Attachment>(parts[1])
+        assertTrue(
+            TestDb.allEltmNotes().map { it.note }.contains("likes coffee"),
+            "the extracted fact must be recorded into the ELTM diary",
+        )
+    }
+
+    @Test
+    fun `processUserImport runs the extraction for a pasted sentinel when images are attached`() = runBlocking {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = FakeHand(runScript = { textRunFlow("Nothing worth remember.") })
+        val extractor = service(hand, eltm)
+        // the sentinel skips the WRITE only: with images attached, the
+        // extraction must still run (the images may be worth remembering)
+        extractor.processUserImport(
+            "Nothing worth remember.",
+            listOf("data:image/png;base64,AAAA"),
+            LocalDate.parse("2026-01-01"),
+        )
+        assertEquals(1, hand.requests.size, "the extraction runs despite the sentinel text")
+        assertTrue(TestDb.allEltmNotes().isEmpty(), "a sentinel extraction must not write the ELTM")
+    }
+
+    @Test
+    fun `processUserImport fails fast when the model cannot see the images`() = runBlocking {
+        val hand = FakeHand(runScript = { error("the LLM must not be called") })
+        val textOnly = model("bifrost/cerebras/gpt-oss-120b")
+        val extractor = service(hand, extractModel = textOnly)
+        // a text-only extraction model with an attached image: the
+        // capability mismatch is a configuration error
+        // (memory.eltm.extractionModel) and must fail the import, not
+        // silently skip the images
+        val e = assertFailsWith<ModelCapabilityException> {
+            extractor.processUserImport(
+                "look at this",
+                listOf("data:image/png;base64,AAAA"),
+                LocalDate.parse("2026-01-01"),
+            )
+        }
+        assertTrue(
+            e.message!!.contains("image"),
+            "the error should name the unsupported kind: ${e.message}"
+        )
+        assertTrue(hand.requests.isEmpty(), "no LLM call for an incapable model")
+    }
+
+    @Test
+    fun `processUserImport rejects a malformed image data URL without an LLM call`() = runBlocking {
+        val hand = FakeHand(runScript = { error("the LLM must not be called") })
+        val extractor = service(hand)
+        // the same parseImageDataUrl contract ChatService.prepareRun uses:
+        // a malformed data URL is a client error before any LLM call
+        listOf("not-a-data-url", "data:text/plain;base64,AAAA", "data:image/png;base64,!!!").forEach { url ->
+            assertFailsWith<ChatValidationException> {
+                extractor.processUserImport("text", listOf(url), LocalDate.parse("2026-01-01"))
+            }
+        }
+        assertTrue(hand.requests.isEmpty(), "no LLM call for a malformed data URL")
     }
 
     @Test

@@ -15,7 +15,6 @@ import info.skyblond.daapu.db.AdvisoryChatLock
 import info.skyblond.daapu.db.AdvisoryChatLockManager
 import info.skyblond.daapu.db.AdvisoryLockConflictException
 import info.skyblond.daapu.db.AdvisoryLockPoolExhaustedException
-import kotlin.io.encoding.Base64
 
 /**
  * A malformed chat-run or history-edit request: the client can fix it, so
@@ -334,28 +333,8 @@ class ChatService(
         } ?: chatToolProvider
         val parts = mutableListOf<ChatMessagePart>()
         if (trimmed.isNotBlank()) parts += ChatMessagePart.Text(trimmed)
-        imageDataUrls.forEach { parts += parseImagePart(it) }
+        imageDataUrls.forEach { parts += parseImageDataUrl(it) }
         return ChatRunSetup(chatId, resolvedModel, parts, persona, toolProvider)
-    }
-
-    /**
-     * Serialize a data URL (`data:image/png;base64,...`) into a neutral image
-     * attachment part.
-     */
-    private fun parseImagePart(dataUrl: String): ChatMessagePart.Attachment {
-        val match = dataUrlRegex.matchEntire(dataUrl.trim())
-            ?: throw ChatValidationException("Invalid image data URL")
-        val mimeType = match.groupValues[1]
-        val base64 = match.groupValues[2].filterNot { it.isWhitespace() }
-        // validate early so a malformed payload fails with a clear 400 instead
-        // of an opaque gateway error mid-stream
-        runCatching { Base64.decode(base64) }
-            .getOrElse { throw ChatValidationException("Invalid base64 in image data URL") }
-        return ChatMessagePart.Attachment(
-            kind = AttachmentKind.Image,
-            content = AttachmentContent.Base64(base64),
-            mimeType = mimeType,
-        )
     }
 
     /**
@@ -456,15 +435,5 @@ class ChatService(
         )
     }
 
-    companion object {
-        // `.+` with DOT_MATCHES_ALL: data URLs may fold base64 across lines
-        // (semantically `[\s\S]+`). Display-side mirror: DATA_URL_RE in
-        // frontend/src/lib/display.ts — update both patterns together
-        // (that copy only prunes non-image parts from the optimistic bubble;
-        // this one is authoritative).
-        private val dataUrlRegex = Regex(
-            """^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$""",
-            RegexOption.DOT_MATCHES_ALL,
-        )
-    }
+    companion object
 }
