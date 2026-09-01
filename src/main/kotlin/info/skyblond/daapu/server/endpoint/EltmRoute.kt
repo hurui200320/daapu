@@ -1,5 +1,10 @@
 package info.skyblond.daapu.server.endpoint
 
+import info.skyblond.daapu.agent.chat.AttachmentContent
+import info.skyblond.daapu.agent.chat.AttachmentKind
+import info.skyblond.daapu.agent.chat.ChatMessagePart
+import info.skyblond.daapu.agent.chat.ChatValidationException
+import info.skyblond.daapu.agent.chat.imageMimeTypeRegex
 import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.server.EltmImportRequest
@@ -13,6 +18,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
+import kotlin.io.encoding.Base64
 
 /** Default page size of the browse-only `/api/eltm` list routes. */
 private const val DEFAULT_ELTM_PAGE_LIMIT = 100
@@ -41,8 +47,8 @@ class EltmImportException(message: String, cause: Throwable) : RuntimeException(
 
 /**
  * The `/api/eltm` routes: the browse-only reads over [EltmService] plus the
- * ONE write endpoint, `POST /import`, feeding caller-supplied text and/or
- * images through [memoryExtractionService] (both the extraction one-shot
+ * ONE write endpoint, `POST /import`, feeding caller-supplied text/image
+ * parts through [memoryExtractionService] (both the extraction one-shot
  * and the writer run inside `MemoryExtractionService.processUserImport`;
  * the same extractor/writer pair the discard pipeline uses — the ELTM is
  * otherwise written only by that pipeline).
@@ -136,36 +142,77 @@ fun Route.registerEltmEndpoints(
                     .map { it.toDto() }
             )
         }
-        // the manual write path: caller-supplied text and/or images (raw
-        // notes, prose or pre-digested facts, plus image attachments) run
-        // through MemoryExtractionService.processUserImport — the memory
-        // extraction one-shot first (first-person pronouns → "the user",
-        // relative dates resolve against `date`/today; the extraction model
-        // must support vision when images are attached), then the
-        // extractor's fact batch goes through the ELTM writer tool loop
-        // exactly like the discard pipeline's does. The request blocks for
-        // both stages (minutes are normal; the same blocking-LLM precedent
-        // as deleteChat's extraction). No chat lock: nothing here touches
-        // the chats table, and the ELTM store already tolerates the
-        // extraction pipeline's concurrent writers (the writer deduplicates
-        // recorded content, so a retry after a failure never duplicates
-        // entries). Response: 201 Created with an EMPTY body — a pasted
-        // skip sentinel or an empty extraction is an indistinguishable
-        // no-op success (there is no recorded flag; a terminal stage
-        // failure is the 502 EltmImportException instead). Accepted PoC
-        // limits, the same stance as the rest of this API's request
-        // bodies: no size cap on `text` or the images and no import
-        // concurrency limit (each import is one extraction one-shot plus
-        // one minutes-long writer loop).
+        // the manual write path: caller-supplied text/image parts in the
+        // user-message wire shape (raw notes, prose or pre-digested facts,
+        // plus image attachments — an email or a document imports with its
+        // interleaving intact) run through
+        // MemoryExtractionService.processUserImport — the memory extraction
+        // one-shot first (first-person pronouns → "the user", relative
+        // dates resolve against `date`/today; the extraction model must
+        // support vision when images are attached), then the extractor's
+        // fact batch goes through the ELTM writer tool loop exactly like
+        // the discard pipeline's does. The request blocks for both stages
+        // (minutes are normal; the same blocking-LLM precedent as
+        // deleteChat's extraction). No chat lock: nothing here touches the
+        // chats table, and the ELTM store already tolerates the extraction
+        // pipeline's concurrent writers (the writer deduplicates recorded
+        // content, so a retry after a failure never duplicates entries).
+        // Response: 201 Created with an EMPTY body — a pasted skip sentinel
+        // or an empty extraction is an indistinguishable no-op success
+        // (there is no recorded flag; a terminal stage failure is the 502
+        // EltmImportException instead). Accepted PoC limits, the same
+        // stance as the rest of this API's request bodies: no size cap on
+        // the parts and no import concurrency limit (each import is one
+        // extraction one-shot plus one minutes-long writer loop).
         post("/import") {
             val request = call.receive<EltmImportRequest>()
-            val text = request.text?.trim().orEmpty()
-            // the image data URLs are parsed (and 400'd when malformed)
-            // inside the service, before any LLM call — the same pattern
-            // as ChatService.prepareRun
-            val imageDataUrls = request.images.map { it.dataUrl }
-            if (text.isEmpty() && imageDataUrls.isEmpty()) {
-                throw BadRequestException("text and/or images must be present")
+            // the polymorphic decode accepts any ChatMessagePart the wire
+            // can carry; only text and IMAGE attachments are importable —
+            // everything else is a client error before any LLM call
+            val parts = request.parts.map { part ->
+                when (part) {
+                    is ChatMessagePart.Text -> part
+                    is ChatMessagePart.Attachment -> {
+                        if (part.kind != AttachmentKind.Image) {
+                            throw BadRequestException(
+                                "only image attachments can be imported, got ${part.kind}"
+                            )
+                        }
+                        // the same image-MIME shape the chat-send data-URL
+                        // regex enforces (see imageMimeTypeRegex)
+                        if (imageMimeTypeRegex.matchEntire(part.mimeType) == null) {
+                            throw BadRequestException(
+                                "attachment mimeType must be image/*, got '${part.mimeType}'"
+                            )
+                        }
+                        // parity with parseImageDataUrl (the chat-send path,
+                        // see agent/chat/ImageAttachments.kt): strip the
+                        // payload's whitespace like that path does and
+                        // validate up front — a malformed base64 payload is
+                        // a clear 400 here, not an opaque gateway error
+                        // mid-run (the hand forwards the payload verbatim),
+                        // and the STRIPPED value travels on so the wire
+                        // carries no folded payloads on either path
+                        val content = part.content as? AttachmentContent.Base64
+                            ?: throw BadRequestException("only base64 attachment content can be imported")
+                        val base64 = content.base64.filterNot { it.isWhitespace() }
+                        runCatching { Base64.decode(base64) }
+                            .getOrElse { throw ChatValidationException("Invalid base64 in image attachment") }
+                        part.copy(content = AttachmentContent.Base64(base64))
+                    }
+
+                    else -> throw BadRequestException(
+                        "only text and image attachment parts can be imported, got ${part.javaClass.simpleName}"
+                    )
+                }
+            }
+            // blank text parts carry no content: dropped before the
+            // emptiness check, exactly like the old single-text shape
+            // trimmed the text first (MemoryExtractionService drops them
+            // again when building the synthetic message)
+            val meaningful = parts.filterNot { it is ChatMessagePart.Text && it.text.isBlank() }
+            if (meaningful.isEmpty()) {
+                throw BadRequestException("at least one non-blank text part or image must be present")
             }
             // "today" bound once: the future-date guard below and the default
             // reference date must agree even if the request straddles midnight
@@ -187,7 +234,7 @@ fun Route.registerEltmEndpoints(
             }
             try {
                 val referenceDate = date ?: today
-                memoryExtractionService.processUserImport(text, imageDataUrls, referenceDate)
+                memoryExtractionService.processUserImport(meaningful, referenceDate)
             } catch (e: IllegalStateException) {
                 throw EltmImportException(failureChainMessages(e).joinToString("\nCaused by: "), e)
             }

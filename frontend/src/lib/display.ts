@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatMessagePart } from './types'
+import type { ChatAttachmentPart, ChatMessage, ChatMessagePart } from './types'
 
 /**
  * Pure display-assembly helpers: they derive UI facts from the message
@@ -9,9 +9,10 @@ import type { ChatMessage, ChatMessagePart } from './types'
 
 /*
  * Mirror of the backend's data-URL validation — `dataUrlRegex` in
- * src/main/kotlin/info/skyblond/daapu/agent/chat/ChatService.kt
- * (`^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$`), plus its post-match
- * handling: trim the URL, strip whitespace from the base64 payload.
+ * src/main/kotlin/info/skyblond/daapu/agent/chat/ImageAttachments.kt
+ * (`^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$`, the image-MIME half shared
+ * as `imageMimeTypeRegex`), plus its post-match handling: trim the URL,
+ * strip whitespace from the base64 payload.
  * UPDATE BOTH PATTERNS TOGETHER. This copy is display-only (it prunes
  * non-image parts from the OPTIMISTIC user bubble; the request still
  * carries the raw URL and the backend performs the authoritative check),
@@ -89,13 +90,16 @@ export function messageSpacing(messages: ChatMessage[], i: number): string {
 }
 
 /**
- * Parse an image data URL into the backend-neutral attachment shape for
- * DISPLAY only (the optimistic user message). Mirrors the server-side regex:
- * non-image MIME types and non-data URLs yield null (the part is dropped
- * from the optimistic bubble; the request still carries the raw data URL,
- * where the backend performs the authoritative validation).
+ * Parse an image data URL into the backend-neutral attachment shape (used
+ * for the optimistic user bubble AND the ELTM import's wire parts). Mirrors
+ * the server-side regex: non-image MIME types and non-data URLs yield null.
+ * The null means "skip" either way, but the validation story differs per
+ * caller: the optimistic bubble simply drops the part (the chat-send request
+ * still carries the raw data URL, where the backend performs the
+ * authoritative validation), while the ELTM import sends the CONVERTED part,
+ * validated by the route's attachment checks (see EltmRoute.kt).
  */
-export function dataUrlToImagePart(dataUrl: string): ChatMessagePart | null {
+export function dataUrlToImagePart(dataUrl: string): ChatAttachmentPart | null {
   const match = DATA_URL_RE.exec(dataUrl.trim())
   if (!match) return null
   return {

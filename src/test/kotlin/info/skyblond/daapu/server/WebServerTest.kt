@@ -660,33 +660,34 @@ class WebServerTest : DbTestBase() {
         },
     )
 
-    /**
-     * The import request body, serialized through the real DTO. A null
-     * [text] is omitted (`explicitNulls = false`), so images-only bodies
-     * are exercised the way a client would send them.
-     */
-    private fun importBody(
-        text: String? = "",
-        images: List<String> = emptyList(),
-        date: String? = null,
-    ): String = json.encodeToString(
-        EltmImportRequest(
-            text = text,
-            images = images.map { ImagePart(it) },
-            date = date,
-        )
+    private fun importText(text: String) = ChatMessagePart.Text(text)
+
+    private fun importImage(base64: String = "AAAA") = ChatMessagePart.Attachment(
+        kind = AttachmentKind.Image,
+        content = AttachmentContent.Base64(base64),
+        mimeType = "image/png",
     )
 
+    /**
+     * The import request body, serialized through the real DTO (the
+     * polymorphic parts render with the `type` discriminator, exactly the
+     * way a client would send them).
+     */
+    private fun importBody(
+        parts: List<ChatMessagePart> = emptyList(),
+        date: String? = null,
+    ): String = json.encodeToString(EltmImportRequest(parts = parts, date = date))
+
     @Test
-    fun `eltm import rejects a blank text without images with 400`() {
+    fun `eltm import rejects an empty or blank-parts request with 400`() {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
             listOf(
                 """{}""",
-                """{"text":""}""",
-                """{"text":"   "}""",
-                """{"images":[]}""",
+                """{"parts":[]}""",
+                """{"parts":[{"type":"text","text":""}]}""",
+                """{"parts":[{"type":"text","text":"   "}]}""",
             ).forEach { body ->
                 val response = client.post("/api/eltm/import") {
                     contentType(ContentType.Application.Json)
@@ -704,9 +705,9 @@ class WebServerTest : DbTestBase() {
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
             listOf(
-                importBody("User likes coffee", date = "2026/01/01"),
-                importBody("User likes coffee", date = "not-a-date"),
-                importBody("User likes coffee", date = "2099-01-01"),
+                importBody(listOf(importText("User likes coffee")), date = "2026/01/01"),
+                importBody(listOf(importText("User likes coffee")), date = "not-a-date"),
+                importBody(listOf(importText("User likes coffee")), date = "2099-01-01"),
             ).forEach { body ->
                 val response = client.post("/api/eltm/import") {
                     contentType(ContentType.Application.Json)
@@ -730,7 +731,7 @@ class WebServerTest : DbTestBase() {
             val before = LocalDate.now()
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("I like coffee"))
+                setBody(importBody(listOf(importText("I like coffee"))))
             }
             val after = LocalDate.now()
             assertEquals(HttpStatusCode.Created, response.status)
@@ -797,7 +798,7 @@ class WebServerTest : DbTestBase() {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("I like coffee", date = "2026-01-01"))
+                setBody(importBody(listOf(importText("I like coffee")), date = "2026-01-01"))
             }
             assertEquals(HttpStatusCode.Created, response.status)
             // the reference date also anchors the synthetic text message, so
@@ -843,7 +844,7 @@ class WebServerTest : DbTestBase() {
             listOf("Nothing worth remember.", "nothing worth remember").forEach { paste ->
                 val response = client.post("/api/eltm/import") {
                     contentType(ContentType.Application.Json)
-                    setBody(importBody(paste))
+                    setBody(importBody(listOf(importText(paste))))
                 }
                 assertEquals(HttpStatusCode.Created, response.status, "paste: $paste")
             }
@@ -864,7 +865,7 @@ class WebServerTest : DbTestBase() {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("we just chatted about the weather"))
+                setBody(importBody(listOf(importText("we just chatted about the weather"))))
             }
             assertEquals(HttpStatusCode.Created, response.status)
         }
@@ -887,7 +888,7 @@ class WebServerTest : DbTestBase() {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("we just chatted about the weather"))
+                setBody(importBody(listOf(importText("we just chatted about the weather"))))
             }
             assertEquals(HttpStatusCode.Created, response.status)
         }
@@ -906,7 +907,7 @@ class WebServerTest : DbTestBase() {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("I like coffee"))
+                setBody(importBody(listOf(importText("I like coffee"))))
             }
             assertEquals(HttpStatusCode.BadGateway, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -929,7 +930,7 @@ class WebServerTest : DbTestBase() {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody("I like coffee"))
+                setBody(importBody(listOf(importText("I like coffee"))))
             }
             assertEquals(HttpStatusCode.BadGateway, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -943,7 +944,7 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import passes attached images to the extractor`() {
+    fun `eltm import passes interleaved parts to the extractor in order`() {
         val eltm = testPostgresEltmService(FakeHand())
         val hand = importHand(eltm)
         testApplication {
@@ -952,17 +953,20 @@ class WebServerTest : DbTestBase() {
                 contentType(ContentType.Application.Json)
                 setBody(
                     importBody(
-                        "I like coffee",
-                        images = listOf("data:image/png;base64,AAAA"),
+                        listOf(
+                            importText("I like coffee"),
+                            importImage(),
+                            importText("Also, I switched from editor A to editor B yesterday."),
+                        )
                     )
                 )
             }
             assertEquals(HttpStatusCode.Created, response.status)
             assertEquals("", response.bodyAsText(), "201 Created carries no body")
             assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
-            // the synthetic input message carries the anchor, the text and
-            // the parsed image attachment (composer order), followed by the
-            // extraction instruction
+            // the synthetic input message carries the anchor and then the
+            // parts VERBATIM in the given order, followed by the extraction
+            // instruction
             val extractionMessages = hand.requests[0].messages
             assertEquals(2, extractionMessages.size, "the synthetic input message + the extraction instruction")
             assertTrue(
@@ -970,11 +974,16 @@ class WebServerTest : DbTestBase() {
                 "the synthetic message carries its reference-date anchor",
             )
             val parts = extractionMessages[0].parts
-            assertEquals(ChatMessagePart.Text("I like coffee"), parts[1], "the text follows the anchor untouched")
+            assertEquals(ChatMessagePart.Text("I like coffee"), parts[1], "the first text follows the anchor untouched")
             val attachment = parts[2] as ChatMessagePart.Attachment
-            assertEquals(AttachmentKind.Image, attachment.kind, "the data URL parses into an image attachment")
+            assertEquals(AttachmentKind.Image, attachment.kind)
             assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
             assertEquals("image/png", attachment.mimeType)
+            assertEquals(
+                ChatMessagePart.Text("Also, I switched from editor A to editor B yesterday."),
+                parts[3],
+                "the trailing text keeps its place after the image",
+            )
         }
         // the writer run landed the fact in the ELTM diary
         val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
@@ -987,11 +996,11 @@ class WebServerTest : DbTestBase() {
         val hand = importHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            // no text field at all: images alone are a valid import (the
+            // no text part at all: images alone are a valid import (the
             // extraction model in the test config supports vision)
             val response = client.post("/api/eltm/import") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(text = null, images = listOf("data:image/png;base64,AAAA")))
+                setBody(importBody(listOf(importImage())))
             }
             assertEquals(HttpStatusCode.Created, response.status)
             assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
@@ -1007,25 +1016,61 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import rejects a malformed image data URL with 400 and no LLM call`() {
+    fun `eltm import rejects a malformed or non-image part with 400 and no LLM call`() {
         val eltm = testPostgresEltmService(FakeHand())
         val hand = importHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             listOf(
-                "not-a-data-url",
-                "data:text/plain;base64,AAAA",
-                "data:image/png;base64,!!!",
-            ).forEach { url ->
+                // a non-image attachment kind (the wire carries video too)
+                """{"parts":[{"type":"attachment","kind":"video","content":{"type":"base64","base64":"AAAA"},"mimeType":"video/mp4"}]}""",
+                // an image-kind attachment with a non-image mimeType
+                """{"parts":[{"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"text/plain"}]}""",
+                // image-kind attachments with a mimeType the data-URL regex
+                // would reject (see imageMimeTypeRegex): a bare "image/" and
+                // one carrying parameters
+                """{"parts":[{"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"image/"}]}""",
+                """{"parts":[{"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"image/png;charset=x"}]}""",
+                // an undecodable base64 payload (parity with parseImageDataUrl)
+                """{"parts":[{"type":"attachment","kind":"image","content":{"type":"base64","base64":"!!!"},"mimeType":"image/png"}]}""",
+                // a part type no import accepts (tool reasoning)
+                """{"parts":[{"type":"reasoning","content":"r"}]}""",
+            ).forEach { body ->
                 val response = client.post("/api/eltm/import") {
                     contentType(ContentType.Application.Json)
-                    setBody(importBody("look at this", images = listOf(url)))
+                    setBody(body)
                 }
-                assertEquals(HttpStatusCode.BadRequest, response.status, "data URL: $url")
+                assertEquals(HttpStatusCode.BadRequest, response.status, "body: $body")
             }
         }
-        assertTrue(hand.requests.isEmpty(), "a rejected image must not call the LLM")
+        assertTrue(hand.requests.isEmpty(), "a rejected part must not call the LLM")
         assertTrue(runBlocking { TestDb.allEltmNotes() }.isEmpty(), "nothing recorded")
+    }
+
+    @Test
+    fun `eltm import folds whitespace out of base64 payloads like the chat-send path`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = importHand(eltm)
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            // parity with parseImageDataUrl (see EltmRoute.kt): a folded
+            // payload is accepted AND forwarded stripped — the same base64
+            // the chat-send data-URL path would accept, so the wire never
+            // carries whitespace on either path
+            val response = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(importBody(listOf(importImage("aGVs\nbG8= "))))
+            }
+            assertEquals(HttpStatusCode.Created, response.status)
+            val attachment = hand.requests[0].messages[0].parts.last() as ChatMessagePart.Attachment
+            assertEquals(
+                AttachmentContent.Base64("aGVsbG8="),
+                attachment.content,
+                "the payload travels stripped",
+            )
+        }
+        val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
+        assertTrue(notes.contains("likes coffee"), "the folded-payload import must reach the ELTM")
     }
 
     @Test

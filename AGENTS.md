@@ -297,8 +297,9 @@ frontend + Node/TS "hand-pi" service.
     later. The extractor prompt has two flavors (`ExtractionInput`):
     `CONVERSATION` for the discard pipeline (pinned byte-identical) and
     `USER_IMPORT` for the import path (the `/api/eltm/import` entry point is
-    `MemoryExtractionService.processUserImport` over caller-supplied text
-    and/or image data URLs; shared body, no conversation-only lines). The
+    `MemoryExtractionService.processUserImport` over caller-supplied
+    ordered text/image parts — ONE synthetic message, order preserved;
+    shared body, no conversation-only lines). The
     import route answers 201 Created with an
     empty body — a pasted sentinel or an empty extraction is an
     indistinguishable no-op success (no `recorded` flag).
@@ -397,15 +398,20 @@ frontend + Node/TS "hand-pi" service.
     (names + validity badge, lazy notes). Load-more pagination (100
     rows/page, oldest first); resync refetches the loaded window
     (appends survive, server-side shrinks shrink). Import tab (the manual
-    write path): a piece of text (raw notes, prose, pre-digested facts)
-    and/or image attachments (the composer's 8 MB/downscale pipeline,
-    paste + paperclip) + optional reference date POSTed to
-    `POST /api/eltm/import`, which runs
-    `MemoryExtractionService.processUserImport` (one synthetic message
+    write path): ordered text/image blocks — an email or a document
+    imports with its interleaving intact — (raw notes, prose, pre-digested
+    facts; images via the composer's 8 MB/downscale pipeline, paste +
+    paperclip) + optional reference date POSTed to
+    `POST /api/eltm/import` as `parts` (the user-message wire shape,
+    `ChatMessagePart`; only `text` and image `attachment` parts pass),
+    which runs
+    `MemoryExtractionService.processUserImport` (one synthetic message in
+    part order,
     anchored at the reference date — first-person pronouns → "the user",
     relative dates resolve against it — then the writer tool loop on the
     extracted facts; the extraction model must support vision for images;
-    400 on blank text without images/bad data URLs/bad/future dates;
+    400 on blank parts without images/non-image attachments/undecodable
+    base64/bad/future dates;
     attached images are never silently skipped — a sentinel text with
     images still runs; blocked, minutes are normal; success — including a
     pasted "Nothing worth remember." sentinel (tolerant match) or an empty

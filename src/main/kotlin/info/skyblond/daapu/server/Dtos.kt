@@ -1,5 +1,6 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.memory.eltm.EltmEntity
 import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmRelationship
@@ -75,18 +76,20 @@ data class ModelInfo(
  * through `MemoryExtractionService.processUserImport` (the memory
  * extraction one-shot — first-person pronouns resolve to "the user",
  * relative dates resolve against [date] — then the same ELTM writer the
- * extraction pipeline uses). [text] may be anything — raw notes, prose,
+ * extraction pipeline uses). [parts] is an ORDERED list of text and image
+ * parts in the user-message wire shape (`agent/chat/ChatMessage.kt`), so
+ * email/document-shaped input imports with its interleaving intact (see
+ * `EltmRoute.kt` for the part validation: only `text` parts and image
+ * `attachment` parts pass). Text may be anything — raw notes, prose,
  * pre-digested facts (the frontend's Import tab carries the full notice);
- * [images] are image attachments read by the extraction model, so it must
- * support vision (a mismatch fails the import with a clear 400). At least
- * one of [text] and [images] must be present. [date] is the optional
- * reference date (`YYYY-MM-DD`); the server's today when absent, and never
- * a future day.
+ * images are read by the extraction model, so it must support vision (a
+ * mismatch fails the import with a clear 400). At least one non-blank text
+ * part or image must be present. [date] is the optional reference date
+ * (`YYYY-MM-DD`); the server's today when absent, and never a future day.
  */
 @Serializable
 data class EltmImportRequest(
-    val text: String? = null,
-    val images: List<ImagePart> = emptyList(),
+    val parts: List<ChatMessagePart> = emptyList(),
     val date: String? = null,
 )
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { ChevronDown, ChevronRight, Info, Paperclip, X } from '@lucide/svelte'
+  import { ChevronDown, ChevronRight, ChevronUp, GripVertical, Info, Paperclip, Type, X } from '@lucide/svelte'
   import {
     ELTM_DRILLDOWN_LIMIT,
     getEntityNotes,
@@ -15,8 +15,11 @@
   import { PagedTab } from '../paged-tab.svelte'
   import { router } from '../router.svelte'
   import { toastStore } from '../toast-store.svelte'
+  import { hasImportInput, moveToSlot, newTextPart, wireImportParts, type ImportDraftPart } from '../import-form'
   import { browserEncoder, imageFileToDataUrl, MAX_IMAGE_BYTES } from '../image-attachment'
-  import { errMsg } from '../utils'
+  import { cn, errMsg } from '../utils'
+  import ImageLightbox from './ImageLightbox.svelte'
+  import { lightboxTriggerBtn } from './ui/message-styles'
   import Button from './ui/button.svelte'
 
   type Tab = 'entities' | 'relationships' | 'import'
@@ -120,14 +123,16 @@
     }
   }
 
-  // ---- Import tab (the manual write path): caller-supplied text and/or
-  // images run through the memory extraction one-shot and then the ELTM
+  // ---- Import tab (the manual write path): caller-supplied text/image
+  // parts run through the memory extraction one-shot and then the ELTM
   // writer agent. The request blocks for both stages (minutes are normal),
   // so the form is its own state machine — `importing` disables everything
   // and the busy label explains the wait. Lives in the always-mounted
-  // view, so the draft survives switching tabs/chats mid-write.
-  let text = $state('')
-  let images = $state<{ dataUrl: string }[]>([])
+  // view, so the draft survives switching tabs/chats mid-write. The draft
+  // is an ordered part list (text blocks + images, see import-form.ts for
+  // the pure draft logic), so an email or a document can be imported with
+  // its interleaving intact.
+  let parts = $state<ImportDraftPart[]>([newTextPart()])
   let importDate = $state('')
   let importing = $state(false)
   let importError = $state<string | null>(null)
@@ -142,6 +147,29 @@
   // server no-ops a text matching this sentence without any LLM call
   const NOTHING_TO_REMEMBER = 'Nothing worth remember.'
 
+  // whether anything meaningful (a non-blank text block or an image) is
+  // drafted — gates the submit button, mirroring the server's 400
+  let hasInput = $derived(hasImportInput(parts))
+
+  // the placeholder example text rides the FIRST text block only
+  let firstTextIndex = $derived(parts.findIndex((p) => p.kind === 'text'))
+
+  // the image currently open in the fullscreen viewer, plus the trigger
+  // button to restore focus to on close (the MessageItem pattern)
+  let lightboxSrc = $state<string | null>(null)
+  let lightboxTrigger: HTMLButtonElement | null = null
+
+  function openLightbox(e: MouseEvent, src: string) {
+    lightboxTrigger = e.currentTarget as HTMLButtonElement | null
+    lightboxSrc = src
+  }
+
+  function closeLightbox() {
+    lightboxSrc = null
+    lightboxTrigger?.focus()
+    lightboxTrigger = null
+  }
+
   // the reference date picker's ceiling: the browser's local today, rendered
   // the way the backend parses it (YYYY-MM-DD, see EltmRoute.kt). Page-load
   // time only — the server's future-date 400 stays the authority.
@@ -152,23 +180,23 @@
     return `${d.getFullYear()}-${mm}-${dd}`
   })()
 
-  // two snippets of casual first-person notes — the shape the textarea
-  // encourages (any prose works; see the notice above it)
+  // two snippets of casual first-person notes — the shape the first text
+  // block encourages (any prose works; see the notice above it)
   const TEXT_PLACEHOLDER =
     'I went to Paris the week of May 15, 2026 for a work conference. It was amazing!\n' +
     'Also, I switched from editor A to editor B yesterday because of plugin compatibility.'
 
   async function submitImport() {
     if (importing) return
-    const batch = text.trim()
-    if (batch.length === 0 && images.length === 0) return
+    const wireParts = wireImportParts(parts)
+    if (wireParts.length === 0) return
     importing = true
     importError = null
     importSuccess = false
     try {
       // no date = the server's today as the reference date (it only
       // anchors the extraction — the writer always stamps the import day)
-      await importEltm(batch, images, importDate || undefined)
+      await importEltm(wireParts, importDate || undefined)
       importSuccess = true
       // the server no longer reports whether anything was recorded (the
       // response is a bare 201): a no-op (a pasted sentinel or an empty
@@ -179,8 +207,7 @@
       // path: unlike refresh() it keeps the loaded pages and the expanded
       // cards' drill-downs (a from-scratch load would collapse them back to
       // page 1) and leaves the lists untouched when a fetch fails.
-      text = ''
-      images = []
+      parts = [newTextPart()]
       await resync()
     } catch (e) {
       importError = errMsg(e)
@@ -189,17 +216,105 @@
     }
   }
 
-  // ---- Image attachments (the composer's pipeline, see image-attachment.ts
-  // and Composer.svelte): per-file budget + downscale ladder, thumbnails
-  // with remove buttons, paste onto the textarea. No per-chat draft here —
-  // the form is the single always-mounted import tab.
+  // ---- Part blocks: add/remove/reorder. Images ride the composer's
+  // pipeline (see image-attachment.ts and Composer.svelte): per-file
+  // budget + downscale ladder. No per-chat draft here — the form is the
+  // single always-mounted import tab.
 
   /** Per-attachment byte budget (lives with the pipeline in image-attachment.ts). */
   const toastTooLarge = (name: string) =>
     toastStore.push(`"${name}" is too large (max ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB)`, 'error')
 
-  async function addFiles(files: FileList | null) {
+  function addTextPart() {
+    parts = [...parts, newTextPart()]
+  }
+
+  function removePart(index: number) {
+    parts = parts.filter((_, i) => i !== index)
+  }
+
+  // ---- Drag to reorder (native HTML5 DnD — mouse only): a block's
+  // wrapper is `draggable` only while its handle button is pressed
+  // (armed), so text selection inside the textareas is never hijacked.
+  // The arm is cleared by any completed press (the window-level pointerup
+  // in the markup), covering a release outside the block or the window.
+  // Touch devices and keyboard users reorder with the toolbar buttons
+  // instead (HTML5 DnD does not work on touch; the buttons reveal on
+  // focus-within for keyboard users); the buttons share [reorder] with
+  // the drop handler.
+
+  /** The block being dragged, the highlighted drop target, and the block whose handle is armed. */
+  let dragIndex = $state<number | null>(null)
+  let dropIndex = $state<number | null>(null)
+  let draggableIndex = $state<number | null>(null)
+
+  function startDrag(e: DragEvent, index: number) {
+    if (importing) {
+      e.preventDefault()
+      return
+    }
+    dragIndex = index
+    dropIndex = null
+    // Firefox refuses to start the drag without payload data
+    e.dataTransfer?.setData('text/plain', String(index))
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+  }
+
+  function onDragOver(e: DragEvent, index: number) {
+    if (dragIndex === null || dragIndex === index) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    dropIndex = index
+  }
+
+  function onDragLeave(e: DragEvent, index: number) {
+    if (dragIndex === null) return
+    // moving across the block's children fires dragleave on the wrapper
+    // too: only clear the highlight when the pointer left the block
+    const wrapper = e.currentTarget as HTMLElement
+    if (e.relatedTarget && wrapper.contains(e.relatedTarget as Node)) return
+    if (dropIndex === index) dropIndex = null
+  }
+
+  function onDrop(e: DragEvent, index: number) {
+    e.preventDefault()
+    const from = dragIndex
+    endDrag()
+    if (from === null || from === index) return
+    // the drop lands in the pointer's half of the target: top half inserts
+    // before it, bottom half after it (a drop carrying no block — e.g. a
+    // native text drag out of a textarea — is swallowed by the
+    // preventDefault above)
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const after = e.clientY > rect.top + rect.height / 2
+    reorder(from, after ? index + 1 : index)
+  }
+
+  function endDrag() {
+    dragIndex = null
+    dropIndex = null
+    draggableIndex = null
+  }
+
+  /**
+   * Reorder via the shared slot mover (see [moveToSlot] in import-form.ts
+   * for the slot coordinates and the no-op rule). The touch-only move
+   * buttons share it: up = slot i-1, down = slot i+2; a no-op returns the
+   * same array, so reactivity only fires on real moves.
+   */
+  function reorder(from: number, to: number) {
+    const next = moveToSlot(parts, from, to)
+    if (next !== parts) parts = next
+  }
+
+  /**
+   * Convert picked/pasted image files into draft image parts, inserted at
+   * `insertAt` (the end when omitted — the paperclip appends; a paste
+   * inside a text block inserts right after that block).
+   */
+  async function addFiles(files: FileList | null, insertAt?: number) {
     if (!files) return
+    const added: ImportDraftPart[] = []
     for (const file of Array.from(files)) {
       const result = await imageFileToDataUrl(file, browserEncoder)
       if (!result.ok) {
@@ -210,24 +325,48 @@
         // 'not-an-image': silently skipped, like the paperclip's image/* filter
         continue
       }
-      images = [...images, { dataUrl: result.dataUrl }]
+      added.push({ kind: 'image', dataUrl: result.dataUrl })
+    }
+    if (added.length > 0) {
+      const at = insertAt ?? parts.length
+      parts = [...parts.slice(0, at), ...added, ...parts.slice(at)]
     }
     // a stale input value fires no change event for a re-pick of the same
     // file: reset it so the picker always works
     if (fileInput) fileInput.value = ''
   }
 
-  function onPaste(e: ClipboardEvent) {
+  /**
+   * Paste image files while focused in a text block: they insert right
+   * after that block. Consumes the paste (a clipboard carrying both files
+   * and text would otherwise also insert the text into the textarea) and
+   * stops the propagation, so the form-level paste handler does not ALSO
+   * append at the end.
+   */
+  function pasteInTextBlock(e: ClipboardEvent, index: number) {
+    // frozen while importing like every other control: a mid-run paste
+    // would mutate a draft the success reset then silently wipes
+    if (importing) {
+      e.preventDefault()
+      return
+    }
     const files = e.clipboardData?.files
     if (!files || files.length === 0) return
-    // consume the paste: a clipboard carrying both files and text would
-    // otherwise also insert the text into the textarea
     e.preventDefault()
-    void addFiles(files)
+    e.stopPropagation()
+    void addFiles(files, index + 1)
   }
 
-  function removeImage(index: number) {
-    images = images.filter((_, i) => i !== index)
+  /** Paste image files anywhere else on the form: they append at the end (frozen while importing — see pasteInTextBlock). */
+  function pasteOnForm(e: ClipboardEvent) {
+    if (importing) {
+      e.preventDefault()
+      return
+    }
+    const files = e.clipboardData?.files
+    if (!files || files.length === 0) return
+    e.preventDefault()
+    void addFiles(files)
   }
 
   // Fetch + poll only while the view is visible (it stays mounted, CSS-hidden
@@ -294,6 +433,11 @@
     </div>
   {/if}
 {/snippet}
+
+<!-- any completed press anywhere clears the drag arm (see the reorder
+     comment in the script): it must never outlive its own mousedown, even
+     when the pointer was released outside the block or the window -->
+<svelte:window onpointerup={() => (draggableIndex = null)} />
 
 <div class="h-full overflow-y-auto">
   <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-8">
@@ -466,18 +610,20 @@
         </div>
       {/if}
 
-      <!-- The notice: the endpoint runs the text and attached images
-           through the memory extraction one-shot and then the ELTM writer
-           agent (see EltmRoute.kt), so any prose works — the notice pins
-           what the extraction stage does with it. -->
+      <!-- The notice: the endpoint runs the text and image parts
+           (in the order the user arranges them) through the memory
+           extraction one-shot and then the ELTM writer agent (see
+           EltmRoute.kt), so any prose works — the notice pins what the
+           extraction stage does with it. -->
       <div class="rounded-2xl border border-border/30 bg-muted/60 p-4 shadow-sm backdrop-blur-md">
         <div class="flex items-start gap-2">
           <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div class="min-w-0 text-sm text-muted-foreground">
             <p>
-              Import runs your text and attached images through the memory extractor, then the ELTM writer agent records
-              the extracted facts into the store. You can paste general text, raw notes, or summarized facts, and attach
-              images:
+              Import runs the text and image blocks below, in the order you arrange them, through the memory extractor,
+              then the ELTM writer agent records the extracted facts into the store. You can paste general text, raw
+              notes, or summarized facts, and interleave images — an email or a document can go in as alternating text
+              and images:
             </p>
             <ul class="mt-2 list-disc space-y-1 pl-5">
               <li>First-person pronouns ("I", "my") are automatically mapped to "the user"</li>
@@ -492,48 +638,128 @@
                 Images are read by the extraction model — the server's extraction model must support vision, or the
                 import fails with a clear error
               </li>
-              <li>A text that is just "{NOTHING_TO_REMEMBER}" is treated as empty (no-op)</li>
+              <li>A text that is just "{NOTHING_TO_REMEMBER}" (with no images) is treated as empty (no-op)</li>
             </ul>
           </div>
         </div>
       </div>
 
-      <div class="flex flex-col gap-3">
-        {#if images.length > 0}
-          <div class="flex flex-wrap gap-2">
-            {#each images as image, i (image)}
-              <div class="relative">
-                <img src={image.dataUrl} alt={`attachment ${i + 1}`} class="h-20 rounded-xl object-cover" />
+      <!-- the part form: ordered text/image part blocks plus the toolbar;
+           pasting image files inside a text block inserts them right after
+           it, anywhere else appends at the end -->
+      <div class="flex flex-col gap-1" onpaste={pasteOnForm}>
+        <div class="flex flex-col gap-1" role="list">
+          {#each parts as part, i (part)}
+            <!-- the drag handlers are pointer-gesture glue without a
+                 wrapper-level ARIA pattern (touch devices and keyboard users
+                 reorder via the toolbar buttons instead) -->
+            <div
+              role="listitem"
+              class={cn(
+                'rounded-xl',
+                dragIndex !== null && dropIndex === i && 'ring-2 ring-ring/60',
+                dragIndex === i && 'opacity-50',
+              )}
+              draggable={draggableIndex === i && !importing}
+              ondragstart={(e) => startDrag(e, i)}
+              ondragover={(e) => onDragOver(e, i)}
+              ondragleave={(e) => onDragLeave(e, i)}
+              ondrop={(e) => onDrop(e, i)}
+              ondragend={endDrag}
+            >
+              {#if part.kind === 'text'}
+                <textarea
+                  class="min-h-24 w-full resize-y whitespace-pre-wrap break-words rounded-xl border border-border/30 bg-background/60 p-3 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
+                  aria-label="Text block to import"
+                  placeholder={firstTextIndex === i ? TEXT_PLACEHOLDER : ''}
+                  bind:value={part.text}
+                  onpaste={(e) => pasteInTextBlock(e, i)}
+                  disabled={importing}></textarea>
+              {:else}
+                <!-- @container caps the image at a 1:1 ratio with the block's
+                     width (max-h = 100cqw): a long mobile screenshot cannot
+                     blow up the height, while wide images keep their natural
+                     contained height. Click opens the fullscreen viewer. -->
+                <div class="@container">
+                  <button
+                    type="button"
+                    class={lightboxTriggerBtn(
+                      'block w-full rounded-xl border border-border/30 bg-background/60 p-2 disabled:pointer-events-none disabled:opacity-50',
+                    )}
+                    onclick={(e) => openLightbox(e, part.dataUrl)}
+                    disabled={importing}
+                    title="view image"
+                  >
+                    <img
+                      src={part.dataUrl}
+                      alt={`attachment ${i + 1}`}
+                      class="max-h-[100cqw] w-full object-contain"
+                      draggable="false"
+                    />
+                  </button>
+                </div>
+              {/if}
+              <div class="group flex items-center justify-end gap-1 pb-1">
                 <button
                   type="button"
-                  onclick={() => removeImage(i)}
-                  title="remove attachment"
+                  onmousedown={() => (draggableIndex = i)}
                   disabled={importing}
-                  class="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-sm transition hover:bg-destructive/90"
+                  title="drag to reorder"
+                  class="inline-flex size-7 cursor-grab items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 no-hover:hidden"
                 >
-                  <X class="size-3" />
+                  <GripVertical class="size-4" />
+                </button>
+                <button
+                  type="button"
+                  onclick={() => reorder(i, i - 1)}
+                  disabled={importing || i === 0}
+                  title="move up"
+                  class="hidden size-7 no-hover:flex group-focus-within:flex items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
+                >
+                  <ChevronUp class="size-4" />
+                </button>
+                <button
+                  type="button"
+                  onclick={() => reorder(i, i + 2)}
+                  disabled={importing || i === parts.length - 1}
+                  title="move down"
+                  class="hidden size-7 no-hover:flex group-focus-within:flex items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
+                >
+                  <ChevronDown class="size-4" />
+                </button>
+                <button
+                  type="button"
+                  onclick={() => removePart(i)}
+                  disabled={importing}
+                  title="remove block"
+                  class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
+                >
+                  <X class="size-4" />
                 </button>
               </div>
-            {/each}
-          </div>
-        {/if}
-        <textarea
-          class="min-h-40 w-full resize-y whitespace-pre-wrap break-words rounded-xl border border-border/30 bg-background/60 p-3 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
-          aria-label="Text to import"
-          placeholder={TEXT_PLACEHOLDER}
-          bind:value={text}
-          onpaste={onPaste}
-          disabled={importing}></textarea>
-        <div class="flex flex-wrap items-center justify-between gap-3">
+            </div>
+          {/each}
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
           <div class="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onclick={addTextPart}
+              disabled={importing}
+              title="add a text block"
+              class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
+            >
+              <Type class="size-4" /> text
+            </button>
             <button
               type="button"
               onclick={() => fileInput?.click()}
               disabled={importing}
-              title="attach image (or paste)"
-              class="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted-foreground/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+              title="add image (or paste)"
+              class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
             >
-              <Paperclip class="size-4" />
+              <Paperclip class="size-4" /> image
             </button>
             <input
               bind:this={fileInput}
@@ -554,15 +780,15 @@
               />
             </label>
           </div>
-          <Button
-            size="sm"
-            disabled={importing || (text.trim().length === 0 && images.length === 0)}
-            onclick={() => void submitImport()}
-          >
+          <Button size="sm" disabled={importing || !hasInput} onclick={() => void submitImport()}>
             {importing ? 'Writing to the ELTM… this can take a while' : 'Import'}
           </Button>
         </div>
       </div>
+
+      {#if lightboxSrc}
+        <ImageLightbox src={lightboxSrc} alt="imported image" onClose={closeLightbox} />
+      {/if}
     {/if}
   </div>
 </div>

@@ -1,4 +1,5 @@
 import type {
+  ChatAttachmentPart,
   ChatInfo,
   ChatMessage,
   EntityViewDto,
@@ -7,6 +8,7 @@ import type {
   Persona,
   RelationshipViewDto,
   StreamEvent,
+  TextPart,
 } from './types'
 
 async function parseError(res: Response): Promise<string> {
@@ -216,21 +218,26 @@ export async function getRelationshipNotes(id: number, limit = ELTM_DRILLDOWN_LI
 
 // ---- ELTM import (the manual write path; see the `#/eltm` Import tab) ----
 
+/** An import part: the text/image subset of the chat message parts. */
+export type EltmImportPart = TextPart | ChatAttachmentPart
+
 /**
  * Feed caller-supplied material into the ELTM import pipeline (`POST
  * /api/eltm/import`): the memory extraction one-shot normalizes it into
  * the extractor's fact tone (first-person pronouns resolve to "the user",
  * relative dates resolve against `date`), then the ELTM writer agent
- * records the extracted facts (see EltmRoute.kt). `text` may be anything —
- * raw notes, prose, pre-digested facts — and `images` are image data URLs
- * read by the extraction model (the server's extraction model must support
- * vision; the Import tab carries the full notice). At least one of `text`
- * and `images` must be present. `date` is the optional reference date
- * (`YYYY-MM-DD`); omit it for the server's today. The request blocks for
- * both stages (minutes are normal). Success — including a pasted skip
- * sentinel or an empty extraction, an indistinguishable no-op — answers
- * 201 Created with an empty body (there is no recorded flag).
+ * records the extracted facts (see EltmRoute.kt). `parts` are ordered
+ * text/image parts (see EltmImportPart) — an email or a document imports
+ * with its interleaving intact; text may be anything — raw notes, prose,
+ * pre-digested facts — and images are read by the extraction model (the
+ * server's extraction model must support vision; the Import tab carries
+ * the full notice). At least one non-blank text part or image must be
+ * present. `date` is the optional reference date (`YYYY-MM-DD`); omit it
+ * for the server's today. The request blocks for both stages (minutes are
+ * normal). Success — including a pasted skip sentinel or an empty
+ * extraction, an indistinguishable no-op — answers 201 Created with an
+ * empty body (there is no recorded flag).
  */
-export async function importEltm(text: string, images: { dataUrl: string }[], date?: string): Promise<void> {
-  await request('/api/eltm/import', jsonInit('POST', { text, images, date }))
+export async function importEltm(parts: EltmImportPart[], date?: string): Promise<void> {
+  await request('/api/eltm/import', jsonInit('POST', { parts, date }))
 }
