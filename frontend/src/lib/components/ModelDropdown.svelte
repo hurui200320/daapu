@@ -13,16 +13,28 @@
   const filtered = $derived(
     query.trim() ? store.models.filter((m) => m.id.toLowerCase().includes(query.trim().toLowerCase())) : store.models,
   )
+
+  // Model ids are `{provider.id}/{modelId}` (agent/model/LLM.kt) and the
+  // provider id cannot contain a slash, so the first one splits provider
+  // from model id; a slash-free id falls back to a single-line render.
+  const splitModelId = (id: string): { provider: string; model: string } => {
+    const slash = id.indexOf('/')
+    return slash === -1 ? { provider: '', model: id } : { provider: id.slice(0, slash), model: id.slice(slash + 1) }
+  }
 </script>
 
 <DropdownMenu.Root onOpenChange={(open: boolean) => open && (query = '')}>
-  <DropdownMenu.Trigger disabled={store.streaming} class={dropdownChipTrigger('max-w-36', 'sm:max-w-52')} title="model">
+  <DropdownMenu.Trigger
+    disabled={store.streaming}
+    class={dropdownChipTrigger('max-w-36', 'sm:max-w-52')}
+    title={store.selectedModel || 'model'}
+  >
     <Package class="size-3.5 shrink-0 text-muted-foreground" />
     <span class="min-w-0 truncate">{store.selectedModel || 'model'}</span>
     <ChevronDown class="size-3.5 shrink-0 text-muted-foreground" />
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>
-    <DropdownMenu.Content class={dropdownContentPanel('w-72')} align="end" sideOffset={6}>
+    <DropdownMenu.Content class={dropdownContentPanel('w-80')} align="end" sideOffset={6}>
       <div class="relative mb-1">
         <Search class="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <input
@@ -33,11 +45,20 @@
       </div>
       <div class="max-h-72 overflow-y-auto">
         {#each filtered as model (model.id)}
+          {@const parts = splitModelId(model.id)}
           <DropdownMenu.Item
             class={dropdownItemClass('justify-between', 'cursor-pointer')}
             onSelect={() => (store.selectedModel = model.id)}
+            title={model.id}
           >
-            <span class="truncate">{model.id}</span>
+            <span class="flex min-w-0 flex-col">
+              {#if parts.provider}
+                <span class="text-[0.65rem] uppercase leading-tight tracking-wide text-muted-foreground">
+                  {parts.provider}
+                </span>
+              {/if}
+              <span class="truncate leading-tight">{parts.model}</span>
+            </span>
             {#if model.vision}
               <span class="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">vision</span>
             {/if}
