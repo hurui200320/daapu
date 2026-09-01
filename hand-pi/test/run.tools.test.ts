@@ -9,6 +9,8 @@ import {
   TINY_PNG,
   TOKEN,
   TOOL_CALLS,
+  TOOL_CALLS_STOP_FINISH,
+  TOOL_CALLS_STOP_FINISH_WITH_TEXT,
   TOOL_CALL_ONE,
   STOP,
   WEATHER_TOOLS,
@@ -111,6 +113,114 @@ describe("POST /v1/run tool rounds", () => {
       expect(toolMessages[0]).toMatchObject({ tool_call_id: "call_1", content: "Berlin: 22C" });
       expect(toolMessages[1]).toMatchObject({ content: "fetched" });
     });
+  });
+
+  it("executes tool calls relayed under a stop finish (Gemini gateway quirk)", async () => {
+    // the no-text variant of the stop-finish quirk (see
+    // [upgradeStopWithToolCalls] in src/run.ts).
+    const upstream = await startFakeUpstream([TOOL_CALLS_STOP_FINISH, STOP]);
+    const callback = await startFakeCallback();
+    callback.scriptedToolList({ tools: WEATHER_TOOLS });
+    callback.scriptedGate(2, (request) =>
+      request.name === "search"
+        ? { parts: [{ type: "text", text: "Berlin: 22C" }], isError: false }
+        : { parts: [{ type: "text", text: "fetched" }], isError: false },
+    );
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { status, events } = await run(
+        port(),
+        runRequest(upstream.port, { toolListUrl: callback.toolsUrl, toolCallbackUrl: callbackUrl }),
+      );
+      expect(status).toBe(200);
+      // the round ran as a tool round and the run continued to the next
+      // round's stop — NOT an empty_response error
+      expect(eventNames(events)).toEqual([
+        "reasoning_delta",
+        "assistant_message",
+        "tool_call",
+        "tool_call",
+        "tool_result",
+        "tool_result",
+        "text_delta",
+        "assistant_message",
+        "done",
+      ]);
+      // the assembled message reports the truthful tool_calls finish
+      const firstMessage = (
+        events[1]?.data as { message: { finishReason: string; parts: { type: string; tool: string }[] } }
+      ).message;
+      expect(firstMessage.finishReason).toBe("tool_calls");
+      expect(firstMessage.parts.filter((part) => part.type === "tool_call").map((part) => part.tool)).toEqual([
+        "search",
+        "fetch",
+      ]);
+      // both calls reached the brain for execution (matched by call identity:
+      // parallel arrival order is not guaranteed — see scriptedGate)
+      const requests = callback.requests();
+      expect(requests).toHaveLength(2);
+      const searchRequest = requests.find((request) => request.name === "search");
+      const fetchRequest = requests.find((request) => request.name === "fetch");
+      expect(searchRequest).toMatchObject({ runId: "run-test", id: "call_1", args: { query: "hello" } });
+      expect(fetchRequest).toMatchObject({ args: { url: "x" } });
+    });
+  });
+
+  it("executes tool calls relayed under a stop finish even when text precedes them", async () => {
+    // the with-text variant of the stop-finish quirk (see
+    // [upgradeStopWithToolCalls] in src/run.ts).
+    const upstream = await startFakeUpstream([TOOL_CALLS_STOP_FINISH_WITH_TEXT, STOP]);
+    const callback = await startFakeCallback();
+    callback.scriptedToolList({ tools: WEATHER_TOOLS });
+    callback.scripted({ parts: [{ type: "text", text: "Berlin: 22C" }], isError: false });
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { status, events } = await run(
+        port(),
+        runRequest(upstream.port, { toolListUrl: callback.toolsUrl, toolCallbackUrl: callbackUrl }),
+      );
+      expect(status).toBe(200);
+      // the round ran as a tool round and the run continued to the next
+      // round's stop — NOT a "stop" finish with dangling tool_call parts
+      expect(eventNames(events)).toEqual([
+        "text_delta",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "text_delta",
+        "assistant_message",
+        "done",
+      ]);
+      // the assembled message reports the truthful tool_calls finish and
+      // keeps both the text and the call
+      const firstMessage = (events[1]?.data as { message: { finishReason: string; parts: unknown[] } }).message;
+      expect(firstMessage.finishReason).toBe("tool_calls");
+      expect(firstMessage.parts).toEqual([
+        { type: "text", text: "Let me check." },
+        { type: "tool_call", id: "call_1", tool: "search", args: { query: "hello" } },
+      ]);
+      // the call reached the brain for execution
+      expect(callback.requests()[0]).toMatchObject({ runId: "run-test", id: "call_1", name: "search" });
+    });
+  });
+
+  it("fails a tool-less run with internal when the model strays tool calls under a stop finish", async () => {
+    // the tool-less variant (no toolListUrl/toolCallbackUrl — the one-shots):
+    // the stray call cannot execute, so the run fails `internal`, the same
+    // outcome as a stray call under a proper tool_calls finish (see
+    // [upgradeStopWithToolCalls] in src/run.ts)
+    const upstream = await startFakeUpstream([TOOL_CALLS_STOP_FINISH]);
+    try {
+      const { status, events } = await run(port(), runRequest(upstream.port));
+      expect(status).toBe(200);
+      expect(eventNames(events)).toEqual(["reasoning_delta", "assistant_message", "error"]);
+      expect(events[2]?.data).toMatchObject({
+        type: "internal",
+        message: "tool calls received but no toolCallbackUrl",
+      });
+      // the failure ended the run: one LLM round, no retry
+      expect(upstream.connectionCount()).toBe(1);
+    } finally {
+      await upstream.close();
+    }
   });
 
   it("runs a tool-less request without ever contacting the brain", async () => {

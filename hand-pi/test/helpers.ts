@@ -250,6 +250,100 @@ export const TOOL_CALL_ONE: FakeScenario = [
   { end: true },
 ];
 
+/**
+ * TOOL_CALLS with the final chunk tagged `finish_reason: "stop"` instead of
+ * `"tool_calls"` — the real-world Gemini gateway quirk (reasoning + tool
+ * call deltas relayed under a stop finish), see [upgradeStopWithToolCalls]
+ * in `src/run.ts`.
+ */
+export const TOOL_CALLS_STOP_FINISH: FakeScenario = [
+  { chunk: { id: "c1", choices: [{ index: 0, delta: { reasoning: "thinking " } }] } },
+  {
+    chunk: {
+      id: "c1",
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "search", arguments: "" } }],
+          },
+        },
+      ],
+    },
+  },
+  { chunk: { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"quer' } }] } }] } },
+  {
+    chunk: {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              { index: 0, function: { arguments: 'y": "hel' } },
+              { index: 1, type: "function", function: { name: "fetch", arguments: "" } },
+            ],
+          },
+        },
+      ],
+    },
+  },
+  {
+    chunk: {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              { index: 0, function: { arguments: 'lo"}' } },
+              { index: 1, function: { arguments: '{"url":"x"}' } },
+            ],
+          },
+        },
+      ],
+    },
+  },
+  {
+    chunk: {
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 40, completion_tokens: 15, total_tokens: 55 },
+    },
+  },
+  { end: true },
+];
+
+/**
+ * TOOL_CALLS_STOP_FINISH with a text block ahead of the calls — the worst
+ * pre-fix variant: the message was assembled as a "stop" assistant message
+ * whose tool_call parts never executed (dangling calls in history), see
+ * [upgradeStopWithToolCalls] in `src/run.ts`.
+ */
+export const TOOL_CALLS_STOP_FINISH_WITH_TEXT: FakeScenario = [
+  { chunk: { id: "c1", choices: [{ index: 0, delta: { content: "Let me check." } }] } },
+  {
+    chunk: {
+      id: "c1",
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "search", arguments: "" } }],
+          },
+        },
+      ],
+    },
+  },
+  { chunk: { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"quer' } }] } }] } },
+  { chunk: { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'y": "hel' } }] } }] } },
+  { chunk: { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'lo"}' } }] } }] } },
+  {
+    chunk: {
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 40, completion_tokens: 15, total_tokens: 55 },
+    },
+  },
+  { end: true },
+];
+
 export const MIDSTREAM_ERROR: FakeScenario = [
   { chunk: { id: "c1", choices: [{ index: 0, delta: { content: "par" } }] } },
   { error: { error: { message: "upstream exploded mid-stream", type: "server_error" } } },

@@ -127,26 +127,22 @@ export async function executeRun(
           outcome = `error:${classification.error.type}`;
           return;
         }
-        const classification = classifyTerminal(
-          "done",
-          roundOutcome.message,
-          request.model.contextWindow,
-          effectiveMaxTokens,
-        );
+        // normalize provider quirks BEFORE classification, so the classifier,
+        // the empty-response guard below, and the assembled finishReason all
+        // read the same message (see [upgradeStopWithToolCalls])
+        const terminal = upgradeStopWithToolCalls(roundOutcome.message);
+        const classification = classifyTerminal("done", terminal, request.model.contextWindow, effectiveMaxTokens);
         if (!classification.ok) {
           // Only `length` reaches here: preserve the partial round for the
           // frontend (spec §3.3 step 3) before failing the run.
-          if (roundOutcome.message.stopReason === "length") {
-            const usage = roundOutcome.message.usage;
+          if (terminal.stopReason === "length") {
+            const usage = terminal.usage;
             // a message without provider-reported usage cannot be assembled
             // (daapu requires usage on every accepted message); the partial
             // is skipped so the classified error survives instead of being
             // replaced by an assembly failure
             if (usage !== undefined && (fullInputTokens(usage) > 0 || (usage.output ?? 0) > 0)) {
-              const partial = assembleAssistantMessage(
-                normalizeToolCallIds(roundOutcome.message),
-                request.model.modelId,
-              );
+              const partial = assembleAssistantMessage(normalizeToolCallIds(terminal), request.model.modelId);
               if (!emit("assistant_message", { message: partial.message })) {
                 return;
               }
@@ -159,7 +155,7 @@ export async function executeRun(
         // a stop with neither text nor tool calls is a deliberate provider
         // answer, not a transient hiccup: retrying the identical prompt
         // would spin forever, so the run fails (like content_filter)
-        if (classification.finishReason === "stop" && !hasText(roundOutcome.message)) {
+        if (classification.finishReason === "stop" && !hasText(terminal)) {
           emit("error", {
             type: "empty_response",
             message: "assistant finished with neither text nor tool calls",
@@ -167,7 +163,7 @@ export async function executeRun(
           outcome = "error:empty_response";
           return;
         }
-        const assembled = assembleAssistantMessage(normalizeToolCallIds(roundOutcome.message), request.model.modelId);
+        const assembled = assembleAssistantMessage(normalizeToolCallIds(terminal), request.model.modelId);
         history.push(assembled.message);
         totalInputTokens += assembled.message.meta?.inputTokens ?? 0;
         totalOutputTokens += assembled.message.meta?.outputTokens ?? 0;
@@ -307,6 +303,24 @@ function normalizeToolCallIds(message: PiAssistantMessage): PiAssistantMessage {
     return block;
   });
   return changed ? { ...message, content } : message;
+}
+
+/**
+ * Upgrades a "stop" finish whose content carries tool calls to "toolUse":
+ * Google Gemini reports finishReason STOP even when it emits function
+ * calls, and translating gateways (e.g. Gemini behind zenmux/bifrost) relay
+ * that verbatim as `finish_reason: "stop"`. pi-ai trusts the wire finish
+ * reason — its own content-based fix-up runs only when NO finish_reason
+ * chunk arrived — so the round loop normalizes here instead, before
+ * classification. The tool-call blocks are the authoritative signal:
+ * without the upgrade the empty-response guard would discard a real tool
+ * call and fail the run.
+ */
+export function upgradeStopWithToolCalls(message: PiAssistantMessage): PiAssistantMessage {
+  if (message.stopReason !== "stop") {
+    return message;
+  }
+  return message.content.some((block) => block.type === "toolCall") ? { ...message, stopReason: "toolUse" } : message;
 }
 
 function hasText(message: PiAssistantMessage): boolean {
