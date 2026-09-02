@@ -31,6 +31,16 @@ class ConfigTest {
         reconnectAttempts = reconnectAttempts, reconnectDelayMs = reconnectDelayMs,
     )
 
+    /**
+     * The REQUIRED hand section interpolated into the inline configs below:
+     * the section and both of its URLs carry no default anymore
+     * (`HandConfig`), so every success-path config must carry it. The
+     * placeholders dial nothing.
+     */
+    private val hand = """
+        "hand": { "baseUrl": "http://127.0.0.1:9", "selfBaseUrl": "http://127.0.0.1:9" },
+    """.trimIndent()
+
     @Test
     fun `a full jsonc config decodes with comments, trailing commas and schema key`() {
         val config = decodeAppConfig(
@@ -94,6 +104,12 @@ class ConfigTest {
                 "title": {
                     "model": "bifrost/t",
                 },
+                // both hand URLs are REQUIRED (no defaults): where this
+                // brain finds the hand, and where the hand finds this brain
+                "hand": {
+                    "baseUrl": "http://127.0.0.1:3100",
+                    "selfBaseUrl": "http://127.0.0.1:8080",
+                },
             }
             """.trimIndent()
         )
@@ -105,6 +121,8 @@ class ConfigTest {
         assertEquals(9090, config.server.port)
         assertEquals("./config.schema.json", config.schema)
         assertEquals("bifrost/t", config.title.model)
+        assertEquals("http://127.0.0.1:3100", config.hand.baseUrl)
+        assertEquals("http://127.0.0.1:8080", config.hand.selfBaseUrl)
 
         // allServers merges the dedicated exa server under its hardcoded
         // namespace (getValue throws if the merge was lost)
@@ -133,6 +151,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": {
                     "url": "jdbc:postgresql:////my//host//db",
                     "user": "postgres",
@@ -161,6 +180,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -174,6 +194,11 @@ class ConfigTest {
         assertTrue(config.mcp.customs.isEmpty())
         assertEquals(setOf(EXA_NAMESPACE), config.mcp.allServers().keys, "only the dedicated exa server by default")
         assertEquals(null, config.mcp.proxy, "no proxy by default")
+        // the hand SECTION is required, but its optional knobs still default
+        assertEquals("dev-token", config.hand.token)
+        assertEquals(64, config.hand.maxRounds)
+        assertEquals(0, config.hand.maxRetries)
+        assertEquals(300_000, config.hand.streamIdleTimeoutMs)
     }
 
     @Test
@@ -181,6 +206,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -210,6 +236,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {
                     "bifrost": { "apiKey": "k1", "baseUrl": "http://h1" },
@@ -237,6 +264,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {
                     "bifrost": {
@@ -296,6 +324,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -375,6 +404,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "unknownFutureKey": true,
@@ -390,6 +420,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                 }
                 """.trimIndent()
@@ -405,6 +436,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -431,6 +463,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -450,6 +483,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": {
@@ -470,6 +504,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": {
@@ -488,6 +523,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -523,6 +559,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": {},
@@ -547,6 +584,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
@@ -560,6 +598,166 @@ class ConfigTest {
             e.message!!.contains("mcp"),
             "the error should name the missing section: ${e.message}"
         )
+    }
+
+    @Test
+    fun `the hand section itself is required at decode`() {
+        // hand has no default: a config without the section at all must fail
+        // at decode (config.schema.json requires "hand" the same way)
+        val e = assertFailsWith<SerializationException> {
+            decodeAppConfig(
+                """
+                {
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("hand"),
+            "the error should name the missing section: ${e.message}"
+        )
+    }
+
+    @Test
+    fun `hand config requires both urls at decode`() {
+        // both endpoints are REQUIRED (no defaults): where this brain finds
+        // the hand (baseUrl) and where the hand finds this brain
+        // (selfBaseUrl) — a config missing either fails at decode
+        val e = assertFailsWith<SerializationException> {
+            decodeAppConfig(
+                """
+                {
+                    "hand": { "selfBaseUrl": "http://127.0.0.1:8080" },
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("baseUrl"),
+            "the error should name the missing field: ${e.message}"
+        )
+        val selfError = assertFailsWith<SerializationException> {
+            decodeAppConfig(
+                """
+                {
+                    "hand": { "baseUrl": "http://127.0.0.1:3100" },
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            selfError.message!!.contains("selfBaseUrl"),
+            "the error should name the missing field: ${selfError.message}"
+        )
+    }
+
+    @Test
+    fun `an invalid hand url fails at decode`() {
+        // decodeAppConfig runs AppConfig.validate() -> hand.validate(): an
+        // INVALID url value (not just a missing field) must fail the boot,
+        // not a mid-run tool callback (the trailing slash would compose
+        // ...//api/hand/tool, a query would swallow the path)
+        val e = assertFailsWith<IllegalArgumentException> {
+            decodeAppConfig(
+                """
+                {
+                    "hand": { "baseUrl": "http://127.0.0.1:3100/", "selfBaseUrl": "http://127.0.0.1:8080" },
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("hand.baseUrl"),
+            "the error should name the offending field: ${e.message}"
+        )
+        val selfError = assertFailsWith<IllegalArgumentException> {
+            decodeAppConfig(
+                """
+                {
+                    "hand": { "baseUrl": "http://127.0.0.1:3100", "selfBaseUrl": "http://127.0.0.1:8080?x=1" },
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            selfError.message!!.contains("hand.selfBaseUrl"),
+            "the error should name the offending field: ${selfError.message}"
+        )
+    }
+
+    @Test
+    fun `hand config validation`() {
+        // both URLs must be non-blank http(s) with a host and no query,
+        // fragment, or trailing slash: the code-owned paths are appended
+        // directly (HandConfig's toolCallbackUrl/toolListUrl), and a query or
+        // fragment would silently swallow them — fail at boot instead
+        HandConfig(baseUrl = "http://127.0.0.1:3100", selfBaseUrl = "http://127.0.0.1:8080").validate()
+        HandConfig(baseUrl = "https://127.0.0.1:3100", selfBaseUrl = "https://127.0.0.1:8080").validate()
+        // a path prefix (e.g. behind a reverse proxy) is fine
+        HandConfig(baseUrl = "http://127.0.0.1:3100/pre", selfBaseUrl = "http://127.0.0.1:8080/pre").validate()
+        for (bad in listOf(
+            "", "  ", "ftp://host", "127.0.0.1:3100", "http://127.0.0.1:3100/",
+            // URI-level problems: no host, a query, a fragment, an illegal character
+            "http:///x", "http://h?x=1", "http://h#f", "http://ho st",
+        )) {
+            val urlError = assertFailsWith<IllegalArgumentException> {
+                HandConfig(baseUrl = bad, selfBaseUrl = "http://127.0.0.1:8080").validate()
+            }
+            assertTrue(urlError.message!!.contains("hand.baseUrl"), urlError.message)
+            val selfError = assertFailsWith<IllegalArgumentException> {
+                HandConfig(baseUrl = "http://127.0.0.1:3100", selfBaseUrl = bad).validate()
+            }
+            assertTrue(selfError.message!!.contains("hand.selfBaseUrl"), selfError.message)
+        }
+    }
+
+    @Test
+    fun `hand callback urls compose the code owned tool paths on selfBaseUrl`() {
+        // the getters must produce exactly the /api-prefixed routes
+        // registered in server/endpoint/HandRoute.kt (see the pointers there)
+        val hand = HandConfig(
+            baseUrl = "https://hand.example:3100",
+            selfBaseUrl = "https://brain.example:8080",
+        )
+        assertEquals("https://brain.example:8080/api/hand/tool", hand.toolCallbackUrl)
+        assertEquals("https://brain.example:8080/api/hand/tools", hand.toolListUrl)
+        // a path prefix (e.g. behind a reverse proxy) carries into the URLs
+        val prefixed = HandConfig(
+            baseUrl = "https://hand.example:3100",
+            selfBaseUrl = "https://brain.example:8080/pre",
+        )
+        assertEquals("https://brain.example:8080/pre/api/hand/tool", prefixed.toolCallbackUrl)
+        assertEquals("https://brain.example:8080/pre/api/hand/tools", prefixed.toolListUrl)
     }
 
     @Test
@@ -691,6 +889,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -710,6 +909,7 @@ class ConfigTest {
         val config = decodeAppConfig(
             """
             {
+                $hand
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -805,6 +1005,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
@@ -869,6 +1070,7 @@ class ConfigTest {
         val decoded = decodeAppConfig(
             """
             {
+                $hand
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -919,6 +1121,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } }
@@ -934,6 +1137,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -958,6 +1162,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -984,6 +1189,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1011,6 +1217,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1124,6 +1331,7 @@ assertTrue(
         val decoded = decodeAppConfig(
             """
             {
+                $hand
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1152,6 +1360,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1166,6 +1375,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1180,6 +1390,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1195,6 +1406,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1277,6 +1489,7 @@ assertTrue(
         val decoded = decodeAppConfig(
             """
             {
+                $hand
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1295,6 +1508,7 @@ assertTrue(
         val decoded = decodeAppConfig(
             """
             {
+                $hand
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1315,6 +1529,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -1328,6 +1543,7 @@ assertTrue(
             decodeAppConfig(
                 """
                 {
+                    $hand
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },

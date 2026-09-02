@@ -58,7 +58,7 @@ data class AppConfig(
     /** Session-title generation (a one-shot pipeline service, see `agent/pipeline/TitleGenerator.kt`). */
     val title: TitleConfig,
     /** The hand-pi execution service. */
-    val hand: HandConfig = HandConfig(),
+    val hand: HandConfig,
     // editor hint declared by config.schema.json and config.example.jsonc;
     // a known field so the strict parser accepts files that carry it
     @SerialName("\$schema")

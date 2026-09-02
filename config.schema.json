@@ -11,7 +11,8 @@
     "mcp",
     "memory",
     "agent",
-    "title"
+    "title",
+    "hand"
   ],
   "properties": {
     "$schema": {
@@ -375,13 +376,21 @@
     "hand": {
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "baseUrl",
+        "selfBaseUrl"
+      ],
       "description": "The hand-pi execution service (hand-pi/): a stateless Node service that owns LLM execution. The token is shared with the hand's tool callbacks into this process. The run-policy knobs are sent with every /v1/run request (the hand holds no defaults).",
       "properties": {
         "baseUrl": {
           "type": "string",
-          "minLength": 1,
-          "default": "http://127.0.0.1:3100",
-          "description": "The hand's base URL."
+          "pattern": "^https?://[^/\\s?#]+(/[^\\s?#]*[^/\\s/?#])?$",
+          "description": "The hand's base URL, e.g. http://127.0.0.1:3100. An http(s) URL with a host and no query, fragment, or whitespace, and no trailing slash — the request paths are appended directly."
+        },
+        "selfBaseUrl": {
+          "type": "string",
+          "pattern": "^https?://[^/\\s?#]+(/[^\\s?#]*[^/\\s/?#])?$",
+          "description": "This brain's base URL as the hand reaches it — deployment-dependent (http://127.0.0.1:<port> in local development, a container/service name inside a docker network). An http(s) URL with a host and no query, fragment, or whitespace, and no trailing slash — the brain composes the code-owned tool-listing and callback paths on it (/api/hand/tools, /api/hand/tool). A path prefix is allowed (e.g. behind a reverse proxy)."
         },
         "token": {
           "type": "string",

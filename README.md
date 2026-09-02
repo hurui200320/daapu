@@ -84,8 +84,9 @@ HAND_PORT=3100 HAND_TOKEN=dev-token npm --prefix hand-pi start   # the hand on h
 ./gradlew run        # ktor API on http://localhost:8080
 ```
 
-The hand's port and token must match the `hand` section of `config.jsonc`
-(see below). In a second terminal, start the frontend dev server:
+The hand's port and token — and this API server's address as the hand
+reaches it (`hand.selfBaseUrl`) — must match the `hand` section of
+`config.jsonc` (see below). In a second terminal, start the frontend dev server:
 
 ```bash
 cd frontend
@@ -119,7 +120,7 @@ cp config.example.jsonc config.jsonc
 | `memory`    | `compactModel` + `eltm` (required)                 | Compaction + external long-term memory (ELTM) settings, see below.   |
 | `agent`     | `investigator` (required): `model` (required), `allowedNamespaces` (required), `maxRounds` (default `150`) | The investigate sub-agent settings, see below. |
 | `title`     | `model` (required), `lastNRound` (default `0`)     | Session-title generation (`POST /api/chats/{id}/title`).             |
-| `hand`      | `baseUrl` (`http://127.0.0.1:3100`), `token` (`dev-token`), `maxRounds` (64), `maxRetries` (0), `streamIdleTimeoutMs` (300000) | The hand-pi execution service endpoint, the shared static token (`HAND_TOKEN`), and the run-policy knobs sent with every run (the hand holds no defaults). |
+| `hand`      | `baseUrl` (required), `selfBaseUrl` (required), `token` (`dev-token`), `maxRounds` (64), `maxRetries` (0), `streamIdleTimeoutMs` (300000) | The hand-pi execution service endpoint (`baseUrl`), where the hand reaches this brain (`selfBaseUrl` — deployment-dependent: localhost in dev, a container/service name in docker), the shared static token (`HAND_TOKEN`), and the run-policy knobs sent with every run (the hand holds no defaults). |
 
 `config.schema.json` is a JSON Schema (draft-07) mirroring the config models
 in `config/Config.kt`; the `"$schema": "./config.schema.json"` entry at the

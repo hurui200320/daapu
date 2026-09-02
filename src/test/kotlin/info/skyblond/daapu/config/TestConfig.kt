@@ -99,4 +99,9 @@ fun testAppConfig() = AppConfig(
         ),
     ),
     title = TitleConfig(model = "bifrost/cerebras/gemma-4-31b"),
+    // port 9 (discard) placeholders: a fake HandClient never dials them
+    hand = HandConfig(
+        baseUrl = "http://127.0.0.1:9",
+        selfBaseUrl = "http://127.0.0.1:9",
+    ),
 )

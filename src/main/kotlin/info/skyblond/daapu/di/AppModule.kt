@@ -63,17 +63,16 @@ fun appModule(config: AppConfig): Module = module {
 
     // the hand-pi client plus the callback wiring (the in-flight run
     // registry the hand's tool callbacks resolve through); the callback and
-    // tool-list URLs are loopback PoC values derived from the server port
+    // tool-list URLs come from `HandConfig` (composed on `hand.selfBaseUrl`,
+    // see there)
     single<HandClient> { HttpHandClient(config.hand.baseUrl, config.hand.token) }
     single<HandCallbackService> { HandCallbackService(config.hand.token) }
     single<HandService> {
         HandService(
             hand = get(),
             handCallback = get(),
-            // TODO: make these two URL configurable
-            //       fine for now, but will break if use multiple container for production
-            toolCallbackUrl = "http://127.0.0.1:${config.server.port}/api/hand/tool",
-            toolListUrl = "http://127.0.0.1:${config.server.port}/api/hand/tools",
+            toolCallbackUrl = config.hand.toolCallbackUrl,
+            toolListUrl = config.hand.toolListUrl,
         )
     } withOptions { onClose { it?.close() } }
 

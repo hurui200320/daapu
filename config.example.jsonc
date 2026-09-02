@@ -278,6 +278,11 @@
   // previous hand-side defaults.
   "hand": {
     "baseUrl": "http://127.0.0.1:3100",
+    // REQUIRED: where the hand reaches THIS brain's API — deployment-
+    // dependent (localhost in local development, a container/service name
+    // inside a docker network). The brain composes the code-owned
+    // /api/hand/tools and /api/hand/tool paths on it — no trailing slash.
+    "selfBaseUrl": "http://127.0.0.1:8080",
     "token": "dev-token",
     // Round cap per /v1/run; 0 = unlimited.
     "maxRounds": 64,
