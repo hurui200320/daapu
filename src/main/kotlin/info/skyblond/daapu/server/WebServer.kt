@@ -57,9 +57,9 @@ fun startWebServer(config: AppConfig) {
     // eager resolution: every fail-fast validation above fires here, never
     // mid-run (the resolved service is what the module below serves)
     koinApp.koin.get<ChatService>()
-    // the background extraction queue worker (the deletion path's async
-    // memory extraction, `memory/eltm/ExtractionQueueWorker.kt`): started
-    // explicitly because it is deliberately NOT reachable from the
+    // the background extraction queue worker (the deletion and compaction
+    // paths' async memory extraction, `memory/eltm/ExtractionQueueWorker.kt`):
+    // started explicitly because it is deliberately NOT reachable from the
     // ChatService graph root — a test resolving the container must not
     // spawn poll loops. Stopped via the container's onClose when the
     // shutdown hook closes the Koin application.

@@ -130,7 +130,9 @@ frontend + Node/TS "hand-pi" service.
       (`agent/pipeline/eltm/EltmWriterService.kt` + 13-tool
       `memory/eltm/EltmToolProvider.kt`, RW; `readOnly` mode = the 5 read tools for
       the investigator; `runCollect` loop, `memory.eltm.writerModel`, cap
-      `maxWriterRounds`). Writer failure fails the run; retry re-extracts
+      `maxWriterRounds`). Writer failure never fails a chat run — every fed
+      path goes through the background extraction queue (the worker logs,
+      the queue retries) or the import route (502); retry re-extracts
       (recorded content is skipped). Exact-match creates are pure reads;
       renames via `refine_entity` (id kept, attachments stay; identical
       (name, category) = no-op, a collision errors → model merges); unique
@@ -269,14 +271,16 @@ frontend + Node/TS "hand-pi" service.
   metadata delegates. Around the loop's set (persona whitelist wraps it)
   and the investigator's set; caps REQUIRED positive (default 40000).
 - **Compaction & memory extraction** (`agent/pipeline/compaction/`,
-  `agent/pipeline/eltm/MemoryExtractionService.kt`, wired in
-  `PersistChatService`, config `memory.*`):
+  `agent/pipeline/eltm/MemoryExtractionService.kt`; compaction is wired in
+  `PersistChatService`, the extraction runs off-path in the background
+  queue's worker, config `memory.*`):
   - Proactive trigger: `currentPromptTokens(chat)` (last assistant's
     `meta.inputTokens` — usage REQUIRED on every hand response) exceeds
     `compactionTriggerFraction × model.contextLength` (per-entry fields,
     e.g. 0.75–0.8; `agent/model/LLM.kt` owns the `[0,1]`/`>=1` contract;
     `0` disables); pending input not counted. Reactive: EVERY
-    `context_exhausted` round compacts + retries — no cap; failure fails
+    `context_exhausted` round compacts + retries — no cap; a failed
+    compaction or enqueue fails
     the run.
   - `compactChat(fullChat, excludeLastNRound)`: sanitizes, re-anchors,
     splits at a user-turn boundary (tool pairs intact; trailing tool
@@ -287,17 +291,19 @@ frontend + Node/TS "hand-pi" service.
     untouched on throw: no user messages → `IllegalArgumentException`;
     failed/blank summary → `IllegalStateException`; blind compactor →
     `ModelCapabilityException` (`memory.compactModel` config error).
-  - `processDiscardedMessages`: sanitize + re-anchor each user message
+  - `processDiscardedMessages` (the extraction queue worker's job body —
+    BOTH the deletion and compaction paths feed it via the queue, so the
+    extraction never runs on the request path): sanitize + re-anchor each
+    user message
     with its own `<meta>` (extractor STATELESS — dates resolve
     per-message). Extractor one-shot (no tools, capability-checked) →
     facts or `Nothing worth remember.` (only skip; blank =
     `empty_response` error); failed extraction or tool calls/no text
-    fails the run. Non-sentinel → ELTM writer (tool loop ≤
+    fails the job. Non-sentinel → ELTM writer (tool loop ≤
     `maxWriterRounds`) — facts go straight to the ELTM, no intermediate
-    store. `upstream` retries with hand backoff; ANY terminal failure
-    fails the run when triggered from compaction (nothing lost; recorded
-    content sticks — no duplicate diary entries); from the deletion queue
-    the worker logs and retries instead. `event_date` = extraction (or
+    store. `upstream` retries with hand backoff; ANY terminal failure is
+    logged by the worker and the queue retries (nothing lost; recorded
+    content sticks — no duplicate diary entries). `event_date` = extraction (or
     compaction) day, never later. The extractor prompt has two flavors
     (`ExtractionInput`):
     `CONVERSATION` for the discard pipeline (pinned byte-identical) and
@@ -308,12 +314,21 @@ frontend + Node/TS "hand-pi" service.
     import route answers 201 Created with an
     empty body — a pasted sentinel or an empty extraction is an
     indistinguishable no-op success (no `recorded` flag).
-  - **Deletion extraction queue** (`memory/eltm/ExtractionQueue.kt` +
+  - **Background extraction queue** (`memory/eltm/ExtractionQueue.kt` +
     `ExtractionQueueWorker.kt` — NOT in `agent.*`: the queue is plumbing,
-    not an agent): `deleteChat` snapshots the history into the
+    not an agent): fed by BOTH paths that drop history —
+    `deleteChat` snapshots the history into the
     `pending_extractions` table (`V3__pending_extractions.sql`) and
-    deletes the chats row right away; N workers
-    (`memory.eltm.queueWorkers`) drain it off the request path. SQS-style
+    deletes the chats row right away, and compaction
+    (`PersistChatService.compactAndEnqueue`) enqueues the dropped messages
+    BEFORE the compacted history is stored (enqueue failure fails the run
+    before the store, so the dropped messages stay; a failed run leaves a
+    benign orphan job — the writer deduplicates). N workers
+    (`memory.eltm.queueWorkers`) drain it off the request path. The claim
+    decodes with `ChatCodec.validateSnapshot` (NOT the stored-chat
+    validation): a drop region is a FRAGMENT that may end mid-turn (a
+    user message) — enforcing chat completeness would poison the queue
+    head with an forever-retrying job. SQS-style
     visibility timeout, one column (`visible_after`, default `now()`):
     claim = SELECT..`FOR UPDATE SKIP LOCKED` + `visible_after = now() +
     jobTimeoutMinutes` in ONE transaction (row lock held only for the

@@ -140,8 +140,9 @@ History compaction and memory extraction (see `AGENTS.md` and
   snapshot) and compacts the history when it exceeds `compactionTriggerFraction`
   of the model's context window (0 disables the proactive path). A round that
   still exhausts the context compacts reactively and retries (every exhaustion
-  triggers a compaction; a compaction that fails or returns a non-clean summary
-  fails the run). `compactionKeepRounds` complete rounds are kept verbatim at
+  triggers a compaction; a compaction that fails, returns a non-clean summary,
+  or cannot enqueue the dropped messages fails the run). `compactionKeepRounds`
+  complete rounds are kept verbatim at
   the tail of a compacted chat; everything older is replaced by one
   `CONTEXT COMPACTION: `-marked summary user message. When the chat has
   fewer rounds than this, the keep count shrinks (down to zero) so an
@@ -154,10 +155,14 @@ History compaction and memory extraction (see `AGENTS.md` and
   cannot fails the run with a clear error (same as the chat model's own
   capability check), and unknown ids fail fast at startup.
 - The extracted facts are written into the ELTM diary directly by the ELTM
-  writer agent (no intermediate short-term store): the extractor
-  summarizes the dropped messages, the writer records them through its
-  tool loop, and a failed write fails the run (a retry re-extracts; the
-  writer skips content that is already recorded).
+  writer agent (no intermediate short-term store): the dropped messages
+  are snapshotted into the background extraction queue
+  (`memory/eltm/ExtractionQueue.kt` — the same queue chat deletion feeds)
+  and a background worker runs the extractor + writer off the request
+  path. A failed extraction retries in the background (unlimited; the
+  writer skips content that is already recorded) — a chat run never waits
+  for, or fails on, the memory work; only the enqueue itself can fail the
+  run (before the store, so the dropped messages stay).
 
 ### ELTM (`memory.eltm`)
 

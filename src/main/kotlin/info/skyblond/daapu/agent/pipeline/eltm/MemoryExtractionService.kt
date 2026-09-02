@@ -29,7 +29,12 @@ import java.time.ZoneId
  *    duplicates diary entries.
  *
  * The two public entry points pair the stages behind one call:
- * [processDiscardedMessages] (the discard pipeline) and
+ * [processDiscardedMessages] (the background extraction queue's job body —
+ * the worker `memory/eltm/ExtractionQueueWorker.kt` feeds it the frozen
+ * history snapshots enqueued by BOTH the chat-deletion path
+ * (`agent/chat/ChatService.deleteChat`) and the compaction path
+ * (`agent/persist/PersistChatService.compactAndEnqueue`), so the memory
+ * work never runs on the request path) and
  * [processUserImport] (the `/api/eltm/import` path, running the same
  * extractor over caller-supplied text/image parts — ONE synthetic
  * message, order preserved — instead of a dropped history; the private
@@ -38,7 +43,7 @@ import java.time.ZoneId
  * fact tone regardless of how the input was written). Both write through
  * [EltmWriterService.writeToEltm].
  *
- * A failure throws and fails the run:
+ * A failure throws:
  * - [info.skyblond.daapu.agent.model.ModelCapabilityException] when the
  *   extraction model cannot process the prompt content (e.g. images with a
  *   text-only model — possible on both paths), which is a configuration
@@ -47,12 +52,12 @@ import java.time.ZoneId
  *   `length` finish) or one producing tool calls or no text;
  * - any terminal writer failure: a classified hand error, an exhausted
  *   transient-retry budget, the `round_limit` cap or an `empty_response`.
- *   A failed write fails the run when triggered from compaction — nothing
- *   is lost (whatever was already recorded sticks: the writer skips
- *   already-recorded content on retry). When triggered from the DELETION
- *   queue (`memory/eltm/ExtractionQueueWorker.kt`), the failure never
- *   reaches the user: the worker logs it and the queue's visibility
- *   timeout retries the job, re-extracting from the frozen snapshot.
+ *   Neither entry point runs on the chat-run request path, so a failure
+ *   never fails a run: the worker logs it and the queue's visibility
+ *   timeout retries the job — re-extracting from the frozen snapshot,
+ *   unlimited (whatever was already recorded sticks: the writer skips
+ *   already-recorded content on retry) — while the import route maps a
+ *   terminal [IllegalStateException] onto a 502 (see `EltmRoute.kt`).
  */
 class MemoryExtractionService(
     private val extractModel: LLM,
@@ -71,15 +76,15 @@ class MemoryExtractionService(
     private val contextInjection: ContextInjection = ContextInjection(),
 ) {
     /**
-     * Extract memories from [droppedMessages] (the raw messages compaction is
-     * about to discard, or the snapshot of a deleted chat's history — the
-     * deletion queue's worker feeds this from `pending_extractions`) and
-     * write them into the ELTM. Throws per the class KDoc — the caller
-     * decides the consequence: the compaction path fails the run, the
-     * deletion queue's worker logs and retries. The
+     * Extract memories from [droppedMessages] (the raw history snapshot a
+     * background job carries: a deleted chat's history or a compaction's
+     * dropped messages — the extraction queue's worker feeds this from
+     * `pending_extractions`) and write them into the ELTM. Throws per the
+     * class KDoc — the worker logs the failure and the queue's visibility
+     * timeout retries the job. The
      * [NOTHING_TO_REMEMBER_TEXT] sentinel (matched tolerantly by
      * [isNothingToRemember]) is the only skip path for the extraction: a
-     * blank answer is a hand `empty_response` error and fails the run, it
+     * blank answer is a hand `empty_response` error and fails the job, it
      * cannot silently skip the write.
      */
     suspend fun processDiscardedMessages(

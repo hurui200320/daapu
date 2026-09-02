@@ -6,8 +6,6 @@ import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.ModelCapabilityException
 import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionService
 import info.skyblond.daapu.memory.eltm.EltmToolProvider
-import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
-import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.pipeline.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.agent.persona.Persona
@@ -23,10 +21,13 @@ import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
 import info.skyblond.daapu.mcp.MockToolReply
+import info.skyblond.daapu.memory.eltm.ClaimedJob
 import info.skyblond.daapu.memory.eltm.EltmEntity
 import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.ExtractionQueue
+import info.skyblond.daapu.memory.eltm.PostgresExtractionQueue
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.bumpMetaCounterTx
 import info.skyblond.daapu.testutil.DbTestBase
@@ -34,7 +35,6 @@ import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.testPostgresEltmService
 import info.skyblond.daapu.testutil.testHandService
 import info.skyblond.daapu.testutil.testLlm
-import info.skyblond.daapu.testutil.writerRunFlow
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -57,11 +57,21 @@ import kotlin.test.*
  * the callback and the history, capability enforcement BEFORE any hand
  * request, the per-turn query rewrite one-shot, and the reactive compaction
  * path (hand `context_exhausted` →
- * compact → extract → refresh injection → fresh run, with no attempt cap).
+ * compact → queue the extraction → refresh injection → fresh run, with no
+ * attempt cap).
  */
 class PersistChatServiceTest : DbTestBase() {
 
     private val mainAgentSystemPromptService = MainAgentSystemPromptService()
+
+    /**
+     * The production Postgres queue over the test database (the timeout
+     * knobs are irrelevant here): wired into the service under test and
+     * used to claim the enqueued jobs back, so the compaction tests assert
+     * the queue's real round trip. Stateless — one instance serves the
+     * concurrent-runs test too.
+     */
+    private val testExtractionQueue = PostgresExtractionQueue(jobTimeoutMinutes = 30, retryDelayMinutes = 5)
 
     /**
      * Catalog model, optionally with compaction values different from the
@@ -86,8 +96,8 @@ class PersistChatServiceTest : DbTestBase() {
 
     /**
      * Runs one turn; returns the outcome for assertions. The fake hand
-     * dispatches on the out-of-band system prompt, standing in for the four
-     * one-shot roles (compactor / extractor / writer / query rewriter) plus
+     * dispatches on the out-of-band system prompt, standing in for the
+     * one-shot roles (compactor / query rewriter) plus
      * the chat loop. Within a [chatScript] it plays the model AND the
      * hand's callback POST (the script answers the brain-side callback).
      */
@@ -97,7 +107,10 @@ class PersistChatServiceTest : DbTestBase() {
         store: InMemoryChatStore = InMemoryChatStore(),
         eltmService: EltmService = testPostgresEltmService(FakeHand()),
         toolProvider: ToolProvider = EmptyToolProvider,
-        memoryExtractionService: MemoryExtractionService? = null,
+        // the extraction queue behind the compaction path; defaults to
+        // testExtractionQueue, so compaction tests assert the enqueued job
+        // through TestDb.allExtractionJobs()
+        extractionQueue: ExtractionQueue? = null,
         compactionKeepRounds: Int = 3,
         rewriteRounds: Int = 5,
         relatedEntitiesLimit: Int = 5,
@@ -105,10 +118,6 @@ class PersistChatServiceTest : DbTestBase() {
         chatScript: suspend (HandRunRequest) -> List<HandEvent> = { stopEvents() },
         compactionScript: suspend (HandRunRequest) -> List<HandEvent> =
             { textRunFlow("compacted summary") },
-        extractionScript: suspend (HandRunRequest) -> List<HandEvent> =
-            { textRunFlow("Nothing worth remember.") },
-        writerScript: suspend (HandRunRequest) -> List<HandEvent> =
-            { textRunFlow("done") },
         rewriteScript: suspend (HandRunRequest) -> List<HandEvent> =
             { textRunFlow("rewritten query") },
         persona: Persona = defaultPersona(),
@@ -119,12 +128,6 @@ class PersistChatServiceTest : DbTestBase() {
                 when {
                     request.systemPrompt?.startsWith("You're summarizing") == true ->
                         compactionScript(request)
-
-                    request.systemPrompt?.startsWith("You're extracting") == true ->
-                        extractionScript(request)
-
-                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
-                        writerScript(request)
 
                     request.systemPrompt?.startsWith("You're rewriting") == true ->
                         rewriteScript(request)
@@ -157,22 +160,7 @@ class PersistChatServiceTest : DbTestBase() {
                     hand = handService,
                     compactionService = compactionService,
                     systemPromptService = mainAgentSystemPromptService,
-                    // the default answers the extractor with the sentinel, so
-                    // extraction is a no-op: compaction-focused tests neither
-                    // accumulate calls nor run the writer
-                    memoryExtractionService = memoryExtractionService
-                        ?: MemoryExtractionService(
-                            extractModel = model,
-                            hand = handService,
-                            policy = HandRunPolicy(0, 300_000),
-                            eltmWriterService = EltmWriterService(
-                                writerModel = model,
-                                hand = handService,
-                                eltmService = eltmService,
-                                maxWriterRounds = 150,
-                                policy = HandRunPolicy(0, 300_000),
-                            ),
-                        ),
+                    extractionQueue = extractionQueue ?: testExtractionQueue,
                     rewriteRounds = rewriteRounds,
                     relatedEntitiesLimit = relatedEntitiesLimit,
                     relatedNotesLimit = relatedNotesLimit,
@@ -314,13 +302,13 @@ class PersistChatServiceTest : DbTestBase() {
         )
         assertNull(outcome.error)
         assertEquals(
-            4,
+            3,
             outcome.hand.requests.size,
-            "exhausted run -> compactor -> extractor -> fresh run (no rewrite)",
+            "exhausted run -> compactor -> fresh run (no rewrite)",
         )
         // both the exhausted run and the compacted retry carry the same
         // time-only injection: localtime, never eltm-updated or memories
-        for (request in listOf(outcome.hand.requests[0], outcome.hand.requests[3])) {
+        for (request in listOf(outcome.hand.requests[0], outcome.hand.requests[2])) {
             val injection = injectionOf(request)
             assertTrue(injection.contains("<localtime>"))
             assertFalse(injection.contains("eltm-updated"))
@@ -393,30 +381,27 @@ class PersistChatServiceTest : DbTestBase() {
     }
 
     @Test
-    fun `an extraction during reactive compaction bumps the ELTM version the re-injected flag sees`() = runBlocking {
-        // the reactive compaction's extraction writes the dropped facts
-        // straight into the ELTM (the writer run creates an entity), bumping
-        // the ELTM version BETWEEN the initial injection and the
-        // re-injection: the loop must read the version fresh at the
-        // re-injection — the exhausted attempt's injection (pre-write) says
-        // false, the retried round's must count the write, and the run
-        // stores the bumped version
+    fun `a reactive compaction queues the dropped messages instead of extracting inline`() = runBlocking {
+        // the reactive compaction enqueues the dropped messages into the
+        // background extraction queue instead of running the two-stage
+        // pipeline on the run path: no extractor/writer hand calls mid-run,
+        // one job carrying the dropped messages. The queued extraction does
+        // not bump the ELTM version, so the re-injected flag stays false —
+        // the writes flag on the NEXT run once the worker has applied them.
         val store = InMemoryChatStore()
-        val eltm = testPostgresEltmService(FakeHand())
-        val writerProvider = EltmToolProvider(eltm)
 
-        // run 1: a normal turn stores the ELTM version it saw
-        val first = run(store = store, eltmService = eltm)
+        // run 1: a normal turn stores the ELTM version it saw and one round
+        // of history (the reactive compaction of run 2 drops it)
+        val first = run(store = store)
         assertNull(first.error)
         assertEquals("0", store.storedEltmVersion)
 
         // run 2: the first chat attempt is exhausted, the reactive
-        // compaction's pipeline extracts the dropped messages and the writer
-        // run creates an entity, and the retried round is re-injected
+        // compaction queues the dropped messages, the retried round is
+        // re-injected with the (unchanged) version flag
         var chatRounds = 0
         val outcome = run(
             store = store,
-            eltmService = eltm,
             chatScript = { _ ->
                 if (++chatRounds == 1) {
                     listOf(HandEvent.RunError("context_exhausted", "input too big"))
@@ -424,50 +409,42 @@ class PersistChatServiceTest : DbTestBase() {
                     stopEvents()
                 }
             },
-            extractionScript = { textRunFlow("likes coffee") },
-            writerScript = { _ ->
-                val call = ChatMessagePart.ToolCall(
-                    id = "call_1",
-                    tool = "create_entity",
-                    args = buildJsonObject {
-                        put("name", "Alice")
-                        put("category", "person")
-                    },
-                )
-                val round = assistantMessage(parts = listOf(call), finishReason = "tool_calls")
-                listOf(HandEvent.AssistantMessage(round)) +
-                        toolRoundEvents(round, writerProvider) +
-                        listOf(
-                            HandEvent.AssistantMessage(assistantMessage("done")),
-                            HandEvent.Done("stop"),
-                        )
-            },
         )
         assertNull(outcome.error)
 
-        // the extraction really wrote into the ELTM, bumping its version
-        assertTrue(
-            TestDb.allEltmEntities().any { it.canonicalName == "alice" },
-            "the extraction must write the facts into the ELTM",
-        )
-        // request order: rewrite, exhausted chat, compactor, extractor, writer, fresh run
+        // request order: rewrite, exhausted chat, compactor, fresh run —
+        // NO extractor or writer call on the run path
         assertEquals(
-            6, outcome.hand.requests.size,
-            "rewrite -> exhausted -> compact -> extract -> write -> fresh run"
+            4, outcome.hand.requests.size,
+            "rewrite -> exhausted -> compact -> fresh run",
         )
-        // the exhausted attempt was injected BEFORE the extraction: its flag
-        // must still say the stored version matches
+        // exactly one queue job, carrying the dropped first round
+        val jobs = TestDb.allExtractionJobs()
+        assertEquals(1, jobs.size, "the reactive compaction must enqueue the dropped messages")
+        val claimed = assertNotNull(testExtractionQueue.claim())
+        assertEquals(
+            listOf(ChatMessageRole.User, ChatMessageRole.Assistant),
+            claimed.messages.map { it.role },
+            "the snapshot is the dropped round, not the summary",
+        )
+        assertEquals(listOf(ChatMessagePart.Text("hello")), claimed.messages[0].parts)
+
+        // the queued extraction has not written anything yet: no ELTM
+        // entities exist and the version never moved mid-run
+        assertTrue(TestDb.allEltmEntities().isEmpty(), "nothing is written on the run path")
+        // the exhausted attempt was injected BEFORE the compaction: its flag
+        // must say the stored version matches
         assertTrue(
             injectionOf(outcome.hand.requests[1]).contains("<eltm-updated>false</eltm-updated>"),
-            "the pre-extraction injection must not flag",
+            "the pre-compaction injection must not flag",
         )
-        // the retried round was re-injected AFTER the extraction: the fresh
-        // read must flag the bumped version
+        // the retried round was re-injected with a freshly read version:
+        // the queued extraction cannot have bumped it, so it still says false
         assertTrue(
-            injectionOf(outcome.hand.requests.last()).contains("<eltm-updated>true</eltm-updated>"),
-            "the re-injected flag must count the extraction write",
+            injectionOf(outcome.hand.requests.last()).contains("<eltm-updated>false</eltm-updated>"),
+            "the re-injected flag must not count the queued (not yet applied) extraction",
         )
-        assertEquals("1", store.storedEltmVersion, "the run must store the version it last saw")
+        assertEquals("0", store.storedEltmVersion, "the run stores the version it saw")
     }
 
     @Test
@@ -1277,14 +1254,14 @@ class PersistChatServiceTest : DbTestBase() {
         )
         assertNull(outcome.error)
         assertEquals(
-            5,
+            4,
             outcome.hand.requests.size,
-            "rewrite -> exhausted run -> compactor -> extractor -> fresh run",
+            "rewrite -> exhausted run -> compactor -> fresh run",
         )
         // both the exhausted run and the compacted retry carry the same
         // pre-round search results: the compaction refreshes the injection
         // in place, it never re-searches
-        for (request in listOf(outcome.hand.requests[1], outcome.hand.requests[4])) {
+        for (request in listOf(outcome.hand.requests[1], outcome.hand.requests[3])) {
             val injection = injectionOf(request)
             assertTrue(
                 injection.contains("""<entity category=\"person\" id=\"1\" name=\"alice\">"""),
@@ -1359,13 +1336,13 @@ class PersistChatServiceTest : DbTestBase() {
         assertNull(outcome.error)
 
         // the compactor ran (its one-shot /v1/run call) before the hand run,
-        // followed by the sentinel extraction (a no-op) and the rewrite
-        assertEquals(4, outcome.hand.requests.size, "compactor run + extractor run + rewrite run + hand run")
+        // followed by the rewrite (the extraction is queued, not called)
+        assertEquals(3, outcome.hand.requests.size, "compactor run + rewrite run + hand run")
         assertTrue(outcome.hand.requests[0].systemPrompt!!.startsWith("You're summarizing"))
 
         // the hand received the compacted history: the summary user message,
         // the last 3 turns verbatim, the injected user message
-        val sent = outcome.hand.requests[3].messages
+        val sent = outcome.hand.requests[2].messages
         assertEquals(
             listOf(
                 ChatMessageRole.User,
@@ -1432,12 +1409,12 @@ class PersistChatServiceTest : DbTestBase() {
 
         // reactive compaction happened once, mid-run: the rewrite ran first, then
         // the first hand run reported exhaustion, the compactor's one-shot
-        // run happened (plus the sentinel extraction), and a fresh hand run
-        // received the compacted history
+        // run happened, and a fresh hand run received the compacted history
+        // (the dropped messages were queued, not extracted on the run path)
         assertEquals(
-            5,
+            4,
             outcome.hand.requests.size,
-            "rewrite -> exhausted run -> compactor -> extractor -> fresh run"
+            "rewrite -> exhausted run -> compactor -> fresh run"
         )
         assertTrue(outcome.hand.requests[2].systemPrompt!!.startsWith("You're summarizing"))
         assertTrue(outcome.callback.errors.isEmpty())
@@ -1474,28 +1451,21 @@ class PersistChatServiceTest : DbTestBase() {
         val cause = assertIs<HandRunException>(e.cause)
         assertEquals("output_budget_exhausted", cause.type)
         assertEquals(
-            6,
+            5,
             outcome.hand.requests.size,
-            "rewrite -> exhausted -> compact(+extract) -> exhausted -> compact (fails)"
+            "rewrite -> exhausted -> compact -> exhausted -> compact (fails)"
         )
         assertEquals(0, outcome.store.storeCount, "a failed run must never store")
     }
 
     @Test
-    fun `pre-round compaction extracts memories into the ELTM from the dropped messages`() = runBlocking {
-        val eltm = testPostgresEltmService(FakeHand())
+    fun `pre-round compaction queues the dropped messages for background extraction`() = runBlocking {
         val model = catalogModel("bifrost/cerebras/gemma-4-31b", compactionKeepRounds = 3)
         val hand = FakeHand(
             runScript = { request ->
                 when {
                     request.systemPrompt?.startsWith("You're summarizing") == true ->
                         textRunFlow("compacted summary")
-
-                    request.systemPrompt?.startsWith("You're extracting") == true ->
-                        textRunFlow("likes coffee")
-
-                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
-                        writerRunFlow(eltm)
 
                     else -> stopEvents()
                 }
@@ -1518,23 +1488,12 @@ class PersistChatServiceTest : DbTestBase() {
             runCatching {
                 PersistChatService(
                     chatStore = store,
-                    eltmService = eltm,
+                    eltmService = testPostgresEltmService(FakeHand()),
                     queryRewriteService = rewriteService,
                     hand = handService,
                     compactionService = compactionService,
                     systemPromptService = mainAgentSystemPromptService,
-                    memoryExtractionService = MemoryExtractionService(
-                        extractModel = model,
-                        hand = handService,
-                        policy = HandRunPolicy(0, 300_000),
-                        eltmWriterService = EltmWriterService(
-                            writerModel = model,
-                            hand = handService,
-                            eltmService = eltm,
-                            maxWriterRounds = 150,
-                            policy = HandRunPolicy(0, 300_000),
-                        ),
-                    ),
+                    extractionQueue = testExtractionQueue,
                     rewriteRounds = 5,
                     relatedEntitiesLimit = 5,
                     relatedNotesLimit = 5,
@@ -1552,40 +1511,38 @@ class PersistChatServiceTest : DbTestBase() {
         }
         assertNull(error)
 
-        // request order: compactor, extractor, writer, rewrite, chat round
-        assertEquals(5, hand.requests.size, "compactor + extractor + writer + rewrite + chat round")
+        // request order: compactor, rewrite, chat round — the memory
+        // pipeline (extractor + writer) never runs on the request path
+        assertEquals(3, hand.requests.size, "compactor + rewrite + chat round")
 
-        // the raw dropped messages (not the summary) fed the extraction:
-        // the extractor's run starts with the dropped complete turn,
-        // followed by the extraction instruction. The dropped user message
-        // carries its send-time <meta> anchor (anchors-only: a one-shot
-        // must not get a full context injection), so the extractor resolves
-        // relative dates per message instead of against extraction time.
-        val contextInjection = ContextInjection()
-        val extractorMessages = hand.requests[1].messages
+        // the queue holds exactly one job: the raw dropped messages (turn 1),
+        // NOT the summary and NOT an extraction input — the extractor's
+        // instruction and the <meta> anchoring are added by the pipeline when
+        // the worker runs
+        assertEquals(1, TestDb.allExtractionJobs().size, "one queue job carries the dropped messages")
+        val claimed = assertNotNull(testExtractionQueue.claim())
+        val dropped = claimed.messages
         assertEquals(
-            listOf(ChatMessageRole.User, ChatMessageRole.Assistant, ChatMessageRole.User),
-            extractorMessages.map { it.role },
-        )
-        assertTrue(contextInjection.hasMetaPart(extractorMessages[0]))
-        assertTrue(
-            (extractorMessages[0].parts[1] as ChatMessagePart.Text).text.startsWith("topic 1")
+            listOf(ChatMessageRole.User, ChatMessageRole.Assistant),
+            dropped.map { it.role },
         )
         assertTrue(
-            (extractorMessages[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1")
+            (dropped[0].parts.single() as ChatMessagePart.Text).text.startsWith("topic 1"),
+            "the raw dropped turn feeds the extraction, not the summary",
         )
+        assertTrue(
+            (dropped[1].parts.single() as ChatMessagePart.Text).text.startsWith("answer 1")
+        )
+        val contextInjection = ContextInjection()
         assertFalse(
-            extractorMessages.any { message ->
-                message.parts.firstOrNull() is ChatMessagePart.Text &&
-                        contextInjection.isInjection(message.parts.first() as ChatMessagePart.Text)
-            },
-            "the extractor must not receive a full context injection",
+            contextInjection.hasMetaPart(dropped[0]),
+            "the snapshot carries raw messages; the worker anchors them at extraction time",
         )
 
-        // the writer run recorded the extracted fact into the ELTM diary
+        // nothing was written into the ELTM on the run path
         assertTrue(
-            TestDb.allEltmNotes().map { it.note }.contains("likes coffee"),
-            "the extracted fact lands in the ELTM",
+            TestDb.allEltmNotes().isEmpty(),
+            "the ELTM is only written by the background worker",
         )
 
         // the run completed and stored the compacted history
@@ -1594,7 +1551,26 @@ class PersistChatServiceTest : DbTestBase() {
     }
 
     @Test
-    fun `a full-body reactive compaction re-appends the injection with the user input`() {
+    fun `a failed enqueue fails the run without storing`() = runBlocking {
+        // the enqueue is the only memory-extraction step left on the run
+        // path: when it fails (a DB error), the run must fail BEFORE the
+        // store, so the dropped messages stay in the stored chat and the
+        // retry's compaction re-enqueues them — nothing is silently lost.
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed()),
+            extractionQueue = FailingEnqueueQueue(testExtractionQueue),
+        )
+        val e = assertIs<IllegalStateException>(outcome.error)
+        assertEquals("extraction queue is down", e.message)
+        // the compaction itself succeeded (the summarizer ran) — the
+        // failure came from the enqueue after it
+        assertTrue(outcome.hand.requests[0].systemPrompt!!.startsWith("You're summarizing"))
+        assertTrue(TestDb.allExtractionJobs().isEmpty(), "no job was enqueued")
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+    }
+
+    @Test
+    fun `a full-body reactive compaction re-appends the injection with the user input`() = runBlocking {
         // a fresh chat whose single user message (injection + input) is the
         // only user message: the compaction's keep count collapses to zero,
         // replacing the whole chat — injected message included — with the
@@ -1619,11 +1595,27 @@ class PersistChatServiceTest : DbTestBase() {
         assertNull(outcome.error)
 
         // exhausted attempt -> compaction -> fresh run with the re-appended
-        // input (the rewrite's one-shot run precedes the first attempt)
+        // input (the rewrite's one-shot run precedes the first attempt; the
+        // dropped messages are queued, not extracted on the run path)
         assertEquals(
-            5,
+            4,
             outcome.hand.requests.size,
-            "rewrite -> exhausted run -> compactor -> extractor -> fresh run"
+            "rewrite -> exhausted run -> compactor -> fresh run"
+        )
+        // the queued snapshot is the WHOLE chat — ending with the run's user
+        // message, i.e. a mid-turn fragment the stored-chat validation would
+        // reject. The queue's snapshot decode must accept it (the worker's
+        // claim below runs ChatCodec.validateSnapshot).
+        assertEquals(1, TestDb.allExtractionJobs().size, "the drop region is queued")
+        val claimed = assertNotNull(testExtractionQueue.claim())
+        assertEquals(1, claimed.messages.size, "the fragment is the run's user message only")
+        assertEquals(
+            listOf(ChatMessagePart.Text("hello")),
+            claimed.messages.single().parts,
+        )
+        assertNotNull(
+            claimed.messages.single().createdAt,
+            "the run's user message must carry its send time in the snapshot",
         )
         val retried = outcome.hand.requests.last()
         assertTrue(
@@ -1658,8 +1650,8 @@ class PersistChatServiceTest : DbTestBase() {
     @Test
     fun `one shared service instance serves concurrent runs without cross-talk`() = runBlocking {
         // both chats sit above the proactive compaction trigger, so each run
-        // compacts and extracts through the SAME shared service instances
-        // (ChatCompactionService / MemoryExtractionService / PersistChatService):
+        // compacts and enqueues through the SAME shared service instances
+        // (ChatCompactionService / ExtractionQueue / PersistChatService):
         // this pins the statelessness claim of the shared services under
         // concurrent calls. Distinct chat content makes any cross-talk
         // visible in the stores.
@@ -1669,12 +1661,6 @@ class PersistChatServiceTest : DbTestBase() {
                 when {
                     request.systemPrompt?.startsWith("You're summarizing") == true ->
                         textRunFlow("compacted summary")
-
-                    request.systemPrompt?.startsWith("You're extracting") == true ->
-                        textRunFlow("likes coffee")
-
-                    request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
-                        writerRunFlow(eltm)
 
                     else -> stopEvents()
                 }
@@ -1686,18 +1672,6 @@ class PersistChatServiceTest : DbTestBase() {
             model = model,
             hand = handService,
             policy = HandRunPolicy(0, 300_000),
-        )
-        val extractionService = MemoryExtractionService(
-            extractModel = model,
-            hand = handService,
-            policy = HandRunPolicy(0, 300_000),
-            eltmWriterService = EltmWriterService(
-                writerModel = model,
-                hand = handService,
-                eltmService = eltm,
-                maxWriterRounds = 150,
-                policy = HandRunPolicy(0, 300_000),
-            ),
         )
         val chatStore = ConcurrentChatStore()
         val persistService = PersistChatService(
@@ -1711,7 +1685,7 @@ class PersistChatServiceTest : DbTestBase() {
             hand = handService,
             compactionService = compactionService,
             systemPromptService = mainAgentSystemPromptService,
-            memoryExtractionService = extractionService,
+            extractionQueue = testExtractionQueue,
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
@@ -1783,18 +1757,17 @@ class PersistChatServiceTest : DbTestBase() {
             )
         }
 
-        // both writer runs recorded their fact into the shared ELTM diary;
-        // per chat the shared hand served compactor + extractor + writer +
-        // rewrite + chat round
+        // each run queued its own dropped messages into the shared queue;
+        // per chat the shared hand served compactor + rewrite + chat round
         assertEquals(
             2,
-            TestDb.allEltmNotes().count { it.note == "likes coffee" },
-            "both extractions applied their note",
+            TestDb.allExtractionJobs().size,
+            "both compactions enqueued their dropped messages",
         )
         assertEquals(
-            10,
+            6,
             hand.requests.size,
-            "2 chats x (compact + extract + write + rewrite + chat round)",
+            "2 chats x (compact + rewrite + chat round)",
         )
     }
 }
@@ -1805,6 +1778,22 @@ private class TurnOutcome(
     val callback: RecordingCallback,
     val hand: FakeHand,
 )
+
+/**
+ * An [ExtractionQueue] that fails the enqueue (a DB outage stand-in) while
+ * delegating everything else: pins the compaction path's enqueue-failure
+ * contract (the run fails before the store).
+ */
+private class FailingEnqueueQueue(private val delegate: ExtractionQueue) : ExtractionQueue {
+    override suspend fun enqueue(messages: List<ChatMessage>): Long =
+        throw IllegalStateException("extraction queue is down")
+
+    override suspend fun claim(): ClaimedJob? = delegate.claim()
+
+    override suspend fun complete(id: Long) = delegate.complete(id)
+
+    override suspend fun reschedule(id: Long) = delegate.reschedule(id)
+}
 
 private fun mcpAddTool(): MockTool = MockTool(
     name = "add",

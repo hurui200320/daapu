@@ -8,13 +8,13 @@ import info.skyblond.daapu.agent.context.resolveRelatedNotes
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.pipeline.currentPromptTokens
-import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.pipeline.rewrite.QueryRewriteService
 import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EntityWithScore
+import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.ZonedDateTime
 
@@ -37,8 +37,9 @@ import java.time.ZonedDateTime
  * Reactive compaction: the hand reports `context_exhausted` when the
  * prompt overflows the window (a `length` finish near the window or a
  * gateway-side 400/413 rejection). The loop then discards the failed
- * attempt's messages, compacts, extracts memories from the dropped
- * messages, refreshes the injection in place, and starts a fresh hand run —
+ * attempt's messages, compacts, queues the dropped messages' memory
+ * extraction into the background extraction queue, refreshes the injection
+ * in place, and starts a fresh hand run —
  * with no attempt cap, exactly like the old in-process loop (a second
  * exhaustion compacts again).
  *
@@ -65,13 +66,17 @@ class PersistChatService(
      */
     private val systemPromptService: MainAgentSystemPromptService,
     /**
-     * Memory extraction over the raw messages a compaction is about to
-     * discard (see `agent/pipeline/eltm/MemoryExtractionService.kt`): the
-     * extractor summarizes them and the ELTM writer records the facts into
-     * the diary directly. No lock is held: concurrent writes are safe
-     * because the writer deduplicates against the store.
+     * The background extraction queue (`memory/eltm/ExtractionQueue.kt`):
+     * [compactAndEnqueue] enqueues the raw messages a compaction is about
+     * to discard (see `agent/pipeline/eltm/MemoryExtractionService.kt` for
+     * the pipeline the worker then runs off the request path — the
+     * extractor one-shot plus the ELTM writer tool loop). Enqueuing happens
+     * BEFORE the compacted history is stored, so a crash can at worst leave
+     * a benign orphan job — never lose the dropped messages. No lock is
+     * held: concurrent writes are safe because the writer deduplicates
+     * against the store.
      */
-    private val memoryExtractionService: MemoryExtractionService,
+    private val extractionQueue: ExtractionQueue,
     /** Config `memory.eltm.rewriteRounds` (`config/MemoryConfig.kt`). */
     private val rewriteRounds: Int,
     /** Config `memory.eltm.relatedEntitiesLimit` (`config/MemoryConfig.kt`). */
@@ -119,13 +124,13 @@ class PersistChatService(
         // does, the hand reports context_exhausted, which compacts reactively
         // below). The not-yet-appended input is not counted; the trigger
         // headroom absorbs the difference.
-        // The raw dropped messages feed the memory extraction BEFORE they are
-        // discarded (the harness's memory architecture, see the README).
+        // The raw dropped messages are queued for the background memory
+        // extraction (the harness's memory architecture, see the README).
         if (model.compactionTriggerFraction > 0 &&
             currentPromptTokens(chat) > model.contextLength * model.compactionTriggerFraction
         ) {
             logger.info { "Compacting chat $chatId" }
-            chat = compactAndExtract(chat, model)
+            chat = compactAndEnqueue(chatId, chat, model)
             logger.info { "Finished compacting chat $chatId" }
         }
 
@@ -225,7 +230,7 @@ class PersistChatService(
                     if (terminal.type == "context_exhausted") {
                         logger.info { "Hand reports context exhaustion, compacting chat $chatId" }
                         // the compacted chat history does not contain injection
-                        chat = compactAndExtract(chat, model)
+                        chat = compactAndEnqueue(chatId, chat, model)
                         // The compaction replaces the whole chat with the
                         // summary when the keep count collapses to zero, so the
                         // run's own user message may be gone. The latest user
@@ -241,9 +246,13 @@ class PersistChatService(
                                 parts = userParts,
                             )
                         }
-                        // the extraction may have changed the ELTM, so refresh
-                        // the injection with the fresh version flag
-                        // (injectContext replaces the stale
+                        // The global ELTM version may have moved while this run
+                        // streamed (concurrent writers: other chats' runs and
+                        // the background extraction queue — this run's OWN
+                        // compaction extraction is QUEUED, not written inline,
+                        // so it flags on the NEXT run once the worker has
+                        // written). Refresh the injection with the fresh
+                        // version flag (injectContext replaces the stale
                         // injection on the run's message in place). The
                         // related entities/notes were retrieved for THIS run's
                         // input, which the compaction never changes, so the
@@ -277,20 +286,37 @@ class PersistChatService(
     }
 
     /**
-     * Compact the chat and run the memory extraction over the dropped
-     * messages BEFORE they are discarded (the harness's memory architecture,
-     * see the README); returns the compacted history (no injection). The
-     * compacted history reaches the client via the post-run resync; no
-     * dedicated event is emitted. Both the proactive trigger and the
-     * reactive `context_exhausted` recovery go through here — the two
-     * paths differ only in their logging and what they re-inject after.
+     * Compact the chat and QUEUE the memory extraction of the dropped
+     * messages (the harness's memory architecture, see the README): the
+     * dropped messages go into the background extraction queue
+     * ([extractionQueue]) and the two-stage pipeline (extractor one-shot +
+     * ELTM writer tool loop) runs off the request path in
+     * `memory/eltm/ExtractionQueueWorker.kt` — the run only waits for the
+     * summarization, never for the memory work. The enqueue lands BEFORE
+     * the compacted history is stored: a crash in between leaves a benign
+     * orphan job (the writer deduplicates), while enqueueing after the
+     * store could lose the dropped messages — and with them the memories —
+     * entirely. A failed enqueue throws and fails the run before the store,
+     * so the dropped messages stay in the stored chat — nothing is silently
+     * lost (the queue's own retries cover the extraction itself; a failed
+     * run before the store simply re-enqueues on the retry's compaction).
+     * Returns the compacted history (no injection). The compacted history
+     * reaches the client via the post-run resync; no dedicated event is
+     * emitted. Both the proactive trigger and the reactive
+     * `context_exhausted` recovery go through here — the two paths differ
+     * only in their logging and what they re-inject after.
      */
-    private suspend fun compactAndExtract(
+    private suspend fun compactAndEnqueue(
+        chatId: String,
         chat: List<ChatMessage>,
         model: LLM,
     ): List<ChatMessage> {
         val result = compactionService.compactChat(chat, model.compactionKeepRounds)
-        memoryExtractionService.processDiscardedMessages(result.droppedMessages)
+        val jobId = extractionQueue.enqueue(result.droppedMessages)
+        logger.info {
+            "Compaction of chat '$chatId' dropped ${result.droppedMessages.size} " +
+                    "message(s), queued for background memory extraction as job $jobId"
+        }
         return result.newChat
     }
 

@@ -260,8 +260,9 @@ fun appModule(config: AppConfig): Module = module {
 
     // the background extraction queue (Postgres-as-queue, visibility-timeout
     // pattern — see `memory/eltm/ExtractionQueue.kt`): the chat-deletion path
-    // enqueues a history snapshot and returns immediately; the worker below
-    // drains it into the ELTM off the request path. Not reachable from the
+    // and the compaction path (PersistChatService.compactAndEnqueue) enqueue
+    // history snapshots and return immediately; the worker below drains it
+    // into the ELTM off the request path. Not reachable from the
     // ChatService graph root on purpose: `server/WebServer.kt` resolves and
     // starts it explicitly (only the production server runs poll loops, never
     // a test that merely resolves ChatService), and `stop()` cancels the
@@ -303,7 +304,7 @@ fun appModule(config: AppConfig): Module = module {
             hand = get(),
             compactionService = get(),
             systemPromptService = get(),
-            memoryExtractionService = get(),
+            extractionQueue = get(),
             rewriteRounds = config.memory.eltm.rewriteRounds,
             relatedEntitiesLimit = config.memory.eltm.relatedEntitiesLimit,
             relatedNotesLimit = config.memory.eltm.relatedNotesLimit,

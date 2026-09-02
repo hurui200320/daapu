@@ -32,11 +32,14 @@ data class ClaimedJob(
 /**
  * The background memory-extraction queue (`pending_extractions` table,
  * `V3__pending_extractions.sql`): the Postgres-as-queue seam between the
- * chat-deletion path (`agent/chat/ChatService.kt`'s `deleteChat`, which
- * enqueues a history snapshot and deletes the chats row on the request
- * path) and the extraction worker (`ExtractionQueueWorker.kt`, which drains
- * the queue into the ELTM off the request path — slow endpoints no longer
- * stall the delete).
+ * paths that drop history worth remembering — the chat-deletion path
+ * (`agent/chat/ChatService.kt`'s `deleteChat`, which enqueues a history
+ * snapshot and deletes the chats row on the request path) and the
+ * compaction path (`agent/persist/PersistChatService.kt`'s
+ * `compactAndEnqueue`, which enqueues the dropped messages before the
+ * compacted history is stored) — and the extraction worker
+ * (`ExtractionQueueWorker.kt`, which drains the queue into the ELTM off the
+ * request path — slow endpoints stall neither a delete nor a chat run).
  *
  * VISIBILITY-TIMEOUT PATTERN (the migration's header comment holds the
  * authoritative mechanism description): there is no separate lease or
@@ -59,13 +62,15 @@ data class ClaimedJob(
  * arithmetic happens in the database (`now()`), so multiple app instances
  * never disagree on the clock.
  *
- * Retention: a job's snapshot carries the deleted chat's full content (text
- * and image attachments) until the job completes — see the retention note
- * in `V3__pending_extractions.sql`, the authoritative one.
+ * Retention: a job's snapshot carries the dropped history's full content
+ * (text and image attachments — a deleted chat's history or a compaction's
+ * drop region) until the job completes — see the retention note in
+ * `V3__pending_extractions.sql`, the authoritative one.
  */
 interface ExtractionQueue {
     /**
-     * Insert a job carrying the history snapshot; returns its id. Callers
+     * Insert a job carrying the history snapshot (a deleted chat's full
+     * history or a compaction's dropped messages); returns its id. Callers
      * pass [ChatMessage]s — how the snapshot is stored is the
      * implementation's detail (see [PostgresExtractionQueue]).
      */
@@ -139,9 +144,12 @@ class PostgresExtractionQueue(
         // encodes valid histories) is a known failure, pushed to the retry
         // delay like any other. ROLLING BACK instead would leave the row
         // visible and oldest forever: it would be re-claimed and re-fail
-        // every poll, blocking the queue head on the same job.
+        // every poll, blocking the queue head on the same job. The SNAPSHOT
+        // validation (ChatCodec.validateSnapshot) applies, not the stored-
+        // chat one: a compaction drop region is a fragment, not a complete
+        // chat (see ChatCodec.decodeSnapshot).
         val messages = try {
-            ChatCodec.decodeChat("extraction job $id", row[PendingExtractions.chatJson])
+            ChatCodec.decodeSnapshot("extraction job $id", row[PendingExtractions.chatJson])
         } catch (e: IllegalStateException) {
             logger.error(e) {
                 "Extraction job $id holds a corrupt history snapshot, " +

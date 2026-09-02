@@ -9,6 +9,7 @@ import info.skyblond.daapu.agent.chat.ChatRunSetup
 import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatValidationException
+import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.pipeline.investigate.InvestigatorService
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_SYSTEM_PROMPT
@@ -418,7 +419,12 @@ class ChatServiceTest : DbTestBase() {
     @Test
     fun `an unknown memory model id fails fast at construction`() {
         // the one-shot pipeline models are resolved once at startup: a typo
-        // must fail here, not silently skip every compaction/extraction
+        // must fail here, not silently skip every compaction/extraction.
+        // The compactor is reachable from the graph root
+        // (ChatService -> PersistChatService -> ChatCompactionService); the
+        // extractor left the run path (its compaction work is enqueued), so
+        // its model resolves at boot via the eager MemoryExtractionService
+        // get (startWebServer's module wiring).
         val valid = MemoryConfig(
             compactModel = "bifrost/cerebras/gemma-4-31b",
             eltm = EltmConfig(
@@ -443,23 +449,31 @@ class ChatServiceTest : DbTestBase() {
             e.message!!.contains("memory.compactModel"),
             "the error should name the config key: ${e.message}"
         )
-        assertIs<IllegalArgumentException>(
+        val extractionError = assertIs<IllegalArgumentException>(
             assertFailsFast {
-                chatService(
+                testKoinApp(
                     testAppConfig().copy(
                         memory = valid.copy(
                             eltm = valid.eltm.copy(extractionModel = "bifrost/nope")
                         )
                     )
-                )
+                ).koin.get<MemoryExtractionService>()
             }
+        )
+        assertTrue(
+            extractionError.message!!.contains("memory.eltm.extractionModel"),
+            "the error should name the config key: ${extractionError.message}"
         )
     }
 
     @Test
     fun `an unknown eltm model id fails fast at construction`() {
         // same as the memory pipeline models: the resolved ELTM models
-        // (REQUIRED config) are checked once at startup.
+        // (REQUIRED config) are checked once at startup. The embedding and
+        // rewrite models are reachable from the graph root (EltmService /
+        // QueryRewriteService); the writer left the run path (its compaction
+        // work is enqueued), so its model resolves at boot via the eager
+        // MemoryExtractionService get (startWebServer's module wiring).
         val base = testAppConfig().memory.eltm
         val e = assertIs<IllegalArgumentException>(
             assertFailsFast {
@@ -476,16 +490,20 @@ class ChatServiceTest : DbTestBase() {
             e.message!!.contains("memory.eltm.embeddingModel"),
             "the error should name the config key: ${e.message}"
         )
-        assertIs<IllegalArgumentException>(
+        val writerError = assertIs<IllegalArgumentException>(
             assertFailsFast {
-                chatService(
+                testKoinApp(
                     testAppConfig().copy(
                         memory = testAppConfig().memory.copy(eltm = base.copy(writerModel = "bifrost/nope"))
                     )
-                )
+                ).koin.get<MemoryExtractionService>()
             }
         )
-        assertIs<IllegalArgumentException>(
+        assertTrue(
+            writerError.message!!.contains("memory.eltm.writerModel"),
+            "the error should name the config key: ${writerError.message}"
+        )
+        val rewriteError = assertIs<IllegalArgumentException>(
             assertFailsFast {
                 chatService(
                     testAppConfig().copy(
@@ -493,6 +511,10 @@ class ChatServiceTest : DbTestBase() {
                     )
                 )
             }
+        )
+        assertTrue(
+            rewriteError.message!!.contains("memory.eltm.rewriteModel"),
+            "the error should name the config key: ${rewriteError.message}"
         )
     }
 

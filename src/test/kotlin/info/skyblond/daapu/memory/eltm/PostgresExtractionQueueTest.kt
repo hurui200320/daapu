@@ -48,6 +48,30 @@ class PostgresExtractionQueueTest : DbTestBase() {
     }
 
     @Test
+    fun `a mid-turn fragment snapshot round-trips`() = runBlocking {
+        // a compaction drop region is NOT necessarily a complete chat: a
+        // fresh chat's full-body reactive compaction drops the whole chat
+        // ending with the run's user message (see
+        // ChatCompactionService.splitMessage). The claim must validate the
+        // snapshot with ChatCodec.validateSnapshot — the stored-chat
+        // completeness rule (trailing assistant stop) would reject this
+        // fragment forever, poisoning the queue head.
+        val fragment = listOf(
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text("u1")),
+                createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+            ),
+        )
+        val id = queue.enqueue(fragment)
+
+        val job = queue.claim()
+        assertNotNull(job, "a valid fragment snapshot is claimable")
+        assertEquals(id, job.id)
+        assertEquals(fragment, job.messages)
+    }
+
+    @Test
     fun `claim on an empty queue returns null`() = runBlocking {
         assertNull(queue.claim())
     }

@@ -21,10 +21,10 @@ private val logger = KotlinLogging.logger {}
  * ([ExtractionQueue]): N identical poll loops ([workers], config
  * `memory.eltm.queueWorkers`), each claiming one job at a time and running
  * the full two-stage memory-extraction pipeline ([MemoryExtractionService]
- * — the extractor one-shot plus the ELTM writer tool loop — the same call
- * the compaction path makes synchronously) over the claimed history
- * snapshot. Built for slow LLM endpoints: a chat deletion only enqueues,
- * and this worker does the minutes-long memory work off the request path.
+ * — the extractor one-shot plus the ELTM writer tool loop) over the claimed
+ * history snapshot. Built for slow LLM endpoints: neither a chat deletion
+ * nor a compaction waits for the memory work — both only enqueue, and this
+ * worker does the minutes-long extraction off the request path.
  *
  * The loop needs NO per-chat lock and touches no chats row: the job carries
  * a frozen history snapshot and the chats row is already gone, so nothing
