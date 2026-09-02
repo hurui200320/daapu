@@ -97,6 +97,33 @@ data class EltmConfig(
     val noteSearchThreshold: Double = 0.1,
     /** Round cap for the ELTM writer tool loop; `0` = unlimited. */
     val maxWriterRounds: Int = 150,
+    /**
+     * How many background workers drain the extraction queue
+     * (`memory/eltm/ExtractionQueueWorker.kt`) — the chat-deletion path
+     * enqueues history snapshots and these workers run the memory pipeline
+     * off the request path. REQUIRED: it bounds the concurrent background
+     * extractions (their LLM calls dominate; each worker runs one job at a
+     * time).
+     */
+    val queueWorkers: Int,
+    /**
+     * The extraction queue's visibility timeout in minutes: a claimed job
+     * moves its `visible_after` this far into the future, so it is invisible
+     * to every worker for the window. Doubles as the crash-recovery delay (a
+     * worker dying mid-job leaves the job to re-emerge at the lease
+     * boundary) — it must comfortably exceed the worst-case extraction
+     * duration, or a still-running job gets claimed twice (benign — the ELTM
+     * writer deduplicates — but wasteful). REQUIRED. See
+     * `memory/eltm/ExtractionQueue.kt`.
+     */
+    val jobTimeoutMinutes: Int,
+    /**
+     * How long after a KNOWN failure a queue job re-emerges for its retry
+     * (unlimited retries; every failure logs). Typically much shorter than
+     * [jobTimeoutMinutes] — the lease covers crashes, this covers the
+     * ordinary failure path. REQUIRED. See `memory/eltm/ExtractionQueue.kt`.
+     */
+    val retryDelayMinutes: Int,
 ) {
     fun validate() {
         listOf(
@@ -121,5 +148,12 @@ data class EltmConfig(
             "memory.eltm.noteSearchThreshold must be in [0, 1], got $noteSearchThreshold"
         }
         require(maxWriterRounds >= 0) { "memory.eltm.maxWriterRounds must be >= 0, got $maxWriterRounds" }
+        require(queueWorkers >= 1) { "memory.eltm.queueWorkers must be >= 1, got $queueWorkers" }
+        require(jobTimeoutMinutes >= 1) {
+            "memory.eltm.jobTimeoutMinutes must be >= 1, got $jobTimeoutMinutes"
+        }
+        require(retryDelayMinutes >= 1) {
+            "memory.eltm.retryDelayMinutes must be >= 1, got $retryDelayMinutes"
+        }
     }
 }

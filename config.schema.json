@@ -210,7 +210,10 @@
             "rewriteModel",
             "rewriteRounds",
             "relatedEntitiesLimit",
-            "relatedNotesLimit"
+            "relatedNotesLimit",
+            "queueWorkers",
+            "jobTimeoutMinutes",
+            "retryDelayMinutes"
           ],
           "description": "The ELTM (diary model) settings: REQUIRED for every deployment — the extraction pipeline and the investigate agent's ELTM access depend on it. The extraction, embedding, writer, and rewrite model ids are resolved once at startup by the DI container (di/AppModule.kt; unknown ids and a writer without tool-call support fail fast). The embedding model's output dimensions must not exceed 2000 (pgvector's HNSW limit): the ELTM vector columns are fixed at 2000 and shorter vectors are zero-padded on write, so switching embedding models never needs a schema change.",
           "properties": {
@@ -268,6 +271,21 @@
               "minimum": 0,
               "default": 150,
               "description": "Round cap for the ELTM writer tool loop; 0 = unlimited."
+            },
+            "queueWorkers": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "REQUIRED: how many background workers drain the extraction queue (memory/eltm/ExtractionQueueWorker.kt) — the chat-deletion path enqueues history snapshots and these workers run the memory pipeline off the request path. Each worker processes one job at a time, so this bounds the concurrent background extractions."
+            },
+            "jobTimeoutMinutes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "REQUIRED: the extraction queue's visibility timeout in minutes — a claimed job moves its visible_after this far into the future, making it invisible to every worker for the window. Doubles as the crash-recovery delay (a worker dying mid-job leaves the job to re-emerge at the lease boundary); must comfortably exceed the worst-case extraction duration or a still-running job gets claimed twice (benign — the ELTM writer deduplicates — but wasteful). See memory/eltm/ExtractionQueue.kt."
+            },
+            "retryDelayMinutes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "REQUIRED: how long after a KNOWN failure a queue job re-emerges for its retry (retries are unlimited; every failure is logged). Typically much shorter than jobTimeoutMinutes — the lease covers crashes, this covers the ordinary failure path. See memory/eltm/ExtractionQueue.kt."
             }
           }
         }

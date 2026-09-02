@@ -29,13 +29,6 @@
       <MessageList />
     </div>
   {/if}
-  {#if store.deletingIds.has(store.chatId)}
-    <div class="mx-auto w-full max-w-3xl space-y-2 px-4 pb-2">
-      <div class="break-words rounded-lg border border-border/50 bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
-        deleting chat — the conversation is being scanned into memories…
-      </div>
-    </div>
-  {/if}
   {#if store.streamError}
     <div class="mx-auto w-full max-w-3xl space-y-2 px-4 pb-2">
       <div

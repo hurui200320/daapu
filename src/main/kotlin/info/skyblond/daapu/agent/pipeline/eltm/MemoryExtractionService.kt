@@ -47,10 +47,12 @@ import java.time.ZoneId
  *   `length` finish) or one producing tool calls or no text;
  * - any terminal writer failure: a classified hand error, an exhausted
  *   transient-retry budget, the `round_limit` cap or an `empty_response`.
- *   A failed write fails the run — and with it the deletion when triggered
- *   from there, so a retry re-extracts from the still-existing history
- *   instead of losing memories. Whatever was already recorded sticks (the
- *   writer skips already-recorded content on retry).
+ *   A failed write fails the run when triggered from compaction — nothing
+ *   is lost (whatever was already recorded sticks: the writer skips
+ *   already-recorded content on retry). When triggered from the DELETION
+ *   queue (`memory/eltm/ExtractionQueueWorker.kt`), the failure never
+ *   reaches the user: the worker logs it and the queue's visibility
+ *   timeout retries the job, re-extracting from the frozen snapshot.
  */
 class MemoryExtractionService(
     private val extractModel: LLM,
@@ -70,8 +72,11 @@ class MemoryExtractionService(
 ) {
     /**
      * Extract memories from [droppedMessages] (the raw messages compaction is
-     * about to discard) and write them into the ELTM. Throws per the class
-     * KDoc (the extraction pipeline fails the run on failure). The
+     * about to discard, or the snapshot of a deleted chat's history — the
+     * deletion queue's worker feeds this from `pending_extractions`) and
+     * write them into the ELTM. Throws per the class KDoc — the caller
+     * decides the consequence: the compaction path fails the run, the
+     * deletion queue's worker logs and retries. The
      * [NOTHING_TO_REMEMBER_TEXT] sentinel (matched tolerantly by
      * [isNothingToRemember]) is the only skip path for the extraction: a
      * blank answer is a hand `empty_response` error and fails the run, it

@@ -209,7 +209,20 @@
       // Cosine floor for search_notes (0..1).
       "noteSearchThreshold": 0.1,
       // Round cap for the ELTM writer tool loop; 0 = unlimited.
-      "maxWriterRounds": 150
+      "maxWriterRounds": 150,
+      // The background extraction queue (memory/eltm/ExtractionQueue.kt):
+      // deleting a chat only snapshots its history into the pending_extractions
+      // table and removes the row right away; these workers run the memory
+      // pipeline (extractor + ELTM writer) off the request path, so slow LLM
+      // endpoints never stall a delete. All three REQUIRED.
+      "queueWorkers": 1,
+      // Visibility timeout in minutes: a claimed job is invisible to every
+      // worker for this window. Also the crash-recovery delay — keep it well
+      // above the worst-case extraction duration.
+      "jobTimeoutMinutes": 30,
+      // How long after a known failure a job retries (retries are unlimited;
+      // every failure is logged). Usually much shorter than the job timeout.
+      "retryDelayMinutes": 5
     }
   },
   // The agents: the main (chat loop) agent and the investigate agent

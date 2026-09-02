@@ -12,6 +12,7 @@ import info.skyblond.daapu.db.EltmEntityAttributes
 import info.skyblond.daapu.db.EltmNotes
 import info.skyblond.daapu.db.EltmRelationships
 import info.skyblond.daapu.db.MemoryMetaNumber
+import info.skyblond.daapu.db.PendingExtractions
 import info.skyblond.daapu.db.Personas
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.db.withTransaction
@@ -100,8 +101,8 @@ object TestDb {
         runBlocking {
             withTransaction {
                 exec(
-                    "TRUNCATE chats, personas, memory_meta_number, eltm_entities, " +
-                            "eltm_entity_attributes, eltm_relationships, eltm_notes " +
+                    "TRUNCATE chats, personas, pending_extractions, memory_meta_number, " +
+                            "eltm_entities, eltm_entity_attributes, eltm_relationships, eltm_notes " +
                             "RESTART IDENTITY CASCADE"
                 )
                 // the migration's seed row, restored through the table mapping
@@ -189,6 +190,56 @@ object TestDb {
                 // the column default fills created_at; the read map keeps it
                 // as the DB wrote it
                 row[EltmNotes.createdAt],
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // raw extraction-queue access (test fixtures and assertions over the
+    // queue table)
+    // ------------------------------------------------------------------
+
+    /**
+     * Insert a `pending_extractions` row directly (a fixture, NOT the
+     * queue's enqueue path): tests seed arbitrary payloads — including ones
+     * that would fail ChatCodec's decode — to exercise the queue's
+     * corruption handling. Returns the DB-assigned id.
+     */
+    suspend fun seedExtractionJob(chatJson: String): Long = withTransaction {
+        PendingExtractions.insert {
+            it[PendingExtractions.chatJson] = chatJson
+        } get PendingExtractions.id
+    }
+
+    /** One `pending_extractions` row as the tests see it. */
+    data class ExtractionJobRow(
+        val id: Long,
+        val chatJson: String,
+        val visibleAfter: java.time.OffsetDateTime,
+    )
+
+    suspend fun allExtractionJobs(): List<ExtractionJobRow> = withTransaction {
+        PendingExtractions.selectAll()
+            .orderBy(PendingExtractions.id)
+            .map { row ->
+                ExtractionJobRow(
+                    row[PendingExtractions.id],
+                    row[PendingExtractions.chatJson],
+                    row[PendingExtractions.visibleAfter],
+                )
+            }
+    }
+
+    /**
+     * Rewind one job's `visible_after` into the past: simulates the
+     * visibility window (the claim lease or the retry delay) lapsing, so the
+     * job is claimable again without the tests waiting real minutes.
+     */
+    suspend fun rewindExtractionJob(id: Long) {
+        withTransaction {
+            exec(
+                "UPDATE pending_extractions SET visible_after = now() - interval '1 hour' WHERE id = ?",
+                args = listOf(org.jetbrains.exposed.v1.core.LongColumnType() to id),
             )
         }
     }

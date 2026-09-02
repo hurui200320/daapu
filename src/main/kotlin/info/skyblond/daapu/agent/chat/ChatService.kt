@@ -3,7 +3,6 @@ package info.skyblond.daapu.agent.chat
 import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.pipeline.TitleGenerator
-import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.agent.persist.PersistChatService
@@ -11,10 +10,14 @@ import info.skyblond.daapu.agent.persist.StreamingExecutionCallback
 import info.skyblond.daapu.agent.tool.LengthSafeToolProvider
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
+import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import info.skyblond.daapu.db.AdvisoryChatLock
 import info.skyblond.daapu.db.AdvisoryChatLockManager
 import info.skyblond.daapu.db.AdvisoryLockConflictException
 import info.skyblond.daapu.db.AdvisoryLockPoolExhaustedException
+import io.github.oshai.kotlinlogging.KotlinLogging
+
+private val logger = KotlinLogging.logger {}
 
 /**
  * A malformed chat-run or history-edit request: the client can fix it, so
@@ -78,7 +81,8 @@ class ChatRunSetup(
  *
  * The class only holds what it uses: the chat store, the model catalog,
  * the session-title generator, the chat loop's tool set, the persona
- * service, the memory extraction pipeline (deletion) and the persist loop.
+ * service, the background extraction queue (deletion's async memory
+ * extraction) and the persist loop.
  * The stores and the hand callback service live in the container and are
  * consumed directly by the web server module; cleanup is Koin's job too
  * (`onClose` on the `HandService`/`McpToolProvider` definitions, triggered
@@ -121,7 +125,13 @@ class ChatService(
      * come from the persona the request names.
      */
     private val personaService: PersonaService,
-    private val memoryExtractionService: MemoryExtractionService,
+    /**
+     * The background extraction queue (`memory/eltm/ExtractionQueue.kt`):
+     * [deleteChat] enqueues a history snapshot instead of running the
+     * extraction pipeline inline, so slow LLM endpoints never stall a
+     * delete — `memory/eltm/ExtractionQueueWorker.kt` drains the queue.
+     */
+    private val extractionQueue: ExtractionQueue,
     private val persistService: PersistChatService,
     /**
      * The per-chat lock over PostgreSQL session-level advisory locks
@@ -174,26 +184,36 @@ class ChatService(
     }
 
     /**
-     * Delete a chat row, but first run the memory extraction pipeline over
-     * its full history so the chat's memories survive the deletion. Refuses
-     * (throws [ChatRunConflictException]) while a run holds the chat lock:
-     * the chat store's upsert would otherwise let an in-flight run's final
-     * store resurrect the deleted row. Returns false when the chat doesn't
-     * exist (nothing to extract, no LLM call; an empty chat extracts nothing).
+     * Delete a chat row, keeping the chat's memories: instead of running the
+     * extraction pipeline inline (which stalled the request for minutes on
+     * slow endpoints), the full history is SNAPSHOTTED into the background
+     * extraction queue ([extractionQueue] → `pending_extractions`,
+     * `memory/eltm/ExtractionQueue.kt`) and the row is deleted right away —
+     * `memory/eltm/ExtractionQueueWorker.kt` runs the extraction into the
+     * ELTM off the request path. Refuses (throws
+     * [ChatRunConflictException]) while a run holds the chat lock: the chat
+     * store's upsert would otherwise let an in-flight run's final store
+     * resurrect the deleted row. Returns false when the chat doesn't exist
+     * (nothing to extract, no queue entry; an empty chat has no history to
+     * extract, so it is deleted without enqueueing).
      *
-     * The lock is held for the whole operation — load, extraction (potentially
-     * minutes of LLM calls) and the row delete — via [withChatLock], so no new
-     * run can start (409) while the deletion is in progress.
+     * The lock is held only for the brief load-enqueue-delete, but it still
+     * serializes the delete against runs. The enqueue happens BEFORE the
+     * row delete: a crash in between leaves a benign orphan job (the writer
+     * deduplicates; the row delete would simply retry), while the reverse
+     * order could lose the history — and with it the memories — entirely.
      *
-     * A failed extraction (a classified hand error, a truncated extractor
-     * round, a model that cannot see the history, a failed ELTM writer run)
-     * throws and FAILS the delete: the row survives untouched, and the next
-     * delete attempt re-extracts the same history, which the writer
-     * deduplicates against the store.
+     * A failed extraction is no longer THIS method's problem: it surfaces in
+     * the worker as an error log line, and the queue's visibility timeout
+     * retries the job (unlimited; the writer deduplicates, so nothing is
+     * written twice).
      */
     suspend fun deleteChat(chatId: String): Boolean = withChatLock(chatId) {
         val entry = chatStore.load(chatId) ?: return@withChatLock false
-        memoryExtractionService.processDiscardedMessages(entry.content.messages)
+        if (entry.content.messages.isNotEmpty()) {
+            val jobId = extractionQueue.enqueue(entry.content.messages)
+            logger.info { "Chat '$chatId' queued for background memory extraction as job $jobId" }
+        }
         chatStore.delete(chatId)
     }
 

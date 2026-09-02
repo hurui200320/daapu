@@ -210,17 +210,13 @@
                     {chat.title}
                   </span>
                 </div>
-                <DropdownMenu.Item
-                  class={dropdownItemClass()}
-                  disabled={store.deletingIds.has(chat.id)}
-                  onSelect={() => (renameTarget = chat)}
-                >
+                <DropdownMenu.Item class={dropdownItemClass()} onSelect={() => (renameTarget = chat)}>
                   <Pencil class="size-3.5" />
                   Rename
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   class={dropdownItemClass()}
-                  disabled={titleGeneratingIds.has(chat.id) || store.deletingIds.has(chat.id)}
+                  disabled={titleGeneratingIds.has(chat.id)}
                   onSelect={() => void generateTitleFor(chat)}
                 >
                   {#if titleGeneratingIds.has(chat.id)}
@@ -232,7 +228,7 @@
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   class={dropdownItemDestructive()}
-                  disabled={store.deletingIds.has(chat.id) || (store.streaming && chat.id === store.chatId)}
+                  disabled={store.streaming && chat.id === store.chatId}
                   onSelect={() => (deleteTarget = chat)}
                 >
                   <Trash2 class="size-3.5" />

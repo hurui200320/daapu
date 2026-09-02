@@ -113,18 +113,11 @@ class ChatStore {
   // toast: it stays tied to the messages it relates to)
   streamError = $state<string | null>(null)
 
-  // in-flight deletions per chat id: while a delete request is running (the
-  // backend extracts memories from the history first, which can take minutes),
-  // the chat is read-only — no rename/title/delete/send — until the backend
-  // confirms the row is gone or reports an error
-  // (SvelteSet: a native Set under $state is not proxied, so .add()/.delete()
-  // would never invalidate the templates reading .has())
-  deletingIds = new SvelteSet<string>()
-
   // chats deleted this session, per id: a route pointing at one (e.g. the
   // history entry left behind when the open chat was deleted from another
   // view) must not be picked — the load would 404; the App route effect
-  // redirects such landings to home instead
+  // redirects such landings to home instead. Also guards the draft swap:
+  // a deleted chat's draft was dropped with it.
   deletedChatIds = new SvelteSet<string>()
 
   // fork requests in flight per chat id: forks have no confirmation dialog
@@ -135,19 +128,18 @@ class ChatStore {
 
   // truncations in flight per chat id: indices computed on the display list
   // go stale once a truncate lands, so while one is pending every OTHER
-  // history edit (truncate/fork) on this chat stays disabled — mirroring how
-  // fork/truncate disable during a full-chat delete's memory extraction
+  // history edit (truncate/fork) on this chat stays disabled
   truncatingIds = new SvelteSet<string>()
 
   /**
-   * True while ANY history mutation (full-chat delete / fork / truncate) is
-   * in flight on this chat: the other edits' display indices go stale until
-   * it settles, so every edit entry point must gate on this ONE predicate —
-   * adding a future mutation kind means adding it here, not finding the
-   * inline triples.
+   * True while a history mutation (fork / truncate) is in flight on this
+   * chat: the other edits' display indices go stale until it settles, so
+   * every edit entry point must gate on this ONE predicate — adding a
+   * future mutation kind means adding it here, not finding the inline
+   * pairs.
    */
   isMutatingHistory(id: string): boolean {
-    return this.deletingIds.has(id) || this.forkingIds.has(id) || this.truncatingIds.has(id)
+    return this.forkingIds.has(id) || this.truncatingIds.has(id)
   }
 
   private started = false
@@ -351,7 +343,6 @@ class ChatStore {
   }
 
   async renameChat(id: string, title: string): Promise<boolean> {
-    if (this.deletingIds.has(id)) return false
     try {
       await renameChat(id, title)
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title } : c))
@@ -369,7 +360,6 @@ class ChatStore {
    * call.
    */
   async generateTitle(id: string): Promise<void> {
-    if (this.deletingIds.has(id)) return
     try {
       const chat = await generateTitle(id)
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title: chat.title } : c))
@@ -379,15 +369,13 @@ class ChatStore {
   }
 
   /**
-   * Delete a chat: the backend extracts memories from its history before
-   * removing the row, which can take minutes. While the request is in flight
-   * the chat is read-only ([deletingIds]) — a second delete call is a no-op.
-   * On failure (e.g. the extraction failed and the row is kept) the lock is
-   * released and the error surfaces as a toast, so the user can retry.
+   * Delete a chat: the backend snapshots the history into its background
+   * extraction queue (the memories are written off the request path) and
+   * removes the row right away, so the request is fast. On failure (e.g. a
+   * run holds the chat lock) the error surfaces as a toast and the chat
+   * simply stays in the list.
    */
   async deleteChat(id: string): Promise<void> {
-    if (this.deletingIds.has(id)) return
-    this.deletingIds.add(id)
     try {
       await deleteChat(id)
       this.knownChats = this.knownChats.filter((c) => c.id !== id)
@@ -404,8 +392,6 @@ class ChatStore {
       }
     } catch (e) {
       toastStore.pushError(e)
-    } finally {
-      this.deletingIds.delete(id)
     }
   }
 
@@ -417,8 +403,8 @@ class ChatStore {
    * delete; the slice applies only while still on the same chat. The backend
    * rejects (409) while a run is active; the UI hides the button while
    * streaming anyway, so the local slice mirrors the DB exactly. Like any
-   * history edit, it is skipped while a full-chat delete, a fork or another
-   * truncation on this chat is still in flight.
+   * history edit, it is skipped while a fork or another truncation on this
+   * chat is still in flight.
    *
    * Returns whether the truncation was performed: false either on an API
    * error (toasted here) or on a guarded no-op — another history edit in
@@ -502,10 +488,6 @@ class ChatStore {
       this.personaOverride = null
     }
     const personaId = this.currentPersonaId
-    if (this.deletingIds.has(id)) {
-      toastStore.push('This chat is being deleted')
-      return false
-    }
     // serialize against history edits like the message-item buttons do: a
     // pending truncate/fork shifts indices (then the stored history) under
     // an optimistic send

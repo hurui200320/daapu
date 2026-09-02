@@ -12,6 +12,7 @@ import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.server.endpoint.*
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.*
@@ -56,6 +57,13 @@ fun startWebServer(config: AppConfig) {
     // eager resolution: every fail-fast validation above fires here, never
     // mid-run (the resolved service is what the module below serves)
     koinApp.koin.get<ChatService>()
+    // the background extraction queue worker (the deletion path's async
+    // memory extraction, `memory/eltm/ExtractionQueueWorker.kt`): started
+    // explicitly because it is deliberately NOT reachable from the
+    // ChatService graph root — a test resolving the container must not
+    // spawn poll loops. Stopped via the container's onClose when the
+    // shutdown hook closes the Koin application.
+    koinApp.koin.get<ExtractionQueueWorker>().start()
     // graceful close of the hand client and the MCP clients (stdio
     // subprocesses, HTTP sessions) via the container's onClose callbacks
     Runtime.getRuntime().addShutdownHook(Thread { koinApp.close() })

@@ -203,9 +203,12 @@ frontend + Node/TS "hand-pi" service.
     holding a lock), and the lock connections carry
     `SET statement_timeout = lockConnectionTimeout` (a hung session fails
     fast into the ordinary error paths — Hikari's timeout covers only the
-    pool wait). `deleteChat` runs extraction over the full history
-    BEFORE deleting, holding the lock; failed extraction fails the delete
-    (retry re-extracts). Transaction-level `pg_advisory_xact_lock` is not
+    pool wait). `deleteChat` takes the lock only for the brief
+    load-enqueue-delete: the history is SNAPSHOTTED into the background
+    extraction queue (`memory/eltm/ExtractionQueue.kt`) and the row deleted
+    right away — the extraction runs off the request path
+    (`memory/eltm/ExtractionQueueWorker.kt`), so slow endpoints never stall
+    a delete. Transaction-level `pg_advisory_xact_lock` is not
     viable — a run spans many short transactions.
   - **ChatStore** (`agent/chat/ChatStore.kt`): all `chats` access behind
     it; `ChatService` holds no raw DB calls. `load` → full
@@ -292,9 +295,11 @@ frontend + Node/TS "hand-pi" service.
     fails the run. Non-sentinel → ELTM writer (tool loop ≤
     `maxWriterRounds`) — facts go straight to the ELTM, no intermediate
     store. `upstream` retries with hand backoff; ANY terminal failure
-    fails the run (nothing lost; recorded content sticks — no duplicate
-    diary entries). `event_date` = extraction (or compaction) day, never
-    later. The extractor prompt has two flavors (`ExtractionInput`):
+    fails the run when triggered from compaction (nothing lost; recorded
+    content sticks — no duplicate diary entries); from the deletion queue
+    the worker logs and retries instead. `event_date` = extraction (or
+    compaction) day, never later. The extractor prompt has two flavors
+    (`ExtractionInput`):
     `CONVERSATION` for the discard pipeline (pinned byte-identical) and
     `USER_IMPORT` for the import path (the `/api/eltm/import` entry point is
     `MemoryExtractionService.processUserImport` over caller-supplied
@@ -303,6 +308,25 @@ frontend + Node/TS "hand-pi" service.
     import route answers 201 Created with an
     empty body — a pasted sentinel or an empty extraction is an
     indistinguishable no-op success (no `recorded` flag).
+  - **Deletion extraction queue** (`memory/eltm/ExtractionQueue.kt` +
+    `ExtractionQueueWorker.kt` — NOT in `agent.*`: the queue is plumbing,
+    not an agent): `deleteChat` snapshots the history into the
+    `pending_extractions` table (`V3__pending_extractions.sql`) and
+    deletes the chats row right away; N workers
+    (`memory.eltm.queueWorkers`) drain it off the request path. SQS-style
+    visibility timeout, one column (`visible_after`, default `now()`):
+    claim = SELECT..`FOR UPDATE SKIP LOCKED` + `visible_after = now() +
+    jobTimeoutMinutes` in ONE transaction (row lock held only for the
+    transaction — the minutes-long extraction is guarded purely by the
+    moved marker; all time arithmetic in DB `now()`); success deletes the
+    row; a KNOWN failure logs + reschedules to `now() + retryDelayMinutes`
+    (both knobs REQUIRED ≥ 1, no cross-constraint); a crash/shutdown/overrun
+    leaves the job to re-emerge at the lease boundary. Unlimited retries;
+    a job overrunning the timeout may double-run (benign — the writer
+    deduplicates). The worker needs no chat lock and is NOT reachable from
+    the ChatService graph root: `WebServer.startWebServer` resolves +
+    starts it explicitly, Koin `onClose` stops it (no join — a cancelled
+    job re-emerges via its lease).
   - Models: `memory.compactModel`, `memory.eltm.extractionModel/
     embeddingModel/writerModel/rewriteModel`, `agent.investigator.model`,
     and `title.model` are ALL REQUIRED, resolved once at boot by DI
@@ -369,9 +393,9 @@ frontend + Node/TS "hand-pi" service.
     flash; sends blocked).
   - State (`src/lib/chat-store.svelte.ts`, module-scope singleton — no
     `$effect` runes there; model-picker persistence in `App.svelte`):
-    in-flight delete locks the chat read-only via `deletingIds`
-    (extraction can take minutes; dialog fire-and-forget; actions/send
-    disabled until confirmed). Transient errors → toasts
+    delete is a fast request (the backend queues extraction) — dialog
+    fire-and-forget, one error toast, no read-only locking. Transient
+    errors → toasts
     (`lib/toast-store.svelte.ts`); contextual errors stay view-tied
     (`streamError`, ELTM inline). SSE semantics verbatim: tool-round
     commits, retry wipes, DB resync on done/error/abnormal close,
@@ -463,10 +487,10 @@ frontend + Node/TS "hand-pi" service.
       output (alpha flatten + JPEG quality steps, refuse if nothing
       fits); decoded results park on the persisted draft (deleted chats'
       dropped).
-    - History-edit serialization: `truncatingIds` joins `deletingIds`/
-      `forkingIds`; buttons disable on any; guarded edits toast "A
-      history edit is in progress" (`send` returns early; truncate's
-      dialog stays open).
+    - History-edit serialization: `truncatingIds` joins `forkingIds`
+      (deletes need no serialization — they are fast requests); buttons
+      disable on any; guarded edits toast "A history edit is in progress"
+      (`send` returns early; truncate's dialog stays open).
     - Tooling: Prettier + ESLint 10 flat config → `npm run lint`;
       `npm run check` = lint + svelte-check; `npm run test` = Vitest
       (node env, colocated `*.test.ts`); `engines.node` pins Vite 8's

@@ -87,6 +87,9 @@ fun testAppConfig() = AppConfig(
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
+            queueWorkers = 1,
+            jobTimeoutMinutes = 30,
+            retryDelayMinutes = 5,
         ),
     ),
     agent = AgentConfig(

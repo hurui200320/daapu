@@ -84,7 +84,10 @@ class ConfigTest {
                         "rewriteModel": "bifrost/rw",
                         "rewriteRounds": 5,
                         "relatedEntitiesLimit": 5,
-                        "relatedNotesLimit": 5
+                        "relatedNotesLimit": 5,
+                        "queueWorkers": 1,
+                        "jobTimeoutMinutes": 30,
+                        "retryDelayMinutes": 5
                     }
                 },
                 "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
@@ -142,7 +145,7 @@ class ConfigTest {
                     },
                 },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -161,7 +164,7 @@ class ConfigTest {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -181,7 +184,7 @@ class ConfigTest {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -213,7 +216,7 @@ class ConfigTest {
                     "other": { "apiKey": "k2", "baseUrl": "http://h2" },
                 },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -260,7 +263,7 @@ class ConfigTest {
                     }
                 },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -296,7 +299,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "My Provider": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                 }
@@ -405,7 +408,7 @@ class ConfigTest {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -431,7 +434,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                 }
@@ -489,7 +492,7 @@ class ConfigTest {
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "server": { "port": 0 },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                 }
@@ -523,7 +526,7 @@ class ConfigTest {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": {},
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" }
                 }
@@ -546,7 +549,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" }
                 }
@@ -691,7 +694,7 @@ class ConfigTest {
                 "database": { "url": "u", "user": "p", "password": "p" },
                 "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -717,7 +720,7 @@ class ConfigTest {
                         "blacklists": ["**/.env", "**/*.env", "secrets/**"]
                     }
                 },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "t" },
             }
@@ -804,7 +807,7 @@ class ConfigTest {
                 {
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                     "title": { "model": "t" },
                     "mcp": {
@@ -881,7 +884,10 @@ class ConfigTest {
                         "relatedNotesLimit": 0,
                         "entityMatchThreshold": 0.3,
                         "noteSearchThreshold": 0.2,
-                        "maxWriterRounds": 10
+                        "maxWriterRounds": 10,
+                        "queueWorkers": 2,
+                        "jobTimeoutMinutes": 45,
+                        "retryDelayMinutes": 7
                     }
                 },
                 "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
@@ -900,6 +906,9 @@ class ConfigTest {
         assertEquals(0.3, decoded.eltm.entityMatchThreshold)
         assertEquals(0.2, decoded.eltm.noteSearchThreshold)
         assertEquals(10, decoded.eltm.maxWriterRounds)
+        assertEquals(2, decoded.eltm.queueWorkers)
+        assertEquals(45, decoded.eltm.jobTimeoutMinutes)
+        assertEquals(7, decoded.eltm.retryDelayMinutes)
     }
 
     @Test
@@ -930,7 +939,7 @@ assertTrue(
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "eltm": { "extractionModel": "x", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
+                        "eltm": { "extractionModel": "x", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -954,7 +963,7 @@ assertTrue(
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5 }
+                        "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 3, "relatedEntitiesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -980,7 +989,7 @@ assertTrue(
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
                     "memory": {
                         "compactModel": "bifrost/x",
-                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 }
+                        "eltm": { "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 }
                     },
                     "title": { "model": "bifrost/t" }
                 }
@@ -1029,6 +1038,9 @@ assertTrue(
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
+            queueWorkers = 1,
+            jobTimeoutMinutes = 30,
+            retryDelayMinutes = 5,
         )
         val blank = assertFailsWith<IllegalArgumentException> {
             MemoryConfig(
@@ -1057,6 +1069,9 @@ assertTrue(
             rewriteRounds = 5,
             relatedEntitiesLimit = 5,
             relatedNotesLimit = 5,
+            queueWorkers = 1,
+            jobTimeoutMinutes = 30,
+            retryDelayMinutes = 5,
         )
         valid.validate()
 
@@ -1092,6 +1107,16 @@ assertTrue(
 
         assertFailsWith<IllegalArgumentException> { valid.copy(maxWriterRounds = -1).validate() }
         valid.copy(maxWriterRounds = 0).validate()
+
+        // the extraction-queue knobs (see memory/eltm/ExtractionQueue.kt):
+        // 0 would hot-loop the claim (a claimed job is invisible for exactly
+        // the timeout) or spawn no worker at all
+        assertFailsWith<IllegalArgumentException> { valid.copy(queueWorkers = 0).validate() }
+        assertFailsWith<IllegalArgumentException> { valid.copy(jobTimeoutMinutes = 0).validate() }
+        assertFailsWith<IllegalArgumentException> { valid.copy(retryDelayMinutes = 0).validate() }
+        // no cross-constraint: the retry delay may be shorter OR longer than
+        // the job timeout (the lease covers crashes, the retry the failure)
+        valid.copy(retryDelayMinutes = 60).validate()
     }
 
     @Test
@@ -1102,7 +1127,7 @@ assertTrue(
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "main": { "toolResultLimit": 12345 }, "investigator": { "model": "bifrost/i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t" }
             }
@@ -1130,7 +1155,7 @@ assertTrue(
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": {},
                     "title": { "model": "bifrost/t" }
                 }
@@ -1144,7 +1169,7 @@ assertTrue(
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "title": { "model": "bifrost/t" }
                 }
                 """.trimIndent()
@@ -1158,7 +1183,7 @@ assertTrue(
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "bifrost/i" } },
                     "title": { "model": "bifrost/t" }
                 }
@@ -1173,7 +1198,7 @@ assertTrue(
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "bifrost/i", "allowedNamespaces": [] } },
                     "title": { "model": "bifrost/t" }
                 }
@@ -1255,7 +1280,7 @@ assertTrue(
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t" }
             }
@@ -1273,7 +1298,7 @@ assertTrue(
                 "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                 "providers": {},
                 "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                 "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
                 "title": { "model": "bifrost/t", "lastNRound": 3 }
             }
@@ -1293,7 +1318,7 @@ assertTrue(
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } }
                 }
                 """.trimIndent()
@@ -1306,7 +1331,7 @@ assertTrue(
                     "database": {"url": "jdbc:postgresql://localhost:5432/postgres", "user": "postgres", "password": "postgres"},
                     "providers": {},
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
-                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
                     "title": {}
                 }
                 """.trimIndent()

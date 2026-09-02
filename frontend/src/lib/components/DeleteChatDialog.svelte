@@ -7,10 +7,10 @@
 
   function confirmDelete() {
     if (!target) return
-    // fire-and-forget: the backend extracts memories from the history before
-    // deleting, which can take minutes — close the dialog right away so the
-    // user isn't stuck waiting. The chat stays locked read-only via
-    // [store.deletingIds] until the backend confirms or fails (toast).
+    // fire-and-forget: the backend snapshots the history into its background
+    // extraction queue and deletes the row right away, so the request is
+    // fast — close the dialog immediately; a failure surfaces as a toast and
+    // the chat simply stays in the list.
     void store.deleteChat(target.id)
     onClose()
   }

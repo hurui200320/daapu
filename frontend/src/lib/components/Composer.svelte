@@ -37,21 +37,13 @@
     })
   })
 
-  // the active chat is being deleted (the backend extracts memories first,
-  // which can take minutes): no message may be sent to it until it is gone
-  const deleting = $derived(store.deletingIds.has(store.chatId))
-
   // one gate shared by the submit guard and the send button's disabled
   // binding: no send while the history is still loading (an optimistic
   // message sent before it arrives would be clobbered by the load), while a
-  // run streams or the chat is being deleted, without a model (the server
-  // requires one — an empty id is a guaranteed 400), or with nothing to send
+  // run streams, without a model (the server requires one — an empty id is a
+  // guaranteed 400), or with nothing to send
   const canSend = $derived(
-    !!store.selectedModel &&
-      !store.streaming &&
-      !deleting &&
-      !store.chatLoading &&
-      (!!text.trim() || images.length > 0),
+    !!store.selectedModel && !store.streaming && !store.chatLoading && (!!text.trim() || images.length > 0),
   )
 
   const usage = $derived(store.usage)
@@ -124,9 +116,9 @@
   function onPaste(e: ClipboardEvent) {
     const files = e.clipboardData?.files
     if (!files || files.length === 0) return
-    // same gate as the paperclip button: no attachments while a run streams
-    // or the chat is being deleted; the paste falls through to plain text
-    if (store.streaming || deleting) return
+    // same gate as the paperclip button: no attachments while a run streams;
+    // the paste falls through to plain text
+    if (store.streaming) return
     // consume the paste: a clipboard carrying both files and text would
     // otherwise also insert the text into the textarea
     e.preventDefault()
@@ -217,7 +209,7 @@
         <button
           type="button"
           onclick={() => fileInput.click()}
-          disabled={store.streaming || deleting}
+          disabled={store.streaming}
           title="attach image (or paste)"
           class="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted-foreground/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
         >

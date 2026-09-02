@@ -120,6 +120,23 @@ object EltmEntityAttributes : Table("eltm_entity_attributes") {
 }
 
 /**
+ * The background memory-extraction queue (`V3__pending_extractions.sql`):
+ * deleted chats' history snapshots waiting for the extraction worker
+ * (`memory/eltm/ExtractionQueue.kt`). Access goes ONLY through that seam.
+ * A row is deleted on success; `visible_after` is the visibility-timeout
+ * marker the claim moves forward (the migration's header comment holds the
+ * authoritative mechanism description).
+ */
+object PendingExtractions : Table("pending_extractions") {
+    val id = long("id").autoIncrement()
+    val chatJson = text("chat_json")
+    val visibleAfter = timestampWithTimeZone("visible_after")
+        .defaultExpression(CurrentTimestampWithTimeZone)
+
+    override val primaryKey = PrimaryKey(id)
+}
+
+/**
  * ELTM diary notes: add-only (no update/delete methods exist in
  * `memory/eltm/`), strictly single-subject (exactly one of [entityId] /
  * [relationshipId], enforced by the migration's CHECK). A new note supersedes

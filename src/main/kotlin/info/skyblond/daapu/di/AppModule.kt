@@ -32,7 +32,10 @@ import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.ExtractionQueue
+import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.memory.eltm.PostgresEltmService
+import info.skyblond.daapu.memory.eltm.PostgresExtractionQueue
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.onClose
 import org.koin.core.module.dsl.withOptions
@@ -254,6 +257,29 @@ fun appModule(config: AppConfig): Module = module {
             eltmWriterService = get(),
         )
     }
+
+    // the background extraction queue (Postgres-as-queue, visibility-timeout
+    // pattern — see `memory/eltm/ExtractionQueue.kt`): the chat-deletion path
+    // enqueues a history snapshot and returns immediately; the worker below
+    // drains it into the ELTM off the request path. Not reachable from the
+    // ChatService graph root on purpose: `server/WebServer.kt` resolves and
+    // starts it explicitly (only the production server runs poll loops, never
+    // a test that merely resolves ChatService), and `stop()` cancels the
+    // worker's scope through the container's onClose when the shutdown hook
+    // closes the Koin application.
+    single<ExtractionQueue> {
+        PostgresExtractionQueue(
+            jobTimeoutMinutes = config.memory.eltm.jobTimeoutMinutes,
+            retryDelayMinutes = config.memory.eltm.retryDelayMinutes,
+        )
+    }
+    single<ExtractionQueueWorker> {
+        ExtractionQueueWorker(
+            queue = get(),
+            memoryExtractionService = get(),
+            workers = config.memory.eltm.queueWorkers,
+        )
+    } withOptions { onClose { it?.stop() } }
 
     single<QueryRewriteService> {
         QueryRewriteService(
