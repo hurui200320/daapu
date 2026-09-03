@@ -94,9 +94,6 @@ npm install
 npm run dev          # Svelte app on http://localhost:5173, proxies /api to :8080
 ```
 
-(There is a three-process `dev.sh` convenience script that starts the hand,
-ktor, and the frontend dev server together.)
-
 Open http://localhost:5173, pick a chat from the sidebar (or click "new
 chat"), pick a model, and chat.
 
@@ -113,7 +110,7 @@ cp config.example.jsonc config.jsonc
 
 | Section     | Fields                                             | Description                                                          |
 |-------------|----------------------------------------------------|----------------------------------------------------------------------|
-| `database`  | `url`, `user`, `password` (required)               | PostgreSQL JDBC URL, user and password.                              |
+| `database`  | `url`, `user`, `password` (required)               | PostgreSQL JDBC URL, user and password. `url` must be a DIRECT connection or a session-pooling proxy — a transaction-pooling proxy would drop the session-level chat locks mid-run (see `db/AdvisoryChatLockManager.kt`). |
 | `providers` | `{<id>: {apiKey, baseUrl, llm[]?, embedding[]?}}` (required) | OpenAI-compatible gateways keyed by id (e.g. `bifrost`); each carries the catalog entries it serves — at least one `llm[]` entry overall is REQUIRED. `baseUrl` is used as-is and must carry the full `/v1` root. |
 | `server`    | `port` (default `8080`)                            | API port; the frontend dev server proxies `/api` to it.              |
 | `mcp`       | `exa` (required) + `customs` (default none)       | MCP tool servers, see below.                                         |
@@ -307,17 +304,9 @@ catalog entry — the server has no default).
 
 ### Verification
 
-```bash
-./gradlew test
-cd hand-pi && npm test && npm run build
-```
-
-Frontend (in `frontend/`):
-
-```bash
-npm run check       # svelte-check
-npm run build       # production build
-```
+The authoritative build/test command list (JVM tests, hand-pi, frontend)
+lives in `AGENTS.md` ("Verification commands") — run it after any relevant
+source change; everything must exit clean.
 
 Note: the schema is a fresh migration (`V1__init.sql`); if you had an older
 database, drop the volume (`docker compose down -v`) before starting again.
@@ -328,10 +317,6 @@ The hand-pi migration changed a few observable behaviors on purpose (the old
 turn loops were the hand-rolled `koog` implementation, later rewritten on
 langchain4j):
 
-- **Sequential tool callbacks.** The hand executes one round's tool calls
-  one at a time, in source order (the old loop ran them in parallel). Slower
-  for multi-tool rounds, but deterministic and side-effect-safe — and the
-  hand never retries a callback POST.
 - **Transient upstream failures are retried by the hand.** 5xx responses,
   mid-stream error chunks, and truncated streams retry with exponential
   backoff inside the hand (visible as `retry` SSE events); the old loop only
@@ -366,10 +351,20 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | `GET /api/personas`                     | All personas: the code-only default persona first, then the `personas` rows. |
 | `POST /api/personas`                    | Create a persona (`{"name", "systemPrompt", "allowedNamespaces"}`; `allowedNamespaces` `[]` = all loop namespaces). |
 | `PUT/DELETE /api/personas/{id}`         | Update/delete a persona row (400 on the reserved default persona id 0). |
+| `GET /api/eltm/entities`                | Browse entities, paged (`?limit`, `?offset`; max 500 per page). |
+| `GET /api/eltm/entities/{id}`           | One entity's full view (attributes, counts, latest note; 404 unknown). |
+| `GET /api/eltm/entities/{id}/relationships` | The entity's relationships (`?includeInvalid`, default false). |
+| `GET /api/eltm/entities/{id}/notes`     | The entity's notes, paged, optional `?from`/`?to` date range. |
+| `GET /api/eltm/relationships`           | Browse relationships, paged (`?limit`, `?offset`). |
+| `GET /api/eltm/relationships/{id}`      | One relationship's full view (counts, latest note; 404 unknown). |
+| `GET /api/eltm/relationships/{id}/notes` | The relationship's notes, paged, optional `?from`/`?to` date range. |
+| `POST /api/eltm/import`                 | Manual memory import — request/response details below. |
 | `GET /api/hand/tools`                   | Internal: the hand's per-round tool advertisement (`?runId=...`). |
 | `POST /api/hand/tool`                   | Internal: the hand's tool-execution callback (`runId`-scoped). |
 
 `POST /api/chats/{id}/messages` accepts `{"text": "...", "images": [{"dataUrl": "data:image/png;base64,..."}], "model": "...", "personaId": 0}` (text and/or images required, model and persona required — no server defaults) and streams SSE events: `reasoning`, `text`, `tool_call`, `tool_result`, `retry` (transient hiccup, the run will be retried), `done`, or `error` (terminal). Validation errors are plain `400`/`409` responses before the stream starts. History compaction happens server-side with no dedicated event — the frontend's post-run resync (done/error) presents the compacted history.
+
+`POST /api/eltm/import` accepts `{"parts": [...], "date": "YYYY-MM-DD"}` — parts in the user-message wire shape (text parts and/or image attachments; at least one non-blank text part or image is required, and only image attachments are importable). `date` is the optional reference date for resolving relative dates (must not be in the future). The request blocks for the memory-extraction one-shot plus the writer loop (minutes are normal) and responds `201 Created` with an empty body on success — an empty extraction is an indistinguishable no-op — or `502` with the failure chain in the body when a stage fails terminally (whatever the writer already recorded sticks, and the writer deduplicates on retry). No chat lock: nothing here touches the chats table.
 
 ## References
 

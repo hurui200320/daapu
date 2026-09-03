@@ -5,7 +5,7 @@
  * (probe rows, capped chunk walks, exact-page boundaries).
  */
 
-/** Server-side cap of a single `/api/eltm` page (WebServer.kt MAX_ELTM_PAGE_LIMIT). */
+/** Server-side cap of a single `/api/eltm` page (EltmRoute.kt MAX_ELTM_PAGE_LIMIT). */
 export const LIST_LIMIT_CAP = 500
 
 /**
