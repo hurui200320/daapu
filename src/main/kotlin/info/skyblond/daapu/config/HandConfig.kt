@@ -28,8 +28,12 @@ data class HandConfig(
      * paths are appended directly ([toolListUrl], [toolCallbackUrl]).
      */
     val selfBaseUrl: String,
-    /** The shared static token (`HAND_TOKEN` on the hand's side). */
-    val token: String = "dev-token",
+    /**
+     * The shared static token (`HAND_TOKEN` on the hand's side). REQUIRED —
+     * there is no default: the deployment must set the SAME value on both
+     * sides (this field and the hand's `HAND_TOKEN` env var).
+     */
+    val token: String,
     /** Round cap per `/v1/run`; 0 = unlimited. */
     val maxRounds: Int = 64,
     /** Total transient attempts per `/v1/run` round (1 = a single attempt); 0 = unlimited. */
@@ -40,6 +44,10 @@ data class HandConfig(
     fun validate() {
         requireHttpUrl("hand.baseUrl", baseUrl)
         requireHttpUrl("hand.selfBaseUrl", selfBaseUrl)
+        // mirrors config.schema.json's minLength: 1 — a blank token would
+        // authenticate the hand's callbacks with whitespace, which is never
+        // what a deployment wants
+        require(token.isNotBlank()) { "hand.token must not be blank" }
         require(maxRounds >= 0) { "hand.maxRounds must be >= 0, got $maxRounds" }
         require(maxRetries >= 0) { "hand.maxRetries must be >= 0, got $maxRetries" }
         require(streamIdleTimeoutMs >= 0) { "hand.streamIdleTimeoutMs must be >= 0, got $streamIdleTimeoutMs" }

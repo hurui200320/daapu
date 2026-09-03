@@ -80,7 +80,7 @@ Start PostgreSQL, the hand, then the API server:
 ```bash
 docker compose up -d db
 cd hand-pi && npm install && npm run build
-HAND_PORT=3100 HAND_TOKEN=dev-token npm --prefix hand-pi start   # the hand on http://127.0.0.1:3100
+HAND_PORT=3100 HAND_TOKEN=<same as hand.token in config.jsonc> npm --prefix hand-pi start   # the hand on http://127.0.0.1:3100
 ./gradlew run        # ktor API on http://localhost:8080
 ```
 
@@ -146,7 +146,7 @@ secrets; it answers `{"ok": true, "version": ...}`), which the compose
 | `hand.baseUrl`            | `http://hand:3100`                   |
 | `hand.selfBaseUrl`        | `http://brain:8080`                  |
 | `server.port`             | must stay `8080` — the compose host port mapping and `hand.selfBaseUrl` both assume it |
-| `hand.token`              | must match the `hand` service's `HAND_TOKEN` in `compose.yaml` (default `dev-token` — fine for the loopback-only dev setup; for anything non-local set a real value via the `HAND_TOKEN` env var and mirror it here) |
+| `hand.token`              | REQUIRED (no default): set the `HAND_TOKEN` env var for the `hand` service (compose refuses to start without it) and mirror the same value here |
 
 JVM tuning goes through `JAVA_OPTS` (the `installDist` start scripts honor
 it — add e.g. `JAVA_OPTS: -Xmx4g` to the `brain` service's `environment`).
@@ -181,7 +181,7 @@ cp config.example.jsonc config.jsonc
 | `memory`    | `compactModel` + `eltm` (required)                 | Compaction + external long-term memory (ELTM) settings, see below.   |
 | `agent`     | `investigator` (required): `model` (required), `allowedNamespaces` (required), `maxRounds` (default `150`) | The investigate sub-agent settings, see below. |
 | `title`     | `model` (required), `lastNRound` (default `0`)     | Session-title generation (`POST /api/chats/{id}/title`).             |
-| `hand`      | `baseUrl` (required), `selfBaseUrl` (required), `token` (`dev-token`), `maxRounds` (64), `maxRetries` (0), `streamIdleTimeoutMs` (300000) | The hand-pi execution service endpoint (`baseUrl`), where the hand reaches this brain (`selfBaseUrl` — deployment-dependent: localhost in dev, a container/service name in docker), the shared static token (`HAND_TOKEN`), and the run-policy knobs sent with every run (the hand holds no defaults). |
+| `hand`      | `baseUrl` (required), `selfBaseUrl` (required), `token` (required), `maxRounds` (64), `maxRetries` (0), `streamIdleTimeoutMs` (300000) | The hand-pi execution service endpoint (`baseUrl`), where the hand reaches this brain (`selfBaseUrl` — deployment-dependent: localhost in dev, a container/service name in docker), the shared static token (`HAND_TOKEN` on the hand's side — no default, both sides must carry the same value), and the run-policy knobs sent with every run (the hand holds no defaults). |
 
 `config.schema.json` is a JSON Schema (draft-07) mirroring the config models
 in `config/Config.kt`; the `"$schema": "./config.schema.json"` entry at the

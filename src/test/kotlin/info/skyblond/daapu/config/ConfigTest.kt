@@ -33,12 +33,12 @@ class ConfigTest {
 
     /**
      * The REQUIRED hand section interpolated into the inline configs below:
-     * the section and both of its URLs carry no default anymore
+     * the section, both of its URLs, and its token carry no default anymore
      * (`HandConfig`), so every success-path config must carry it. The
      * placeholders dial nothing.
      */
     private val hand = """
-        "hand": { "baseUrl": "http://127.0.0.1:9", "selfBaseUrl": "http://127.0.0.1:9" },
+        "hand": { "baseUrl": "http://127.0.0.1:9", "selfBaseUrl": "http://127.0.0.1:9", "token": "test-token" },
     """.trimIndent()
 
     @Test
@@ -104,11 +104,13 @@ class ConfigTest {
                 "title": {
                     "model": "bifrost/t",
                 },
-                // both hand URLs are REQUIRED (no defaults): where this
-                // brain finds the hand, and where the hand finds this brain
+                // both hand URLs and the token are REQUIRED (no defaults):
+                // where this brain finds the hand, where the hand finds
+                // this brain, and the shared static token
                 "hand": {
                     "baseUrl": "http://127.0.0.1:3100",
                     "selfBaseUrl": "http://127.0.0.1:8080",
+                    "token": "test-token",
                 },
             }
             """.trimIndent()
@@ -194,8 +196,9 @@ class ConfigTest {
         assertTrue(config.mcp.customs.isEmpty())
         assertEquals(setOf(EXA_NAMESPACE), config.mcp.allServers().keys, "only the dedicated exa server by default")
         assertEquals(null, config.mcp.proxy, "no proxy by default")
-        // the hand SECTION is required, but its optional knobs still default
-        assertEquals("dev-token", config.hand.token)
+        // the hand section AND its token are required (supplied by the
+        // helper above); the run-policy knobs below still default
+        assertEquals("test-token", config.hand.token)
         assertEquals(64, config.hand.maxRounds)
         assertEquals(0, config.hand.maxRetries)
         assertEquals(300_000, config.hand.streamIdleTimeoutMs)
@@ -670,6 +673,31 @@ class ConfigTest {
     }
 
     @Test
+    fun `hand token is required at decode`() {
+        // the token carries no default (config.schema.json requires "token"
+        // the same way): a hand section without one must fail the boot
+        val e = assertFailsWith<SerializationException> {
+            decodeAppConfig(
+                """
+                {
+                    "hand": { "baseUrl": "http://127.0.0.1:3100", "selfBaseUrl": "http://127.0.0.1:8080" },
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" }
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(
+            e.message!!.contains("token"),
+            "the error should name the missing field: ${e.message}"
+        )
+    }
+
+    @Test
     fun `an invalid hand url fails at decode`() {
         // decodeAppConfig runs AppConfig.validate() -> hand.validate(): an
         // INVALID url value (not just a missing field) must fail the boot,
@@ -679,7 +707,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
-                    "hand": { "baseUrl": "http://127.0.0.1:3100/", "selfBaseUrl": "http://127.0.0.1:8080" },
+                    "hand": { "baseUrl": "http://127.0.0.1:3100/", "selfBaseUrl": "http://127.0.0.1:8080", "token": "test-token" },
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -698,7 +726,7 @@ class ConfigTest {
             decodeAppConfig(
                 """
                 {
-                    "hand": { "baseUrl": "http://127.0.0.1:3100", "selfBaseUrl": "http://127.0.0.1:8080?x=1" },
+                    "hand": { "baseUrl": "http://127.0.0.1:3100", "selfBaseUrl": "http://127.0.0.1:8080?x=1", "token": "test-token" },
                     "database": { "url": "u", "user": "p", "password": "p" },
                     "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
                     "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
@@ -721,23 +749,41 @@ class ConfigTest {
         // fragment, or trailing slash: the code-owned paths are appended
         // directly (HandConfig's toolCallbackUrl/toolListUrl), and a query or
         // fragment would silently swallow them — fail at boot instead
-        HandConfig(baseUrl = "http://127.0.0.1:3100", selfBaseUrl = "http://127.0.0.1:8080").validate()
-        HandConfig(baseUrl = "https://127.0.0.1:3100", selfBaseUrl = "https://127.0.0.1:8080").validate()
+        HandConfig(baseUrl = "http://127.0.0.1:3100", selfBaseUrl = "http://127.0.0.1:8080", token = "test-token").validate()
+        HandConfig(baseUrl = "https://127.0.0.1:3100", selfBaseUrl = "https://127.0.0.1:8080", token = "test-token").validate()
         // a path prefix (e.g. behind a reverse proxy) is fine
-        HandConfig(baseUrl = "http://127.0.0.1:3100/pre", selfBaseUrl = "http://127.0.0.1:8080/pre").validate()
+        HandConfig(baseUrl = "http://127.0.0.1:3100/pre", selfBaseUrl = "http://127.0.0.1:8080/pre", token = "test-token").validate()
         for (bad in listOf(
             "", "  ", "ftp://host", "127.0.0.1:3100", "http://127.0.0.1:3100/",
             // URI-level problems: no host, a query, a fragment, an illegal character
             "http:///x", "http://h?x=1", "http://h#f", "http://ho st",
         )) {
             val urlError = assertFailsWith<IllegalArgumentException> {
-                HandConfig(baseUrl = bad, selfBaseUrl = "http://127.0.0.1:8080").validate()
+                HandConfig(baseUrl = bad, selfBaseUrl = "http://127.0.0.1:8080", token = "test-token").validate()
             }
             assertTrue(urlError.message!!.contains("hand.baseUrl"), urlError.message)
             val selfError = assertFailsWith<IllegalArgumentException> {
-                HandConfig(baseUrl = "http://127.0.0.1:3100", selfBaseUrl = bad).validate()
+                HandConfig(baseUrl = "http://127.0.0.1:3100", selfBaseUrl = bad, token = "test-token").validate()
             }
             assertTrue(selfError.message!!.contains("hand.selfBaseUrl"), selfError.message)
+        }
+    }
+
+    @Test
+    fun `a blank hand token fails validation`() {
+        // the token also authenticates the hand's tool callbacks into this
+        // brain (server/endpoint/HandRoute.kt): a blank value is a deployment
+        // mistake — fail at boot (mirrors the hand's own blank HAND_TOKEN
+        // rejection in hand-pi/src/main.ts)
+        for (blank in listOf("", "   ")) {
+            val e = assertFailsWith<IllegalArgumentException> {
+                HandConfig(
+                    baseUrl = "http://127.0.0.1:3100",
+                    selfBaseUrl = "http://127.0.0.1:8080",
+                    token = blank,
+                ).validate()
+            }
+            assertTrue(e.message!!.contains("hand.token"), e.message)
         }
     }
 
@@ -748,6 +794,7 @@ class ConfigTest {
         val hand = HandConfig(
             baseUrl = "https://hand.example:3100",
             selfBaseUrl = "https://brain.example:8080",
+            token = "test-token",
         )
         assertEquals("https://brain.example:8080/api/hand/tool", hand.toolCallbackUrl)
         assertEquals("https://brain.example:8080/api/hand/tools", hand.toolListUrl)
@@ -755,6 +802,7 @@ class ConfigTest {
         val prefixed = HandConfig(
             baseUrl = "https://hand.example:3100",
             selfBaseUrl = "https://brain.example:8080/pre",
+            token = "test-token",
         )
         assertEquals("https://brain.example:8080/pre/api/hand/tool", prefixed.toolCallbackUrl)
         assertEquals("https://brain.example:8080/pre/api/hand/tools", prefixed.toolListUrl)

@@ -52,7 +52,8 @@ class HandCallbackTest {
     }
 
     private suspend fun io.ktor.client.HttpClient.callback(
-        token: String? = "dev-token",
+        // default must match testAppConfig()'s hand.token (TestConfig.kt)
+        token: String? = "test-token",
         body: HandToolCallbackRequest,
     ): Pair<HttpStatusCode, String> {
         val response = post("/api/hand/tool") {
@@ -65,7 +66,8 @@ class HandCallbackTest {
 
     private suspend fun io.ktor.client.HttpClient.toolList(
         runId: String,
-        token: String? = "dev-token",
+        // default must match testAppConfig()'s hand.token (TestConfig.kt)
+        token: String? = "test-token",
     ): Pair<HttpStatusCode, String> {
         val response = get("/api/hand/tools") {
             token?.let { header("x-daapu-token", it) }

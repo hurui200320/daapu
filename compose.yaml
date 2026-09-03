@@ -24,9 +24,9 @@ services:
     build: ./hand-pi
     environment:
       - HAND_PORT=3100
-      # must match hand.token in config.jsonc; override via the HAND_TOKEN
-      # env var (shell or .env next to this file)
-      - HAND_TOKEN=${HAND_TOKEN:-dev-token}
+      # REQUIRED (no default): must match hand.token in config.jsonc;
+      # the :? form refuses to start the stack when unset or empty
+      - HAND_TOKEN=${HAND_TOKEN:?HAND_TOKEN must be set and match hand.token in config.jsonc}
     # no ports: internal only — the brain reaches it at http://hand:3100
     # (the image binds 0.0.0.0 by default, see hand-pi/Dockerfile)
     restart: unless-stopped

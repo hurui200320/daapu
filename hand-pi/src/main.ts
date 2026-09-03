@@ -18,6 +18,12 @@ const HAND_HOST = process.env.HAND_HOST ?? "127.0.0.1";
 const HAND_TOKEN = process.env.HAND_TOKEN ?? "";
 
 export function startServer(port: number, token: string, host: string = "127.0.0.1"): Promise<Server> {
+  // fail fast: a blank token would leave the run/embed routes unauthenticated
+  // (mirrors hand.token's blank rejection on the Kotlin side); the entrypoint
+  // surfaces the rejection below as a startup failure
+  if (token.trim().length === 0) {
+    return Promise.reject(new Error("HAND_TOKEN must not be blank: set the HAND_TOKEN environment variable"));
+  }
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void handleRequest(req, res, token).catch((error: unknown) => {
       respondFailure(res, error);
@@ -67,9 +73,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
 const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
-  if (HAND_TOKEN.length === 0) {
-    console.warn("[hand] HAND_TOKEN environment variable is empty, this is not secure");
-  }
   startServer(HAND_PORT, HAND_TOKEN, HAND_HOST)
     .then(() => {
       console.log(`[hand] listening on ${HAND_HOST}:${HAND_PORT}`);

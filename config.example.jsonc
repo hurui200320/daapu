@@ -272,7 +272,7 @@
   // The hand-pi execution service (hand-pi/): a stateless
   // Node service that owns LLM execution (streaming, dialects, tool-call
   // accumulation, retries, usage). Run it with the same token:
-  //   HAND_PORT=3100 HAND_TOKEN=dev-token npm --prefix hand-pi start
+  //   HAND_PORT=3100 HAND_TOKEN=<same as hand.token below> npm --prefix hand-pi start
   // The run-policy knobs are REQUIRED per request (the hand holds no
   // defaults) and sent with every run; the values below mirror the
   // previous hand-side defaults.
@@ -283,7 +283,9 @@
     // inside a docker network). The brain composes the code-owned
     // /api/hand/tools and /api/hand/tool paths on it — no trailing slash.
     "selfBaseUrl": "http://127.0.0.1:8080",
-    "token": "dev-token",
+    // REQUIRED (no default): must match the hand's HAND_TOKEN env var —
+    // the same value authenticates both directions (runs and callbacks).
+    "token": "CHANGE_ME",
     // Round cap per /v1/run; 0 = unlimited.
     "maxRounds": 64,
     // Total transient attempts per /v1/run round (1 = a single attempt); 0 = unlimited.
