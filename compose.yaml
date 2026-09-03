@@ -2,7 +2,11 @@ services:
   db:
     image: pgvector/pgvector:pg18-trixie
     ports:
-      - "5432:5432"
+      # loopback-only, same posture as the brain's port: the db holds all
+      # chat/ELTM content behind postgres/postgres credentials. `./gradlew
+      # run` reaches it over loopback either way; widen the binding only
+      # deliberately via a compose.override.yaml
+      - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_DB=postgres
       - POSTGRES_USER=postgres
@@ -10,6 +14,55 @@ services:
     volumes:
       - pg-data:/var/lib/postgresql
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  hand:
+    build: ./hand-pi
+    environment:
+      - HAND_PORT=3100
+      # must match hand.token in config.jsonc; override via the HAND_TOKEN
+      # env var (shell or .env next to this file)
+      - HAND_TOKEN=${HAND_TOKEN:-dev-token}
+    # no ports: internal only — the brain reaches it at http://hand:3100
+    # (the image binds 0.0.0.0 by default, see hand-pi/Dockerfile)
+    restart: unless-stopped
+
+  brain:
+    build: .
+    ports:
+      # loopback-only: the API carries no authentication — widen the host
+      # binding deliberately (or front it with an authenticating proxy) if
+      # it must serve more than the local machine. NOTE the port must match
+      # server.port in config.jsonc (default 8080) — the mapping and
+      # hand.selfBaseUrl both assume it
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # loadConfig reads ./config.jsonc from the workdir; the file carries the
+      # deployment values: database.url=jdbc:postgresql://db:5432/postgres,
+      # hand.baseUrl=http://hand:3100, hand.selfBaseUrl=http://brain:8080
+      # (see README Deployment). create_host_path=false fails a missing
+      # config.jsonc at `up` time — the default would silently create an
+      # empty DIRECTORY at the path and crash-loop the brain with a confusing
+      # parse error. Local-only extras (personal bind mounts) belong in a
+      # gitignored compose.override.yaml.
+      - type: bind
+        source: ./config.jsonc
+        target: /app/config.jsonc
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      db:
+        condition: service_healthy
+      # the hand image's HEALTHCHECK probes GET /v1/health (tokenless)
+      hand:
+        condition: service_healthy
+    restart: unless-stopped
+    # the API and the compiled UI both live on this one port: http://localhost:8080
 
 volumes:
   pg-data:

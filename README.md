@@ -97,6 +97,70 @@ npm run dev          # Svelte app on http://localhost:5173, proxies /api to :808
 Open http://localhost:5173, pick a chat from the sidebar (or click "new
 chat"), pick a model, and chat.
 
+### Deployment (docker compose)
+
+The whole stack ships via the checked-in `compose.yaml` (services `db`,
+`hand`, `brain`):
+
+```bash
+cp config.example.jsonc config.jsonc   # fill in the keys, see below
+docker compose up -d --build
+```
+
+Local-only extras (personal bind mounts, per-host port changes) belong in a
+gitignored `compose.override.yaml` — Compose merges it over `compose.yaml`
+automatically (service volumes merge by container target path) — so the
+tracked file stays portable.
+
+The UI and the API share one origin — http://localhost:8080 (the `brain`
+container); the host mapping is loopback-only (`127.0.0.1:8080:8080`)
+because the API carries no authentication — widen the binding deliberately
+if the host must serve a LAN. The frontend dist is baked into the brain
+image by the
+multi-stage `Dockerfile` (stage 1 builds the frontend, stage 2 copies it
+into the `frontend` classpath package before the Gradle build, stage 3 runs
+the distribution on a toolbox base: zulu JDK 25 on Ubuntu, with node 24 and
+python3 + uv for the stdio MCP servers plus curl/wget/git — no separate
+frontend server exists. The container runs as root on purpose: the brain's
+bash tool installs CLI tools at runtime. Anything it installs is
+per-container ephemeral — dependencies the deployment relies on long-term
+belong in the Dockerfile's toolbox layer. The root agent can also read the
+mounted `config.jsonc` and use the container's network: the container is
+the isolation boundary. On kubernetes this needs
+`securityContext: { runAsUser: 0 }` (or root-equivalent) on the brain pod.
+Development differs by design: locally the resource package is empty (see
+`.gitignore`), the ktor server answers 404 for web-UI paths, and the UI
+comes from the vite dev server (`server/WebServer.kt` → `staticWebUi`).
+
+The hand runs in its own container (`hand-pi/Dockerfile`, no host ports —
+the brain reaches it over the compose network, and its image carries a
+`HEALTHCHECK` on `GET /v1/health` — tokenless on purpose (probes carry no
+secrets; it answers `{"ok": true, "version": ...}`), which the compose
+`brain` waits on; the same URL is the kubernetes liveness/readiness probe,
+`httpGet` on port 3100). The mounted
+`config.jsonc` needs the deployment-specific values:
+
+| Field                     | Value                                |
+|---------------------------|--------------------------------------|
+| `database.url`            | `jdbc:postgresql://db:5432/postgres` |
+| `hand.baseUrl`            | `http://hand:3100`                   |
+| `hand.selfBaseUrl`        | `http://brain:8080`                  |
+| `server.port`             | must stay `8080` — the compose host port mapping and `hand.selfBaseUrl` both assume it |
+| `hand.token`              | must match the `hand` service's `HAND_TOKEN` in `compose.yaml` (default `dev-token` — fine for the loopback-only dev setup; for anything non-local set a real value via the `HAND_TOKEN` env var and mirror it here) |
+
+JVM tuning goes through `JAVA_OPTS` (the `installDist` start scripts honor
+it — add e.g. `JAVA_OPTS: -Xmx4g` to the `brain` service's `environment`).
+`docker compose up -d db` remains the development flow (the db keeps its
+loopback-only host port `5432` for `./gradlew run` — reachable locally,
+invisible to the LAN).
+
+Note the config's deployment sensitivity: `mcp.proxy` (a host-local proxy)
+is a dev-local concern — in a container deployment drop it and route
+egress at the host/network level instead. stdio MCP servers run fine in
+the container (node/uv are in the toolbox layer); stdio servers whose
+packages are NOT preinstalled resolve on first use via the bash tool's
+on-demand installs and vanish with the container.
+
 ### Configuration
 
 Configuration lives in `config.jsonc` (JSON with C-style `//` comments and

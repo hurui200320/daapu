@@ -1,0 +1,28 @@
+# SECRETS FIRST: config.jsonc holds API keys and must never enter a build
+# context or image layer (see README Configuration)
+config.jsonc
+config.example.jsonc
+
+# stale/derived frontend artifacts: the image builds them fresh (the dist
+# lands in src/main/resources/frontend only inside the Docker build)
+frontend/dist/
+frontend/node_modules/
+src/main/resources/frontend/
+
+# the hand builds from its own context (hand-pi/Dockerfile)
+hand-pi/
+
+# nothing the JVM build (-x test) needs
+src/test/
+
+# local tooling, IDE files, git, and the compose files themselves
+.git/
+.gradle/
+.kotlin/
+.idea/
+build/
+out/
+sql-backup/
+.playwright-mcp/
+compose.yaml
+*.md

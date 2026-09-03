@@ -87,6 +87,22 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
+    fun `HEAD answers on GET routes - the AutoHeadResponse install`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            // the packaged web UI (the stub `frontend` test package, see
+            // WebUiServingTest) and /api GET routes answer HEAD — without the
+            // module's AutoHeadResponse install ktor 404s HEAD, so a
+            // HEAD-based probe would report a healthy UI as down
+            assertEquals(HttpStatusCode.OK, client.head("/").status)
+            assertEquals(HttpStatusCode.OK, client.head("/api/models").status)
+            // AutoHeadResponse mirrors GET routes only: POST-only paths stay
+            // HEAD-less (404)
+            assertEquals(HttpStatusCode.NotFound, client.head("/api/chats/chat-1/messages").status)
+        }
+    }
+
+    @Test
     fun `missing and unknown models are rejected with 400`() {
         testApplication {
             application { module(testKoinApp().koin) }

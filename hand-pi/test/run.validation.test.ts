@@ -14,8 +14,14 @@ describe("/v1/health", () => {
     expect(await response.json()).toEqual({ ok: true, version: SERVICE_VERSION });
   });
 
-  it("rejects requests without a token", async () => {
+  it("answers without a token (the docker/k8s probe contract)", async () => {
     const response = await fetch(`http://127.0.0.1:${port()}/v1/health`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, version: SERVICE_VERSION });
+  });
+
+  it("keeps the run route behind the token", async () => {
+    const response = await fetch(`http://127.0.0.1:${port()}/v1/run`, { method: "POST" });
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ ok: false, error: { type: "auth" } });
   });

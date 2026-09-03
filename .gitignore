@@ -53,3 +53,13 @@ frontend/node_modules/
 frontend/dist/
 .playwright-mcp/
 sql-backup/
+
+# the packaged web UI: build artifacts the Docker build copies from
+# frontend/dist into the `frontend` resource package before the Gradle build
+# (dev has no such package — the ktor server answers 404 for the UI there,
+# see WebServer.staticWebUi)
+src/main/resources/frontend/
+
+# local-only compose overrides (personal bind mounts etc.; Compose merges
+# compose.override.yaml over compose.yaml automatically)
+compose.override.yaml

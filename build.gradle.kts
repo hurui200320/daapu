@@ -52,6 +52,12 @@ dependencies {
     implementation("io.ktor:ktor-server-status-pages-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-content-negotiation-jvm:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:$ktorVersion")
+    // conditional requests (ETag → 304) for the static web UI, see
+    // server/WebServer.kt staticWebUi
+    implementation("io.ktor:ktor-server-conditional-headers-jvm:$ktorVersion")
+    // HEAD requests on GET routes (the static web UI, the /api GET routes),
+    // see server/WebServer.kt module
+    implementation("io.ktor:ktor-server-auto-head-response-jvm:$ktorVersion")
 
     // hand-pi client + MCP transport: Java engine (JDK HttpClient, TLS 1.3
     // via JSSE, no read timeout by default) + the SSE plugin (the plugin

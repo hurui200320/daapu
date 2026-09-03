@@ -1,0 +1,15 @@
+# secrets and local state must never enter the build context
+.env
+config.jsonc
+
+# dev artifacts: the image compiles fresh (tsc) and installs production
+# dependencies itself
+node_modules/
+dist/
+
+# tests and tooling are not part of the image (tsconfig.json only builds src/)
+test/
+tsconfig.test.json
+vitest.config.ts
+eslint.config.js
+*.md

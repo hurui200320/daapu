@@ -19,9 +19,13 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
+import io.ktor.server.http.content.ETagProvider
+import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.*
 import io.ktor.server.plugins.ContentTransformationException
+import io.ktor.server.plugins.autohead.AutoHeadResponse
+import io.ktor.server.plugins.conditionalheaders.ConditionalHeaders
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.request.*
@@ -39,8 +43,9 @@ private val logger = KotlinLogging.logger("WebServer")
 data class ErrorResponse(val error: String)
 
 /**
- * Start the HTTP API server (the frontend is a separate dev server that
- * proxies `/api` here; this process only serves the API).
+ * Start the HTTP server: the API plus, when the packaged web UI exists, the
+ * compiled frontend (see [staticWebUi] — the Docker build populates the
+ * resource package; dev does not).
  *
  * The whole object graph lives in the Koin container (`di/AppModule.kt`);
  * resolving the graph eagerly before the server starts runs every
@@ -90,6 +95,15 @@ internal fun Application.module(koin: Koin) {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
     }
+    // answer HEAD on GET routes (the packaged web UI, the /api GET routes):
+    // without this install ktor answers 404 for HEAD, so a HEAD-based probe
+    // (monitors, proxies, link checkers) would report a healthy UI as down
+    install(AutoHeadResponse)
+    // conditional requests (If-None-Match → 304) for the static web UI's
+    // ETags (see staticWebUi): the static responder only ATTACHES the ETag
+    // versions to the response content — this plugin evaluates them. API
+    // responses carry no versions, so this is a no-op outside the packaged UI.
+    install(ConditionalHeaders)
     install(StatusPages) {
         exception<CancellationException> { _, cause ->
             // the client disconnected mid-stream (the sink wrapper in
@@ -176,5 +190,48 @@ internal fun Application.module(koin: Koin) {
             registerEltmEndpoints(eltmService, memoryExtractionService)
             registerPersonasEndpoints(personaService)
         }
+        staticWebUi()
+    }
+}
+
+/** The classpath package the Docker build copies the compiled frontend into (see the root `Dockerfile`). */
+private const val WEB_UI_RESOURCE_PACKAGE = "frontend"
+
+/**
+ * Serve the packaged web UI from classpath resources: the Docker build
+ * copies the frontend dist into [WEB_UI_RESOURCE_PACKAGE] before the Gradle
+ * build packages it into the application jar, so the deployed brain serves
+ * the API and the UI on one origin. In development nothing populates the
+ * package (the UI runs on the vite dev server, which proxies `/api` here),
+ * so every request resolves nothing and ktor answers a plain 404.
+ *
+ * A low-priority tailcard: ktor's routing prefers literal matches, so the
+ * `/api` routes win regardless of registration order. There is
+ * deliberately no `default("index.html")` SPA fallback — it would answer
+ * unknown `/api` paths (and everything else) with index.html; the UI uses
+ * hash routing, so in practice only `/` and the hashed asset paths are
+ * ever requested, and both resolve directly (`index = "index.html"` maps
+ * the directory request `/` to the package's index.html).
+ *
+ * Caching: the vite dist's `assets/` files are content-hashed (immutable
+ * per URL) and are cached long; `index.html` references those hashes and is
+ * served `no-cache` (revalidated every load; the strong content ETag turns
+ * that into a cheap 304 — evaluated by the `ConditionalHeaders` install in
+ * `module`). The assets decision reads the in-package path back out of the
+ * resource URL (the part after the last `resourcePackage/` segment).
+ */
+internal fun Route.staticWebUi(resourcePackage: String = WEB_UI_RESOURCE_PACKAGE) {
+    staticResources("/", resourcePackage, index = "index.html") {
+        cacheControl { url ->
+            if (url.path.substringAfterLast("$resourcePackage/").startsWith("assets/")) {
+                // content-hashed dist assets: immutable per URL
+                listOf(CacheControl.MaxAge(maxAgeSeconds = 365 * 24 * 3600))
+            } else {
+                // index.html: revalidate before reuse — a new deploy changes
+                // the hashed names it references
+                listOf(CacheControl.NoCache(visibility = null))
+            }
+        }
+        etag(ETagProvider.StrongSha256)
     }
 }
