@@ -950,6 +950,11 @@ class ConfigTest {
         assertFalse(config.tool.fs.enabled)
         assertTrue(config.tool.fs.allowedDirs.isEmpty())
         assertTrue(config.tool.fs.blacklists.isEmpty())
+        assertFalse(config.tool.bash.enabled)
+        assertEquals("/bin/bash", config.tool.bash.shellPath)
+        assertEquals(null, config.tool.bash.workdir)
+        assertEquals(120, config.tool.bash.timeoutSeconds)
+        assertEquals(1_000_000, config.tool.bash.maxCaptureBytes)
     }
 
     @Test
@@ -977,6 +982,83 @@ class ConfigTest {
         assertTrue(config.tool.fs.enabled)
         assertEquals(listOf("~/Documents", "/tmp/other"), config.tool.fs.allowedDirs)
         assertEquals(listOf("**/.env", "**/*.env", "secrets/**"), config.tool.fs.blacklists)
+    }
+
+    @Test
+    fun `an enabled tool bash section decodes with its fields`() {
+        val config = decodeAppConfig(
+            """
+            {
+                $hand
+                "database": { "url": "u", "user": "p", "password": "p" },
+                "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                "tool": {
+                    "bash": {
+                        "enabled": true,
+                        "shellPath": "/bin/zsh",
+                        "workdir": "~/sandbox",
+                        "timeoutSeconds": 60,
+                        "maxCaptureBytes": 50000
+                    }
+                },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                "title": { "model": "t" },
+            }
+            """.trimIndent()
+        )
+        assertTrue(config.tool.bash.enabled)
+        assertEquals("/bin/zsh", config.tool.bash.shellPath)
+        assertEquals("~/sandbox", config.tool.bash.workdir)
+        assertEquals(60, config.tool.bash.timeoutSeconds)
+        assertEquals(50_000, config.tool.bash.maxCaptureBytes)
+    }
+
+    @Test
+    fun `tool bash validation only applies while enabled`() {
+        // all fields are ignored when disabled: garbage passes
+        BashToolConfig(enabled = false).validate()
+        BashToolConfig(
+            enabled = false,
+            shellPath = "  ",
+            timeoutSeconds = 0,
+            maxCaptureBytes = 1,
+        ).validate()
+        ToolConfig().validate()
+        // unlike fs, the bash defaults are valid when enabled, so the
+        // fail-fast case passes an explicitly invalid value
+        assertFailsWith<IllegalArgumentException> {
+            ToolConfig(bash = BashToolConfig(enabled = true, timeoutSeconds = 0)).validate()
+        }
+    }
+
+    @Test
+    fun `enabled tool bash requires a non-blank shell path`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            BashToolConfig(enabled = true, shellPath = "  ").validate()
+        }
+        assertTrue(e.message!!.contains("shellPath"), e.message)
+    }
+
+    @Test
+    fun `enabled tool bash requires a positive timeout`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            BashToolConfig(enabled = true, timeoutSeconds = 0).validate()
+        }
+        assertTrue(e.message!!.contains("timeoutSeconds"), e.message)
+    }
+
+    @Test
+    fun `enabled tool bash bounds the capture cap`() {
+        val tooSmall = assertFailsWith<IllegalArgumentException> {
+            BashToolConfig(enabled = true, maxCaptureBytes = 9_999).validate()
+        }
+        assertTrue(tooSmall.message!!.contains("maxCaptureBytes"), tooSmall.message)
+        val tooBig = assertFailsWith<IllegalArgumentException> {
+            BashToolConfig(enabled = true, maxCaptureBytes = Int.MAX_VALUE.toLong() + 1).validate()
+        }
+        assertTrue(tooBig.message!!.contains("maxCaptureBytes"), tooBig.message)
     }
 
     @Test

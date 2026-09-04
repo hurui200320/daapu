@@ -50,7 +50,7 @@ data class AppConfig(
     val providers: Map<String, LlmProviderConfig>,
     val server: ServerConfig = ServerConfig(),
     val mcp: McpConfig,
-    /** The harness-owned tool providers (see `ToolConfig`; today only the read-only filesystem provider). */
+    /** The harness-owned tool providers (see `ToolConfig`; the read-only filesystem provider and the bash tool). */
     val tool: ToolConfig = ToolConfig(),
     val memory: MemoryConfig,
     /** The sub-agent settings (see `agent/pipeline/investigate/InvestigatorService.kt`). */

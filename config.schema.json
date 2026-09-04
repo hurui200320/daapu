@@ -123,7 +123,7 @@
     "tool": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The harness-owned tool providers (not MCP servers): today only the read-only filesystem provider (agent/tool/filesystem/FsToolProvider.kt), a local mock of the read-only tools of the vanilla filesystem MCP server. Its namespace is hardcoded to 'fs' (advertised names fs__read_text_file, ...), so it cannot coexist with an MCP server under the same namespace — use the vanilla filesystem MCP server for read-write access instead (enabling both fails fast at boot on the duplicate namespace).",
+      "description": "The harness-owned tool providers (not MCP servers): the read-only filesystem provider (agent/tool/filesystem/FsToolProvider.kt, a local mock of the read-only tools of the vanilla filesystem MCP server — its namespace is hardcoded to 'fs', so it cannot coexist with an MCP server under the same namespace) and the bash tool (agent/tool/bash/BashToolProvider.kt, namespace hardcoded to 'bash' the same way).",
       "properties": {
         "fs": {
           "type": "object",
@@ -179,6 +179,70 @@
                       "minLength": 1,
                       "pattern": "\\S"
                     }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "bash": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The bash tool provider (agent/tool/bash/BashToolProvider.kt): the LLM may run arbitrary shell commands as '<shellPath> -c <command>' with the brain process's own privileges and user. SECURITY: there is NO sandboxing, NO allowlist and NO permission prompt at this layer — the container IS the sandbox. Enable ONLY when the brain runs inside an isolated environment (container/VM — the shipped Dockerfile runs the brain as root on a toolbox base exactly for this); NEVER on bare metal. All fields are ignored while enabled is false.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether the provider is built into the chat loop's tool set — and into the investigate sub-agent's combined set, where the namespace stays masked unless agent.investigator.allowedNamespaces lists 'bash' (exactly like the fs provider)."
+            },
+            "shellPath": {
+              "type": "string",
+              "default": "/bin/bash",
+              "description": "The shell executable, spawned as '<shellPath> -c <command>'; must be non-blank when enabled."
+            },
+            "workdir": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null,
+              "description": "The default working directory for commands; null (or omitted) = the brain process's own working directory. Must exist and be a directory at boot (the provider canonicalizes it and fails fast otherwise). A per-call 'workdir' argument overrides it."
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "default": 120,
+              "description": "The per-command execution budget in seconds: when a command overruns, its whole process tree is killed (SIGTERM, then SIGKILL) and the tool answers a timeout error result with the output captured so far."
+            },
+            "maxCaptureBytes": {
+              "type": "integer",
+              "default": 1000000,
+              "description": "The in-memory cap in bytes on the command output the tool captures (stdout+stderr merged): output past the cap is drained and discarded, and the result notes the truncation. Must also fit an Int (the capture buffer is a byte array)."
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "shellPath": {
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "timeoutSeconds": {
+                    "minimum": 1
+                  },
+                  "maxCaptureBytes": {
+                    "minimum": 10000,
+                    "maximum": 2147483647
                   }
                 }
               }

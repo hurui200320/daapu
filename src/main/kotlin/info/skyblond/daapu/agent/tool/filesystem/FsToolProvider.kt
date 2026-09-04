@@ -8,6 +8,7 @@ import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.agent.tool.ToolSpec
 import info.skyblond.daapu.agent.tool.enumStringSchema
 import info.skyblond.daapu.agent.tool.errorResult
+import info.skyblond.daapu.agent.tool.expandHomePath
 import info.skyblond.daapu.agent.tool.intArg
 import info.skyblond.daapu.agent.tool.integerSchema
 import info.skyblond.daapu.agent.tool.nsToolName
@@ -111,7 +112,7 @@ class FsToolProvider(
         // compares canonical paths only (a symlinked config path like
         // /tmp -> /private/tmp on macOS can never be escaped by a request
         // that resolves to the same file the "other" way)
-        roots = allowedDirs.map(::expandHome).map { dir ->
+        roots = allowedDirs.map(::expandHomePath).map { dir ->
             val canonical = File(dir).canonicalFile
             require(canonical.isDirectory) {
                 "tool.fs.allowedDirs entry '$dir' does not exist or is not a directory"
@@ -406,7 +407,7 @@ class FsToolProvider(
      * model-visible reason; the callers catch it as an `isError` result.
      */
     private fun resolveTarget(requested: String): Path {
-        val expanded = expandHome(requested)
+        val expanded = expandHomePath(requested)
         val absolute = Path.of(expanded).let { path ->
             if (path.isAbsolute) path else roots.first().resolve(path)
         }
@@ -576,15 +577,6 @@ class FsToolProvider(
             val unitIndex = minOf(i, units.size - 1)
             val value = bytes / 1024.0.pow(unitIndex)
             return String.format(Locale.ROOT, "%.2f %s", value, units[unitIndex])
-        }
-
-        private fun expandHome(path: String): String {
-            val home = System.getProperty("user.home") ?: return path
-            return when {
-                path == "~" -> home
-                path.startsWith("~/") -> home + path.substring(1)
-                else -> path
-            }
         }
 
         private val toolSpecs = listOf(

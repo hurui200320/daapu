@@ -55,8 +55,9 @@ data class MainAgentConfig(
  * resolved once at startup by the DI container (`di/AppModule.kt`) like
  * the memory pipeline models — unknown ids and a model without tool-call
  * support fail fast. [allowedNamespaces] is the sub-agent's tool whitelist
- * over its OWN tool set (the read-only `eltm` tools plus the MCP servers,
- * built separately from the chat loop's set): REQUIRED, non-empty, and
+ * over its OWN tool set (built separately from the chat loop's set — the
+ * children are enumerated at the `InvestigatorService` registration in
+ * `di/AppModule.kt`): REQUIRED, non-empty, and
  * every entry must be a namespace that set serves (a typo — or an attempt
  * to whitelist `gsg` itself, which would enable recursion — fails fast at
  * boot via the `WhitelistedToolProvider` construction).
@@ -69,9 +70,8 @@ data class InvestigatorConfig(
     val maxRounds: Int = 150,
     /**
      * The namespaces the investigate sub-agent may execute (a whitelist
-     * over its own tool set — the read-only `eltm` tools plus the MCP
-     * servers); REQUIRED, non-empty. Entries are validated like any tool
-     * namespace.
+     * over its own tool set — see the class KDoc); REQUIRED, non-empty.
+     * Entries are validated like any tool namespace.
      */
     val allowedNamespaces: List<String>,
     /**

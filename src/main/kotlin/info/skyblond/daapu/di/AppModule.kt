@@ -22,6 +22,7 @@ import info.skyblond.daapu.agent.persist.PersistChatService
 import info.skyblond.daapu.agent.tool.CombinedToolProvider
 import info.skyblond.daapu.agent.tool.LengthSafeToolProvider
 import info.skyblond.daapu.agent.tool.WhitelistedToolProvider
+import info.skyblond.daapu.agent.tool.bash.BashToolProvider
 import info.skyblond.daapu.agent.tool.filesystem.FsToolProvider
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.db.AdvisoryChatLockManager
@@ -141,6 +142,26 @@ fun appModule(config: AppConfig): Module = module {
         }
     }
 
+    // the bash tool provider (`agent/tool/bash/`), only when enabled:
+    // construction validates the `tool.bash` values and canonicalizes the
+    // default workdir, so a bad config (missing directory, out-of-range
+    // budget) fails fast at boot. When disabled it is not registered at
+    // all — the namespace `bash` is hardcoded and would collide with an
+    // MCP server under the same namespace (fail fast in
+    // CombinedToolProvider). SECURITY: see `BashToolConfig` — the shell
+    // runs with this process's own privileges, only enable it inside an
+    // isolated environment.
+    if (config.tool.bash.enabled) {
+        single<BashToolProvider> {
+            BashToolProvider(
+                shellPath = config.tool.bash.shellPath,
+                workdir = config.tool.bash.workdir,
+                timeoutSeconds = config.tool.bash.timeoutSeconds,
+                maxCaptureBytes = config.tool.bash.maxCaptureBytes,
+            )
+        }
+    }
+
     // one-shot pipeline services: stateless across runs, so a single
     // instance is shared by every concurrent chat run. They talk to the
     // hand through the same `/v1/run` seam as the chat loop, carrying the
@@ -161,7 +182,8 @@ fun appModule(config: AppConfig): Module = module {
         )
     }
 
-    // the chat loop's tool set: the MCP servers plus the `gsg__investigate`
+    // the chat loop's tool set: the MCP servers, the harness-owned
+    // providers enabled under `tool` plus the `gsg__investigate`
     // tool (see `agent/persist/GsgToolProvider.kt`) — the main agent no
     // longer sees the granular ELTM read tools (`eltm__*`); deep memory and
     // web searches go through the sub-agent. The MCP child is only included
@@ -184,6 +206,7 @@ fun appModule(config: AppConfig): Module = module {
                 val mcp = get<McpToolProvider>()
                 if (mcp.namespaces().isNotEmpty()) add(mcp)
                 if (config.tool.fs.enabled) add(get<FsToolProvider>())
+                if (config.tool.bash.enabled) add(get<BashToolProvider>())
                 add(get<GsgToolProvider>())
             }
         )
@@ -198,8 +221,9 @@ fun appModule(config: AppConfig): Module = module {
         LengthSafeToolProvider(get<CombinedToolProvider>(), config.agent.main.toolResultLimit)
     }
     // the investigate sub-agent (`agent/pipeline/investigate/`): its tool
-    // set is its OWN combined provider — the MCP servers plus the read-only
-    // ELTM tools — restricted by the `agent.investigator.allowedNamespaces`
+    // set is its OWN combined provider — the MCP servers, the harness-owned
+    // providers enabled under `tool` and the read-only ELTM
+    // tools — restricted by the `agent.investigator.allowedNamespaces`
     // whitelist and capped by the length-safe provider
     // (`agent.investigator.toolResultLimit`). It is NOT the chat loop's set,
     // deliberately: the loop no longer serves `eltm`, and a separate set
@@ -217,6 +241,7 @@ fun appModule(config: AppConfig): Module = module {
                 val mcp = get<McpToolProvider>()
                 if (mcp.namespaces().isNotEmpty()) add(mcp)
                 if (config.tool.fs.enabled) add(get<FsToolProvider>())
+                if (config.tool.bash.enabled) add(get<BashToolProvider>())
                 add(get<EltmToolProvider>())
             }
         )

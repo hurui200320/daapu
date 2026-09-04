@@ -87,7 +87,8 @@ src/main/kotlin/info/skyblond/daapu/
                              Namespaces.kt (the {namespace}__{tool}
                              contract), ToolArgs/ToolResults/ToolSchemas;
                              Combined/Whitelisted/LengthSafe decorators;
-                             filesystem/ (read-only fs mock, GlobMatcher)
+                             filesystem/ (read-only fs mock, GlobMatcher);
+                             bash/ (one-shot shell tool, timeout tree-kill)
   config/                    config models, one file per section (Config.kt
                              is the root)
   db/                        Exposed tables (Tables.kt), advisory chat locks
@@ -229,9 +230,9 @@ KDoc of the named files.
   `config/MemoryConfig.kt` / `config/AgentConfig.kt` and documented by
   `config.schema.json`.
 - **Sub-pipelines**: the investigator
-  (`agent/pipeline/investigate/InvestigatorService.kt` — its OWN tool set
-  = MCP + read-only `eltm`; `round_limit`/`context_exhausted` stops are
-  recovered elastically), the query rewrite
+  (`agent/pipeline/investigate/InvestigatorService.kt` — its OWN tool set,
+  built at its `di/AppModule.kt` registration; `round_limit`/
+  `context_exhausted` stops are recovered elastically), the query rewrite
   (`agent/pipeline/rewrite/QueryRewriteService.kt` — feeds the
   `<memories>` injection), the title generator
   (`agent/pipeline/TitleGenerator.kt` — `POST /api/chats/{id}/title`, no
