@@ -346,6 +346,7 @@ Assistant messages carry no marker: they reply immediately after the preceding u
         header = """
 You're extracting memories from a submission the user provided for long-term memory.
 Extract **all** important information from every part, in the order given, into a list of self-contained facts suitable for long-term memory.
+If the input is already a list of facts, repeat it as-is (make sure don't lose any information).
 
 The input opens with a <meta><sent-at>...</sent-at></meta> marker carrying the input's reference time.
 Resolve every relative date or time ("today", "last week", "in two months") against that reference time.
