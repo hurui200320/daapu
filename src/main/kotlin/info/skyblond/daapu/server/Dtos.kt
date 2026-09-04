@@ -1,5 +1,6 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.memory.eltm.EltmEntity
 import info.skyblond.daapu.memory.eltm.EltmNote
@@ -55,6 +56,20 @@ data class ChatIdResponse(val id: String)
  */
 @Serializable
 data class RenameChatRequest(val title: String)
+
+/**
+ * The chat export/import payload: the user-visible title plus the message
+ * history in the neutral chat format (`agent/chat/ChatMessage.kt` — the
+ * stored `chat_json` shape). This DTO is the request body of
+ * `POST /api/chats/import`; the export answers the SAME shape, but its body
+ * is built by hand through `ChatCodec` (why: see the export route), so an
+ * exported file round-trips without reshaping either way. Deliberately
+ * carries no chat id (the import mints a fresh one), ELTM fingerprint, or
+ * persona record (an import starts fresh, like a fork) — see
+ * `ChatService.exportChat`/`importChat`.
+ */
+@Serializable
+data class ChatExportPayload(val title: String, val messages: List<ChatMessage>)
 
 @Serializable
 data class ModelInfo(

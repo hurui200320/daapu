@@ -13,6 +13,7 @@ import io.ktor.server.routing.*
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeString
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -25,6 +26,13 @@ fun Route.registerChatsEndpoints(service: ChatService) {
         }
         post {
             call.respond(HttpStatusCode.Created, ChatIdResponse(service.newChat().id))
+        }
+        // import an exported chat: a NEW chat reusing the payload's title,
+        // with fork-like fresh state (empty ELTM fingerprint, default persona
+        // record); validated like any stored chat — see ChatService.importChat
+        post("/import") {
+            val request = call.receive<ChatExportPayload>()
+            call.respond(HttpStatusCode.Created, service.importChat(request.title, request.messages))
         }
         put("/{chatId}") {
             val id = call.chatIdParam()
@@ -72,6 +80,38 @@ fun Route.registerChatsEndpoints(service: ChatService) {
         get("/{chatId}/chat") {
             val chat = service.chat(call.chatIdParam())
             call.respondText(ChatCodec.encodeChat(chat), ContentType.Application.Json)
+        }
+        // export the chat as `{title, messages}` (see ChatExportPayload):
+        // the chat id names the FILE (`{id}.json` — the id is filename-safe,
+        // the title is not) but never travels in the payload.
+        //
+        // The body is built by hand (respondText, like the sibling /chat
+        // route) instead of responding ChatExportPayload through
+        // ContentNegotiation: ktor's Json serializes with
+        // `encodeDefaults = false`, which would silently DROP the stored
+        // format's explicit defaults (e.g. a tool_result's `isError: false`)
+        // — the exported history must byte-match the neutral format
+        // ChatCodec owns (defaults are part of the stored format, see its
+        // class KDoc), the same bytes `GET /chat` serves. The messages go
+        // through the codec; the JSON builder only wraps them and escapes
+        // the title (parse-back of the codec's array keeps key order, so
+        // the array is re-emitted byte-identically).
+        get("/{chatId}/export") {
+            val id = call.chatIdParam()
+            val entry = service.exportChat(id) ?: throw NotFoundException("Chat $id not found")
+            call.response.header(
+                HttpHeaders.ContentDisposition,
+                ContentDisposition.Attachment
+                    .withParameter(ContentDisposition.Parameters.FileName, "$id.json")
+                    .toString(),
+            )
+            call.respondText(
+                buildJsonObject {
+                    put("title", entry.info.title)
+                    put("messages", Json.parseToJsonElement(ChatCodec.encodeChat(entry.content.messages)))
+                }.toString(),
+                ContentType.Application.Json,
+            )
         }
         post("/{chatId}/messages") {
             handleChatMessage(call, service)

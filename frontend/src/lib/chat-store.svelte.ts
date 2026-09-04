@@ -1,8 +1,10 @@
 import { SvelteSet } from 'svelte/reactivity'
 import {
   deleteChat,
+  exportChat as apiExportChat,
   forkChat as apiForkChat,
   generateTitle,
+  importChat as apiImportChat,
   listChats,
   listModels,
   loadChat,
@@ -18,6 +20,7 @@ import { personaStore } from './persona-store.svelte'
 import { onIntervalAndFocus } from './resync'
 import { toastStore } from './toast-store.svelte'
 import { dataUrlToImagePart } from './display'
+import { downloadJsonFile, parseChatExportFile } from './chat-transfer'
 import {
   applyToolResult,
   commitRoundParts,
@@ -146,6 +149,19 @@ class ChatStore {
   // true while a create request is in flight: a double-click on "New chat"
   // must not create two empty chats
   creatingChat = $state(false)
+
+  // true while the export-all loop is running: a double-click must not start
+  // a second loop (the browser is already juggling one download per chat)
+  exportingAll = $state(false)
+
+  // true while a chat import is in flight: the sidebar's import button
+  // disables, so a double-click cannot import the same picked file twice
+  importingChats = $state(false)
+
+  // exports in flight per chat id: a repeated trigger before the download
+  // completes would double-download; the sidebar's Export item disables and
+  // spins from this set until it settles (same recipe as forkingIds)
+  exportingIds = new SvelteSet<string>()
 
   /**
    * One-time startup: load the catalog + chat list, then start the background
@@ -365,6 +381,84 @@ class ChatStore {
       this.knownChats = this.knownChats.map((c) => (c.id === id ? { ...c, title: chat.title } : c))
     } catch (e) {
       toastStore.pushError(e)
+    }
+  }
+
+  /**
+   * Fetch one chat's export payload (title + history, see `api.ts`
+   * `exportChat`) and trigger the download (named by the chat id — see the
+   * backend's export route, `ChatsRoute.kt`). Failures surface as a toast.
+   * Guarded per chat id ([exportingIds]): a repeat trigger before the
+   * download completes would double-download.
+   */
+  async exportChat(id: string): Promise<void> {
+    if (this.exportingIds.has(id)) return
+    this.exportingIds.add(id)
+    try {
+      const payload = await apiExportChat(id)
+      downloadJsonFile(`${id}.json`, JSON.stringify(payload))
+    } catch (e) {
+      toastStore.pushError(e)
+    } finally {
+      this.exportingIds.delete(id)
+    }
+  }
+
+  /**
+   * Export every chat: refresh the list from the server first (the sidebar
+   * list may be stale or capped), then download one file per chat —
+   * sequentially, since one HTTP response can carry only one file, so
+   * "export all" is a client-side loop. A failed chat is skipped with its
+   * own toast; the loop continues and a summary toast reports
+   * `X/Y chats exported`.
+   */
+  async exportAll(): Promise<void> {
+    if (this.exportingAll) return
+    this.exportingAll = true
+    try {
+      const chats = await listChats()
+      if (chats.length === 0) {
+        toastStore.push('No chats to export')
+        return
+      }
+      let exported = 0
+      for (const chat of chats) {
+        try {
+          const payload = await apiExportChat(chat.id)
+          downloadJsonFile(`${chat.id}.json`, JSON.stringify(payload))
+          exported++
+        } catch (e) {
+          toastStore.pushError(e)
+        }
+      }
+      toastStore.push(`${exported}/${chats.length} chats exported`)
+    } catch (e) {
+      // the list refresh itself failed: no export was attempted
+      toastStore.pushError(e)
+    } finally {
+      this.exportingAll = false
+    }
+  }
+
+  /**
+   * Import one exported chat file (parsed in `chat-transfer.ts`, stored and
+   * validated server-side — see `api.ts` `importChat`): on success the
+   * created chat is prepended to the list (the server's newest-first id
+   * order) and the view stays where it is. Parse/shape errors and the
+   * server's validation errors surface as toasts (with the file name).
+   */
+  async importFile(file: File): Promise<void> {
+    if (this.importingChats) return
+    this.importingChats = true
+    try {
+      const payload = await parseChatExportFile(file)
+      const chat = await apiImportChat(payload)
+      this.knownChats = [chat, ...this.knownChats]
+      toastStore.push(`Imported "${chat.title}"`)
+    } catch (e) {
+      toastStore.pushError(e)
+    } finally {
+      this.importingChats = false
     }
   }
 

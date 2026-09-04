@@ -3,6 +3,7 @@ package info.skyblond.daapu.agent.chat
 import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.pipeline.TitleGenerator
+import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.agent.persist.PersistChatService
@@ -98,7 +99,10 @@ class ChatRunSetup(
  * [IllegalArgumentException] is deliberately NOT mapped: within this
  * service it only marks the defensive [ChatCodec.validateChat] breach
  * before a history store (a server-side invariant, correctly a 500); the
- * persona routes map their own IAE validation errors onto 400 per-route.
+ * persona routes map their own IAE validation errors onto 400 per-route,
+ * and [importChat] catches the codec's IAE on client-supplied history and
+ * rethrows [ChatValidationException] locally (the ONE per-route deviation —
+ * see its KDoc for why).
  */
 class ChatService(
     private val chatStore: ChatStore,
@@ -306,6 +310,60 @@ class ChatService(
         val forked = chatStore.newChat(entry.info.personaId)
         chatStore.store(forked.id, ChatContent(kept, "", entry.info.personaId))
         return forked
+    }
+
+    /**
+     * Export a chat: the full row (title + message history) for the
+     * `GET /api/chats/{id}/export` route to map onto the wire payload. The
+     * route owns the payload shape (server/Dtos.kt) — including the
+     * attachment filename — and deliberately drops the ELTM fingerprint and
+     * the persona record: an import starts fresh, like a fork.
+     *
+     * Returns null when the chat doesn't exist. Takes no per-chat lock: a
+     * pure read like fork's source read — a concurrent run only means the
+     * snapshot may lack the in-flight turn.
+     */
+    suspend fun exportChat(chatId: String): ChatEntry? = chatStore.load(chatId)
+
+    /**
+     * Import an exported chat: create a NEW chat that reuses [title] and
+     * stores [messages] under it. The exported payload carries no chat id,
+     * so the import always mints a fresh one (re-importing the same file
+     * duplicates the chat — the intended round-trip semantics, never an
+     * upsert of an unknown id).
+     *
+     * The messages must satisfy the SAME completeness invariants as any
+     * stored chat ([ChatCodec.validateChat]: a non-empty chat ends with a
+     * naturally finished assistant message, user messages carry `createdAt`,
+     * tool calls/results stay paired). [ChatValidationException] (HTTP 400)
+     * carries the codec's reason: HERE the data is client-supplied, so a
+     * [IllegalArgumentException] from the codec is a fixable client error —
+     * NOT the defensive server-side breach that exception marks elsewhere in
+     * this service (see the class KDoc).
+     *
+     * An empty [messages] is accepted (a titled, empty chat) — the same
+     * completeness rule [ChatCodec] applies to any stored chat. An invalid
+     * import creates nothing: the validation runs before any store write.
+     *
+     * Like a fork, the new chat starts fresh: an empty ELTM fingerprint (its
+     * first run flags `eltm-updated`) and the default persona record (the
+     * exported payload carries none). Takes no per-chat lock: a pure insert
+     * into a new row, nothing to contend with.
+     */
+    suspend fun importChat(title: String, messages: List<ChatMessage>): ChatInfo {
+        val trimmed = title.trim()
+        if (trimmed.isEmpty()) throw ChatValidationException("Chat title is empty")
+        try {
+            ChatCodec.validateChat(messages)
+        } catch (e: IllegalArgumentException) {
+            throw ChatValidationException(e.message ?: "Invalid chat content")
+        }
+        // two steps, exactly like forkChat: a crash in between leaves at
+        // most a valid empty chat with the imported title (the store upsert
+        // below fills the history)
+        val created = chatStore.newChat(title = trimmed)
+        chatStore.store(created.id, ChatContent(messages, "", DEFAULT_PERSONA_ID))
+        return created
     }
 
     suspend fun chat(chatId: String): List<ChatMessage> =

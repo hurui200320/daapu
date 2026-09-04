@@ -64,7 +64,7 @@ src/main/kotlin/info/skyblond/daapu/
     ModelCatalog.kt          model catalog from providers.<id>.llm/embedding
     chat/                    ChatMessage.kt/ChatCodec.kt (wire validation),
                              ChatService.kt (API-facing chat ops incl.
-                             delete/fork/truncate), ChatStore.kt +
+                             delete/fork/truncate/export/import), ChatStore.kt +
                              PostgresChatStore.kt, ImageAttachments.kt,
                              ChatExtensions.kt (display/report text helpers)
     model/                   LLM.kt/EmbeddingModel.kt wrappers + capability

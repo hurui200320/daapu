@@ -1833,7 +1833,7 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
     override suspend fun listChats(): List<ChatInfo> =
         error("not exercised by the persist loop tests")
 
-    override suspend fun newChat(personaId: Long): ChatInfo =
+    override suspend fun newChat(personaId: Long, title: String): ChatInfo =
         error("not exercised by the persist loop tests")
 
     override suspend fun rename(chatId: String, title: String): ChatInfo =
@@ -1871,7 +1871,7 @@ private class ConcurrentChatStore : ChatStore {
     override suspend fun listChats(): List<ChatInfo> =
         error("not exercised by the persist loop tests")
 
-    override suspend fun newChat(personaId: Long): ChatInfo =
+    override suspend fun newChat(personaId: Long, title: String): ChatInfo =
         error("not exercised by the persist loop tests")
 
     override suspend fun rename(chatId: String, title: String): ChatInfo =

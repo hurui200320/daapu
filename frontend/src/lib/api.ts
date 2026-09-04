@@ -1,5 +1,6 @@
 import type {
   ChatAttachmentPart,
+  ChatExport,
   ChatInfo,
   ChatMessage,
   EntityViewDto,
@@ -85,6 +86,26 @@ export async function forkChat(chatId: string, index: number): Promise<ChatInfo>
 
 export async function loadChat(chatId: string): Promise<ChatMessage[]> {
   return getJson(`/api/chats/${encodeURIComponent(chatId)}/chat`)
+}
+
+/**
+ * Export a chat: the title plus the full neutral-format history (no chat
+ * id, see ChatExport). Returns the parsed payload — triggering the
+ * download (and its file naming, see the backend's export route,
+ * ChatsRoute.kt) is the caller's job.
+ */
+export async function exportChat(chatId: string): Promise<ChatExport> {
+  return getJson(`/api/chats/${encodeURIComponent(chatId)}/export`)
+}
+
+/**
+ * Import an exported payload: creates a NEW chat reusing the title (fresh
+ * fork-like state) with the stored-chat validation applied server-side —
+ * 400 with the reason on violation. Returns the created chat's info.
+ */
+export async function importChat(payload: ChatExport): Promise<ChatInfo> {
+  const res = await request('/api/chats/import', jsonInit('POST', payload))
+  return res.json()
 }
 
 interface SendMessageRequest {

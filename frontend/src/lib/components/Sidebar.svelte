@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     Bot,
+    Download,
     Loader2,
     MoreHorizontal,
     Network,
@@ -11,6 +12,7 @@
     Sparkles,
     SquarePen,
     Trash2,
+    Upload,
     UserRound,
   } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
@@ -74,6 +76,20 @@
     } finally {
       titleGeneratingIds.delete(chat.id)
     }
+  }
+
+  // the hidden file input behind the import button (single file: one chat
+  // per import — see ChatStore.importFile). $state because the input lives
+  // in the expanded-sidebar branch: bind:this re-assigns on every collapse
+  // toggle (Composer's always-mounted refs can stay plain)
+  let importInput = $state<HTMLInputElement>()
+
+  function onImportPicked(input: HTMLInputElement) {
+    const file = input.files?.[0]
+    if (file) void store.importFile(file)
+    // a stale input value fires no change event for a re-pick of the same
+    // file: reset so the picker always works (same recipe as the Composer)
+    input.value = ''
   }
 </script>
 
@@ -141,6 +157,44 @@
         <SquarePen class="size-4" />
         New chat
       </button>
+      <!-- labeled buttons below "New chat"; the tray icons alone read
+           backwards (import = arrow INTO the tray, which is Lucide's
+           Download), so the text carries the meaning -->
+      <div class="flex gap-2">
+        <button
+          class={buttonVariants({ variant: 'ghost', size: 'sm', class: 'flex-1 justify-start' })}
+          disabled={store.importingChats}
+          title="Import a chat from an exported file"
+          onclick={() => importInput?.click()}
+        >
+          {#if store.importingChats}
+            <Loader2 class="size-4 animate-spin" />
+          {:else}
+            <Download class="size-4" />
+          {/if}
+          Import
+        </button>
+        <button
+          class={buttonVariants({ variant: 'ghost', size: 'sm', class: 'flex-1 justify-start' })}
+          disabled={store.exportingAll}
+          title="Export all chats (one file per chat)"
+          onclick={() => void store.exportAll()}
+        >
+          {#if store.exportingAll}
+            <Loader2 class="size-4 animate-spin" />
+          {:else}
+            <Upload class="size-4" />
+          {/if}
+          Export all
+        </button>
+      </div>
+      <input
+        bind:this={importInput}
+        type="file"
+        accept=".json,application/json"
+        class="hidden"
+        onchange={(e) => onImportPicked(e.currentTarget)}
+      />
       <div class="relative">
         <Search class="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <input
@@ -225,6 +279,19 @@
                     <Sparkles class="size-3.5" />
                   {/if}
                   {titleGeneratingIds.has(chat.id) ? 'Generating…' : 'Generate title'}
+                </DropdownMenu.Item>
+                <!-- a snapshot read: safe even while this chat streams -->
+                <DropdownMenu.Item
+                  class={dropdownItemClass()}
+                  disabled={store.exportingIds.has(chat.id)}
+                  onSelect={() => void store.exportChat(chat.id)}
+                >
+                  {#if store.exportingIds.has(chat.id)}
+                    <Loader2 class="size-3.5 animate-spin" />
+                  {:else}
+                    <Upload class="size-3.5" />
+                  {/if}
+                  Export
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   class={dropdownItemDestructive()}

@@ -132,6 +132,17 @@ export interface ChatInfo {
 }
 
 /**
+ * The chat export/import payload (`GET /api/chats/{id}/export` response =
+ * `POST /api/chats/import` request; server/Dtos.kt `ChatExportPayload`):
+ * the title plus the neutral-format history, no chat id — an import always
+ * mints a fresh one.
+ */
+export interface ChatExport {
+  title: string
+  messages: ChatMessage[]
+}
+
+/**
  * One agent persona (`GET /api/personas`): the persona half of the system
  * prompt plus a tool-namespace whitelist. The code-only default persona
  * (id [DEFAULT_PERSONA_ID], read-only) leads the list.

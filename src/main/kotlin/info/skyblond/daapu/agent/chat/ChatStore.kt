@@ -46,8 +46,12 @@ interface ChatStore {
     /** All chat rows as `id` + `title` (+ persona record), newest first, capped. */
     suspend fun listChats(): List<ChatInfo>
 
-    /** Insert a row with the default title, an empty history and [personaId] as the record. */
-    suspend fun newChat(personaId: Long = DEFAULT_PERSONA_ID): ChatInfo
+    /**
+     * Insert a row with the given title (the default title unless named —
+     * the chat import reuses the exported title), an empty history and
+     * [personaId] as the record.
+     */
+    suspend fun newChat(personaId: Long = DEFAULT_PERSONA_ID, title: String = DEFAULT_CHAT_TITLE): ChatInfo
 
     /** The full chat row, or null when the chat doesn't exist. */
     suspend fun load(chatId: String): ChatEntry?

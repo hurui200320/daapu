@@ -1,5 +1,6 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
@@ -28,8 +29,10 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -39,6 +42,7 @@ import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -362,6 +366,169 @@ class WebServerTest : DbTestBase() {
                 assertEquals(HttpStatusCode.BadRequest, response.status, "path: $path")
             }
             assertEquals(1, store.listChats().size)
+        }
+    }
+
+    // ---- export/import (`GET /api/chats/{id}/export`, `POST /api/chats/import`) ----
+
+    @Test
+    fun `export answers the title plus the neutral-format history as an attachment`() {
+        val store = PostgresChatStore()
+        // a history WITH a tool round: the tool_result's `isError: false` is
+        // an explicit default of the stored format (ChatCodec writes it,
+        // `encodeDefaults = true`) — the one field ktor's ContentNegotiation
+        // Json (`encodeDefaults = false`) would drop, so this history pins
+        // the export's BYTE fidelity, not just its shape
+        val history = listOf(
+            user("u1"),
+            assistantMessage(
+                parts = listOf(
+                    ChatMessagePart.ToolCall("call_1", "eltm__search", buildJsonObject { }),
+                ),
+                finishReason = "tool_calls",
+            ),
+            ChatMessage(
+                ChatMessageRole.ToolResult,
+                listOf(
+                    ChatMessagePart.ToolResult(
+                        id = "call_1",
+                        tool = "eltm__search",
+                        parts = listOf(ChatMessagePart.Text("ok")),
+                    )
+                ),
+            ),
+            assistantMessage("a1"),
+        )
+        TestDb.seedChatRow(
+            "chat-1",
+            title = "My chat",
+            messages = history,
+        )
+        testApplication {
+            application {
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
+            }
+            val response = client.get("/api/chats/chat-1/export")
+            assertEquals(HttpStatusCode.OK, response.status)
+            // the FILE is named by the chat id (filename-safe); the title
+            // travels only in the payload, the id never does (ktor quotes
+            // the filename only when the value needs it — digits+dash don't)
+            assertEquals(
+                "attachment; filename=chat-1.json",
+                response.headers[HttpHeaders.ContentDisposition],
+            )
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("My chat", body["title"]?.jsonPrimitive?.content)
+            assertNull(body["id"])
+            // the messages must BYTE-match the stored neutral format (the
+            // same bytes `GET /chat` serves via ChatCodec): the route builds
+            // the body by hand through the codec instead of letting ktor's
+            // ContentNegotiation re-serialize with `encodeDefaults = false`
+            // (see the export route for why)
+            assertEquals(ChatCodec.encodeChat(history), body["messages"]!!.toString())
+        }
+    }
+
+    @Test
+    fun `export on a missing chat is 404`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            assertEquals(HttpStatusCode.NotFound, client.get("/api/chats/nope/export").status)
+        }
+    }
+
+    @Test
+    fun `import creates a chat from an exported payload and answers 201 with its info`() {
+        val store = PostgresChatStore()
+        testApplication {
+            application {
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
+            }
+            val payload = ChatExportPayload(
+                title = "Imported chat",
+                messages = listOf(user("u1"), assistantMessage("a1")),
+            )
+            val response = client.post("/api/chats/import") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(payload))
+            }
+            assertEquals(HttpStatusCode.Created, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            val newId = body["id"]?.jsonPrimitive?.content!!
+            assertEquals("Imported chat", body["title"]?.jsonPrimitive?.content)
+            assertEquals(
+                listOf(user("u1"), assistantMessage("a1")),
+                store.load(newId)!!.content.messages,
+            )
+            // fork-like fresh state: empty ELTM fingerprint, default persona record
+            assertEquals("", store.load(newId)!!.content.eltmVersion)
+            assertEquals(DEFAULT_PERSONA_ID, body["personaId"]?.jsonPrimitive?.long)
+        }
+    }
+
+    @Test
+    fun `import with an invalid payload is 400 and creates nothing`() {
+        val store = PostgresChatStore()
+        testApplication {
+            application {
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
+            }
+            // a blank title fails the rename rule; a history ending with a
+            // user message fails the stored-chat validation; a malformed
+            // body fails the JSON decode — all client errors, no row written
+            val badEnding = ChatExportPayload(
+                title = "t",
+                messages = listOf(
+                    ChatMessage(
+                        ChatMessageRole.User,
+                        listOf(ChatMessagePart.Text("u1")),
+                        createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+                    )
+                ),
+            )
+            listOf(
+                """{"title": "   ", "messages": []}""",
+                json.encodeToString(badEnding),
+                """{"title": 
+            """,
+            ).forEach { body ->
+                val response = client.post("/api/chats/import") {
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                assertEquals(HttpStatusCode.BadRequest, response.status, "body: $body")
+            }
+            assertTrue(store.listChats().isEmpty())
+        }
+    }
+
+    @Test
+    fun `import with an init-invalid message is 400 and creates nothing`() {
+        val store = PostgresChatStore()
+        testApplication {
+            application {
+                module(testKoinApp(testAppConfig(), chatStore = store).koin)
+            }
+            // an assistant message without meta violates ChatMessage's init
+            // DURING the request decode — before ChatService.importChat's
+            // catch can map the codec's IAE onto ChatValidationException. The
+            // 400 comes from ktor's ContentNegotiation, which wraps ANY
+            // converter failure (the init IAE included) in a
+            // BadRequestException (RequestConverter.convertBody) — pinned
+            // here because it depends on that ktor behavior. The payload is
+            // raw JSON: the Kotlin DTO cannot even be constructed (the init
+            // rejects it). The client sees the generic wrap message, not the
+            // init's reason (that stays the cause) — service-level
+            // violations are the ones that surface the precise reason.
+            val body = """{"title": "t", "messages": [
+                {"role": "assistant", "parts": [], "finishReason": "stop"}
+            ]}"""
+            val response = client.post("/api/chats/import") {
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(store.listChats().isEmpty())
         }
     }
 

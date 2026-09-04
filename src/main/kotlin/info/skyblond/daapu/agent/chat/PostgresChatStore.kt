@@ -24,14 +24,14 @@ class PostgresChatStore : ChatStore {
             }
     }
 
-    override suspend fun newChat(personaId: Long): ChatInfo = withTransaction {
+    override suspend fun newChat(personaId: Long, title: String): ChatInfo = withTransaction {
         val id = newChatId()
         Chats.insert {
             it[Chats.id] = id
-            it[Chats.title] = DEFAULT_CHAT_TITLE
+            it[Chats.title] = title
             it[Chats.personaId] = personaId
         }
-        ChatInfo(id, DEFAULT_CHAT_TITLE, personaId)
+        ChatInfo(id, title, personaId)
     }
 
     override suspend fun load(chatId: String): ChatEntry? = withTransaction {
