@@ -19,3 +19,19 @@ export function errMsg(e: unknown): string {
 export function jsonEquals(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
+
+/**
+ * Trigger a browser download of `text` as `filename`: a JSON blob on a
+ * programmatic anchor click, the URL revoked right after (the click hands
+ * the blob to the download synchronously). Shared by the chat and persona
+ * exports — the file naming schemes are owned by the backend's export
+ * routes (ChatsRoute.kt / PersonasRoute.kt).
+ */
+export function downloadJsonFile(filename: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}

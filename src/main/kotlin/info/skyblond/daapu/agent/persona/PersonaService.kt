@@ -20,7 +20,8 @@ import info.skyblond.daapu.agent.tool.validateToolNamespaceSyntax
  * for it.
  *
  * Validation errors throw [IllegalArgumentException] (no ktor dependency in
- * this package); the routes map them onto 400.
+ * this package); the routes map them onto 400. The export/import payload
+ * types live in `PersonaTransfer.kt`.
  */
 class PersonaService(
     private val store: PersonaStore,
@@ -75,6 +76,57 @@ class PersonaService(
             "The default persona lives in code and cannot be deleted"
         }
         return store.delete(id)
+    }
+
+    /**
+     * The export payload: every store row as a [PersonaExportEntry], id order
+     * (creation order) preserved. The DEFAULT persona is NOT exported — it
+     * lives in code, never a row, and an import of it would only mint a
+     * duplicate shadow row (see `importPersonas`).
+     */
+    suspend fun exportPersonas(): List<PersonaExportEntry> =
+        store.list().map { PersonaExportEntry(it.name, it.systemPrompt, it.allowedNamespaces) }
+
+    /**
+     * Import exported entries: per entry, SKIP when an existing persona with
+     * the same name already carries the same (trimmed) system prompt and the
+     * same namespace SET (order-insensitive — the whitelist is a membership
+     * filter, `Persona.serves`); otherwise CREATE through [create] with its
+     * full validation. Same-name rows are legal (no uniqueness constraint),
+     * so a mismatch simply mints another row.
+     *
+     * Fail-fast partial: the first entry failing validation aborts the import
+     * with [IllegalArgumentException] (the routes map it onto 400) and the
+     * personas created before it stick — re-running the same file skips them
+     * and resumes. No lock and no transaction: each create is independent,
+     * and personas are not read by anything but the per-request persona
+     * resolution.
+     */
+    suspend fun importPersonas(entries: List<PersonaExportEntry>): PersonaImportSummary {
+        // one snapshot read for the whole import; every created persona joins
+        // it, so a file carrying the same persona twice creates once and then
+        // skips against its own output
+        val known = store.list().groupBy { it.name }.toMutableMap()
+        val created = mutableListOf<String>()
+        val skipped = mutableListOf<String>()
+        for (entry in entries) {
+            // trimmed comparison: create() trims before storing, so padded
+            // input must match the trimmed row instead of mismatching it
+            val name = entry.name.trim()
+            val prompt = entry.systemPrompt.trim()
+            val namespaces = entry.allowedNamespaces.map { it.trim() }
+            val exists = known[name].orEmpty().any {
+                it.systemPrompt == prompt && it.allowedNamespaces.toSet() == namespaces.toSet()
+            }
+            if (exists) {
+                skipped += name
+            } else {
+                val persona = create(name, prompt, namespaces)
+                known[persona.name] = known[persona.name].orEmpty() + persona
+                created += persona.name
+            }
+        }
+        return PersonaImportSummary(created, skipped)
     }
 
     private fun validateSave(

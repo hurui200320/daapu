@@ -1,5 +1,6 @@
 package info.skyblond.daapu.server.endpoint
 
+import info.skyblond.daapu.agent.persona.PersonaExportEntry
 import info.skyblond.daapu.agent.persona.PersonaService
 import info.skyblond.daapu.server.PersonaSaveRequest
 import io.ktor.http.*
@@ -15,6 +16,12 @@ import io.ktor.server.routing.*
  * the reserved id 0 (the code default) are rejected with 400 (the default
  * persona lives in code and is read-only).
  *
+ * Export/import speak the `PersonaExportEntry` array (see
+ * `PersonaService.exportPersonas`/`importPersonas`): the export answers an
+ * attachment named `personas.json`, the import takes the same shape back and
+ * answers the created/skipped split. No route conflicts: GET and POST have
+ * no `/{personaId}` siblings (only PUT/DELETE carry the id).
+ *
  * The service's validation errors ([IllegalArgumentException]) are mapped
  * onto 400 here — the service package holds no ktor dependency, the routes
  * own the HTTP mapping.
@@ -23,6 +30,26 @@ fun Route.registerPersonasEndpoints(service: PersonaService) {
     route("/personas") {
         get {
             call.respond(service.list())
+        }
+        // export every persona row as the transfer array (the code default is
+        // excluded — see PersonaService.exportPersonas); an attachment, like
+        // the chat export
+        get("/export") {
+            call.response.header(
+                HttpHeaders.ContentDisposition,
+                ContentDisposition.Attachment
+                    .withParameter(ContentDisposition.Parameters.FileName, "personas.json")
+                    .toString(),
+            )
+            call.respond(service.exportPersonas())
+        }
+        // import the transfer array: entries matching an existing persona on
+        // name + prompt + namespace set are skipped, the rest are created;
+        // the first invalid entry fails the whole request with 400 and the
+        // earlier creates stick (see PersonaService.importPersonas)
+        post("/import") {
+            val entries = call.receive<List<PersonaExportEntry>>()
+            call.respond(personaValidation { service.importPersonas(entries) })
         }
         post {
             val request = call.receive<PersonaSaveRequest>()

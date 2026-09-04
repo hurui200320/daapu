@@ -21,7 +21,7 @@ import { personaStore } from './persona-store.svelte'
 import { onIntervalAndFocus } from './resync'
 import { toastStore } from './toast-store.svelte'
 import { dataUrlToImagePart } from './display'
-import { downloadJsonFile, parseChatExportFile } from './chat-transfer'
+import { parseChatExportFile } from './chat-transfer'
 import {
   applyToolResult,
   commitRoundParts,
@@ -31,7 +31,7 @@ import {
   runFailureText,
   type LiveRound,
 } from './chat-logic'
-import { jsonEquals } from './utils'
+import { downloadJsonFile, jsonEquals } from './utils'
 import { StreamSession } from './stream-session'
 
 // mirrors the backend's DEFAULT_CHAT_TITLE (db/Tables.kt)

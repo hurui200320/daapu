@@ -169,6 +169,32 @@ export interface Persona {
 /** mirrors the backend's reserved default persona id 0 (agent/persona/Persona.kt) */
 export const DEFAULT_PERSONA_ID = 0
 
+/**
+ * One entry of the personas export/import payload (`GET /api/personas/export`
+ * response = `POST /api/personas/import` request; authority:
+ * `agent/persona/PersonaTransfer.kt`). An array of these, one per persona row
+ * in creation order — the code-only default persona is never exported.
+ */
+export interface PersonaExportEntry {
+  name: string
+  systemPrompt: string
+  /** namespace whitelist over the chat loop's tools; [] = all namespaces */
+  allowedNamespaces: string[]
+}
+
+/** The personas export file: the entry array itself. */
+export type PersonaExportFile = PersonaExportEntry[]
+
+/**
+ * The `POST /api/personas/import` response: the imported names split by
+ * outcome, entry order preserved (authority: `PersonaTransfer.kt`
+ * `PersonaImportSummary`).
+ */
+export interface PersonaImportResult {
+  created: string[]
+  skipped: string[]
+}
+
 export interface StreamEvent {
   event: string
   data: string

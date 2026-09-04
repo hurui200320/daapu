@@ -7,9 +7,10 @@ import kotlin.test.*
 
 /**
  * Pins [PersonaService]: the code-only default persona (never a store row,
- * resolved from code), request resolution with fail-fast on unknown ids, and
- * the create/update/delete validation (blank name/prompt, whitelist syntax,
- * whitelist entries the chat loop does not serve, the reserved id 0).
+ * resolved from code), request resolution with fail-fast on unknown ids, the
+ * create/update/delete validation (blank name/prompt, whitelist syntax,
+ * whitelist entries the chat loop does not serve, the reserved id 0), and the
+ * export/import transfer semantics (see `exportPersonas`/`importPersonas`).
  */
 class PersonaServiceTest : DbTestBase() {
 
@@ -160,5 +161,176 @@ class PersonaServiceTest : DbTestBase() {
 
         assertTrue(service.delete(writer.id))
         assertFalse(service.delete(writer.id), "already deleted → false")
+    }
+
+    // ---- export ----
+
+    @Test
+    fun `export lists every row in creation order and excludes the default persona`() = runBlocking {
+        val store = PostgresPersonaStore()
+        TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+        TestDb.seedPersonaRow("Poet", "You are a poet.", emptyList())
+
+        val entries = service(store).exportPersonas()
+
+        assertEquals(
+            listOf(
+                PersonaExportEntry("Writer", "You are a writer.", listOf("gsg")),
+                PersonaExportEntry("Poet", "You are a poet.", emptyList()),
+            ),
+            entries,
+        )
+        assertTrue(entries.none { it.name == "Default" }, "the code-only default is not exported")
+    }
+
+    @Test
+    fun `export keeps same-name rows`() = runBlocking {
+        // no name uniqueness: the array format must carry both rows losslessly
+        val store = PostgresPersonaStore()
+        TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+        TestDb.seedPersonaRow("Writer", "You are a poet.", emptyList())
+
+        val entries = service(store).exportPersonas()
+
+        assertEquals(2, entries.size)
+        assertEquals(listOf("You are a writer.", "You are a poet."), entries.map { it.systemPrompt })
+    }
+
+    // ---- import ----
+
+    @Test
+    fun `import creates unmatched entries and answers the created and skipped split`() = runBlocking {
+        val store = PostgresPersonaStore()
+        TestDb.seedPersonaRow("Poet", "You are a poet.", emptyList())
+
+        val summary = service(store).importPersonas(
+            listOf(
+                PersonaExportEntry("Writer", "You are a writer.", listOf("gsg")),
+                // exact match on the seeded row → skipped
+                PersonaExportEntry("Poet", "You are a poet.", emptyList()),
+            )
+        )
+
+        assertEquals(listOf("Writer"), summary.created)
+        assertEquals(listOf("Poet"), summary.skipped)
+        val writer = store.list().single { it.name == "Writer" }
+        assertEquals("You are a writer.", writer.systemPrompt)
+        assertEquals(listOf("gsg"), writer.allowedNamespaces)
+    }
+
+    @Test
+    fun `import skips on the namespace set regardless of order`() = runBlocking {
+        val store = PostgresPersonaStore()
+        TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg", "web"))
+
+        val summary = service(store).importPersonas(
+            listOf(PersonaExportEntry("Writer", "You are a writer.", listOf("web", "gsg")))
+        )
+
+        assertEquals(emptyList(), summary.created)
+        assertEquals(listOf("Writer"), summary.skipped)
+        assertEquals(1, store.list().size, "no duplicate row is minted")
+    }
+
+    @Test
+    fun `import mints a new row when the same name carries different content`() = runBlocking {
+        val store = PostgresPersonaStore()
+        TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+
+        val summary = service(store).importPersonas(
+            listOf(
+                PersonaExportEntry("Writer", "You are a poet.", listOf("gsg")),
+                PersonaExportEntry("Writer", "You are a writer.", listOf("web")),
+            )
+        )
+
+        assertEquals(listOf("Writer", "Writer"), summary.created)
+        val writers = store.list().filter { it.name == "Writer" }
+        assertEquals(3, writers.size)
+        assertEquals(
+            setOf("You are a poet.", "You are a writer."),
+            writers.map { it.systemPrompt }.toSet(),
+        )
+    }
+
+    @Test
+    fun `import matches padded input against the trimmed stored row`() = runBlocking {
+        // create() trims before storing, so the skip-decision must compare
+        // trimmed values — padded input matches, it does not mint a copy
+        val store = PostgresPersonaStore()
+        TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+
+        val summary = service(store).importPersonas(
+            listOf(
+                PersonaExportEntry(
+                    "  Writer  ",
+                    "  You are a writer.  ",
+                    listOf(" gsg "),
+                )
+            )
+        )
+
+        assertEquals(emptyList(), summary.created)
+        assertEquals(listOf("Writer"), summary.skipped)
+        assertEquals(1, store.list().size)
+    }
+
+    @Test
+    fun `import is fail-fast and partial, and a re-run resumes`() = runBlocking {
+        val store = PostgresPersonaStore()
+
+        val aborted = assertFailsWith<IllegalArgumentException> {
+            service(store).importPersonas(
+                listOf(
+                    PersonaExportEntry("Writer", "You are a writer.", listOf("gsg")),
+                    // `a__b` is not a valid namespace (the `__` join is reserved)
+                    PersonaExportEntry("Broken", "You are broken.", listOf("a__b")),
+                )
+            )
+        }
+        assertTrue(aborted.message!!.contains("must not contain '__'"), aborted.message)
+        assertEquals(listOf("Writer"), store.list().map { it.name }, "earlier creates stick")
+
+        // re-running the same file skips what stuck and fails on what didn't;
+        // fixing the entry (or the server's served set) completes the import
+        val summary = service(store).importPersonas(
+            listOf(PersonaExportEntry("Writer", "You are a writer.", listOf("gsg")))
+        )
+        assertEquals(emptyList(), summary.created)
+        assertEquals(listOf("Writer"), summary.skipped)
+    }
+
+    @Test
+    fun `import with the same persona twice creates once then skips against its own output`() = runBlocking {
+        val store = PostgresPersonaStore()
+
+        val summary = service(store).importPersonas(
+            listOf(
+                PersonaExportEntry("Writer", "You are a writer.", listOf("gsg")),
+                PersonaExportEntry("Writer", "You are a writer.", listOf("gsg")),
+            )
+        )
+
+        assertEquals(listOf("Writer"), summary.created)
+        assertEquals(listOf("Writer"), summary.skipped)
+        assertEquals(1, store.list().size)
+    }
+
+    @Test
+    fun `importing an export back into an unchanged store skips everything`() = runBlocking {
+        val store = PostgresPersonaStore()
+        TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+        TestDb.seedPersonaRow("Poet", "You are a poet.", emptyList())
+
+        val summary = service(store).importPersonas(service(store).exportPersonas())
+
+        assertEquals(emptyList(), summary.created)
+        assertEquals(listOf("Writer", "Poet"), summary.skipped)
+    }
+
+    @Test
+    fun `import of an empty list answers an empty summary`() = runBlocking {
+        val summary = service().importPersonas(emptyList())
+        assertEquals(PersonaImportSummary(emptyList(), emptyList()), summary)
     }
 }

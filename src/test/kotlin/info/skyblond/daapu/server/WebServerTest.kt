@@ -1601,4 +1601,130 @@ class WebServerTest : DbTestBase() {
             )
         }
     }
+
+    // ---- persona export/import (`GET /api/personas/export`, `POST /api/personas/import`) ----
+
+    @Test
+    fun `persona export answers the transfer array as an attachment, empty whitelist included`() {
+        runBlocking {
+            TestDb.seedPersonaRow("Writer", "You are a writer.", listOf("gsg"))
+            TestDb.seedPersonaRow("Poet", "You are a poet.", emptyList())
+        }
+        testApplication {
+            application { module(testKoinApp().koin) }
+            val response = client.get("/api/personas/export")
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                "attachment; filename=personas.json",
+                response.headers[HttpHeaders.ContentDisposition],
+            )
+            val entries = json.parseToJsonElement(response.bodyAsText()).jsonArray
+            assertEquals(2, entries.size, "the code default is not exported")
+            val writer = entries[0].jsonObject
+            assertEquals("Writer", writer["name"]?.jsonPrimitive?.content)
+            assertEquals("You are a writer.", writer["systemPrompt"]?.jsonPrimitive?.content)
+            assertEquals(
+                listOf("gsg"),
+                writer["allowedNamespaces"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
+            val poet = entries[1].jsonObject
+            assertEquals("Poet", poet["name"]?.jsonPrimitive?.content)
+            assertEquals("You are a poet.", poet["systemPrompt"]?.jsonPrimitive?.content)
+            // the empty whitelist pins the encodeDefaults pitfall the transfer
+            // types lean on (PersonaTransfer.kt): ktor's ContentNegotiation
+            // Json serializes with `encodeDefaults = false`, so the payload
+            // types must carry NO defaults — an `[]` (= all namespaces) must
+            // reach the WIRE, not be dropped
+            assertTrue(
+                response.bodyAsText().contains("\"allowedNamespaces\":[]"),
+                "an empty whitelist must serialize as an explicit [] on the wire",
+            )
+        }
+    }
+
+    @Test
+    fun `persona import answers the created and skipped split and skips the matching rows`() {
+        runBlocking { TestDb.seedPersonaRow("Poet", "You are a poet.", emptyList()) }
+        testApplication {
+            application { module(testKoinApp().koin) }
+            val response = client.post("/api/personas/import") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    [
+                      {"name":"Writer","systemPrompt":"You are a writer.","allowedNamespaces":["gsg"]},
+                      {"name":"Poet","systemPrompt":"You are a poet.","allowedNamespaces":[]}
+                    ]
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals(
+                listOf("Writer"),
+                body["created"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
+            assertEquals(
+                listOf("Poet"),
+                body["skipped"]?.jsonArray?.map { it.jsonPrimitive.content },
+            )
+            // the skip must not mint a duplicate of the seeded Poet
+            val personas = json.parseToJsonElement(client.get("/api/personas").bodyAsText()).jsonArray
+            assertEquals(3, personas.size, "the code default, the created Writer, the single seeded Poet")
+        }
+    }
+
+    @Test
+    fun `persona import with an invalid entry is 400 and earlier creates stick`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            // `eltm` is not a loop namespace in the test app (only `gsg` is
+            // served): the second entry fails the create validation and the
+            // whole request 400s — but the first entry sticks (fail-fast
+            // partial, see PersonaService.importPersonas)
+            val response = client.post("/api/personas/import") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """
+                    [
+                      {"name":"Writer","systemPrompt":"You are a writer.","allowedNamespaces":["gsg"]},
+                      {"name":"Broken","systemPrompt":"You are broken.","allowedNamespaces":["eltm"]}
+                    ]
+                    """.trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(
+                json.parseToJsonElement(response.bodyAsText()).jsonObject["error"]?.jsonPrimitive?.content
+                    ?.contains("not served") == true,
+                "the 400 must carry the validation reason",
+            )
+            val personas = json.parseToJsonElement(client.get("/api/personas").bodyAsText()).jsonArray
+            assertEquals(2, personas.size, "the code default plus the row created before the failure")
+            assertEquals("Writer", personas.last().jsonObject["name"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
+    fun `persona import rejects a non-array body or an entry missing a field with 400`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            // both fail DURING the request decode (a List cannot decode from
+            // an object; the transfer type's fields are required, see
+            // PersonaTransfer.kt), before the service runs — the same
+            // decode-400 mapping the chat import tests pin
+            listOf(
+                """{"name":"W","systemPrompt":"p","allowedNamespaces":[]}""",
+                """[{"name":"W"}]""",
+            ).forEach { body ->
+                val response = client.post("/api/personas/import") {
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+                assertEquals(HttpStatusCode.BadRequest, response.status, body)
+            }
+            val personas = json.parseToJsonElement(client.get("/api/personas").bodyAsText()).jsonArray
+            assertEquals(1, personas.size, "nothing was created")
+        }
+    }
 }

@@ -8,6 +8,8 @@ import type {
   EltmNoteDto,
   ModelInfo,
   Persona,
+  PersonaExportFile,
+  PersonaImportResult,
   RelationshipViewDto,
   StreamEvent,
   TextPart,
@@ -170,6 +172,25 @@ export async function updatePersona(id: number, body: PersonaSaveBody): Promise<
 
 export async function deletePersona(id: number): Promise<void> {
   await request(`/api/personas/${id}`, { method: 'DELETE' })
+}
+
+/**
+ * Export all persona rows: the transfer array (no chat-style download
+ * trigger — that is the caller's job, like `exportChat`).
+ */
+export async function exportPersonas(): Promise<PersonaExportFile> {
+  return getJson('/api/personas/export')
+}
+
+/**
+ * Import an exported personas file: entries matching an existing persona on
+ * name + prompt + namespace set are skipped, the rest are created — 400 with
+ * the reason on the first invalid entry (earlier creates stick). Returns the
+ * created/skipped split (see PersonaImportResult).
+ */
+export async function importPersonas(payload: PersonaExportFile): Promise<PersonaImportResult> {
+  const res = await request('/api/personas/import', jsonInit('POST', payload))
+  return res.json()
 }
 
 /**

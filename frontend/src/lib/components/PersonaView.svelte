@@ -4,11 +4,13 @@
     ChevronDown,
     ChevronRight,
     Copy,
+    Download,
     Loader2,
     Pencil,
     Plus,
     Tags,
     Trash2,
+    Upload,
     UserRound,
   } from '@lucide/svelte'
   import Button from './ui/button.svelte'
@@ -30,7 +32,8 @@
    * in code) plus the editable `personas` rows — id, name, namespace
    * whitelist — each with a markdown preview dropdown, an edit-prompt and an
    * edit-namespaces dialog, and a delete action. Writes are validated by the
-   * backend (400 → toast).
+   * backend (400 → toast). The header carries the catalog's export/import
+   * (one `personas.json` file — see PersonaStore.exportAll/importFile).
    */
 
   // null = dialog closed; 'new' = create mode; Persona = edit mode
@@ -123,6 +126,17 @@
       if (copiedId === id) copiedId = null
     }, 1500)
   }
+
+  // the hidden file input behind the import button (single file: the whole
+  // catalog per import — see PersonaStore.importFile), the Sidebar's recipe
+  let importInput = $state<HTMLInputElement>()
+
+  function onImportPicked(input: HTMLInputElement) {
+    const file = input.files?.[0]
+    if (file) void personaStore.importFile(file)
+    // reset so picking the same file again still fires the change event
+    input.value = ''
+  }
 </script>
 
 <div class="mx-auto w-full max-w-3xl px-4 pb-4 pt-6">
@@ -134,11 +148,51 @@
         chat loop serves (empty = all).
       </p>
     </div>
-    <Button size="sm" onclick={() => openPromptEditor('new')}>
-      <Plus class="size-4" />
-      New persona
-    </Button>
+    <div class="flex shrink-0 items-center gap-2">
+      <!-- labeled buttons: the tray icons alone read backwards (import = arrow
+           INTO the tray, which is Lucide's Download), so the text carries the
+           meaning — same recipe as the Sidebar's chat importer/exporter -->
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={personaStore.importing}
+        title="Import personas from an exported file"
+        onclick={() => importInput?.click()}
+      >
+        {#if personaStore.importing}
+          <Loader2 class="size-4 animate-spin" />
+        {:else}
+          <Download class="size-4" />
+        {/if}
+        Import
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={personaStore.exporting}
+        title="Export all personas to one JSON file"
+        onclick={() => void personaStore.exportAll()}
+      >
+        {#if personaStore.exporting}
+          <Loader2 class="size-4 animate-spin" />
+        {:else}
+          <Upload class="size-4" />
+        {/if}
+        Export
+      </Button>
+      <Button size="sm" onclick={() => openPromptEditor('new')}>
+        <Plus class="size-4" />
+        New persona
+      </Button>
+    </div>
   </div>
+  <input
+    bind:this={importInput}
+    type="file"
+    accept=".json,application/json"
+    class="hidden"
+    onchange={(e) => onImportPicked(e.currentTarget)}
+  />
 
   <div class="space-y-2">
     {#each personaStore.personas as persona (persona.id)}

@@ -1,8 +1,16 @@
-import { createPersona, deletePersona, listPersonas, updatePersona } from './api'
+import {
+  createPersona,
+  deletePersona,
+  exportPersonas as apiExportPersonas,
+  importPersonas as apiImportPersonas,
+  listPersonas,
+  updatePersona,
+} from './api'
 import type { Persona } from './types'
 import { toastStore } from './toast-store.svelte'
 import { onIntervalAndFocus } from './resync'
-import { jsonEquals } from './utils'
+import { downloadJsonFile, jsonEquals } from './utils'
+import { parsePersonaImportFile } from './persona-transfer'
 
 /**
  * The persona catalog (the code default + the `personas` rows), shared by
@@ -12,6 +20,11 @@ import { jsonEquals } from './utils'
  */
 class PersonaStore {
   personas = $state<Persona[]>([])
+
+  // busy flags of the file actions (export/import), read by the view's
+  // buttons — same pattern as the chat store's importingChats/exportingAll
+  exporting = $state(false)
+  importing = $state(false)
 
   private started = false
 
@@ -62,6 +75,51 @@ class PersonaStore {
       this.personas = this.personas.filter((p) => p.id !== id)
     } catch (e) {
       toastStore.pushError(e)
+    }
+  }
+
+  /**
+   * Export every persona row as one `personas.json` download. Failures
+   * surface as a toast.
+   */
+  async exportAll(): Promise<void> {
+    if (this.exporting) return
+    this.exporting = true
+    try {
+      const entries = await apiExportPersonas()
+      // the name is hardcoded because fetch does not act on the backend's
+      // Content-Disposition — keep it in sync with the attachment of the
+      // export route (PersonasRoute.kt), like the chat store does with
+      // ChatsRoute.kt
+      downloadJsonFile('personas.json', JSON.stringify(entries))
+    } catch (e) {
+      toastStore.pushError(e)
+    } finally {
+      this.exporting = false
+    }
+  }
+
+  /**
+   * Import one exported personas file (parsed in `persona-transfer.ts`,
+   * matched and created server-side — see `api.ts` `importPersonas`):
+   * entries matching an existing persona are skipped, the rest are created.
+   * The catalog resyncs regardless of the outcome — the server's import is
+   * fail-fast partial, so a 400 can still carry earlier creates. On success
+   * a toast reports the created/skipped split; parse/shape errors and the
+   * server's validation errors surface as toasts (with the file name).
+   */
+  async importFile(file: File): Promise<void> {
+    if (this.importing) return
+    this.importing = true
+    try {
+      const entries = await parsePersonaImportFile(file)
+      const summary = await apiImportPersonas(entries)
+      toastStore.push(`Personas imported: ${summary.created.length} created, ${summary.skipped.length} skipped`)
+    } catch (e) {
+      toastStore.pushError(e)
+    } finally {
+      await this.resync()
+      this.importing = false
     }
   }
 }
