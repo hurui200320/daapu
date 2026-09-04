@@ -146,7 +146,7 @@ class ChatServiceExportImportTest : DbTestBase() {
         val srv = service(store)
 
         assertFailsWith<ChatValidationException> { srv.importChat("   ", threeRounds()) }
-        assertTrue(store.listChats().isEmpty())
+        assertTrue(store.listChats(null).chats.isEmpty())
     }
 
     @Test
@@ -155,7 +155,7 @@ class ChatServiceExportImportTest : DbTestBase() {
         val srv = service(store)
 
         assertFailsWith<ChatValidationException> { srv.importChat("title", listOf(user("u1"))) }
-        assertTrue(store.listChats().isEmpty())
+        assertTrue(store.listChats(null).chats.isEmpty())
     }
 
     @Test
@@ -166,7 +166,7 @@ class ChatServiceExportImportTest : DbTestBase() {
         assertFailsWith<ChatValidationException> {
             srv.importChat("title", listOf(user("u1"), assistant("a1", finish = "tool_calls")))
         }
-        assertTrue(store.listChats().isEmpty())
+        assertTrue(store.listChats(null).chats.isEmpty())
     }
 
     @Test
@@ -178,7 +178,7 @@ class ChatServiceExportImportTest : DbTestBase() {
         assertFailsWith<ChatValidationException> {
             srv.importChat("title", listOf(anchorless, assistant("a1")))
         }
-        assertTrue(store.listChats().isEmpty())
+        assertTrue(store.listChats(null).chats.isEmpty())
     }
 
     @Test
@@ -189,6 +189,6 @@ class ChatServiceExportImportTest : DbTestBase() {
         // the tool call has no matching result: the pairing invariant fails
         val split = listOf(user("u1"), toolCallsAssistant("call_1"), assistant("a1"))
         assertFailsWith<ChatValidationException> { srv.importChat("title", split) }
-        assertTrue(store.listChats().isEmpty())
+        assertTrue(store.listChats(null).chats.isEmpty())
     }
 }

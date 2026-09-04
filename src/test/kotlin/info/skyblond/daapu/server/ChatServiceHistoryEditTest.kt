@@ -265,7 +265,7 @@ class ChatServiceHistoryEditTest : DbTestBase() {
         val srv = service(store)
 
         assertFailsWith<ChatValidationException> { srv.forkChat("chat-1", 0) }
-        assertTrue(store.listChats().size == 1, "a rejected fork must not create a chat")
+        assertTrue(store.listChats(null).chats.size == 1, "a rejected fork must not create a chat")
     }
 
     @Test
@@ -276,7 +276,7 @@ class ChatServiceHistoryEditTest : DbTestBase() {
 
         assertFailsWith<ChatValidationException> { srv.forkChat("chat-1", -1) }
         assertFailsWith<ChatValidationException> { srv.forkChat("chat-1", 6) }
-        assertTrue(store.listChats().size == 1, "a rejected fork must not create a chat")
+        assertTrue(store.listChats(null).chats.size == 1, "a rejected fork must not create a chat")
     }
 
     @Test
@@ -303,8 +303,8 @@ class ChatServiceHistoryEditTest : DbTestBase() {
         )
         assertFailsWith<ChatValidationException> { srv.forkChat("chat-2", 1) }
         assertTrue(
-            store.listChats().size == 2,
-            "the rejected forks must not create chats: ${store.listChats()}"
+            store.listChats(null).chats.size == 2,
+            "the rejected forks must not create chats: ${store.listChats(null).chats}"
         )
     }
 

@@ -406,7 +406,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | Method & path                           | Purpose                                                      |
 |-----------------------------------------|--------------------------------------------------------------|
 | `GET /api/models`                       | Model catalog (`vision`, context, output limits).            |
-| `GET /api/chats`                        | Existing chats as `{"id", "title", "personaId"}` (newest first, capped). |
+| `GET /api/chats`                        | One page of chats as `{"chats": [{"id", "title", "personaId"}], "nextCursor"}` (newest first, 200 per page; keyset pagination — pass `?cursor=<previous nextCursor>` to continue, absent `nextCursor` = no more pages, 400 on a malformed cursor). |
 | `POST /api/chats`                       | Create a chat (empty history, title `New chat`).             |
 | `PUT /api/chats/{id}`                   | Rename a chat (`{"title": "..."}`).                          |
 | `POST /api/chats/{id}/title`            | Generate a title from the chat history (no-op on an empty chat, 400 on a capability mismatch). |

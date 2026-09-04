@@ -5,7 +5,11 @@ import info.skyblond.daapu.db.newChatId
 import info.skyblond.daapu.db.withTransaction
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.jdbc.*
+
+/** The `GET /api/chats` page size (fixed — no client-visible limit knob). */
+private const val CHAT_PAGE_SIZE = 200
 
 /**
  * Postgres-backed [ChatStore], storing the whole chat as one JSON array in
@@ -13,15 +17,23 @@ import org.jetbrains.exposed.v1.jdbc.*
  */
 class PostgresChatStore : ChatStore {
 
-    override suspend fun listChats(): List<ChatInfo> = withTransaction {
-        Chats.selectAll()
-            // TODO: should add time to Chats, lastUpdatedAt
+    override suspend fun listChats(cursor: String?): ChatListPage = withTransaction {
+        // keyset pagination: `id < cursor` anchors the page start at a
+        // POSITION in the newest-first order (see ChatListPage), so a
+        // concurrent delete can never shift a row across the page boundary
+        // (the id is immutable and creation-time-ordered — see newChatId in
+        // `db/ChatIds.kt`). One extra row beyond the page size tells whether
+        // a next page exists without a separate count query.
+        val rows = Chats.selectAll()
+            .apply { if (cursor != null) andWhere { Chats.id less cursor } }
             .orderBy(Chats.id to SortOrder.DESC)
-            // TODO: pagination?
-            .limit(200)
+            .limit(CHAT_PAGE_SIZE + 1)
             .map { row ->
                 ChatInfo(row[Chats.id], row[Chats.title], row[Chats.personaId])
             }
+        val hasMore = rows.size > CHAT_PAGE_SIZE
+        val chats = if (hasMore) rows.dropLast(1) else rows
+        ChatListPage(chats, if (hasMore) chats.last().id else null)
     }
 
     override suspend fun newChat(personaId: Long, title: String): ChatInfo = withTransaction {

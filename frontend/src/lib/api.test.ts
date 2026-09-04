@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parseBlock, streamChat } from './api'
+import { listChats, parseBlock, streamChat } from './api'
 import type { StreamEvent } from './types'
 
 /** Collect all events from a streamChat run. */
@@ -56,6 +56,51 @@ describe('streamChat (SSE wire protocol)', () => {
     stubStream(['event: to', 'ol_call\ndata: {"name":', '"t","args":{}}\n', '\n'])
     const events = await drain(streamChat('c1', { text: 'x', model: 'm', personaId: 0 }))
     expect(events).toEqual([{ event: 'tool_call', data: '{"name":"t","args":{}}' }])
+  })
+})
+
+describe('listChats (keyset pagination walk)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** Stub fetch to answer with the given JSON bodies in request order. */
+  function stubPages(pages: unknown[]) {
+    const queue = [...pages]
+    const mock = vi.fn<(path: string) => Promise<Response>>(
+      async () => ({ ok: true, json: async () => queue.shift() }) as Response,
+    )
+    vi.stubGlobal('fetch', mock)
+    return mock
+  }
+
+  it('walks every page and flattens in order, encoding each cursor', async () => {
+    // 'x y' needs URL-encoding: real chat ids (`$millis-$random`) never do,
+    // so the space proves the walk encodes instead of assuming
+    const fetchMock = stubPages([
+      { chats: [{ id: 'b', title: 'B', personaId: 0 }], nextCursor: 'x y' },
+      { chats: [{ id: 'a', title: 'A', personaId: 0 }], nextCursor: '0-9' },
+      { chats: [{ id: '1-8', title: 'C', personaId: 0 }] }, // no nextCursor = last page
+    ])
+    expect(await listChats()).toEqual([
+      { id: 'b', title: 'B', personaId: 0 },
+      { id: 'a', title: 'A', personaId: 0 },
+      { id: '1-8', title: 'C', personaId: 0 },
+    ])
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      '/api/chats',
+      '/api/chats?cursor=x%20y',
+      '/api/chats?cursor=0-9',
+    ])
+  })
+
+  it('stops on an empty page even when it carries a nextCursor', async () => {
+    // a strict-inequality backend can never send this, but the walk must
+    // not loop forever if one ever does (see the guard in listChats)
+    const fetchMock = stubPages([
+      { chats: [{ id: 'b', title: 'B', personaId: 0 }], nextCursor: 'x' },
+      { chats: [], nextCursor: 'would-loop-forever' },
+    ])
+    expect(await listChats()).toEqual([{ id: 'b', title: 'B', personaId: 0 }])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })
 

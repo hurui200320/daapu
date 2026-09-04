@@ -1830,7 +1830,7 @@ private class InMemoryChatStore(seed: List<ChatMessage>? = null) : ChatStore {
 
     // the chat-row CRUD methods are not part of this fake's contract (the
     // persist loop tests only exercise load/store)
-    override suspend fun listChats(): List<ChatInfo> =
+    override suspend fun listChats(cursor: String?): ChatListPage =
         error("not exercised by the persist loop tests")
 
     override suspend fun newChat(personaId: Long, title: String): ChatInfo =
@@ -1868,7 +1868,7 @@ private class ConcurrentChatStore : ChatStore {
 
     // the chat-row CRUD methods are not part of this fake's contract (the
     // persist loop concurrency test only exercises load/store)
-    override suspend fun listChats(): List<ChatInfo> =
+    override suspend fun listChats(cursor: String?): ChatListPage =
         error("not exercised by the persist loop tests")
 
     override suspend fun newChat(personaId: Long, title: String): ChatInfo =

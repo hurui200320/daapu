@@ -123,12 +123,23 @@ export interface RelationshipViewDto {
   latestNote: EltmNoteDto | null
 }
 
-/** One entry of `GET /api/chats`: id + title + the persona record. */
+/** One chat entry of a `GET /api/chats` page (`ChatListPage`): id + title + the persona record. */
 export interface ChatInfo {
   id: string
   title: string
   /** the persona id of the chat's last successful run; only pre-fills the picker */
   personaId: number
+}
+
+/**
+ * One page of `GET /api/chats` (keyset pagination on the immutable chat id,
+ * newest first — the cursor anchors a position in that order, so concurrent
+ * deletes between pages never skip a row). `nextCursor` is absent when the
+ * list is exhausted. Mirror of `agent/chat/ChatStore.kt` `ChatListPage`.
+ */
+export interface ChatListPage {
+  chats: ChatInfo[]
+  nextCursor?: string
 }
 
 /**

@@ -365,7 +365,57 @@ class WebServerTest : DbTestBase() {
                 val response = client.post(path)
                 assertEquals(HttpStatusCode.BadRequest, response.status, "path: $path")
             }
-            assertEquals(1, store.listChats().size)
+            assertEquals(1, store.listChats(null).chats.size)
+        }
+    }
+
+    // ---- list (`GET /api/chats`, keyset pagination) ----
+
+    @Test
+    fun `list chats pages by cursor and rejects a malformed cursor`() {
+        // ids in the REAL `$millis-$random` shape (see newChatId in
+        // db/ChatIds.kt): the cursor must match it, so the paging assertion
+        // cannot use an arbitrary string like "chat-b"
+        val newest = "1700000000000-1"
+        val oldest = "1600000000000-2"
+        TestDb.seedChatRow(newest)
+        TestDb.seedChatRow(oldest)
+        testApplication {
+            application { module(testKoinApp().koin) }
+            // the first page answers the envelope; the list fits one page,
+            // so no nextCursor (a null cursor is omitted on the wire)
+            val first = Json.parseToJsonElement(client.get("/api/chats").bodyAsText()).jsonObject
+            assertEquals(
+                listOf(newest, oldest),
+                first["chats"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content },
+            )
+            assertTrue("nextCursor" !in first, "an exhausted list must not carry a nextCursor")
+
+            // a cursor pages from its POSITION in the newest-first id order
+            val second = Json.parseToJsonElement(
+                client.get("/api/chats?cursor=$newest").bodyAsText()
+            ).jsonObject
+            assertEquals(
+                listOf(oldest),
+                second["chats"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content },
+            )
+
+            // a well-shaped cursor below every id answers an EMPTY page
+            // without a nextCursor — the shape a full walk relies on to
+            // terminate (see listChats in frontend/src/lib/api.ts)
+            val empty = Json.parseToJsonElement(
+                client.get("/api/chats?cursor=1-1").bodyAsText()
+            ).jsonObject
+            assertTrue(empty["chats"]!!.jsonArray.isEmpty(), "a cursor below every id must page to nothing")
+            assertTrue("nextCursor" !in empty, "an exhausted page must not carry a nextCursor")
+
+            // a cursor is a chat id (`$millis-$random`, see newChatId in
+            // db/ChatIds.kt): anything else fails fast instead of paging
+            // from a bogus position
+            listOf("garbage", "12345-abc", "abc-123", "12-34-56", "").forEach { cursor ->
+                val response = client.get("/api/chats?cursor=$cursor")
+                assertEquals(HttpStatusCode.BadRequest, response.status, "cursor: '$cursor'")
+            }
         }
     }
 
@@ -498,7 +548,7 @@ class WebServerTest : DbTestBase() {
                 }
                 assertEquals(HttpStatusCode.BadRequest, response.status, "body: $body")
             }
-            assertTrue(store.listChats().isEmpty())
+            assertTrue(store.listChats(null).chats.isEmpty())
         }
     }
 
@@ -528,7 +578,7 @@ class WebServerTest : DbTestBase() {
                 setBody(body)
             }
             assertEquals(HttpStatusCode.BadRequest, response.status)
-            assertTrue(store.listChats().isEmpty())
+            assertTrue(store.listChats(null).chats.isEmpty())
         }
     }
 

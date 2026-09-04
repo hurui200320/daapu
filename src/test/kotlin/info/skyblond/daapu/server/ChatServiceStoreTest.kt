@@ -107,7 +107,7 @@ class ChatServiceStoreTest : DbTestBase() {
     @Test
     fun `newChat creates a row visible in listChats`() {
         val created = runBlocking { service().newChat() }
-        assertTrue(runBlocking { service().listChats() }.any { it.id == created.id })
+        assertTrue(runBlocking { service().listChats(null).chats }.any { it.id == created.id })
     }
 
     @Test
@@ -123,7 +123,7 @@ class ChatServiceStoreTest : DbTestBase() {
         TestDb.seedChatRow("b", title = "B")
         assertEquals(
             listOf(ChatInfo("b", "B", DEFAULT_PERSONA_ID), ChatInfo("a", "A", DEFAULT_PERSONA_ID)),
-            runBlocking { service().listChats() }
+            runBlocking { service().listChats(null).chats }
         )
     }
 }

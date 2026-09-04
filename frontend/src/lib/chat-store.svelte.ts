@@ -6,6 +6,7 @@ import {
   generateTitle,
   importChat as apiImportChat,
   listChats,
+  listChatsPage,
   listModels,
   loadChat,
   newChat,
@@ -26,6 +27,7 @@ import {
   commitRoundParts,
   computeUsage,
   effectivePersonaId,
+  mergeChatPage,
   runFailureText,
   type LiveRound,
 } from './chat-logic'
@@ -186,7 +188,11 @@ class ChatStore {
   }
 
   /**
-   * Refresh the chat list + model catalog from the DB. Replaces each list
+   * Refresh the chat list + model catalog from the DB. The chat list takes
+   * only the FIRST page (one request per tick regardless of chat count — a
+   * full walk would multiply the tick by ⌈N/200⌉) and folds it into the
+   * known list via `mergeChatPage` (chat-logic.ts): the newest page is
+   * authoritative, older chats are kept best-effort. Replaces each list
    * only when it actually changed, so an open rename dialog keeps its target
    * while the rest of the list updates. Failures are silent: the next tick
    * retries (also covers a failed initial load — the picker must not stay
@@ -196,7 +202,8 @@ class ChatStore {
    */
   private async resyncChats() {
     try {
-      const [freshChats, freshModels] = await Promise.all([listChats(), listModels()])
+      const [page, freshModels] = await Promise.all([listChatsPage(), listModels()])
+      const freshChats = mergeChatPage(this.knownChats, page)
       if (!jsonEquals(freshChats, this.knownChats)) {
         this.knownChats = freshChats
       }
@@ -406,7 +413,8 @@ class ChatStore {
 
   /**
    * Export every chat: refresh the list from the server first (the sidebar
-   * list may be stale or capped), then download one file per chat —
+   * list may be stale beyond its newest page — the resync folds in only
+   * that page), then download one file per chat —
    * sequentially, since one HTTP response can carry only one file, so
    * "export all" is a client-side loop. A failed chat is skipped with its
    * own toast; the loop continues and a summary toast reports

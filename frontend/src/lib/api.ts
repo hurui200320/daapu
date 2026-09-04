@@ -2,6 +2,7 @@ import type {
   ChatAttachmentPart,
   ChatExport,
   ChatInfo,
+  ChatListPage,
   ChatMessage,
   EntityViewDto,
   EltmNoteDto,
@@ -44,8 +45,31 @@ export async function listModels(): Promise<ModelInfo[]> {
   return getJson('/api/models')
 }
 
+/**
+ * One page of the chat list, newest first: the backend pages by keyset
+ * cursor (200 per page, see `ChatListPage`); [cursor] continues after the
+ * previous page's `nextCursor` (undefined = first page).
+ */
+export async function listChatsPage(cursor?: string): Promise<ChatListPage> {
+  return getJson<ChatListPage>(cursor === undefined ? '/api/chats' : `/api/chats?cursor=${encodeURIComponent(cursor)}`)
+}
+
+/**
+ * All chats, newest first: walks `listChatsPage` until `nextCursor` is
+ * absent and flattens it. The empty-page check only guards a pathological
+ * backend — strict-inequality cursors always make progress. Only callers
+ * needing the COMPLETE list use this (initial load, export-all); the
+ * background resync takes one page instead (see ChatStore.resyncChats).
+ */
 export async function listChats(): Promise<ChatInfo[]> {
-  return getJson('/api/chats')
+  const out: ChatInfo[] = []
+  let cursor: string | undefined
+  while (true) {
+    const page = await listChatsPage(cursor)
+    out.push(...page.chats)
+    cursor = page.nextCursor
+    if (cursor === undefined || page.chats.length === 0) return out
+  }
 }
 
 export async function newChat(): Promise<string> {

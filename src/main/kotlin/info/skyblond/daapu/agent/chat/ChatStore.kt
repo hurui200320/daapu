@@ -12,11 +12,22 @@ const val DEFAULT_CHAT_TITLE = "New chat"
 /**
  * One chat row: id + the user-visible title + the persona RECORD (the
  * persona id of the chat's last successful run; the UI pre-fills its picker
- * from it). The wire shape of `GET /api/chats` and the rename/title
- * endpoints.
+ * from it). The wire shape of one `GET /api/chats` entry and the
+ * rename/title endpoints.
  */
 @Serializable
 data class ChatInfo(val id: String, val title: String, val personaId: Long)
+
+/**
+ * One page of `GET /api/chats` (keyset pagination — the cursor is the last
+ * chat id of the previous page, anchoring a POSITION in the newest-first
+ * `id` order, so concurrent deletes between pages can never skip a row).
+ * [nextCursor] is null/absent when the list is exhausted; the wire omits a
+ * null cursor (`encodeDefaults = false` — the ContentNegotiation Json in
+ * `server/WebServer.kt`), so absence means "no more pages".
+ */
+@Serializable
+data class ChatListPage(val chats: List<ChatInfo>, val nextCursor: String? = null)
 
 /**
  * One chat row's content: the message history, the ELTM version fingerprint
@@ -43,8 +54,13 @@ data class ChatEntry(
  * `eltm_version` + `persona_id` — never the title.
  */
 interface ChatStore {
-    /** All chat rows as `id` + `title` (+ persona record), newest first, capped. */
-    suspend fun listChats(): List<ChatInfo>
+    /**
+     * One page of chat rows as `id` + `title` (+ persona record), newest
+     * first (keyset pagination on the immutable snowflake id — see
+     * [ChatListPage]); [cursor] is the previous page's `nextCursor` (null =
+     * first page).
+     */
+    suspend fun listChats(cursor: String?): ChatListPage
 
     /**
      * Insert a row with the given title (the default title unless named —

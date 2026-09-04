@@ -4,11 +4,14 @@ import {
   commitRoundParts,
   computeUsage,
   effectivePersonaId,
+  mergeChatPage,
   runFailureText,
   type LiveRound,
 } from './chat-logic'
 import {
   DEFAULT_PERSONA_ID,
+  type ChatInfo,
+  type ChatListPage,
   type ChatMessage,
   type ChatMessagePart,
   type ChatToolResultPart,
@@ -160,5 +163,34 @@ describe('applyToolResult', () => {
 describe('runFailureText', () => {
   it('prefixes the shared wording used by both banner and toast', () => {
     expect(runFailureText('boom')).toBe('run failed: boom')
+  })
+})
+
+describe('mergeChatPage', () => {
+  const chat = (id: string, title = `t-${id}`): ChatInfo => ({ id, title, personaId: 0 })
+
+  it('replaces wholesale when the page is the complete list (no nextCursor)', () => {
+    // the common case (≤200 chats): the whole list arrives in one page
+    expect(mergeChatPage([chat('old')], { chats: [chat('b'), chat('a')] })).toEqual([chat('b'), chat('a')])
+  })
+
+  it('folds a full page in: fresh entries win, server-side deletions drop, the older tail is kept', () => {
+    // known list newest-first; the fetched page spans down to 'b', so:
+    // 'd' (not in the page, newer than the boundary) was deleted server-side,
+    // 'e'/'b' carry fresh titles in the page, 'a' sits below the boundary
+    const known = [chat('e', 'stale-e'), chat('d'), chat('b', 'stale-b'), chat('a')]
+    const page: ChatListPage = { chats: [chat('f'), chat('e'), chat('b')], nextCursor: 'b' }
+    expect(mergeChatPage(known, page)).toEqual([chat('f'), chat('e'), chat('b'), chat('a')])
+  })
+
+  it('keeps only the page when nothing older is known', () => {
+    const page: ChatListPage = { chats: [chat('b'), chat('a')], nextCursor: 'a' }
+    expect(mergeChatPage([], page)).toEqual([chat('b'), chat('a')])
+  })
+
+  it('returns an empty page as-is (the list is empty now)', () => {
+    // also covers a pathological empty page WITH a nextCursor: an empty
+    // page is authoritative about the whole list either way
+    expect(mergeChatPage([chat('old')], { chats: [], nextCursor: 'would-loop-forever' })).toEqual([])
   })
 })

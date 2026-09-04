@@ -19,10 +19,13 @@ import kotlinx.serialization.json.put
 
 private val logger = KotlinLogging.logger("ChatsRoute")
 
+/** The chat-id shape of a `GET /api/chats` cursor (why: see [chatCursorParam]). */
+private val CHAT_ID_REGEX = Regex("^\\d+-\\d+$")
+
 fun Route.registerChatsEndpoints(service: ChatService) {
     route("/chats") {
         get {
-            call.respond(service.listChats())
+            call.respond(service.listChats(call.chatCursorParam()))
         }
         post {
             call.respond(HttpStatusCode.Created, ChatIdResponse(service.newChat().id))
@@ -181,6 +184,21 @@ private fun ApplicationCall.chatIdParam(): String {
     val chatId = parameters["chatId"]?.trim().orEmpty()
     if (chatId.isEmpty()) throw BadRequestException("chatId is required")
     return chatId
+}
+
+/**
+ * The optional keyset cursor of `GET /api/chats` (the previous page's
+ * `nextCursor`; see `ChatListPage`). A cursor is a chat id —
+ * `$millis-$randomInt` (see `newChatId` in `db/ChatIds.kt`) — so anything
+ * else is rejected up front instead of silently paging from a bogus
+ * position. The historical id shape (`$millis-$userId-$randomInt`) is
+ * rejected too: no persistent DB predates the current scheme, so a cursor
+ * of that shape cannot legitimately occur.
+ */
+private fun ApplicationCall.chatCursorParam(): String? {
+    val cursor = parameters["cursor"] ?: return null
+    if (!CHAT_ID_REGEX.matches(cursor)) throw BadRequestException("cursor must be a chat id")
+    return cursor
 }
 
 private fun ApplicationCall.messageIndexParam(): Int =

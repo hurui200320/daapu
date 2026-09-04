@@ -147,7 +147,7 @@ class ChatService(
     private val chatLockManager: AdvisoryChatLockManager,
 ) {
 
-    suspend fun listChats(): List<ChatInfo> = chatStore.listChats()
+    suspend fun listChats(cursor: String?): ChatListPage = chatStore.listChats(cursor)
 
     /**
      * Create a chat: a row with the default title and empty history is

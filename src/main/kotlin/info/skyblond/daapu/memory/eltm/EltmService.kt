@@ -217,6 +217,22 @@ private val WHITESPACE_REGEX = Regex("\\s+")
  * zero-padded to the fixed column width ([MAX_VECTOR_DIMENSIONS]) on write,
  * and queries are padded identically — cosine similarity is invariant under
  * zero-padding, so switching embedding models never needs a schema change.
+ *
+ * The paged reads ([listEntities], [listRelationships], [getEntityNotes],
+ * [getRelationshipNotes]) use classic limit/offset paging DELIBERATELY, not
+ * the keyset cursors of `GET /api/chats` (see `PostgresChatStore.listChats`):
+ * chats need keyset because a chat can be deleted mid-walk while its
+ * consumer only re-reads the newest page, so a skipped chat stays missed.
+ * Here rows leave a list only when the background writer merges entities
+ * (the loser entity is deleted, some relationships pruned, notes
+ * re-pointed — the diary notes themselves are add-only), which is rare and
+ * bounded: the browse UI refetches its whole loaded window on every resync
+ * (frontend `PagedTab.resync`), so a live row shifted across a page
+ * boundary is picked up on the next tick; the LLM readers' primary recall
+ * path is semantic search, not offset walks; and the planned GC-style
+ * maintenance runs under full app shutdown, so no bulk deletes happen while
+ * serving. Accepted drawback: an in-flight offset walk can skip a live row
+ * adjacent to a merge until the next resync.
  */
 interface EltmService {
     /**

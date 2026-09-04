@@ -4,7 +4,15 @@
  * Svelte runtime (chat-logic.test.ts) — the same split as display.ts and
  * stream-session.ts.
  */
-import type { ChatMessage, ChatMessagePart, ChatToolResultPart, ModelInfo, Persona } from './types'
+import type {
+  ChatInfo,
+  ChatListPage,
+  ChatMessage,
+  ChatMessagePart,
+  ChatToolResultPart,
+  ModelInfo,
+  Persona,
+} from './types'
 import { DEFAULT_PERSONA_ID } from './types'
 
 /**
@@ -113,4 +121,33 @@ export function applyToolResult(
  */
 export function runFailureText(error: string): string {
   return 'run failed: ' + error
+}
+
+/**
+ * Fold one fetched page of the chat list into the known list — the resync's
+ * reconciliation rule (ChatStore.resyncChats fetches only the FIRST page, so
+ * the background tick stays one request regardless of chat count):
+ *
+ * - the fetched page is authoritative for its span of the newest-first id
+ *   order: new chats, fresh titles/personas and deletions all land;
+ * - the known tail OLDER than the page's boundary (its last chat id — the
+ *   same `id < cursor` comparison the backend's keyset query uses) is kept
+ *   as-is, so chats beyond the fetched page stay listed instead of
+ *   vanishing on the next tick. That tail is best-effort: renames and
+ *   deletes deeper than the newest page surface only through a full walk
+ *   (initial load, export-all — see `api.ts` `listChats`), the same
+ *   visibility the pre-pagination capped endpoint had.
+ *
+ * A page without `nextCursor` IS the complete list and replaces wholesale.
+ * Pure: returns the new array, never mutates the inputs.
+ */
+export function mergeChatPage(known: ChatInfo[], page: ChatListPage): ChatInfo[] {
+  // an empty page means the server holds no chats; an exhausted page (no
+  // nextCursor) IS the whole list — either way the page replaces wholesale
+  if (page.chats.length === 0 || page.nextCursor === undefined) return page.chats
+  // every page id is >= its boundary (DESC order), so known entries at or
+  // above the boundary are either in the page (the fresh copy wins) or were
+  // deleted server-side — the tail below the boundary cannot duplicate one
+  const boundary = page.chats[page.chats.length - 1].id
+  return [...page.chats, ...known.filter((c) => c.id < boundary)]
 }
