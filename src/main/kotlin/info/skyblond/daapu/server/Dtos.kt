@@ -150,7 +150,6 @@ data class EltmNoteDto(
     val relationshipId: Long?,
     val eventDate: String,
     val note: String,
-    val createdAt: String,
 ) {
     companion object {
         fun EltmNote.toDto() = EltmNoteDto(
@@ -159,7 +158,6 @@ data class EltmNoteDto(
             relationshipId = relationshipId,
             eventDate = eventDate.toString(),
             note = note,
-            createdAt = createdAt.toString(),
         )
     }
 }

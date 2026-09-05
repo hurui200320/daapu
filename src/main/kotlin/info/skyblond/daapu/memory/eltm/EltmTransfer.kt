@@ -4,10 +4,8 @@ import kotlinx.serialization.Serializable
 
 /**
  * One diary note in the transfer payload: the LLM-resolved absolute event
- * date (`YYYY-MM-DD`) plus the note text. Deliberately NOT the stored
- * note's `createdAt` (DB metadata, not content — the import mints a fresh
- * one) and no subject: the note nests inside its entity/relationship
- * entry, so no note ids exist at all.
+ * date (`YYYY-MM-DD`) plus the note text. No subject: the note nests
+ * inside its entity/relationship entry, so no note ids exist at all.
  */
 @Serializable
 data class EltmExportNote(

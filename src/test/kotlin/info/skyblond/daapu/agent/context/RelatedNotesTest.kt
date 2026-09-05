@@ -8,7 +8,6 @@ import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.runBlocking
 import java.time.LocalDate
-import java.time.OffsetDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -42,7 +41,6 @@ class RelatedNotesTest : DbTestBase() {
         relationshipId = relationshipId,
         eventDate = LocalDate.of(2026, 8, 1),
         note = text,
-        createdAt = OffsetDateTime.parse("2026-08-01T09:00:00Z"),
     )
 
     @Test

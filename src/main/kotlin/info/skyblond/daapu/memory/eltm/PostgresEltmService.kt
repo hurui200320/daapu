@@ -666,7 +666,6 @@ class PostgresEltmService(
                 EltmNotes.relationshipId,
                 EltmNotes.eventDate,
                 EltmNotes.note,
-                EltmNotes.createdAt,
             ).orderBy(EltmNotes.eventDate to SortOrder.ASC, EltmNotes.id to SortOrder.ASC)
                 .map { it.toNote() },
         )
@@ -1063,7 +1062,6 @@ class PostgresEltmService(
         relationshipId = this[EltmNotes.relationshipId],
         eventDate = this[EltmNotes.eventDate],
         note = this[EltmNotes.note],
-        createdAt = this[EltmNotes.createdAt],
     )
 
     // ------------------------------------------------------------------

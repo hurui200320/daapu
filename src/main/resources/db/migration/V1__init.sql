@@ -69,7 +69,6 @@ CREATE TABLE eltm_notes                          -- the diary: add-only
     event_date      DATE NOT NULL,                -- LLM-resolved absolute date of the event
     note            TEXT NOT NULL,
     embedding       vector(2000),                 -- embed(note), zero-padded
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),  -- when the note was logged
     CHECK (num_nonnulls(entity_id, relationship_id) = 1)
 );
 CREATE INDEX eltm_notes_entity_idx ON eltm_notes (entity_id, event_date DESC, id DESC);

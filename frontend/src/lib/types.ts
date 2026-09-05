@@ -103,7 +103,6 @@ export interface EltmNoteDto {
   /** the LLM-resolved absolute date of the event, `YYYY-MM-DD` */
   eventDate: string
   note: string
-  createdAt: string
 }
 
 export interface EntityViewDto {

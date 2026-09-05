@@ -156,8 +156,6 @@ object EltmNotes : Table("eltm_notes") {
         "embedding",
         VectorColumnType(MAX_VECTOR_DIMENSIONS),
     ).nullable()
-    val createdAt = timestampWithTimeZone("created_at")
-        .defaultExpression(CurrentTimestampWithTimeZone)
 
     override val primaryKey = PrimaryKey(id)
 }

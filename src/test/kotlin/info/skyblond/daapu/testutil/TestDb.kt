@@ -187,9 +187,6 @@ object TestDb {
             EltmNote(
                 row[EltmNotes.id], row[EltmNotes.entityId], row[EltmNotes.relationshipId],
                 row[EltmNotes.eventDate], row[EltmNotes.note],
-                // the column default fills created_at; the read map keeps it
-                // as the DB wrote it
-                row[EltmNotes.createdAt],
             )
         }
     }

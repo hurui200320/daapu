@@ -2,7 +2,6 @@ package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.hand.EmbeddingException
 import java.time.LocalDate
-import java.time.OffsetDateTime
 
 /**
  * One ELTM entity: a named thing with a category. The category disambiguates
@@ -53,7 +52,6 @@ data class EltmNote(
     val relationshipId: Long?,
     val eventDate: LocalDate,
     val note: String,
-    val createdAt: OffsetDateTime,
 )
 
 /**
