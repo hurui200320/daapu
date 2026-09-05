@@ -55,6 +55,17 @@ data class EltmNote(
 )
 
 /**
+ * One diary note waiting to be attached: the absolute event date plus the
+ * note text (trimmed and blank-checked by the store, like a stored note).
+ * The draft for the bulk attaches ([EltmService.attachNotesToEntity] /
+ * [EltmService.attachNotesToRelationship]); the stored row is [EltmNote].
+ */
+data class NoteDraft(
+    val eventDate: LocalDate,
+    val note: String,
+)
+
+/**
  * An entity read view carrying its latest diary note inline plus its
  * content-backed prominence counters (the "how much do we know" signal:
  * [noteCount] diary entries, [relationshipCount] relationships in BOTH
@@ -100,9 +111,62 @@ data class EntityWithScore(
     val attributes: EntityAttributes,
 )
 
-/** The result of an entity create: the current row plus near-match suspects. */
+/**
+ * One entity waiting to be created or fetched by its `(name, category)`
+ * key: the draft for the bulk create ([EltmService.createEntities] /
+ * [EltmService.createRelationships]'s endpoints), the stored row is
+ * [EltmEntity]. Normalized exactly like [EltmService.createEntity]'s
+ * arguments.
+ */
+data class EntityDraft(
+    val name: String,
+    val category: String,
+)
+
+/**
+ * One relationship waiting to be created or fetched by its triple: the
+ * draft for the bulk create ([EltmService.createRelationships]). The verb
+ * is normalized exactly like [EltmService.createRelationship]'s argument.
+ */
+data class RelationshipDraft(
+    val srcId: Long,
+    val verb: String,
+    val dstId: Long,
+)
+
+/**
+ * The result of appending diary notes to a relationship
+ * ([EltmService.attachNotesToRelationship]): the appended notes plus the
+ * relationship's structural validity AFTER the attach — the [valid]
+ * argument applied, or the row's unchanged state when the argument was
+ * null — so the tool layer renders the post-attach state without a
+ * read-after-write round trip.
+ */
+data class RelationshipNotesResult(
+    val notes: List<EltmNote>,
+    val valid: Boolean,
+)
+
+/**
+ * The result of the combined retrieval ([EltmService.searchEntitiesAndNotes]):
+ * the entity hits and the diary-note hits of ONE embedded query.
+ */
+data class EltmSearchHits(
+    val entities: List<EntityWithScore>,
+    val notes: List<EltmNote>,
+)
+
+/**
+ * The result of an entity create: the current row's full view plus
+ * near-match suspects.
+ */
 data class CreateEntityResult(
-    val entity: EltmEntity,
+    /**
+     * The created/fetched row's read view (counts, latest note,
+     * attributes), computed inside the create's OWN transaction — the
+     * tool layer renders the entity without a follow-up read.
+     */
+    val view: EntityView,
     /**
      * Similarity candidates (cosine above the configured
      * `entityMatchThreshold`, top 5, excluding the entity itself), so the
@@ -110,7 +174,10 @@ data class CreateEntityResult(
      * Computed from the row's STORED embedding on the exact-match path too.
      */
     val nearMatches: List<EntityWithScore>,
-)
+) {
+    /** [view.entity] — the created/fetched row itself. */
+    val entity: EltmEntity get() = view.entity
+}
 
 /**
  * The whole-store content snapshot behind the transfer feature
@@ -259,10 +326,43 @@ interface EltmService {
      * (a concurrent run's unique violation is caught and turned into a
      * re-select of the existing row — true create-or-fetch semantics, an
      * unhandled violation would fail the whole run as `tool_transport`).
+     * The whole sequence — the key lookup, the hand embed call, the insert
+     * and the near-match search — runs in ONE transaction, and the result
+     * carries the row's full view plus the near matches, so a caller never
+     * needs a follow-up read.
      * [EmbeddingException] of type `invalid_request` propagates for the tool
      * layer to map to a model-visible error.
      */
     suspend fun createEntity(name: String, category: String): CreateEntityResult
+
+    /**
+     * The bulk create-or-fetch of [EltmService.createEntity] over a whole
+     * batch: the transfer import's entity pass (never the tool layer — one
+     * tool call is one entity). The whole batch is ONE unit of work:
+     *
+     * - every entry is normalized and validated up front (a blank
+     *   name/category fails the whole call before any work, naming the
+     *   entry's index);
+     * - the missing keys' texts ride the hand's batched `/v1/embed` — ONE
+     *   batched call series for the whole batch ([attachNotesToEntity]'s
+     *   embedding stance), never one embed call per entity;
+     * - ONE transaction holds the key lookups, the embeds, the inserts and
+     *   the re-selects (the connection is held across the embeds — the
+     *   same stance as [setEntityAttributes]);
+     * - ONE global write counter bump, and only when a row was really
+     *   inserted (a conflict-adopted row is a pure read, per-entity
+     *   semantics preserved);
+     * - NO near matches (the only caller, the transfer import, deliberately
+     *   keeps near-match disambiguation out of scope — see
+     *   `EltmTransferService`).
+     *
+     * An empty batch is a no-op (no transaction, no embed call). Duplicate
+     * keys within the batch fold onto ONE row (create-or-fetch per key).
+     *
+     * @return the entities in INPUT order, one per entry (folded duplicates
+     * repeat the same row).
+     */
+    suspend fun createEntities(entries: List<EntityDraft>): List<EltmEntity>
 
     /**
      * Rename ONE entity in place and/or change its category — e.g. a
@@ -273,10 +373,13 @@ interface EltmService {
      *
      * A null [newName] keeps the current name, a null [newCategory] keeps
      * the current category; at least one of the two is expected to change
-     * something. Like [setEntityAttribute], the whole read-modify-write with
+     * something. Like [setEntityAttributes], the whole read-modify-write with
      * the hand embed call inside runs in ONE transaction (the entity row
      * locked `FOR UPDATE` at the start), so the stored embedding always
-     * matches the new name+category and the unchanged attributes.
+     * matches the new name+category and the unchanged attributes. The
+     * returned view (counts, latest note, attributes) is computed inside
+     * the SAME transaction — a caller never needs a follow-up read (a
+     * no-op refine is still a pure read: no embed, no bump).
      *
      * @throws IllegalArgumentException when the entity does not exist, a
      * provided name/category is blank, or another entity already holds the
@@ -291,19 +394,39 @@ interface EltmService {
         entityId: Long,
         newName: String?,
         newCategory: String?,
-    ): EltmEntity
+    ): EntityView
 
     /**
      * Create or fetch a relationship by `(srcId, verb, dstId)`. There is
      * exactly ONE row per triple (full unique index) — an existing row,
      * ACTIVE OR INVALIDATED, is a pure read returned as-is: `valid` never
      * changes here (re-establishing an ended relationship is a diary event,
-     * see [attachNoteToRelationship]); otherwise the triple is inserted (a
+     * see [attachNotesToRelationship]); otherwise the triple is inserted (a
      * concurrent run's unique violation is caught and turned into a
      * re-select, like [createEntity]). Only real inserts bump the global
-     * write counter in the same transaction.
+     * write counter in the same transaction. The whole sequence — the
+     * endpoint checks, the find-or-insert and the returned view's reads —
+     * runs in ONE transaction (no embed call exists on this path), and the
+     * returned view carries the endpoint names, the note count and the
+     * latest note, so a caller never needs a follow-up read.
      */
-    suspend fun createRelationship(srcId: Long, dstId: Long, verb: String): EltmRelationship
+    suspend fun createRelationship(srcId: Long, dstId: Long, verb: String): RelationshipView
+
+    /**
+     * The bulk create-or-fetch of [EltmService.createRelationship] over a
+     * whole batch: the transfer import's relationship pass (never the tool
+     * layer). Like [createEntities], the whole batch is ONE unit of work:
+     * every verb is normalized and every endpoint checked up front (ONE
+     * query, the first missing id named), then ONE transaction holds the
+     * triple lookups, the inserts and the re-selects, with ONE counter bump
+     * iff a row was really inserted. No embeds exist on this path. An empty
+     * batch is a no-op; duplicate triples within the batch fold onto ONE
+     * row.
+     *
+     * @return the relationships in INPUT order, one per entry (folded
+     * duplicates repeat the same row).
+     */
+    suspend fun createRelationships(triples: List<RelationshipDraft>): List<EltmRelationship>
 
     /**
      * Merge [loserId] into [winnerId] (ONE transaction): every relationship
@@ -327,8 +450,27 @@ interface EltmService {
     suspend fun mergeEntities(winnerId: Long, loserId: Long)
 
     /**
-     * Append a dated diary note to an entity. The note is embedded and the
-     * row appended (add-only — no update/delete methods exist).
+     * Append dated diary notes to ONE entity in ONE transaction: the notes
+     * are embedded through the hand's batched `/v1/embed` (never one call
+     * per note; the store caps each call's input size) and the rows
+     * appended add-only (no update/delete methods exist) with ONE
+     * global write counter bump. The subject is checked before any embed
+     * call, so a missing one fails fast with a clear message. An empty
+     * batch is a no-op. Notes are trimmed and must be non-blank.
+     *
+     * @throws EmbeddingException of type `invalid_request` (content too large
+     * for the embedding model) propagates to the caller.
+     */
+    @Throws(EmbeddingException::class)
+    suspend fun attachNotesToEntity(
+        entityId: Long,
+        notes: List<NoteDraft>,
+    ): List<EltmNote>
+
+    /**
+     * The single-note form of [attachNotesToEntity] — the batch semantics
+     * (batched embed calls, one transaction, one counter bump, add-only)
+     * live there.
      *
      * @throws EmbeddingException of type `invalid_request` (content too large for
      * the embedding model) propagates for the tool layer to map.
@@ -341,16 +483,39 @@ interface EltmService {
     ): EltmNote
 
     /**
-     * Append a dated diary note to a relationship. When [valid] is
-     * non-null, the note records a structural change of the relationship:
-     * `false` CLOSES it (the event ended the edge — e.g. "left the
-     * company"; the note text must explain the ending), `true` RE-OPENS it
-     * (a revival event — e.g. "rejoined the company"; the edge becomes
-     * `valid=true` again). Setting the current state is a no-op
-     * (idempotent — the note still attaches either way). The note and the
-     * structural change are committed in ONE transaction with ONE counter bump.
-     * The diary is the content truth: a bare structural change without a note carries no
-     * reason.
+     * Append dated diary notes to ONE relationship — [attachNotesToEntity]'s
+     * batch semantics (batched embed calls, one transaction, ONE counter
+     * bump; the subject checked before any embed call). When [valid] is
+     * non-null, the structural change of the relationship rides the SAME
+     * transaction: `false` CLOSES it (the event ended the edge — e.g. "left
+     * the company"; a note must explain the ending), `true` RE-OPENS it (a
+     * revival event — e.g. "rejoined the company"). Setting the current
+     * state is a no-op (idempotent — the notes still attach either way),
+     * and the compound event is still ONE bump. The diary is the content
+     * truth: a bare structural change without a note carries no reason, so
+     * [valid] requires at least one note — the transfer import's merge rule
+     * is the only note-less validity write ([setRelationshipValid]). The
+     * result carries the relationship's structural validity AFTER the
+     * attach (the [valid] argument applied, or the row's unchanged state
+     * when null), so a caller never needs a follow-up read.
+     *
+     * @throws IllegalArgumentException when [valid] is set with an empty
+     * note batch.
+     * @throws EmbeddingException of type `invalid_request` (content too large
+     * for the embedding model) propagates to the caller.
+     */
+    @Throws(EmbeddingException::class)
+    suspend fun attachNotesToRelationship(
+        relationshipId: Long,
+        notes: List<NoteDraft>,
+        valid: Boolean? = null,
+    ): RelationshipNotesResult
+
+    /**
+     * The single-note form of [attachNotesToRelationship] — the batch
+     * semantics (including the [valid] structural change and the returned
+     * post-attach validity) live there; the result's [notes][RelationshipNotesResult.notes]
+     * holds exactly one entry.
      *
      * @throws EmbeddingException of type `invalid_request` (content too large for
      * the embedding model) propagates for the tool layer to map.
@@ -361,13 +526,13 @@ interface EltmService {
         eventDate: LocalDate,
         note: String,
         valid: Boolean? = null,
-    ): EltmNote
+    ): RelationshipNotesResult
 
     /**
      * Set a relationship's structural validity directly, WITHOUT a diary
      * note — the transfer import's merge rule only
      * (`EltmTransferService.importEltm`; the diary model's own paths always
-     * ride a note via [attachNoteToRelationship], because a bare structural
+     * ride a note via [attachNotesToRelationship], because a bare structural
      * change carries no reason). Setting the current state is a no-op
      * (pure read: no write, no counter bump).
      *
@@ -378,19 +543,41 @@ interface EltmService {
     suspend fun setRelationshipValid(relationshipId: Long, valid: Boolean): Boolean
 
     /**
-     * Set a current-state fact (key-value attribute) on an entity: one row
-     * per `(entity, key)` — a new key inserts, an existing key OVERWRITES
-     * the value (attributes are facts, not a diary; the notes are the
-     * diary). Setting the identical value is a no-op (pure read: no
-     * embedding call, no counter bump). A changed write re-embeds the
-     * entity (the embedding text is `name + category` plus the attributes
-     * as `key: value` lines, alphabetically by key) and bumps the global
-     * write counter — the whole read-modify-write, the hand embed call
-     * included, runs in ONE transaction with the entity row locked
-     * `FOR UPDATE` at the start (the connection is held across the embed),
-     * so the stored embedding can never diverge from the attribute rows:
-     * a concurrent attribute write serializes against the whole sequence
-     * instead of racing the embed.
+     * Set several current-state facts (key-value attributes) on ONE entity
+     * in ONE transaction: one row per `(entity, key)` — a new key inserts,
+     * an existing key OVERWRITES the value (attributes are facts, not a
+     * diary; the notes are the diary). Keys are canonicalized like
+     * [normalizeAttributeKey]; values are trimmed and must be non-blank
+     * single lines. Setting a key to its identical value is a no-op for
+     * that key. An empty map is a no-op — no existence check, no write.
+     *
+     * The whole batch is ONE read-modify-write: ONE transaction (the entity
+     * row locked `FOR UPDATE` at the start, the hand embed call included —
+     * the connection is held across the embed, the price of consistency),
+     * ONE embed of the final `name + category` + all-attributes text (the
+     * text is `entityEmbeddingText`: the attributes as `key: value` lines,
+     * alphabetically by key — the embedding never re-runs per key), ONE
+     * global write counter bump. A concurrent attribute write serializes
+     * against the whole sequence instead of racing the embed, so the stored
+     * embedding can never diverge from the attribute rows. A batch whose
+     * every key is already set to its identical value touches nothing (pure
+     * read: no embed call, no counter bump).
+     *
+     * Two raw keys that canonicalize alike fold onto ONE entry — the later
+     * value wins (the map's own semantics; one row per `(entity, key)`).
+     *
+     * @return how many keys actually changed (a real write); the rest were
+     * already set to exactly their value.
+     * @throws EmbeddingException of type `invalid_request` (the composed
+     * content too large for the embedding model) propagates to the caller,
+     * rolled back before anything moved.
+     */
+    @Throws(EmbeddingException::class)
+    suspend fun setEntityAttributes(entityId: Long, values: Map<String, String>): Int
+
+    /**
+     * The single-key form of [setEntityAttributes] — the batch semantics
+     * (one transaction, one embed, one bump; a no-op set) live there.
      *
      * @return `true` when the value changed (a real write), `false` when it
      * was already set to exactly [value] (a no-op).
@@ -403,7 +590,7 @@ interface EltmService {
     /**
      * Remove a current-state fact from an entity. Fail-fast on a missing
      * entity or a key the entity does not have. Re-embeds the entity and
-     * bumps the global write counter — like [setEntityAttribute], the whole
+     * bumps the global write counter — like [setEntityAttributes], the whole
      * read-modify-write with the hand embed call inside runs in ONE
      * transaction (the entity row locked `FOR UPDATE` at the start), so the
      * embedding always matches the surviving attributes.
@@ -526,6 +713,26 @@ interface EltmService {
         to: LocalDate?,
         limit: Int,
     ): List<EltmNote>
+
+    /**
+     * The chat loop's combined retrieval: [searchEntities] and
+     * [searchNotes] over ONE embedded [query] — the same rewritten query
+     * feeds both halves, so embedding it once (the hand's `/v1/embed` is a
+     * network round trip per call) halves the embedding cost of every
+     * memory-injecting chat run. Each half keeps its own method's
+     * semantics: entities use the `entityMatchThreshold`, notes the
+     * `noteSearchThreshold`, no subject/date filters (the injection
+     * retrieval has none). A zero [entityLimit]/[noteLimit] skips that half
+     * (no rows, and when BOTH are zero no embed call and no query at all).
+     *
+     * @throws IllegalArgumentException when the query is blank or a limit
+     * is negative.
+     */
+    suspend fun searchEntitiesAndNotes(
+        query: String,
+        entityLimit: Int,
+        noteLimit: Int,
+    ): EltmSearchHits
 
     /**
      * The current ELTM version, read from the store: the global write

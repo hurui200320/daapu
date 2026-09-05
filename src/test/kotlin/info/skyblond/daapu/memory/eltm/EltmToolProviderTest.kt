@@ -155,7 +155,7 @@ class EltmToolProviderTest : DbTestBase() {
             val eltm = eltm()
             val alice = eltm.createEntity("Alice", "person").entity
             val bob = eltm.createEntity("Bob", "person").entity
-            val rel = eltm.createRelationship(alice.id, bob.id, "colleague of")
+            val rel = eltm.createRelationship(alice.id, bob.id, "colleague of").relationship
             eltm.attachNoteToRelationship(rel.id, LocalDate.parse("2026-08-18"), "met at the conference")
             val provider = EltmToolProvider(eltm)
 
@@ -213,7 +213,7 @@ class EltmToolProviderTest : DbTestBase() {
         val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val bob = eltm.createEntity("Bob", "person").entity
-        val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+        val rel = eltm.createRelationship(alice.id, bob.id, "works_at").relationship
         eltm.attachNoteToRelationship(rel.id, LocalDate.parse("2026-08-01"), "early")
         eltm.attachNoteToRelationship(rel.id, LocalDate.parse("2026-08-10"), "late")
         val provider = EltmToolProvider(eltm)
@@ -284,7 +284,7 @@ class EltmToolProviderTest : DbTestBase() {
         val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val bob = eltm.createEntity("Bob", "person").entity
-        val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+        val rel = eltm.createRelationship(alice.id, bob.id, "works_at").relationship
         val provider = EltmToolProvider(eltm)
 
         val badFrom = provider.execute(
@@ -732,7 +732,7 @@ class EltmToolProviderTest : DbTestBase() {
             val eltm = eltm()
             val alice = eltm.createEntity("Alice", "person").entity
             val bob = eltm.createEntity("Bob", "person").entity
-            val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+            val rel = eltm.createRelationship(alice.id, bob.id, "works_at").relationship
             val provider = EltmToolProvider(eltm)
 
             val ok = provider.execute(
@@ -804,7 +804,7 @@ class EltmToolProviderTest : DbTestBase() {
         val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
         val bob = eltm.createEntity("Bob", "person").entity
-        val rel = eltm.createRelationship(alice.id, bob.id, "works_at")
+        val rel = eltm.createRelationship(alice.id, bob.id, "works_at").relationship
         val provider = EltmToolProvider(eltm)
 
         val opened = provider.execute(
@@ -903,12 +903,12 @@ class EltmToolProviderTest : DbTestBase() {
             val provider = EltmToolProvider(eltm)
 
             // one row per triple: the canonical entity's edge is CLOSED...
-            val winnerRel = eltm.createRelationship(acme.id, bob.id, "works_at")
+            val winnerRel = eltm.createRelationship(acme.id, bob.id, "works_at").relationship
             eltm.attachNoteToRelationship(
                 winnerRel.id, LocalDate.parse("2026-08-01"), "left the company", valid = false,
             )
             // ...the duplicate's edge is ACTIVE, with its own diary note
-            val loserRel = eltm.createRelationship(acmeInc.id, bob.id, "works_at")
+            val loserRel = eltm.createRelationship(acmeInc.id, bob.id, "works_at").relationship
             eltm.attachNoteToRelationship(
                 loserRel.id, LocalDate.parse("2026-08-05"), "joined the company",
             )

@@ -45,8 +45,16 @@ import java.util.UUID
  * - Fail-fast partial, like the persona import: the whole file is
  *   validated BEFORE the first write (a broken file creates nothing), then
  *   entries process in order and the first failure aborts the request with
- *   everything already written sticking; re-running the same file skips
- *   the existing content (dedup) and resumes.
+ *   everything already written sticking — the partial boundary is the
+ *   batch, not the row: the entity pass resolves ALL file entities up
+ *   front in ONE bulk create-or-fetch ([EltmService.createEntities] — one
+ *   batched embed call series, one transaction, one counter bump; never a
+ *   per-entity embed call and create-or-fetch chain), the relationship
+ *   pass likewise ([EltmService.createRelationships]), and each entity's
+ *   attribute write set and each subject's note batch are ONE transaction
+ *   (embeddings ride the hand's batched `/v1/embed` — see
+ *   [EltmService.attachNotesToEntity]); re-running the same file skips the
+ *   existing content (dedup) and resumes.
  *
  * Concurrency stance: the merge decisions read ONE pre-import snapshot
  * ([EltmService.exportAll]) and the writes re-check against the live DB
@@ -145,22 +153,31 @@ class EltmTransferService(private val eltm: EltmService) {
         var attributesKept = 0
 
         // ---- entity pass: file uuid -> db id --------------------------
+        // file uuid to db id
         val entityIds = HashMap<String, Long>(payload.entities.size)
+        val pendingCreates = ArrayList<Pair<String, EntityDraft>>()
         for ((uuid, entry) in payload.entities) {
             val key = normalizeName(entry.name) to entry.category.trim().lowercase()
-            val entityId: Long
             val existing = entitiesByKey[key]
             if (existing == null) {
-                entityId = eltm.createEntity(entry.name, entry.category).entity.id
-                // by-row counting (see snapshotEntityIds): a concurrent
-                // refine can rename a snapshot row onto this key between
-                // the snapshot and the write — that row was matched
-                if (entityId in snapshotEntityIds) entitiesMatched++ else entitiesCreated++
+                pendingCreates += uuid to EntityDraft(entry.name, entry.category)
             } else {
-                entityId = existing.id
+                entityIds[uuid] = existing.id
                 entitiesMatched++
             }
-            entityIds[uuid] = entityId
+        }
+        val createdEntities = eltm.createEntities(pendingCreates.map { it.second })
+        for ((pair, entity) in pendingCreates.zip(createdEntities)) {
+            entityIds[pair.first] = entity.id
+            // by-row counting (see snapshotEntityIds): a concurrent refine
+            // can rename a snapshot row onto this key between the snapshot
+            // and the write — that row was matched
+            if (entity.id in snapshotEntityIds) entitiesMatched++ else entitiesCreated++
+        }
+
+        // ---- per-entity attributes and notes ---------------------------
+        for ((uuid, entry) in payload.entities) {
+            val entityId = entityIds.getValue(uuid)
 
             // attributes: the kept/written decision reads the snapshot's
             // state — the file holds each attribute key once (validate),
@@ -168,22 +185,29 @@ class EltmTransferService(private val eltm: EltmService) {
             // races here (an identical concurrent value counts as kept; a
             // concurrently created key is overwritten even under
             // overwriteAttr=false) are the class KDoc's concurrency stance.
+            // The entity's whole write set rides ONE setEntityAttributes
+            // call: one embed, one transaction, one counter bump — never a
+            // re-embed per key.
             val snapshotAttrs = attributesByEntity[entityId].orEmpty()
+            val pendingAttrs = LinkedHashMap<String, String>()
             for ((rawKey, rawValue) in entry.attributes) {
                 val k = normalizeAttributeKey(rawKey)
                 val v = rawValue.trim()
                 if (snapshotAttrs.containsKey(k) && (!overwriteAttr || snapshotAttrs[k] == v)) {
                     // kept: the flag is off, or the file echoes the value
                     attributesKept++
-                } else if (eltm.setEntityAttribute(entityId, k, v)) {
-                    attributesWritten++
                 } else {
-                    attributesKept++
+                    pendingAttrs[k] = v
                 }
+            }
+            if (pendingAttrs.isNotEmpty()) {
+                val written = eltm.setEntityAttributes(entityId, pendingAttrs)
+                attributesWritten += written
+                attributesKept += pendingAttrs.size - written
             }
 
             importNotes(entry.notes, entityNotes[entityId].orEmpty()) {
-                eltm.attachNoteToEntity(entityId, LocalDate.parse(it.date), it.note)
+                eltm.attachNotesToEntity(entityId, it)
             }.let { (inserted, skipped) ->
                 notesInserted += inserted
                 notesSkipped += skipped
@@ -191,35 +215,49 @@ class EltmTransferService(private val eltm: EltmService) {
         }
 
         // ---- relationship pass ----------------------------------------
-        for (rel in payload.relationships) {
+        // array[index] = relationship to exist (true = exist, false = created)
+        val resolvedRelationships = arrayOfNulls<Pair<EltmRelationship, Boolean>>(payload.relationships.size)
+        val pendingRelationships = ArrayList<Pair<Int, RelationshipDraft>>()
+        payload.relationships.forEachIndexed { index, rel ->
             val srcId = entityIds.getValue(rel.srcUuid)
             val dstId = entityIds.getValue(rel.dstUuid)
             val verb = normalizeVerb(rel.verb)
-            val triple = Triple(srcId, dstId, verb)
-            val existing = relationshipsByTriple[triple]
-            val relationship: EltmRelationship
+            val existing = relationshipsByTriple[Triple(srcId, dstId, verb)]
             if (existing == null) {
-                relationship = eltm.createRelationship(srcId, dstId, verb)
-                // by-row counting, as in the entity pass: a concurrent merge
-                // can re-point a snapshot row onto this triple between the
-                // snapshot and the write — that row was matched
-                if (relationship.id in snapshotRelationshipIds) {
-                    relationshipsMatched++
-                } else {
-                    relationshipsCreated++
-                }
+                pendingRelationships += index to RelationshipDraft(srcId, verb, dstId)
             } else {
-                relationship = existing
+                resolvedRelationships[index] = existing to true
                 relationshipsMatched++
             }
+        }
+        val createdRelationships = eltm.createRelationships(pendingRelationships.map { it.second })
+        for ((pair, relationship) in pendingRelationships.zip(createdRelationships)) {
+            resolvedRelationships[pair.first] = relationship to false
+            // by-row counting, as in the entity pass: a concurrent merge can
+            // re-point a snapshot row onto this triple between the snapshot
+            // and the write — that row was matched
+            if (relationship.id in snapshotRelationshipIds) {
+                relationshipsMatched++
+            } else {
+                relationshipsCreated++
+            }
+        }
+
+        for ((index, rel) in payload.relationships.withIndex()) {
+            val (relationship, snapshotHeld) = resolvedRelationships[index]
+                ?: error("relationship $index was not resolved by either pass")
+            // the snapshot's row for this triple, or null when the snapshot
+            // did not hold it (this import's creation, or a concurrent
+            // writer's mid-import one)
+            val existing = if (snapshotHeld) relationship else null
 
             // the file's notes first: a mid-import failure (an embedding
-            // call) then leaves partial notes with the row's structural
-            // state untouched — a validity flip never lands without its
+            // call) leaves none of that subject's batch (the class KDoc's
+            // batch boundary) — a validity flip never lands without its
             // justifying notes (the coupling the diary model's own paths
-            // get in one transaction, see attachNoteToRelationship)
+            // get in one transaction, see attachNotesToRelationship)
             importNotes(rel.notes, relationshipNotes[relationship.id].orEmpty()) {
-                eltm.attachNoteToRelationship(relationship.id, LocalDate.parse(it.date), it.note)
+                eltm.attachNotesToRelationship(relationship.id, it).notes
             }.let { (inserted, skipped) ->
                 notesInserted += inserted
                 notesSkipped += skipped
@@ -231,9 +269,8 @@ class EltmTransferService(private val eltm: EltmService) {
             val dbLatest = relationshipNotes[relationship.id]
                 .orEmpty()
                 .maxOfOrNull { it.eventDate }
-            // `existing == null` is a row the snapshot did not hold (this
-            // import's creation, or a concurrent writer's mid-import one):
-            // nothing pre-exists to protect, so the file's state always applies
+            // `existing == null`: nothing pre-exists to protect, so the
+            // file's state always applies
             val fileWins: Boolean = when {
                 existing == null -> true
                 fileLatest != null -> dbLatest == null || fileLatest.isAfter(dbLatest)
@@ -286,20 +323,21 @@ class EltmTransferService(private val eltm: EltmService) {
     }
 
     /**
-     * Dedup-append [notes] against the subject's [existingNotes] (the
-     * snapshot's rows for this subject): an exact (event date, trimmed
-     * text) match — in the DB or earlier in the same list, tracked in the
-     * seen-set — is skipped, the rest is appended through [attach].
+     * Dedup [notes] against the subject's [existingNotes] (the snapshot's
+     * rows for this subject): an exact (event date, trimmed text) match —
+     * in the DB or earlier in the same list, tracked in the seen-set — is
+     * skipped, the rest is appended through ONE bulk [attach] call (batched
+     * embeds, one transaction for the subject's whole batch).
      * @return the inserted and skipped counts.
      */
     private suspend fun importNotes(
         notes: List<EltmExportNote>,
         existingNotes: List<EltmNote>,
-        attach: suspend (EltmExportNote) -> EltmNote,
+        attach: suspend (List<NoteDraft>) -> List<EltmNote>,
     ): Pair<Int, Int> {
         // stored notes are trimmed by the service, so the comparison is exact
         val seen = existingNotes.mapTo(HashSet()) { it.eventDate to it.note }
-        var inserted = 0
+        val pending = ArrayList<NoteDraft>()
         var skipped = 0
         for (note in notes) {
             val date = LocalDate.parse(note.date)
@@ -308,10 +346,11 @@ class EltmTransferService(private val eltm: EltmService) {
                 skipped++
                 continue
             }
-            attach(EltmExportNote(note.date, text))
+            pending += NoteDraft(date, text)
             seen += date to text
-            inserted++
         }
+        if (pending.isEmpty()) return 0 to skipped
+        val inserted = attach(pending).size
         return inserted to skipped
     }
 

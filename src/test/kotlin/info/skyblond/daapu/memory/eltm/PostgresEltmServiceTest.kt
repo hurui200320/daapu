@@ -129,9 +129,13 @@ class PostgresEltmServiceTest : DbTestBase() {
 
         val versionBefore = service.version().toLong()
         val refined = service.refineEntity(created.id, " Paperwhite  6 ", null)
-        assertEquals(created.id, refined.id, "the id is kept")
-        assertEquals("paperwhite 6", refined.canonicalName)
-        assertEquals("device", refined.category)
+        assertEquals(created.id, refined.entity.id, "the id is kept")
+        assertEquals("paperwhite 6", refined.entity.canonicalName)
+        assertEquals("device", refined.entity.category)
+        // the returned view rides the refine's own transaction — no
+        // follow-up read needed
+        assertEquals(1, refined.noteCount, "the attached note counts")
+        assertEquals(listOf(note.id), refined.latestNote?.let { listOf(it.id) })
         assertEquals(versionBefore + 1, service.version().toLong())
         assertEquals(listOf(note.id), service.getEntityNotes(created.id, null, null, 10, 0).map { it.id })
     }
@@ -145,7 +149,7 @@ class PostgresEltmServiceTest : DbTestBase() {
         val embedsBefore = hand.embedRequests.size
 
         val refined = service.refineEntity(created.id, "kindle", "device")
-        assertEquals(created, refined)
+        assertEquals(created, refined.entity)
         assertEquals(versionBefore, service.version().toLong(), "a no-op refine never bumps")
         assertEquals(embedsBefore, hand.embedRequests.size, "a no-op refine never embeds")
     }
@@ -247,19 +251,22 @@ class PostgresEltmServiceTest : DbTestBase() {
         val a = service.createEntity("alice", "person").entity
         val b = service.createEntity("acme", "company").entity
 
-        val rel = service.createRelationship(a.id, b.id, "Works At")
+        val view = service.createRelationship(a.id, b.id, "Works At")
+        val rel = view.relationship
         assertEquals("works_at", rel.verb, "the verb is normalized")
         assertTrue(rel.valid)
+        assertEquals("alice", view.srcName, "the view's endpoint names ride the create's transaction")
+        assertEquals("acme", view.dstName)
         val versionAfterCreate = service.version().toLong()
 
-        val again = service.createRelationship(a.id, b.id, "works_at")
+        val again = service.createRelationship(a.id, b.id, "works_at").relationship
         assertEquals(rel.id, again.id, "the triple row is the relationship")
         assertEquals(versionAfterCreate, service.version().toLong(), "a re-assert never bumps")
 
         // end the edge via the diary event, then re-assert: still ONE row,
         // still invalid — validity only moves with a note
         service.attachNoteToRelationship(rel.id, day, "left the company", valid = false)
-        val revived = service.createRelationship(a.id, b.id, "works_at")
+        val revived = service.createRelationship(a.id, b.id, "works_at").relationship
         assertEquals(rel.id, revived.id)
         assertFalse(revived.valid, "createRelationship never flips validity")
     }
@@ -279,6 +286,112 @@ class PostgresEltmServiceTest : DbTestBase() {
         }
         assertEquals(versionBefore, service.version().toLong())
         assertEquals(1, hand.embedRequests.size, "the failure embeds nothing new")
+    }
+
+    // ------------------------------------------------------------------
+    // bulk creates (the transfer import's create-or-fetch units)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `createEntities batches the whole batch into ONE embed call and ONE bump`() = runBlocking {
+        val hand = FakeHand()
+        val service = service(hand)
+        // pre-existing key: the bulk's exact-match path
+        val existing = service.createEntity("kindle", "device").entity
+        val versionBefore = service.version().toLong()
+        val embedsBefore = hand.embedRequests.size
+
+        val created = service.createEntities(
+            listOf(
+                EntityDraft("  Alice ", "Person"),
+                EntityDraft("Kindle", "DEVICE"), // exact match: never re-embedded
+                EntityDraft("acme", "company"),
+            )
+        )
+        assertEquals(listOf("alice", "kindle", "acme"), created.map { it.canonicalName })
+        assertEquals(listOf("person", "device", "company"), created.map { it.category })
+        assertEquals(existing.id, created[1].id, "the exact match folds onto the existing row")
+        assertEquals(versionBefore + 1, service.version().toLong(), "ONE bump for the whole batch (2 real inserts)")
+        assertEquals(
+            embedsBefore + 1,
+            hand.embedRequests.size,
+            "the missing keys ride ONE batched embed call, never one per entity",
+        )
+        assertEquals(
+            listOf("alice person", "acme company"),
+            hand.embedRequests.last().input,
+            "only the missing keys are embedded",
+        )
+
+        // an all-existing batch is a pure read: no embed, no bump
+        val embedsAfter = hand.embedRequests.size
+        val again = service.createEntities(
+            listOf(EntityDraft("alice", "person"), EntityDraft("kindle", "device"))
+        )
+        assertEquals(listOf("alice", "kindle"), again.map { it.canonicalName })
+        assertEquals(versionBefore + 1, service.version().toLong())
+        assertEquals(embedsAfter, hand.embedRequests.size)
+
+        // an empty batch is a no-op
+        assertEquals(emptyList<EltmEntity>(), service.createEntities(emptyList()))
+
+        // a blank entry fails the whole call before any work, naming the entry
+        try {
+            service.createEntities(listOf(EntityDraft("x", "y"), EntityDraft("  ", "z")))
+            fail("a blank name must fail fast")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("entry 1"), expected.message)
+        }
+    }
+
+    @Test
+    fun `createEntities folds duplicate keys onto one row`() = runBlocking {
+        val service = service()
+        val created = service.createEntities(
+            listOf(EntityDraft("Alice", "person"), EntityDraft("  ALICE ", "Person"))
+        )
+        assertEquals(created[0].id, created[1].id, "duplicate keys fold onto ONE row")
+        assertEquals(1, TestDb.allEltmEntities().size)
+    }
+
+    @Test
+    fun `createRelationships creates the missing triples with ONE bump and validates`() = runBlocking {
+        val service = service()
+        val a = service.createEntity("alice", "person").entity
+        val b = service.createEntity("acme", "company").entity
+        val c = service.createEntity("carol", "person").entity
+        // pre-existing triple: the bulk's fetch path
+        val existing = service.createRelationship(a.id, b.id, "works_at").relationship
+        val versionBefore = service.version().toLong()
+
+        val created = service.createRelationships(
+            listOf(
+                RelationshipDraft(a.id, "knows", c.id),
+                RelationshipDraft(a.id, "works at", b.id), // fetch (the verb normalizes)
+                RelationshipDraft(c.id, "mentors", b.id),
+            )
+        )
+        assertEquals(listOf("knows", "works_at", "mentors"), created.map { it.verb })
+        assertEquals(existing.id, created[1].id, "the existing triple folds onto its row")
+        assertTrue(created.all { it.valid })
+        assertEquals(versionBefore + 1, service.version().toLong(), "ONE bump for the whole batch (2 real inserts)")
+        assertEquals(3, TestDb.allEltmRelationships().size)
+
+        // an all-existing batch is a pure read: no bump
+        val again = service.createRelationships(listOf(RelationshipDraft(a.id, "knows", c.id)))
+        assertEquals(created[0].id, again[0].id)
+        assertEquals(versionBefore + 1, service.version().toLong())
+
+        // a missing endpoint fails the whole call before any insert
+        try {
+            service.createRelationships(listOf(RelationshipDraft(a.id, "knows", 4242L)))
+            fail("a missing endpoint must fail fast")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("4242"))
+        }
+
+        // an empty batch is a no-op
+        assertEquals(emptyList<EltmRelationship>(), service.createRelationships(emptyList()))
     }
 
     // ------------------------------------------------------------------
@@ -313,20 +426,23 @@ class PostgresEltmServiceTest : DbTestBase() {
         val service = service()
         val a = service.createEntity("alice", "person").entity
         val b = service.createEntity("acme", "company").entity
-        val rel = service.createRelationship(a.id, b.id, "works_at")
+        val rel = service.createRelationship(a.id, b.id, "works_at").relationship
         val versionBefore = service.version().toLong()
 
         val note = service.attachNoteToRelationship(rel.id, day, "left the company", valid = false)
-        assertEquals(rel.id, note.relationshipId)
+        assertEquals(rel.id, note.notes.single().relationshipId)
+        assertFalse(note.valid, "the result reports the post-attach state")
         assertEquals(versionBefore + 1, service.version().toLong(), "ONE bump for the compound event")
         assertFalse(
             service.getRelationship(rel.id)?.relationship?.valid ?: fail("relationship missing"),
             "the edge is closed by the note",
         )
 
-        // idempotent state change: the note still attaches, still one bump
+        // idempotent state change: the note still attaches, still one bump;
+        // the unchanged state still reports back
         val versionAfterClose = service.version().toLong()
-        service.attachNoteToRelationship(rel.id, day, "still gone", valid = false)
+        val stillGone = service.attachNoteToRelationship(rel.id, day, "still gone", valid = false)
+        assertFalse(stillGone.valid)
         assertEquals(versionAfterClose + 1, service.version().toLong())
 
         try {
@@ -335,6 +451,142 @@ class PostgresEltmServiceTest : DbTestBase() {
         } catch (expected: IllegalArgumentException) {
             assertTrue(expected.message!!.contains("does not exist"))
         }
+    }
+
+    @Test
+    fun `attachNotesToEntity appends the batch with ONE embed call and ONE bump`() = runBlocking {
+        val hand = FakeHand()
+        val service = service(hand)
+        val entity = service.createEntity("kindle", "device").entity
+        val versionBefore = service.version().toLong()
+
+        val notes = service.attachNotesToEntity(
+            entity.id,
+            listOf(NoteDraft(day, "  bought it  "), NoteDraft(day.plusDays(1), "dropped it")),
+        )
+        assertEquals(listOf("bought it", "dropped it"), notes.map { it.note }, "the notes are trimmed")
+        assertTrue(notes.all { it.entityId == entity.id })
+        assertEquals(versionBefore + 1, service.version().toLong(), "ONE bump for the whole batch")
+        assertEquals(
+            2,
+            hand.embedRequests.size,
+            "create + the batch: the whole batch rides ONE /v1/embed call",
+        )
+        assertEquals(
+            listOf("bought it", "dropped it"),
+            hand.embedRequests.last().input,
+            "both notes in the same embed request",
+        )
+        // the diary reads back newest-event-first through the returned rows
+        assertEquals(
+            listOf("dropped it", "bought it"),
+            service.getEntityNotes(entity.id, null, null, 10, 0).map { it.note },
+        )
+
+        // an empty batch is a no-op: no embed, no bump
+        val embedsAfterBatch = hand.embedRequests.size
+        assertEquals(emptyList<EltmNote>(), service.attachNotesToEntity(entity.id, emptyList()))
+        assertEquals(versionBefore + 1, service.version().toLong())
+        assertEquals(embedsAfterBatch, hand.embedRequests.size)
+
+        // a blank note fails fast before any embed call
+        try {
+            service.attachNotesToEntity(entity.id, listOf(NoteDraft(day, "   ")))
+            fail("a blank note must be refused")
+        } catch (expected: IllegalArgumentException) {
+            assertEquals(embedsAfterBatch, hand.embedRequests.size)
+        }
+        // a missing subject fails fast before any embed call
+        try {
+            service.attachNotesToEntity(4242L, listOf(NoteDraft(day, "x")))
+            fail("a missing subject must fail fast")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("does not exist"))
+        }
+        assertEquals(embedsAfterBatch, hand.embedRequests.size)
+    }
+
+    @Test
+    fun `attachNotesToEntity splits a batch over the embed cap but keeps ONE bump`() = runBlocking {
+        val hand = FakeHand()
+        val service = service(hand)
+        val entity = service.createEntity("kindle", "device").entity
+        val versionBefore = service.version().toLong()
+
+        val count = PostgresEltmService.EMBED_BATCH_SIZE + 1
+        val drafts = (1..count).map { NoteDraft(day.plusDays(it.toLong()), "note $it") }
+        val embedsBefore = hand.embedRequests.size
+        val notes = service.attachNotesToEntity(entity.id, drafts)
+
+        assertEquals(count, notes.size)
+        assertEquals(
+            2,
+            hand.embedRequests.size - embedsBefore,
+            "ceil((cap + 1) / cap) = 2 embed calls for one batch",
+        )
+        assertEquals(
+            (1..count).map { "note $it" },
+            hand.embedRequests.takeLast(2).flatMap { it.input },
+            "every note is embedded exactly once, chunk by chunk",
+        )
+        assertEquals(versionBefore + 1, service.version().toLong(), "the chunks share ONE bump")
+        assertEquals(
+            count,
+            service.getEntityNotes(entity.id, null, null, count, 0).size,
+            "every row of the over-cap batch landed",
+        )
+    }
+
+    @Test
+    fun `attachNotesToRelationship batches the notes with the validity change and ONE bump`() =
+        runBlocking {
+            val service = service()
+            val a = service.createEntity("alice", "person").entity
+            val b = service.createEntity("acme", "company").entity
+            val rel = service.createRelationship(a.id, b.id, "works_at").relationship
+            val versionBefore = service.version().toLong()
+
+            val notes = service.attachNotesToRelationship(
+                rel.id,
+                listOf(
+                    NoteDraft(day, "joined the company"),
+                    NoteDraft(day.plusDays(1), "left the company"),
+                ),
+                valid = false,
+            )
+            assertEquals(2, notes.notes.size)
+            assertTrue(notes.notes.all { it.relationshipId == rel.id })
+            assertFalse(notes.valid, "the result reports the post-attach state")
+            assertEquals(versionBefore + 1, service.version().toLong(), "ONE bump for the compound event")
+            assertFalse(
+                service.getRelationship(rel.id)?.relationship?.valid ?: fail("relationship missing"),
+                "the edge is closed by the batch",
+            )
+            assertEquals(
+                listOf("left the company", "joined the company"),
+                service.getRelationshipNotes(rel.id, null, null, 10, 0).map { it.note },
+            )
+        }
+
+    @Test
+    fun `attachNotesToRelationship refuses a bare structural change without a note`() = runBlocking {
+        val service = service()
+        val a = service.createEntity("alice", "person").entity
+        val b = service.createEntity("acme", "company").entity
+        val rel = service.createRelationship(a.id, b.id, "works_at").relationship
+        val versionBefore = service.version().toLong()
+
+        try {
+            service.attachNotesToRelationship(rel.id, emptyList(), valid = false)
+            fail("a bare structural change must be refused")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("no reason"))
+        }
+        assertTrue(
+            service.getRelationship(rel.id)?.relationship?.valid ?: fail("relationship missing"),
+            "nothing moved",
+        )
+        assertEquals(versionBefore, service.version().toLong(), "refused writes never bump")
     }
 
     // ------------------------------------------------------------------
@@ -397,6 +649,130 @@ class PostgresEltmServiceTest : DbTestBase() {
     }
 
     @Test
+    fun `setEntityAttributes writes the whole batch with one embed and one bump`() = runBlocking {
+        val hand = FakeHand()
+        val service = service(hand)
+        val entity = service.createEntity("kindle", "device").entity
+        val versionBefore = service.version().toLong()
+
+        val changed = service.setEntityAttributes(
+            entity.id,
+            mapOf("Model" to "Paperwhite 6", "owner" to " me "),
+        )
+        assertEquals(2, changed)
+        assertEquals(versionBefore + 1, service.version().toLong(), "ONE bump for the whole batch")
+        assertEquals(
+            mapOf("model" to "Paperwhite 6", "owner" to "me"),
+            service.getEntity(entity.id)?.attributes,
+            "the keys are normalized, the values trimmed",
+        )
+        assertEquals(
+            2,
+            hand.embedRequests.size,
+            "create + the batch: the whole batch rides ONE /v1/embed call",
+        )
+        assertEquals(
+            listOf("kindle device\nmodel: Paperwhite 6\nowner: me"),
+            hand.embedRequests.last().input,
+            "the FINAL composed text is embedded once, keys alphabetically ordered",
+        )
+
+        // an identical key plus a new one: only the new one writes
+        val embedsAfterSet = hand.embedRequests.size
+        val partial = service.setEntityAttributes(
+            entity.id,
+            mapOf("model" to "Paperwhite 6", "color" to "black"),
+        )
+        assertEquals(1, partial)
+        assertEquals(embedsAfterSet + 1, hand.embedRequests.size)
+        assertEquals(
+            listOf("kindle device\ncolor: black\nmodel: Paperwhite 6\nowner: me"),
+            hand.embedRequests.last().input,
+        )
+
+        // an all-identical batch is a pure read: no embed, no bump
+        val versionAfter = service.version().toLong()
+        val unchanged = service.setEntityAttributes(
+            entity.id,
+            mapOf("model" to "Paperwhite 6", "owner" to "me"),
+        )
+        assertEquals(0, unchanged)
+        assertEquals(versionAfter, service.version().toLong(), "a no-op batch never bumps")
+        assertEquals(embedsAfterSet + 1, hand.embedRequests.size, "a no-op batch never embeds")
+
+        // two raw keys that canonicalize alike fold onto ONE entry: the
+        // later value wins, one changed key
+        val folded = service.setEntityAttributes(
+            entity.id,
+            linkedMapOf("Real Name" to "Alice", "real_name" to "Bob"),
+        )
+        assertEquals(1, folded, "the two raw keys fold onto one (entity, key)")
+        assertEquals(
+            "Bob",
+            service.getEntity(entity.id)?.attributes?.get("real_name"),
+            "the later value wins the fold",
+        )
+    }
+
+    @Test
+    fun `setEntityAttributes validates every entry and fails without writing`() = runBlocking {
+        val service = service()
+        val entity = service.createEntity("kindle", "device").entity
+        val versionBefore = service.version().toLong()
+
+        try {
+            service.setEntityAttributes(
+                entity.id,
+                mapOf("model" to "Paperwhite", "bad" to "two\nlines"),
+            )
+            fail("a multi-line value must be refused")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("single line"))
+        }
+        try {
+            service.setEntityAttributes(entity.id, mapOf(" " to "v"))
+            fail("a blank key must be refused")
+        } catch (expected: IllegalArgumentException) {
+            // expected
+        }
+        try {
+            service.setEntityAttributes(4242L, mapOf("model" to "v"))
+            fail("a missing entity must fail fast")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("does not exist"))
+        }
+        assertEquals(versionBefore, service.version().toLong(), "refused batches never bump")
+        assertEquals(emptyMap(), service.getEntity(entity.id)?.attributes, "refused batches never write")
+    }
+
+    @Test
+    fun `setEntityAttributes rolls back the whole batch on an embed failure`() = runBlocking {
+        val good = service()
+        val created = good.createEntity("kindle", "device").entity
+        good.setEntityAttribute(created.id, "model", "Paperwhite")
+        val versionBefore = good.version().toLong()
+
+        val failing = service(FakeHand(embedScript = { _ ->
+            throw EmbeddingException("invalid_request", "content too large")
+        }))
+        try {
+            failing.setEntityAttributes(
+                created.id,
+                mapOf("model" to "k9", "color" to "black"),
+            )
+            fail("an embed failure must propagate")
+        } catch (expected: EmbeddingException) {
+            assertEquals("invalid_request", expected.type)
+        }
+        assertEquals(
+            mapOf("model" to "Paperwhite"),
+            good.getEntity(created.id)?.attributes,
+            "the whole batch rolled back: nothing moved",
+        )
+        assertEquals(versionBefore, good.version().toLong(), "the counter is untouched")
+    }
+
+    @Test
     fun `deleteEntityAttribute removes the row and re-embeds without it`() = runBlocking {
         val hand = FakeHand()
         val service = service(hand)
@@ -436,10 +812,10 @@ class PostgresEltmServiceTest : DbTestBase() {
         service.setEntityAttribute(loser.id, "ticker", "APPL")
         service.setEntityAttribute(loser.id, "founded", "1976")
         // an edge between winner and loser: re-pointing makes it a self-loop
-        val selfLoopEdge = service.createRelationship(winner.id, loser.id, "renamed_to").id
+        val selfLoopEdge = service.createRelationship(winner.id, loser.id, "renamed_to").relationship.id
         service.attachNoteToRelationship(selfLoopEdge, day, "merged branding")
         // a loser edge to a third entity: re-pointed to the winner
-        val rePointedEdge = service.createRelationship(loser.id, third.id, "employs").id
+        val rePointedEdge = service.createRelationship(loser.id, third.id, "employs").relationship.id
         service.attachNoteToEntity(loser.id, day, "founded in a garage")
 
         val versionBefore = service.version().toLong()
@@ -478,8 +854,8 @@ class PostgresEltmServiceTest : DbTestBase() {
         val winner = service.createEntity("apple", "company").entity
         val loser = service.createEntity("apple inc", "company").entity
 
-        val forward = service.createRelationship(winner.id, loser.id, "knows").id
-        val backward = service.createRelationship(loser.id, winner.id, "knows").id
+        val forward = service.createRelationship(winner.id, loser.id, "knows").relationship.id
+        val backward = service.createRelationship(loser.id, winner.id, "knows").relationship.id
         service.attachNoteToRelationship(forward, day, "forward note")
         service.attachNoteToRelationship(backward, day, "backward note")
 
@@ -615,6 +991,55 @@ class PostgresEltmServiceTest : DbTestBase() {
         }
     }
 
+    @Test
+    fun `searchEntitiesAndNotes embeds the query once and feeds both halves`() = runBlocking {
+        val embeddings = DeterministicEmbeddings()
+        embeddings.register("alice person", testAxisVector(0))
+        embeddings.register("ali", testAxisVector(0))
+        embeddings.register("met alice", testAxisVector(0))
+        val hand = FakeHand(embedScript = embeddings.script)
+        val service = service(hand)
+        val alice = service.createEntity("alice", "person").entity
+        service.attachNoteToEntity(alice.id, day, "met alice")
+        val embedsBefore = hand.embedRequests.size
+
+        val hits = service.searchEntitiesAndNotes("ali", entityLimit = 5, noteLimit = 5)
+        assertEquals(listOf(alice.id), hits.entities.map { it.entity.id })
+        assertEquals(1, hits.notes.size)
+        assertEquals("met alice", hits.notes.single().note)
+        assertEquals(
+            embedsBefore + 1,
+            hand.embedRequests.size,
+            "ONE embed call feeds both halves, never one per search",
+        )
+
+        // a zero half is skipped; both zero short-circuits without embedding
+        val embedsAfterSearch = hand.embedRequests.size
+        val entitiesOnly = service.searchEntitiesAndNotes("ali", entityLimit = 5, noteLimit = 0)
+        assertTrue(entitiesOnly.entities.isNotEmpty())
+        assertTrue(entitiesOnly.notes.isEmpty())
+        val none = service.searchEntitiesAndNotes("ali", entityLimit = 0, noteLimit = 0)
+        assertTrue(none.entities.isEmpty() && none.notes.isEmpty())
+        assertEquals(
+            embedsAfterSearch + 1,
+            hand.embedRequests.size,
+            "only the entitiesOnly search embedded; the both-zero call did not",
+        )
+
+        try {
+            service.searchEntitiesAndNotes("  ", 1, 1)
+            fail("a blank query must fail")
+        } catch (expected: IllegalArgumentException) {
+            // expected
+        }
+        try {
+            service.searchEntitiesAndNotes("x", -1, 1)
+            fail("a negative limit must fail")
+        } catch (expected: IllegalArgumentException) {
+            // expected
+        }
+    }
+
     // ------------------------------------------------------------------
     // views and paging
     // ------------------------------------------------------------------
@@ -659,9 +1084,9 @@ class PostgresEltmServiceTest : DbTestBase() {
         val a = service.createEntity("a", "x").entity
         val b = service.createEntity("b", "x").entity
         val c = service.createEntity("c", "x").entity
-        val ab = service.createRelationship(a.id, b.id, "knows").id
-        val ca = service.createRelationship(c.id, a.id, "knows").id
-        val invalid = service.createRelationship(a.id, c.id, "knew").id
+        val ab = service.createRelationship(a.id, b.id, "knows").relationship.id
+        val ca = service.createRelationship(c.id, a.id, "knows").relationship.id
+        val invalid = service.createRelationship(a.id, c.id, "knew").relationship.id
         service.attachNoteToRelationship(invalid, day, "ended", valid = false)
 
         val active = service.getRelationships(a.id, includeInvalid = false)

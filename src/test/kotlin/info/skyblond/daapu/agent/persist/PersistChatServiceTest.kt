@@ -1142,7 +1142,7 @@ class PersistChatServiceTest : DbTestBase() {
         val bob = eltm.createEntity("bob", "person").entity
         val acme = eltm.createEntity("acme", "company").entity
         eltm.setEntityAttribute(alice.id, "real_name", "Alice Smith")
-        val rel = eltm.createRelationship(alice.id, acme.id, "works_at")
+        val rel = eltm.createRelationship(alice.id, acme.id, "works_at").relationship
         eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 8, 1), "alice met bob at the conference")
         eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 7, 15), "alice joined acme as an engineer")
         return eltm

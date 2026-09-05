@@ -28,9 +28,10 @@ private const val DEFAULT_ELTM_PAGE_LIMIT = 100
 
 /**
  * Upper bound of a single page. The whole-page count/latest-note batch
- * queries materialize the page's subjects' notes in memory, so an
- * unbounded `limit` would be a memory attack surface; the frontend fetches
- * at most 500 rows per request (its resync walks the window in chunks).
+ * queries run per subject of the page (bounded aggregates, see
+ * `PostgresEltmService.noteCountsAndLatest`), and the frontend fetches at
+ * most 500 rows per request (its resync walks the window in chunks) — an
+ * unbounded `limit` would still be an unbounded work-per-request surface.
  */
 private const val MAX_ELTM_PAGE_LIMIT = 500
 

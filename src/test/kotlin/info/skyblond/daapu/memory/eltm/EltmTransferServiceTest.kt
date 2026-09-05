@@ -72,7 +72,7 @@ class EltmTransferServiceTest : DbTestBase() {
             eltm.attachNoteToEntity(kindle.id, day, "bought it")
             val alice = eltm.createEntity("alice", "person").entity
             eltm.attachNoteToEntity(alice.id, day2, "met alice")
-            val works = eltm.createRelationship(kindle.id, alice.id, "belongs to")
+            val works = eltm.createRelationship(kindle.id, alice.id, "belongs to").relationship
             eltm.attachNoteToRelationship(works.id, day3, "gave it away", valid = false)
 
             val payload = transfer.exportEltm()
@@ -125,7 +125,7 @@ class EltmTransferServiceTest : DbTestBase() {
             eltm.attachNoteToEntity(kindle.id, day, "bought it")
             val alice = eltm.createEntity("alice", "person").entity
             eltm.attachNoteToEntity(alice.id, day2, "met alice")
-            val works = eltm.createRelationship(kindle.id, alice.id, "belongs to")
+            val works = eltm.createRelationship(kindle.id, alice.id, "belongs to").relationship
             eltm.attachNoteToRelationship(works.id, day3, "gave it away", valid = false)
             val payload = transfer.exportEltm()
 
@@ -269,7 +269,7 @@ class EltmTransferServiceTest : DbTestBase() {
             val (eltm, transfer) = service()
             val a = eltm.createEntity("alice", "person").entity
             val b = eltm.createEntity("bob", "person").entity
-            val works = eltm.createRelationship(a.id, b.id, "works with")
+            val works = eltm.createRelationship(a.id, b.id, "works with").relationship
             eltm.attachNoteToRelationship(works.id, day2, "still going")
 
             assertTrue(relationshipRow().valid)
@@ -425,10 +425,13 @@ class EltmTransferServiceTest : DbTestBase() {
 
     @Test
     fun `importEltm is fail-fast partial and resumable`() = runBlocking {
-        // the embed script fails the SECOND entity's create ("bob person"):
-        // the failure is post-validation, so alice's writes stick
+        // the embed script fails BOB'S NOTE ("met bob"): the entity bulk (a
+        // single batched embed for both entities) succeeds, and the failure
+        // lands mid-note-pass — alice's earlier writes stick. A failure IN
+        // the entity bulk itself would roll the whole batch (nothing
+        // written), which is the same resumable stance one boundary later.
         val hand = FakeHand(embedScript = { request ->
-            if (request.input.any { "bob" in it }) {
+            if (request.input.any { "met bob" in it }) {
                 throw EmbeddingException("invalid_request", "content too large for the embedding model")
             }
             FakeHand().embed(request)
@@ -446,22 +449,57 @@ class EltmTransferServiceTest : DbTestBase() {
         assertFailsWith<EmbeddingException> {
             transfer.importEltm(payload, overwriteAttr = false)
         }
-        val entities = TestDb.allEltmEntities()
-        assertEquals(listOf("alice"), entities.map { it.canonicalName }, "earlier writes stick")
-        assertEquals(1, TestDb.allEltmNotes().size)
-        assertTrue(TestDb.allEltmRelationships().isEmpty(), "the failing entity's pass never ran")
+        // the entity bulk succeeded before the note failure: both rows
+        // exist, alice's note attached, bob's did not
+        assertEquals(
+            listOf("alice", "bob"),
+            TestDb.allEltmEntities().map { it.canonicalName }.sorted(),
+            "the bulk-created entities stick",
+        )
+        assertEquals(1, TestDb.allEltmNotes().size, "alice's note sticks, bob's does not")
+        assertTrue(TestDb.allEltmRelationships().isEmpty(), "the relationship pass never ran")
 
-        // re-running the same file with a healthy hand resumes: alice
-        // matches (dedup), bob and the relationship land
+        // re-running the same file with a healthy hand resumes: both
+        // entities match (dedup), bob's note and the relationship land
         val (freshEltm, freshTransfer) = service()
         val summary = freshTransfer.importEltm(payload, overwriteAttr = false)
-        assertEquals(1, summary.entitiesCreated, "only bob")
-        assertEquals(1, summary.entitiesMatched, "alice again")
+        assertEquals(0, summary.entitiesCreated, "both entities match")
+        assertEquals(2, summary.entitiesMatched)
         assertEquals(1, summary.relationshipsCreated)
         assertEquals(1, summary.notesInserted, "only bob's note; alice's is deduped")
         assertEquals(1, summary.notesSkipped)
         assertEquals(2, freshEltm.listEntities(100, 0).size)
         assertEquals(2, TestDb.allEltmNotes().size)
+    }
+
+    @Test
+    fun `importEltm rolls the whole entity bulk back when its embed fails`() = runBlocking {
+        // a failure inside the entity bulk's batched embed: the bulk is ONE
+        // boundary, so NOTHING is written (the class KDoc's fail-fast
+        // partial stance) — and the same file re-runs cleanly afterwards
+        val hand = FakeHand(embedScript = { request ->
+            if (request.input.any { "bob person" in it }) {
+                throw EmbeddingException("invalid_request", "content too large for the embedding model")
+            }
+            FakeHand().embed(request)
+        })
+        val (_, transfer) = service(hand)
+        val payload = EltmExportPayload(
+            entities = mapOf(
+                "a" to entity("alice", "person"),
+                "b" to entity("bob", "person"),
+            ),
+            relationships = emptyList(),
+        )
+        assertFailsWith<EmbeddingException> {
+            transfer.importEltm(payload, overwriteAttr = false)
+        }
+        assertTrue(TestDb.allEltmEntities().isEmpty(), "the whole bulk rolled back")
+
+        val (freshEltm, freshTransfer) = service()
+        val summary = freshTransfer.importEltm(payload, overwriteAttr = false)
+        assertEquals(2, summary.entitiesCreated, "the re-run rebuilds everything")
+        assertEquals(2, freshEltm.listEntities(100, 0).size)
     }
 
     // ------------------------------------------------------------------
@@ -473,7 +511,7 @@ class EltmTransferServiceTest : DbTestBase() {
         val (eltm, _) = service()
         val a = eltm.createEntity("alice", "person").entity
         val b = eltm.createEntity("bob", "person").entity
-        val works = eltm.createRelationship(a.id, b.id, "works with")
+        val works = eltm.createRelationship(a.id, b.id, "works with").relationship
         val versionBefore = eltm.version().toLong()
 
         assertFalse(eltm.setRelationshipValid(works.id, true), "already valid: a no-op")

@@ -299,13 +299,14 @@ class EltmToolProvider(
                         request, "name is required and must not be blank"
                     )
                     val category = args.textArg("category") ?: "general"
+                    // the result's view (counts, latest note, attributes)
+                    // rides the create's own transaction — no follow-up read
                     val result = eltmService.createEntity(name, category)
-                    val view = eltmService.getEntity(result.entity.id)
-                    val entity = view?.entity ?: result.entity
+                    val view = result.view
                     buildString {
-                        append(entityHeader(entity.id, entity.canonicalName, entity.category))
-                        append(" - notes ${view?.noteCount ?: 0}, relations ${view?.relationshipCount ?: 0}")
-                        appendAttributesBlock(view?.attributes ?: emptyMap())
+                        append(entityHeader(view.entity.id, view.entity.canonicalName, view.entity.category))
+                        append(" - notes ${view.noteCount}, relations ${view.relationshipCount}")
+                        appendAttributesBlock(view.attributes)
                         if (result.nearMatches.isEmpty()) {
                             append("\nNo near matches.")
                         } else {
@@ -331,12 +332,13 @@ class EltmToolProvider(
                             "at least one of new_name or new_category is required"
                         )
                     }
-                    val refined = eltmService.refineEntity(entityId, newName, newCategory)
-                    val view = eltmService.getEntity(refined.id)
+                    // the returned view rides the refine's own transaction —
+                    // no follow-up read
+                    val view = eltmService.refineEntity(entityId, newName, newCategory)
                     buildString {
-                        append(entityHeader(refined.id, refined.canonicalName, refined.category))
-                        append(" - notes ${view?.noteCount ?: 0}, relations ${view?.relationshipCount ?: 0}")
-                        appendAttributesBlock(view?.attributes ?: emptyMap())
+                        append(entityHeader(view.entity.id, view.entity.canonicalName, view.entity.category))
+                        append(" - notes ${view.noteCount}, relations ${view.relationshipCount}")
+                        appendAttributesBlock(view.attributes)
                     }.let { textResult(request, it) }
                 }
 
@@ -350,13 +352,15 @@ class EltmToolProvider(
                     val verb = args.textArg("verb") ?: return errorResult(
                         request, "verb is required and must not be blank"
                     )
-                    val rel = eltmService.createRelationship(src, dst, verb)
-                    val view = eltmService.getRelationship(rel.id)
+                    // the returned view (endpoint names, note count) rides
+                    // the create's own transaction — no follow-up read
+                    val view = eltmService.createRelationship(src, dst, verb)
+                    val rel = view.relationship
                     textResult(
                         request,
-                        "Relationship ${rel.id}: \"${view?.srcName ?: rel.srcId}\" - ${rel.verb} - " +
-                                "\"${view?.dstName ?: rel.dstId}\" " +
-                                "(${if (rel.valid) "active" else "invalidated"}, notes ${view?.noteCount ?: 0})"
+                        "Relationship ${rel.id}: \"${view.srcName}\" - ${rel.verb} - " +
+                                "\"${view.dstName}\" " +
+                                "(${if (rel.valid) "active" else "invalidated"}, notes ${view.noteCount})"
                     )
                 }
 
@@ -405,14 +409,14 @@ class EltmToolProvider(
                         request, "note is required and must not be blank"
                     )
                     val valid = args.boolArg("valid")
-                    val created =
+                    // the result carries the post-attach validity (the
+                    // [valid] argument applied, or the row's unchanged
+                    // state) — no follow-up read
+                    val attached =
                         eltmService.attachNoteToRelationship(relId, eventDate, note, valid)
-                    val relView = eltmService.getRelationship(relId)
-                    val stateLabel = relView?.relationship?.valid?.let {
-                        if (it) "active" else "invalidated"
-                    }
-                    val subject = stateLabel?.let { "relationship $relId, currently $it" }
-                        ?: "relationship $relId"
+                    val created = attached.notes.single()
+                    val subject = "relationship $relId, currently " +
+                            if (attached.valid) "active" else "invalidated"
                     textResult(
                         request,
                         "Note ${created.id} added (${created.eventDate}, subject $subject)."

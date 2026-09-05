@@ -157,6 +157,8 @@ class PersistChatService(
         // rounds (config `memory.eltm.rewriteRounds`), then searches the ELTM
         // for related entities and diary notes to inject under `<memories>`
         // (config `memory.eltm.relatedEntitiesLimit`/`relatedNotesLimit`).
+        // The combined search embeds the ONE rewritten query once and feeds
+        // both halves (never two embedding calls for the same text).
         // With both limits 0 the whole chain is skipped: no rewrite call, no
         // embedding calls, empty related sections. A persona WITHOUT `gsg`
         // access skips it too: the retrieved memories would never be injected
@@ -167,23 +169,12 @@ class PersistChatService(
             emptyList<EntityWithScore>() to emptyList<RelatedNoteView>()
         } else {
             queryRewriteService.rewriteQuery(chat, rewriteRounds)?.let { query ->
-                val entities = if (relatedEntitiesLimit > 0) {
-                    eltmService.searchEntities(query, relatedEntitiesLimit)
-                } else {
-                    emptyList()
-                }
-                val notes = if (relatedNotesLimit > 0) {
-                    resolveRelatedNotes(
-                        eltmService,
-                        notes = eltmService.searchNotes(
-                            query, null, null, null, null, relatedNotesLimit
-                        ),
-                        knownEntities = entities,
-                    )
-                } else {
-                    emptyList()
-                }
-                entities to notes
+                val hits = eltmService.searchEntitiesAndNotes(query, relatedEntitiesLimit, relatedNotesLimit)
+                hits.entities to resolveRelatedNotes(
+                    eltmService,
+                    notes = hits.notes,
+                    knownEntities = hits.entities,
+                )
             } ?: Pair(emptyList(), emptyList())
         }
 

@@ -107,7 +107,7 @@ class RelatedNotesTest : DbTestBase() {
     fun `a relationship subject resolves to the endpoint names and the verb`() = runBlocking {
         val alice = eltm.createEntity("alice", "person").entity
         val acme = eltm.createEntity("acme", "company").entity
-        val rel = eltm.createRelationship(alice.id, acme.id, "works at")
+        val rel = eltm.createRelationship(alice.id, acme.id, "works at").relationship
         eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 7, 15), "Joined Acme as an engineer")
 
         val views = resolveRelatedNotes(

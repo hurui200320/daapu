@@ -770,7 +770,7 @@ class WebServerTest : DbTestBase() {
         val (aliceId, relId) = runBlocking {
             val alice = eltm.createEntity("Alice", "person").entity
             val bob = eltm.createEntity("Bob", "person").entity
-            val rel = eltm.createRelationship(alice.id, bob.id, "works with")
+            val rel = eltm.createRelationship(alice.id, bob.id, "works with").relationship
             eltm.attachNoteToEntity(alice.id, LocalDate.of(2026, 1, 1), "note text")
             eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 1, 2), "collaborate")
             alice.id to rel.id
@@ -803,7 +803,7 @@ class WebServerTest : DbTestBase() {
         val aliceId = runBlocking {
             val alice = eltm.createEntity("Alice", "person").entity
             val bob = eltm.createEntity("Bob", "person").entity
-            val rel = eltm.createRelationship(alice.id, bob.id, "works with")
+            val rel = eltm.createRelationship(alice.id, bob.id, "works with").relationship
             eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 3, 1), "left", valid = false)
             alice.id
         }
@@ -831,7 +831,7 @@ class WebServerTest : DbTestBase() {
         runBlocking {
             val alice = eltm.createEntity("Alice", "person").entity
             val bob = eltm.createEntity("Bob", "person").entity
-            val rel = eltm.createRelationship(alice.id, bob.id, "works with")
+            val rel = eltm.createRelationship(alice.id, bob.id, "works with").relationship
             eltm.attachNoteToRelationship(rel.id, LocalDate.of(2026, 3, 1), "left", valid = false)
         }
         testApplication {
@@ -1740,7 +1740,7 @@ class WebServerTest : DbTestBase() {
             eltm.setEntityAttribute(kindle.id, "model", "k4")
             eltm.attachNoteToEntity(kindle.id, LocalDate.of(2026, 8, 17), "bought it")
             val alice = eltm.createEntity("alice", "person").entity
-            val works = eltm.createRelationship(kindle.id, alice.id, "belongs to")
+            val works = eltm.createRelationship(kindle.id, alice.id, "belongs to").relationship
             eltm.attachNoteToRelationship(
                 works.id, LocalDate.of(2026, 8, 18), "gave it away", valid = false,
             )
@@ -1894,10 +1894,11 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import answers 502 when an embedding call fails mid-merge - earlier writes stick`() {
-        // the embed script fails the SECOND entity's create ("bob person"):
-        // the failure is post-validation, so alice's row sticks and the 502
-        // carries the upstream reason (the digest's 502 precedent)
+    fun `eltm import answers 502 when an embedding call fails mid-merge - the batch rolls back`() {
+        // the embed script fails inside the entity bulk's ONE batched embed
+        // call (both entities embed together, "bob person" trips it): the
+        // bulk is ONE boundary, so nothing is written and the 502 carries
+        // the upstream reason (the digest's 502 precedent)
         val hand = FakeHand(embedScript = { request ->
             if (request.input.any { "bob" in it }) {
                 throw EmbeddingException(
@@ -1925,11 +1926,7 @@ class WebServerTest : DbTestBase() {
                 "the 502 must carry the upstream reason",
             )
             val entities = json.parseToJsonElement(client.get("/api/eltm/entities").bodyAsText()).jsonArray
-            assertEquals(1, entities.size, "the writes before the failure stick")
-            assertEquals(
-                "alice",
-                entities[0].jsonObject["entity"]!!.jsonObject["canonicalName"]!!.jsonPrimitive.content,
-            )
+            assertEquals(0, entities.size, "the whole entity bulk rolled back")
         }
     }
 }

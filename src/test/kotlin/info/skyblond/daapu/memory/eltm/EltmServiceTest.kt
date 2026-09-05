@@ -157,7 +157,13 @@ class EltmServiceTest {
         override suspend fun createEntity(name: String, category: String): CreateEntityResult =
             error("unused")
 
-        override suspend fun createRelationship(srcId: Long, dstId: Long, verb: String): EltmRelationship =
+        override suspend fun createEntities(entries: List<EntityDraft>): List<EltmEntity> =
+            error("unused")
+
+        override suspend fun createRelationship(srcId: Long, dstId: Long, verb: String): RelationshipView =
+            error("unused")
+
+        override suspend fun createRelationships(triples: List<RelationshipDraft>): List<EltmRelationship> =
             error("unused")
 
         override suspend fun mergeEntities(winnerId: Long, loserId: Long) = error("unused")
@@ -165,10 +171,15 @@ class EltmServiceTest {
             entityId: Long,
             newName: String?,
             newCategory: String?,
-        ): EltmEntity = error("unused")
+        ): EntityView = error("unused")
 
         override suspend fun entityExists(entityId: Long): Boolean = error("unused")
         override suspend fun relationshipExists(relationshipId: Long): Boolean = error("unused")
+        override suspend fun setEntityAttributes(
+            entityId: Long,
+            values: Map<String, String>,
+        ): Int = error("unused")
+
         override suspend fun setEntityAttribute(
             entityId: Long,
             key: String,
@@ -176,21 +187,39 @@ class EltmServiceTest {
         ): Boolean = error("unused")
 
         override suspend fun deleteEntityAttribute(entityId: Long, key: String) = error("unused")
+
+        override suspend fun attachNotesToEntity(
+            entityId: Long,
+            notes: List<NoteDraft>,
+        ): List<EltmNote> = error("unused")
+
         override suspend fun attachNoteToEntity(
             entityId: Long,
             eventDate: java.time.LocalDate,
             note: String,
         ): EltmNote = error("unused")
 
+        override suspend fun attachNotesToRelationship(
+            relationshipId: Long,
+            notes: List<NoteDraft>,
+            valid: Boolean?,
+        ): RelationshipNotesResult = error("unused")
+
         override suspend fun attachNoteToRelationship(
             relationshipId: Long,
             eventDate: java.time.LocalDate,
             note: String,
             valid: Boolean?,
-        ): EltmNote = error("unused")
+        ): RelationshipNotesResult = error("unused")
 
         override suspend fun searchEntities(query: String, limit: Int): List<EntityWithScore> =
             error("unused")
+
+        override suspend fun searchEntitiesAndNotes(
+            query: String,
+            entityLimit: Int,
+            noteLimit: Int,
+        ): EltmSearchHits = error("unused")
 
         override suspend fun getEntity(id: Long): EntityView? = error("unused")
         override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> =
