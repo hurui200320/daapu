@@ -1,6 +1,7 @@
 package info.skyblond.daapu.memory.eltm.postgres
 
 import info.skyblond.daapu.db.*
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EntityView
 import info.skyblond.daapu.memory.eltm.EntityWithScore
 import info.skyblond.daapu.memory.eltm.EltmEntity
@@ -11,11 +12,12 @@ import org.jetbrains.exposed.v1.jdbc.*
 /**
  * Ambient-transaction entity/attribute queries for [PostgresEltmService]
  * over the `eltm_entities` / `eltm_entity_attributes` tables
- * (`V1__init.sql`): the row finders (plain and `FOR UPDATE`), the batched
- * create-or-fetch lookups, the collision check, the attribute readers,
- * the cosine-similarity search and the single-subject view builder.
- * Every function here is only ever called inside `withTransaction` — by
- * the service or by the other query files in this package.
+ * (`V1__init.sql`): the row finders (plain and `FOR UPDATE`), the
+ * create-or-fetch inserts (single and bulk), the collision check, the
+ * attribute readers and writers, the cosine-similarity search and the
+ * view builders. Every function here is only ever called inside
+ * `withTransaction` — by the service or by the other query files in
+ * this package.
  */
 
 internal fun ResultRow.toEntity(): EltmEntity = EltmEntity(
@@ -45,6 +47,97 @@ internal fun findEntityRowByIdForUpdate(id: Long): ResultRow? =
 
 internal fun findEntityById(id: Long): EltmEntity? =
     findEntityRowById(id)?.toEntity()
+
+/**
+ * The create-or-fetch insert for ONE (name, category) key: INSERT ... ON
+ * CONFLICT DO NOTHING RETURNING (`insertReturning(ignoreErrors = true)`
+ * on Postgres) never aborts the transaction — a null result means a
+ * concurrent run inserted the same key first, and since a same-key insert
+ * blocks until the winner resolves, the conflicting row is committed and
+ * visible to the caller's re-select in the SAME transaction (no nested
+ * transaction, no SQLState handling). Only a real insert bumps the write
+ * counter (the caller decides). Ambient transaction.
+ *
+ * The CONFLICT clause is untargeted (Exposed's API offers no conflict
+ * target here), so it swallows a violation of ANY unique constraint on
+ * the table. That is safe only while the table's unique constraints are
+ * exactly the intended (name, category) key plus the BIGSERIAL PK
+ * (collision effectively impossible): a future index must revisit this
+ * or the violation would be misread as a same-key race (the re-select
+ * then fails with the "not visible" error — misleading, but fail-fast).
+ */
+internal fun insertEntityRow(
+    canonicalName: String,
+    category: String,
+    embedding: List<Float>,
+): ResultRow? =
+    EltmEntities.insertReturning(
+        returning = listOf(
+            EltmEntities.id,
+            EltmEntities.canonicalName,
+            EltmEntities.category,
+            EltmEntities.embedding,
+        ),
+        ignoreErrors = true,
+    ) {
+        it[EltmEntities.canonicalName] = canonicalName
+        it[EltmEntities.category] = category
+        it[EltmEntities.embedding] = embedding
+    }.singleOrNull()
+
+/**
+ * The bulk create-or-fetch body (the batch unit's semantics:
+ * [EltmService.createEntities]): the batched key lookups, the per-key
+ * ON CONFLICT inserts (via [insertEntityRow]) and the re-selects, all in
+ * the caller's ONE transaction. Duplicate keys fold onto ONE row:
+ * create-or-fetch per key. The missing keys' embeddings come from
+ * [embedMissing] — the service's suspend lambda (it embeds the batched
+ * texts; the connection is held across the embeds, the same stance as
+ * [PostgresEltmService.setEntityAttributes]). Returns the rows for
+ * [keys] in input order (duplicates repeat their row) plus whether THIS
+ * call inserted anything — only a real insert bumps the write counter,
+ * so a fully conflict-adopted batch is a pure read and the caller bumps
+ * on the flag. Ambient transaction.
+ */
+internal suspend fun bulkCreateOrFetchEntities(
+    keys: List<Pair<String, String>>,
+    embedMissing: suspend (List<Pair<String, String>>) -> List<List<Float>>,
+): Pair<List<ResultRow>, Boolean> {
+    val distinct = keys.distinct()
+    val existing = findEntitiesByKeys(distinct).associateBy {
+        it[EltmEntities.canonicalName] to it[EltmEntities.category]
+    }
+    val missing = distinct.filter { it !in existing }
+    val resolved = HashMap(existing)
+    var insertedAny = false
+    if (missing.isNotEmpty()) {
+        val embeddings = embedMissing(missing)
+        for ((key, embedding) in missing.zip(embeddings)) {
+            // the single createEntity insert path, per key: ON CONFLICT
+            // DO NOTHING RETURNING adopts a concurrent same-key insert
+            // (a null result) — the re-select below resolves it (see
+            // [insertEntityRow] for the full rationale)
+            val row = insertEntityRow(key.first, key.second, embedding)
+            if (row != null) {
+                insertedAny = true
+                resolved[key] = row
+            }
+        }
+        // resolve the conflict-adopted keys (the rare path — usually
+        // every insert above succeeded)
+        val adopted = distinct.filter { it !in resolved }
+        if (adopted.isNotEmpty()) {
+            findEntitiesByKeys(adopted).forEach { row ->
+                resolved[row[EltmEntities.canonicalName] to row[EltmEntities.category]] = row
+            }
+        }
+    }
+    val rows = keys.map { key ->
+        resolved[key]
+            ?: error("unique conflict but the entity (${key.first}, ${key.second}) is not visible")
+    }
+    return rows to insertedAny
+}
 
 /**
  * The rows for a batch of (canonical name, category) keys in ONE query
@@ -188,3 +281,81 @@ internal fun entityViewOf(entity: EltmEntity): EntityView = EntityView(
     latestNote = latestNote(EltmNotes.entityId, entity.id),
     attributes = attributesOf(entity.id),
 )
+
+/**
+ * Overwrite the entity's attribute rows in place — the whole batch rides
+ * ONE JDBC batched UPSERT (ON CONFLICT (entity_id, key) DO UPDATE SET
+ * value = excluded.value), never one UPSERT statement per key — then
+ * store the re-embedded entity vector, so the embedding text and the
+ * attribute rows can never diverge. Ambient transaction.
+ */
+internal fun writeEntityAttributes(
+    entityId: Long,
+    changed: Map<String, String>,
+    embedding: List<Float>,
+) {
+    EltmEntityAttributes.batchUpsert(
+        changed.entries,
+        keys = arrayOf(EltmEntityAttributes.entityId, EltmEntityAttributes.key),
+        shouldReturnGeneratedValues = false,
+    ) { (k, v) ->
+        this[EltmEntityAttributes.entityId] = entityId
+        this[EltmEntityAttributes.key] = k
+        this[EltmEntityAttributes.value] = v
+    }
+    updateEntityEmbedding(entityId, embedding)
+}
+
+/** Delete ONE attribute row. Ambient transaction. */
+internal fun deleteEntityAttributeRow(entityId: Long, key: String) {
+    EltmEntityAttributes.deleteWhere {
+        (EltmEntityAttributes.entityId eq entityId) and
+            (EltmEntityAttributes.key eq key)
+    }
+}
+
+/** Store the entity's re-embedded vector (after an attribute change). */
+internal fun updateEntityEmbedding(entityId: Long, embedding: List<Float>) {
+    EltmEntities.update({ EltmEntities.id eq entityId }) {
+        it[EltmEntities.embedding] = embedding
+    }
+}
+
+/**
+ * One page of full entity views (id order), a whole page's counts,
+ * latest notes and attributes in bounded batch queries (see
+ * [noteCountsAndLatest]) instead of [entityViewOf]'s 5 per-row queries
+ * (the single-subject reads stay per-row: one row, five queries).
+ * Ambient transaction.
+ */
+internal fun selectEntityViews(limit: Int, offset: Int): List<EntityView> {
+    val entities = EltmEntities.selectAll()
+        .orderBy(EltmEntities.id to SortOrder.ASC)
+        .limit(limit)
+        .offset(offset.toLong())
+        .map { it.toEntity() }
+    val noteSummary = noteCountsAndLatest(EltmNotes.entityId, entities.map { it.id })
+    val relationshipCounts = relationshipCountsFor(entities.map { it.id })
+    val attributes = attributesFor(entities.map { it.id })
+    return entities.map { entity ->
+        EntityView(
+            entity = entity,
+            noteCount = noteSummary[entity.id]?.first ?: 0,
+            relationshipCount = relationshipCounts[entity.id] ?: 0,
+            latestNote = noteSummary[entity.id]?.second,
+            attributes = attributes[entity.id] ?: emptyMap(),
+        )
+    }
+}
+
+/**
+ * Every entity's content columns, id order — the export's stable
+ * ordering. Only the content columns: the embedding vectors (2000 dims
+ * per row) never travel (the same rationale as selectNoteContent).
+ * Ambient transaction.
+ */
+internal fun selectAllEntityContent(): List<EltmEntity> =
+    EltmEntities
+        .select(EltmEntities.id, EltmEntities.canonicalName, EltmEntities.category)
+        .orderBy(EltmEntities.id to SortOrder.ASC)
+        .map { it.toEntity() }

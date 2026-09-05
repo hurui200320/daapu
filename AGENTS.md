@@ -113,10 +113,12 @@ src/main/kotlin/info/skyblond/daapu/
                              (ExtractionQueue.kt + ExtractionQueueWorker.kt)
   memory/eltm/postgres/      the Postgres impls: PostgresEltmService.kt,
                              PostgresExtractionQueue.kt; the service's
-                             ambient-transaction SQL helpers (finders, view
-                             builders, note insert, search bodies) live in
+                             ambient-transaction SQL bodies (finders,
+                             create-or-fetch inserts, view builders, note
+                             insert, search bodies, the merge's
+                             fold-and-delete writes) live in
                              EltmEntityQueries.kt / EltmRelationshipQueries.kt /
-                             EltmNoteQueries.kt
+                             EltmNoteQueries.kt / EltmMergeQueries.kt
   script/                    RefreshEmbedding.kt — one-off
                              embedding-model-switch maintenance (see its KDoc)
   server/                    ktor HTTP API: WebServer.kt, SseEvents.kt (SSE
@@ -253,8 +255,11 @@ KDoc of the named files.
   `src/lib/persona-store.svelte.ts`); the run loop
   (`src/lib/stream-session.ts`); the wire client (`src/lib/api.ts`);
   ELTM browse + digest
-  (`src/lib/components/EltmView.svelte`, `src/lib/paged-tab.svelte.ts`,
-  `src/lib/paging.ts`); personas (`src/lib/components/PersonaView.svelte`,
+  (`src/lib/components/EltmView.svelte` + its always-mounted
+  `src/lib/components/DigestForm.svelte` — the digest draft survives
+  tab/chat switches because the form is never `{#if}`-mounted,
+  `src/lib/paged-tab.svelte.ts`, `src/lib/paging.ts`); personas
+  (`src/lib/components/PersonaView.svelte`,
   `src/lib/components/PersonaDropdown.svelte`); chat UI
   (`src/lib/components/ChatView.svelte`, `Composer.svelte`,
   `MessageList.svelte` + `MessageItem.svelte`, `Sidebar.svelte`,
@@ -307,6 +312,14 @@ following perspectives:
 - Code quality and style: follow existing pattern (project conventions), no dark magic, no hacky solution/workaround, no complex logic without comments. Maintainability is the first priority.
   - Single Source of Truth for Comments: Only explain logic at its original/primary location. Other places referencing this logic MUST use pointers (e.g., `see [Component/File]`) and MUST NOT repeat the same explanation.
   - Wire Protocol Documentation: see [Backend style](#backend-style).
+- File size budget: all main source code files must stay at or below 800
+  lines — scope: `src/main/kotlin`, `frontend/src`, `hand-pi/src`, test
+  files excluded (`src/test/**` and the colocated `*.test.ts`). A change
+  that would push a file past the cap must refactor it first: split by
+  cohesive responsibility into named modules (the in-repo precedent:
+  `PostgresEltmService.kt`'s SQL bodies → the `Eltm*Queries.kt` files).
+  Grab-bag files (`Utils.kt`, `Helpers.kt`, `Common.kt`) are forbidden.
+  They just relocate the problem.
 - Config models and their schema: `config.schema.json` mirrors the config
   models in `config/Config.kt` (and the checked-in `config.example.jsonc`
   documents the shape). Treat the schema as documentation: when the config

@@ -2,7 +2,7 @@ import type { EltmDigestPart } from './api'
 import { dataUrlToImagePart } from './display'
 
 /**
- * Pure logic of the ELTM digest form (`EltmView.svelte`'s Digest tab):
+ * Pure logic of the ELTM digest form (`DigestForm.svelte`, the Digest tab):
  * the draft is an ordered list of text blocks and images, and everything
  * below derives from it without touching the DOM or reactivity, so it is
  * unit-tested here (src/lib/*.test.ts) and the component stays a thin

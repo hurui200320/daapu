@@ -109,6 +109,15 @@ internal fun selectNoteContent() = EltmNotes.select(
 )
 
 /**
+ * Every note's content columns, diary order (event date, then id — the
+ * export's stable ordering). Ambient transaction.
+ */
+internal fun selectAllNoteContent(): List<EltmNote> =
+    selectNoteContent()
+        .orderBy(EltmNotes.eventDate to SortOrder.ASC, EltmNotes.id to SortOrder.ASC)
+        .map { it.toNote() }
+
+/**
  * The subject's newest note (event date, then id — the same ordering as
  * [noteQuery] and [noteCountsAndLatest]; the diary ordering rule lives
  * in exactly those three SQL spots).

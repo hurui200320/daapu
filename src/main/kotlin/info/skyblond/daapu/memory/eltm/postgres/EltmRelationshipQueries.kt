@@ -2,6 +2,7 @@ package info.skyblond.daapu.memory.eltm.postgres
 
 import info.skyblond.daapu.db.*
 import info.skyblond.daapu.memory.eltm.EltmRelationship
+import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.RelationshipView
 import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.jdbc.*
@@ -9,10 +10,10 @@ import org.jetbrains.exposed.v1.jdbc.*
 /**
  * Ambient-transaction relationship queries for [PostgresEltmService] over
  * the `eltm_relationships` table (`V1__init.sql`): the row finders (single
- * triple and batched create-or-fetch lookups), the counting rule and the
- * relationship view builders. Every function here is only ever called
- * inside `withTransaction` — by the service or by the other query files
- * in this package.
+ * triple and batched create-or-fetch lookups), the create-or-fetch inserts
+ * (single and bulk), the counting rule and the relationship view builders.
+ * Every function here is only ever called inside `withTransaction` — by
+ * the service or by the other query files in this package.
  */
 
 internal fun ResultRow.toRelationship(): EltmRelationship = EltmRelationship(
@@ -50,6 +51,99 @@ internal fun findRelationshipsByTriples(triples: List<Triple<Long, String, Long>
                 (EltmRelationships.verb eq verb)
     }.reduce { a, b -> a or b }
     return EltmRelationships.selectAll().where { cond }.toList()
+}
+
+/**
+ * The create-or-fetch insert for ONE triple: INSERT ... ON CONFLICT DO
+ * NOTHING RETURNING the id — a null result adopts a concurrent
+ * same-triple insert, which the caller re-selects in the SAME
+ * transaction (the insert semantics' full rationale AND the
+ * untargeted-clause caveat live on [insertEntityRow] in
+ * EltmEntityQueries.kt; here the triple is the table's only unique index
+ * besides the PK, so the swallowed violation can only be a same-key
+ * race). Only a real insert bumps the write counter (the caller
+ * decides). Ambient transaction.
+ */
+internal fun insertRelationshipRow(srcId: Long, dstId: Long, verb: String): Long? =
+    EltmRelationships.insertReturning(
+        returning = listOf(EltmRelationships.id),
+        ignoreErrors = true,
+    ) {
+        it[EltmRelationships.srcId] = srcId
+        it[EltmRelationships.dstId] = dstId
+        it[EltmRelationships.verb] = verb
+    }.singleOrNull()?.get(EltmRelationships.id)
+
+/**
+ * The bulk create-or-fetch body (the batch unit's semantics:
+ * [EltmService.createRelationships]): ONE endpoint existence check for
+ * the whole batch (a single inList query; the first missing id in input
+ * order fails the call before any insert — the FK would catch them later
+ * with a raw SQL error), the batched triple lookups, the per-triple ON
+ * CONFLICT inserts (via [insertRelationshipRow]) and the re-selects, all
+ * in the caller's ONE transaction. Duplicate triples fold onto ONE row:
+ * create-or-fetch per triple. No embed exists on this path. Returns the
+ * relationships in input order (duplicates repeat their row) plus
+ * whether THIS call inserted anything — only a real insert bumps the
+ * write counter, so a fully conflict-adopted batch is a pure read and
+ * the caller bumps on the flag. Ambient transaction.
+ */
+internal fun bulkCreateOrFetchRelationships(
+    triples: List<Triple<Long, String, Long>>,
+): Pair<List<EltmRelationship>, Boolean> {
+    val endpointIds = triples.flatMapTo(HashSet()) { listOf(it.first, it.third) }
+    val present = EltmEntities.select(EltmEntities.id)
+        .where { EltmEntities.id inList endpointIds }
+        .mapTo(HashSet()) { it[EltmEntities.id] }
+    val missingEntityId = triples.firstNotNullOfOrNull { (srcId, _, dstId) ->
+        when {
+            srcId !in present -> srcId
+            dstId !in present -> dstId
+            else -> null
+        }
+    }
+    require(missingEntityId == null) { "entity $missingEntityId does not exist" }
+
+    val distinct = triples.distinct()
+    val existing = findRelationshipsByTriples(distinct).associateBy {
+        Triple(it[EltmRelationships.srcId], it[EltmRelationships.verb], it[EltmRelationships.dstId])
+    }.mapValues { it.value.toRelationship() }
+    val missing = distinct.filter { it !in existing }
+    val resolved = HashMap(existing)
+    var insertedAny = false
+    for ((srcId, v, dstId) in missing) {
+        // the single createRelationship insert path, per triple: ON
+        // CONFLICT DO NOTHING RETURNING adopts a concurrent same-triple
+        // insert (a null result) — the re-select below resolves it (see
+        // [insertRelationshipRow] for the full rationale)
+        val insertedId = insertRelationshipRow(srcId, dstId, v)
+        if (insertedId != null) {
+            insertedAny = true
+            resolved[Triple(srcId, v, dstId)] =
+                EltmRelationship(insertedId, srcId, dstId, v, valid = true)
+        }
+    }
+    // resolve the conflict-adopted triples (the rare path)
+    val adopted = distinct.filter { it !in resolved }
+    if (adopted.isNotEmpty()) {
+        findRelationshipsByTriples(adopted).forEach { row ->
+            resolved[
+                Triple(
+                    row[EltmRelationships.srcId],
+                    row[EltmRelationships.verb],
+                    row[EltmRelationships.dstId],
+                )
+            ] = row.toRelationship()
+        }
+    }
+    val rels = triples.map { triple ->
+        resolved[triple]
+            ?: error(
+                "unique conflict but the relationship " +
+                        "(${triple.first} -[${triple.second}]-> ${triple.third}) is not visible"
+            )
+    }
+    return rels to insertedAny
 }
 
 /**
@@ -119,3 +213,41 @@ internal fun toRelationshipViews(rels: List<EltmRelationship>): List<Relationshi
         )
     }
 }
+
+/**
+ * One page of full relationship views (id order) via the shared batch
+ * builder. Ambient transaction.
+ */
+internal fun selectRelationshipViews(limit: Int, offset: Int): List<RelationshipView> {
+    val rels = EltmRelationships.selectAll()
+        .orderBy(EltmRelationships.id to SortOrder.ASC)
+        .limit(limit)
+        .offset(offset.toLong())
+        .map { it.toRelationship() }
+    if (rels.isEmpty()) return emptyList()
+    return toRelationshipViews(rels)
+}
+
+/**
+ * ONE entity's relationships (src OR dst, newest id first), optionally
+ * filtered to the valid ones, as full views via the shared batch
+ * builder. Ambient transaction.
+ */
+internal fun selectEntityRelationshipViews(
+    entityId: Long,
+    includeInvalid: Boolean,
+): List<RelationshipView> {
+    val cond: Op<Boolean> =
+        (EltmRelationships.srcId eq entityId) or (EltmRelationships.dstId eq entityId)
+    val filtered = if (includeInvalid) cond else cond and (EltmRelationships.valid eq true)
+    val rels = EltmRelationships.selectAll().where { filtered }
+        .orderBy(EltmRelationships.id to SortOrder.DESC)
+        .map { it.toRelationship() }
+    return toRelationshipViews(rels)
+}
+
+/** Every relationship row, id order (the export's stable ordering). */
+internal fun selectAllRelationshipContent(): List<EltmRelationship> =
+    EltmRelationships.selectAll()
+        .orderBy(EltmRelationships.id to SortOrder.ASC)
+        .map { it.toRelationship() }

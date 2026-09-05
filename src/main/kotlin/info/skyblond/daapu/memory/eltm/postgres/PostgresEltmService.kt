@@ -51,13 +51,15 @@ import java.time.LocalDate
  * planning) lives outside the SQL; the SQL paths are covered by the
  * DB-backed `PostgresEltmServiceTest` (throwaway testcontainers database).
  *
- * The ambient-transaction SQL helpers (row mappers, finders, view
- * builders, the batched note insert, the search SQL bodies) live in the
- * sibling files `EltmEntityQueries.kt` / `EltmRelationshipQueries.kt` /
- * `EltmNoteQueries.kt` (same package, internal — every call is inside
+ * The service owns the transaction composition, the validation and the
+ * embedding calls; the ambient-transaction SQL bodies (row mappers,
+ * finders, create-or-fetch inserts, view builders, the batched note
+ * insert, the search SQL bodies, the merge's fold-and-delete writes)
+ * live in the sibling files `EltmEntityQueries.kt` /
+ * `EltmRelationshipQueries.kt` / `EltmNoteQueries.kt` /
+ * `EltmMergeQueries.kt` (same package, internal — every call is inside
  * withTransaction).
  */
-// TODO: split this to EltmStore, the service should own the embedded text construction, etc.
 class PostgresEltmService(
     private val embeddingModel: EmbeddingModel,
     private val hand: HandService,
@@ -85,36 +87,11 @@ class PostgresEltmService(
         return withTransaction {
             val row = findEntityByKey(canonical, cat) ?: run {
                 val embedding = embedText(entityEmbeddingText(canonical, cat, emptyMap()))
-                // create-or-fetch in ONE transaction: INSERT ... ON CONFLICT DO
-                // NOTHING RETURNING (`insertReturning(ignoreErrors = true)` on
-                // Postgres) never aborts the transaction — a null result means a
-                // concurrent run inserted the same (name, category) first, and
-                // since a same-key insert blocks until the winner resolves, the
-                // conflicting row is committed and visible to the re-select in
-                // the SAME transaction (no nested transaction, no SQLState
-                // handling). Only a real insert bumps the write counter.
-                //
-                // The CONFLICT clause is untargeted (Exposed's API offers no
-                // conflict target here), so it swallows a violation of ANY unique
-                // constraint on the table. That is safe only while the table's
-                // unique constraints are exactly the intended (name, category)
-                // key plus the BIGSERIAL PK (collision effectively impossible): a
-                // future index must revisit this or the violation would be
-                // misread as a same-key race (the re-select then fails with the
-                // "not visible" error below — misleading, but fail-fast).
-                val inserted = EltmEntities.insertReturning(
-                    returning = listOf(
-                        EltmEntities.id,
-                        EltmEntities.canonicalName,
-                        EltmEntities.category,
-                        EltmEntities.embedding,
-                    ),
-                    ignoreErrors = true,
-                ) {
-                    it[EltmEntities.canonicalName] = canonical
-                    it[EltmEntities.category] = cat
-                    it[EltmEntities.embedding] = embedding
-                }.singleOrNull()
+                // create-or-fetch in ONE transaction: the ON CONFLICT DO
+                // NOTHING RETURNING insert, its re-select semantics and
+                // the untargeted-clause caveat live on insertEntityRow
+                // (EltmEntityQueries.kt)
+                val inserted = insertEntityRow(canonical, cat, embedding)
                 if (inserted != null) {
                     bumpWriteVersion()
                     inserted
@@ -154,62 +131,21 @@ class PostgresEltmService(
         // EltmService.createEntities): ONE transaction holds the batched
         // key lookups, the batched embeds, the per-key ON CONFLICT inserts
         // and the re-selects — the connection is held across the embeds,
-        // the same stance as setEntityAttributes
+        // the same stance as setEntityAttributes. The SQL body (the
+        // conflict adoption included) lives in
+        // EltmEntityQueries.bulkCreateOrFetchEntities.
         return withTransaction {
-            // duplicate keys fold onto ONE row: create-or-fetch per key
-            val keys = normalized.distinct()
-            val existing = findEntitiesByKeys(keys).associateBy {
-                it[EltmEntities.canonicalName] to it[EltmEntities.category]
-            }
-            val missing = keys.filter { it !in existing }
-            val resolved = HashMap(existing)
-            if (missing.isNotEmpty()) {
+            val (rows, insertedAny) = bulkCreateOrFetchEntities(normalized) { missing ->
                 // the missing keys' texts ride the hand's batched /v1/embed —
                 // ONE batched call series for the whole batch, never one
                 // embed call per entity (see embedAll)
-                val embeddings = embedAll(
-                    missing.map { (name, cat) -> entityEmbeddingText(name, cat, emptyMap()) }
-                )
-                var insertedAny = false
-                for ((key, embedding) in missing.zip(embeddings)) {
-                    // the single createEntity insert path, per key: ON
-                    // CONFLICT DO NOTHING RETURNING adopts a concurrent
-                    // same-key insert (a null result) — the re-select below
-                    // resolves it (see createEntity for the full rationale)
-                    val row = EltmEntities.insertReturning(
-                        returning = listOf(
-                            EltmEntities.id,
-                            EltmEntities.canonicalName,
-                            EltmEntities.category,
-                        ),
-                        ignoreErrors = true,
-                    ) {
-                        it[EltmEntities.canonicalName] = key.first
-                        it[EltmEntities.category] = key.second
-                        it[EltmEntities.embedding] = embedding
-                    }.singleOrNull()
-                    if (row != null) {
-                        insertedAny = true
-                        resolved[key] = row
-                    }
-                }
-                // only a real insert bumps the write counter — a fully
-                // conflict-adopted batch is a pure read (per-entity
-                // semantics preserved)
-                if (insertedAny) bumpWriteVersion()
-                // resolve the conflict-adopted keys (the rare path —
-                // usually every insert above succeeded)
-                val adopted = missing.filter { it !in resolved }
-                if (adopted.isNotEmpty()) {
-                    findEntitiesByKeys(adopted).forEach { row ->
-                        resolved[row[EltmEntities.canonicalName] to row[EltmEntities.category]] = row
-                    }
-                }
+                embedAll(missing.map { (name, cat) -> entityEmbeddingText(name, cat, emptyMap()) })
             }
-            normalized.map { key ->
-                resolved[key]?.toEntity()
-                    ?: error("unique conflict but the entity (${key.first}, ${key.second}) is not visible")
-            }
+            // only a real insert bumps the write counter — a fully
+            // conflict-adopted batch is a pure read (per-entity
+            // semantics preserved)
+            if (insertedAny) bumpWriteVersion()
+            rows.map { it.toEntity() }
         }
     }
 
@@ -312,20 +248,11 @@ class PostgresEltmService(
             // as-is; validity only moves with a diary event
             // (attachNotesToRelationship's valid flag), never here.
             // The insert rides ON CONFLICT DO NOTHING RETURNING (see
-            // createEntity for the full rationale AND the untargeted-clause
-            // caveat: the triple is the table's only unique index besides
-            // the PK, so the swallowed violation can only be a same-key
-            // race), so a concurrent same-triple insert never aborts
-            // the transaction, and the re-select below stays in it.
+            // insertRelationshipRow in EltmRelationshipQueries.kt), so a
+            // concurrent same-triple insert never aborts the transaction,
+            // and the re-select below stays in it.
             val rel = findRelationshipByTriple(srcId, v, dstId)?.toRelationship() ?: run {
-                val insertedId = EltmRelationships.insertReturning(
-                    returning = listOf(EltmRelationships.id),
-                    ignoreErrors = true,
-                ) {
-                    it[EltmRelationships.srcId] = srcId
-                    it[EltmRelationships.dstId] = dstId
-                    it[EltmRelationships.verb] = v
-                }.singleOrNull()?.get(EltmRelationships.id)
+                val insertedId = insertRelationshipRow(srcId, dstId, v)
                 if (insertedId != null) {
                     bumpWriteVersion()
                     // a fresh row always starts active (the column default)
@@ -355,78 +282,15 @@ class PostgresEltmService(
         // EltmService.createRelationships): ONE transaction holds the
         // endpoint check, the batched triple lookups, the per-triple ON
         // CONFLICT inserts and the re-selects — no embed exists on this
-        // path
+        // path. The SQL body (the endpoint check and the conflict
+        // adoption included) lives in
+        // EltmRelationshipQueries.bulkCreateOrFetchRelationships.
         return withTransaction {
-            // ONE endpoint existence check for the whole batch (a single
-            // inList query); the first missing id in input order fails the
-            // call before any insert (the FK would catch them later with a
-            // raw SQL error)
-            val endpointIds = normalized.flatMapTo(HashSet()) { listOf(it.first, it.third) }
-            val present = EltmEntities.select(EltmEntities.id)
-                .where { EltmEntities.id inList endpointIds }
-                .mapTo(HashSet()) { it[EltmEntities.id] }
-            val missingEntityId = normalized.firstNotNullOfOrNull { (srcId, _, dstId) ->
-                when {
-                    srcId !in present -> srcId
-                    dstId !in present -> dstId
-                    else -> null
-                }
-            }
-            require(missingEntityId == null) { "entity $missingEntityId does not exist" }
-
-            // duplicate triples fold onto ONE row: create-or-fetch per triple
-            val distinct = normalized.distinct()
-            val existing = findRelationshipsByTriples(distinct).associateBy {
-                Triple(it[EltmRelationships.srcId], it[EltmRelationships.verb], it[EltmRelationships.dstId])
-            }.mapValues { it.value.toRelationship() }
-            val missing = distinct.filter { it !in existing }
-            val resolved = HashMap(existing)
-            if (missing.isNotEmpty()) {
-                var insertedAny = false
-                for ((srcId, v, dstId) in missing) {
-                    // the single createRelationship insert path, per triple:
-                    // ON CONFLICT DO NOTHING RETURNING adopts a concurrent
-                    // same-triple insert (a null result) — the re-select
-                    // below resolves it (see createEntity for the full
-                    // rationale)
-                    val insertedId = EltmRelationships.insertReturning(
-                        returning = listOf(EltmRelationships.id),
-                        ignoreErrors = true,
-                    ) {
-                        it[EltmRelationships.srcId] = srcId
-                        it[EltmRelationships.dstId] = dstId
-                        it[EltmRelationships.verb] = v
-                    }.singleOrNull()?.get(EltmRelationships.id)
-                    if (insertedId != null) {
-                        insertedAny = true
-                        resolved[Triple(srcId, v, dstId)] =
-                            EltmRelationship(insertedId, srcId, dstId, v, valid = true)
-                    }
-                }
-                // only a real insert bumps the write counter — a fully
-                // conflict-adopted batch is a pure read
-                if (insertedAny) bumpWriteVersion()
-                // resolve the conflict-adopted triples (the rare path)
-                val adopted = missing.filter { it !in resolved }
-                if (adopted.isNotEmpty()) {
-                    findRelationshipsByTriples(adopted).forEach { row ->
-                        resolved[
-                            Triple(
-                                row[EltmRelationships.srcId],
-                                row[EltmRelationships.verb],
-                                row[EltmRelationships.dstId],
-                            )
-                        ] = row.toRelationship()
-                    }
-                }
-            }
-            normalized.map { triple ->
-                resolved[triple]
-                    ?: error(
-                        "unique conflict but the relationship " +
-                            "(${triple.first} -[${triple.second}]-> ${triple.third}) is not visible"
-                    )
-            }
+            val (rels, insertedAny) = bulkCreateOrFetchRelationships(normalized)
+            // only a real insert bumps the write counter — a fully
+            // conflict-adopted batch is a pure read
+            if (insertedAny) bumpWriteVersion()
+            rels
         }
     }
 
@@ -566,22 +430,10 @@ class PostgresEltmService(
                     current + changed,
                 )
             )
-            // one row per (entity, key): overwrite the value in place — the
-            // whole batch rides ONE JDBC batched UPSERT (ON CONFLICT
-            // (entity_id, key) DO UPDATE SET value = excluded.value), never
-            // one UPSERT statement per key
-            EltmEntityAttributes.batchUpsert(
-                changed.entries,
-                keys = arrayOf(EltmEntityAttributes.entityId, EltmEntityAttributes.key),
-                shouldReturnGeneratedValues = false,
-            ) { (k, v) ->
-                this[EltmEntityAttributes.entityId] = entityId
-                this[EltmEntityAttributes.key] = k
-                this[EltmEntityAttributes.value] = v
-            }
-            EltmEntities.update({ EltmEntities.id eq entityId }) {
-                it[EltmEntities.embedding] = embedding
-            }
+            // one row per (entity, key): the batched UPSERT and the
+            // re-embedded vector ride writeEntityAttributes
+            // (EltmEntityQueries.kt)
+            writeEntityAttributes(entityId, changed, embedding)
             bumpWriteVersion()
             changed.size
         }
@@ -610,13 +462,8 @@ class PostgresEltmService(
                     current - k,
                 )
             )
-            EltmEntityAttributes.deleteWhere {
-                (EltmEntityAttributes.entityId eq entityId) and
-                    (EltmEntityAttributes.key eq k)
-            }
-            EltmEntities.update({ EltmEntities.id eq entityId }) {
-                it[EltmEntities.embedding] = embedding
-            }
+            deleteEntityAttributeRow(entityId, k)
+            updateEntityEmbedding(entityId, embedding)
             bumpWriteVersion()
         }
     }
@@ -686,106 +533,11 @@ class PostgresEltmService(
             embedText(entityEmbeddingText(winnerName, winnerCat, foldPlan.winnerAttributes))
         } else null
 
-        val loserRels = EltmRelationships.selectAll().where {
-            (EltmRelationships.srcId eq loserId) or (EltmRelationships.dstId eq loserId)
-        }.toList()
-        // The relationship-fold decision tree below (self-loop → invalidate,
-        // triple collision → fold duplicate away, else re-point) has NO
-        // shared pure planner — unlike the attribute fold above — and the
-        // loop interleaves DB lookups with its own mutations (earlier
-        // iterations create/delete rows the survivor lookup must see), so
-        // planner extraction needs care to simulate that in-loop state.
-        // The tree's behavior is pinned by PostgresEltmServiceTest's
-        // mergeEntities tests.
-        for (rel in loserRels) {
-            val newSrc =
-                if (rel[EltmRelationships.srcId] == loserId) winnerId
-                else rel[EltmRelationships.srcId]
-            val newDst =
-                if (rel[EltmRelationships.dstId] == loserId) winnerId
-                else rel[EltmRelationships.dstId]
-
-            val survivor = findRelationshipByTriple(newSrc, rel[EltmRelationships.verb], newDst)
-            when {
-                // the re-pointed edge would become a self-loop (winner—winner,
-                // from winner—loser, loser—winner or loser—loser): invalidate
-                // instead of re-pointing — a self-loop is never meaningful.
-                // A twin self-loop row may already exist (another loser edge
-                // collapsed onto the same triple first): fold into it instead
-                // of violating the unique index
-                newSrc == newDst -> if (survivor != null) {
-                    EltmNotes.update({ EltmNotes.relationshipId eq rel[EltmRelationships.id] }) {
-                        it[EltmNotes.relationshipId] = survivor[EltmRelationships.id]
-                    }
-                    EltmRelationships.deleteWhere {
-                        EltmRelationships.id eq rel[EltmRelationships.id]
-                    }
-                } else {
-                    EltmRelationships.update({ EltmRelationships.id eq rel[EltmRelationships.id] }) {
-                        it[EltmRelationships.srcId] = newSrc
-                        it[EltmRelationships.dstId] = newDst
-                        it[EltmRelationships.valid] = false
-                    }
-                }
-
-                survivor != null && survivor[EltmRelationships.id] != rel[EltmRelationships.id] -> {
-                    // collides with an existing row of the same triple
-                    // (valid or not): re-point the duplicate's diary notes
-                    // to the survivor, fold the validity (the survivor
-                    // holds the edge if either row held it), and only
-                    // THEN delete the duplicate row (the ON DELETE
-                    // CASCADE must never destroy diary notes)
-                    EltmNotes.update({ EltmNotes.relationshipId eq rel[EltmRelationships.id] }) {
-                        it[EltmNotes.relationshipId] = survivor[EltmRelationships.id]
-                    }
-                    if (rel[EltmRelationships.valid] && !survivor[EltmRelationships.valid]) {
-                        EltmRelationships.update({ EltmRelationships.id eq survivor[EltmRelationships.id] }) {
-                            it[EltmRelationships.valid] = true
-                        }
-                    }
-                    EltmRelationships.deleteWhere {
-                        EltmRelationships.id eq rel[EltmRelationships.id]
-                    }
-                }
-
-                // no collision (or the survivor IS this row): re-point
-                else -> EltmRelationships.update({ EltmRelationships.id eq rel[EltmRelationships.id] }) {
-                    it[EltmRelationships.srcId] = newSrc
-                    it[EltmRelationships.dstId] = newDst
-                }
-            }
-        }
-
-        // re-point the loser's entity notes, fold its attributes per the
-        // shared plan (the colliding rows are dropped: re-pointing them
-        // would overwrite the winner's value on the composite PK; the
-        // foldable rows re-point to the winner), then delete the loser row
-        // (the cascade never fires: no note references the loser anymore)
-        EltmNotes.update({ EltmNotes.entityId eq loserId }) {
-            it[EltmNotes.entityId] = winnerId
-        }
-        val droppedKeys = foldPlan.droppedKeys.toList()
-        if (droppedKeys.isNotEmpty()) {
-            EltmEntityAttributes.deleteWhere {
-                (EltmEntityAttributes.entityId eq loserId) and
-                    (EltmEntityAttributes.key inList droppedKeys)
-            }
-        }
-        val foldableKeys = foldPlan.foldableKeys.toList()
-        if (foldableKeys.isNotEmpty()) {
-            EltmEntityAttributes.update({
-                (EltmEntityAttributes.entityId eq loserId) and
-                    (EltmEntityAttributes.key inList foldableKeys)
-            }) {
-                it[EltmEntityAttributes.entityId] = winnerId
-            }
-        }
-        if (winnerEmbedding != null) {
-            EltmEntities.update({ EltmEntities.id eq winnerId }) {
-                it[EltmEntities.embedding] = winnerEmbedding
-            }
-        }
-        EltmEntities.deleteWhere { EltmEntities.id eq loserId }
+        // the whole SQL fold-and-delete below — the loser's relationships
+        // (the decision tree lives in EltmMergeQueries.kt), diary notes
+        // and attributes, then the loser row itself — rides
+        // executeEntityMerge inside this same transaction
+        executeEntityMerge(winnerId, loserId, foldPlan, winnerEmbedding)
         // one bump for the whole transactional merge (the loser delete is
         // the reliable change signal; the re-points ride the same commit)
         bumpWriteVersion()
@@ -806,40 +558,19 @@ class PostgresEltmService(
 
     override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> = withTransaction {
         requirePaging(limit, offset)
-        val entities = EltmEntities.selectAll()
-            .orderBy(EltmEntities.id to SortOrder.ASC)
-            .limit(limit)
-            .offset(offset.toLong())
-            .map { it.toEntity() }
-        // a whole page's counts, latest notes and attributes in bounded
-        // batch queries (see noteCountsAndLatest) instead of the
-        // single-subject helpers' 5 per row (the single-subject reads stay
-        // per-row: one row, five queries)
-        val noteSummary = noteCountsAndLatest(EltmNotes.entityId, entities.map { it.id })
-        val relationshipCounts = relationshipCountsFor(entities.map { it.id })
-        val attributes = attributesFor(entities.map { it.id })
-        entities.map { entity ->
-            EntityView(
-                entity = entity,
-                noteCount = noteSummary[entity.id]?.first ?: 0,
-                relationshipCount = relationshipCounts[entity.id] ?: 0,
-                latestNote = noteSummary[entity.id]?.second,
-                attributes = attributes[entity.id] ?: emptyMap(),
-            )
-        }
+        // the whole page's counts, latest notes and attributes ride the
+        // batch builder selectEntityViews (EltmEntityQueries.kt) instead
+        // of the single-subject helpers' 5 per row (the single-subject
+        // reads stay per-row: one row, five queries)
+        selectEntityViews(limit, offset)
     }
 
     override suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView> =
         withTransaction {
             requirePaging(limit, offset)
-            val rels = EltmRelationships.selectAll()
-                .orderBy(EltmRelationships.id to SortOrder.ASC)
-                .limit(limit)
-                .offset(offset.toLong())
-                .map { it.toRelationship() }
-            if (rels.isEmpty()) return@withTransaction emptyList()
-            // the whole page's views ride the shared batch builder
-            toRelationshipViews(rels)
+            // the whole page's views ride the batch builder
+            // selectRelationshipViews (EltmRelationshipQueries.kt)
+            selectRelationshipViews(limit, offset)
         }
 
     override suspend fun exportAll(): EltmSnapshot = withTransaction(
@@ -855,25 +586,14 @@ class PostgresEltmService(
     ) {
         // the whole store (the snapshot rationale lives on
         // EltmService.exportAll); only the content columns — the embedding
-        // vectors (2000 dims per row) never travel
-        val entities = EltmEntities
-            .select(EltmEntities.id, EltmEntities.canonicalName, EltmEntities.category)
-            .orderBy(EltmEntities.id to SortOrder.ASC)
-            .map { it.toEntity() }
+        // vectors (2000 dims per row) never travel (the content-only
+        // selects live in the query files)
+        val entities = selectAllEntityContent()
         EltmSnapshot(
             entities = entities,
             attributes = attributesFor(entities.map { it.id }),
-            relationships = EltmRelationships.selectAll()
-                .orderBy(EltmRelationships.id to SortOrder.ASC)
-                .map { it.toRelationship() },
-            notes = EltmNotes.select(
-                EltmNotes.id,
-                EltmNotes.entityId,
-                EltmNotes.relationshipId,
-                EltmNotes.eventDate,
-                EltmNotes.note,
-            ).orderBy(EltmNotes.eventDate to SortOrder.ASC, EltmNotes.id to SortOrder.ASC)
-                .map { it.toNote() },
+            relationships = selectAllRelationshipContent(),
+            notes = selectAllNoteContent(),
         )
     }
 
@@ -900,16 +620,10 @@ class PostgresEltmService(
         entityId: Long,
         includeInvalid: Boolean,
     ): List<RelationshipView> = withTransaction {
-        val cond: Op<Boolean> =
-            (EltmRelationships.srcId eq entityId) or (EltmRelationships.dstId eq entityId)
-
-        val filtered = if (includeInvalid) cond else cond and (EltmRelationships.valid eq true)
-        val rels = EltmRelationships.selectAll().where { filtered }
-            .orderBy(EltmRelationships.id to SortOrder.DESC)
-            .map { it.toRelationship() }
-        // the whole drill-down rides the shared batch builder, not a
-        // per-row view build
-        toRelationshipViews(rels)
+        // the whole drill-down rides the batch builder
+        // selectEntityRelationshipViews (EltmRelationshipQueries.kt), not
+        // a per-row view build
+        selectEntityRelationshipViews(entityId, includeInvalid)
     }
 
     override suspend fun getEntityNotes(
