@@ -210,7 +210,7 @@ private fun ApplicationCall.messageIndexParam(): Int =
  * cause (deeper links stay out of the client-visible message — the full
  * chain stays in the server log), typed for the frontend's rendering.
  * The per-link messages come from the shared [failureChainMessages]
- * traversal; the ELTM import's 502 body (EltmRoute.kt) joins the WHOLE
+ * traversal; the ELTM digest's 502 body (EltmRoute.kt) joins the WHOLE
  * chain instead.
  */
 private fun errorEventData(error: Throwable): String = buildJsonObject {

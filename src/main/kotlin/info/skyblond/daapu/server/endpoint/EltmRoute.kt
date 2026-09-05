@@ -7,7 +7,7 @@ import info.skyblond.daapu.agent.chat.ChatValidationException
 import info.skyblond.daapu.agent.chat.imageMimeTypeRegex
 import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.server.EltmImportRequest
+import info.skyblond.daapu.server.EltmDigestRequest
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
 import info.skyblond.daapu.server.EntityViewDto.Companion.toDto
 import info.skyblond.daapu.server.RelationshipViewDto.Companion.toDto
@@ -32,24 +32,24 @@ private const val DEFAULT_ELTM_PAGE_LIMIT = 100
 private const val MAX_ELTM_PAGE_LIMIT = 500
 
 /**
- * A terminal failure of the ELTM import behind `POST /api/eltm/import`:
+ * A terminal failure of the ELTM digest behind `POST /api/eltm/digest`:
  * the extraction one-shot or the writer run inside
- * `MemoryExtractionService.processUserImport` threw its
+ * `MemoryExtractionService.digestUserInput` threw its
  * [IllegalStateException]. Mapped to 502 with the real failure reason
- * (WebServer's StatusPages) — the importer is interactively waiting and
- * must know why the import failed (an upstream error, the writer round
+ * (WebServer's StatusPages) — the submitter is interactively waiting and
+ * must know why the digest failed (an upstream error, the writer round
  * cap, ...) to decide on a retry; whatever the writer already recorded
  * sticks (it deduplicates on retry). [cause] carries the stage's exception
  * for the server-side log only: the response body renders the message
  * chain, not the stack.
  */
-class EltmImportException(message: String, cause: Throwable) : RuntimeException(message, cause)
+class EltmDigestException(message: String, cause: Throwable) : RuntimeException(message, cause)
 
 /**
  * The `/api/eltm` routes: the browse-only reads over [EltmService] plus the
- * ONE write endpoint, `POST /import`, feeding caller-supplied text/image
+ * ONE write endpoint, `POST /digest`, feeding caller-supplied text/image
  * parts through [memoryExtractionService] (both the extraction one-shot
- * and the writer run inside `MemoryExtractionService.processUserImport`;
+ * and the writer run inside `MemoryExtractionService.digestUserInput`;
  * the same extractor/writer pair the discard pipeline uses — the ELTM is
  * otherwise written only by that pipeline).
  */
@@ -143,10 +143,10 @@ fun Route.registerEltmEndpoints(
             )
         }
         // the manual write path: caller-supplied text/image parts in the
-        // user-message wire shape (raw notes, prose or pre-digested facts,
-        // plus image attachments — an email or a document imports with its
-        // interleaving intact) run through
-        // MemoryExtractionService.processUserImport — the memory extraction
+        // user-message wire shape (raw notes, prose or facts already in
+        // fact form, plus image attachments — an email or a document is
+        // digested with its interleaving intact) run through
+        // MemoryExtractionService.digestUserInput — the memory extraction
         // one-shot first (first-person pronouns → "the user", relative
         // dates resolve against `date`/today; the extraction model must
         // support vision when images are attached), then the extractor's
@@ -160,14 +160,14 @@ fun Route.registerEltmEndpoints(
         // Response: 201 Created with an EMPTY body — a pasted skip sentinel
         // or an empty extraction is an indistinguishable no-op success
         // (there is no recorded flag; a terminal stage failure is the 502
-        // EltmImportException instead). Accepted PoC limits, the same
+        // EltmDigestException instead). Accepted PoC limits, the same
         // stance as the rest of this API's request bodies: no size cap on
-        // the parts and no import concurrency limit (each import is one
+        // the parts and no digest concurrency limit (each digest is one
         // extraction one-shot plus one minutes-long writer loop).
-        post("/import") {
-            val request = call.receive<EltmImportRequest>()
+        post("/digest") {
+            val request = call.receive<EltmDigestRequest>()
             // the polymorphic decode accepts any ChatMessagePart the wire
-            // can carry; only text and IMAGE attachments are importable —
+            // can carry; only text and IMAGE attachments are digestible —
             // everything else is a client error before any LLM call
             val parts = request.parts.map { part ->
                 when (part) {
@@ -175,7 +175,7 @@ fun Route.registerEltmEndpoints(
                     is ChatMessagePart.Attachment -> {
                         if (part.kind != AttachmentKind.Image) {
                             throw BadRequestException(
-                                "only image attachments can be imported, got ${part.kind}"
+                                "only image attachments can be digested, got ${part.kind}"
                             )
                         }
                         // the same image-MIME shape the chat-send data-URL
@@ -194,7 +194,7 @@ fun Route.registerEltmEndpoints(
                         // and the STRIPPED value travels on so the wire
                         // carries no folded payloads on either path
                         val content = part.content as? AttachmentContent.Base64
-                            ?: throw BadRequestException("only base64 attachment content can be imported")
+                            ?: throw BadRequestException("only base64 attachment content can be digested")
                         val base64 = content.base64.filterNot { it.isWhitespace() }
                         runCatching { Base64.decode(base64) }
                             .getOrElse { throw ChatValidationException("Invalid base64 in image attachment") }
@@ -202,7 +202,7 @@ fun Route.registerEltmEndpoints(
                     }
 
                     else -> throw BadRequestException(
-                        "only text and image attachment parts can be imported, got ${part.javaClass.simpleName}"
+                        "only text and image attachment parts can be digested, got ${part.javaClass.simpleName}"
                     )
                 }
             }
@@ -234,9 +234,9 @@ fun Route.registerEltmEndpoints(
             }
             try {
                 val referenceDate = date ?: today
-                memoryExtractionService.processUserImport(meaningful, referenceDate)
+                memoryExtractionService.digestUserInput(meaningful, referenceDate)
             } catch (e: IllegalStateException) {
-                throw EltmImportException(failureChainMessages(e).joinToString("\nCaused by: "), e)
+                throw EltmDigestException(failureChainMessages(e).joinToString("\nCaused by: "), e)
             }
             // 201 Created with an empty body — see the route comment above
             // for the no-op/failure semantics

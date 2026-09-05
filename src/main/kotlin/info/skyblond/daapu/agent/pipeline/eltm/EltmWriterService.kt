@@ -64,9 +64,9 @@ class EltmWriterService(
          * The writer's input: the current date plus the extracted facts
          * verbatim (the only source the writer may record — it must never
          * invent details). The framing is input-neutral: the facts may come
-         * from a discarded conversation (the discard pipeline) or from
-         * caller-supplied text and/or images (the import path, see
-         * [MemoryExtractionService.processUserImport]). The fence is
+          * from a discarded conversation (the discard pipeline) or from
+          * caller-supplied text and/or images (the digest path, see
+          * [MemoryExtractionService.digestUserInput]). The fence is
          * FOUR backticks so a three-backtick run inside the facts (the
          * extractor copies code content into facts) cannot break the
          * enclosure.

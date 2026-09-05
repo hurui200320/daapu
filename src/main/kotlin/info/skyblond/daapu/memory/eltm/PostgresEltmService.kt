@@ -753,7 +753,7 @@ class PostgresEltmService(
      * Atomically bump the global ELTM write counter
      * (`memory_meta_number.eltm_version`, see `db/MetaCounter.kt`) by one.
      * Called inside the same transaction as every visible-state write, so
-     * the bump commits with the write — the digest fingerprint moves
+     * the bump commits with the write — the version moves
      * exactly when the ELTM changes.
      */
     private fun bumpWriteVersion() = bumpMetaCounter(ELTM_VERSION_KEY)

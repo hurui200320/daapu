@@ -18,7 +18,7 @@ internal const val ELTM_VERSION_KEY = "eltm_version"
  * Atomically bump the numeric counter [key] (`value = value + 1` UPDATE on
  * the column itself — no read-modify-write race). AMBIENT transaction: only
  * call inside [withTransaction], so the bump commits with the caller's
- * write and the digest fingerprint moves exactly when the visible state
+ * write and the version moves exactly when the visible state
  * changes. Fails fast when the row is absent: the migration seeds it, so a
  * missing row means a broken database and a silently lost bump (the
  * `eltm-updated` flag would stop moving) must not happen.

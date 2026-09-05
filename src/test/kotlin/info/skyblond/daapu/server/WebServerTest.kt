@@ -865,7 +865,7 @@ class WebServerTest : DbTestBase() {
         }
     }
 
-    // ---- ELTM import route (`POST /api/eltm/import`, the manual write path) ----
+    // ---- ELTM digest route (`POST /api/eltm/digest`, the manual write path) ----
 
     /**
      * A fake hand dispatching on the one-shot system prompts: the
@@ -874,10 +874,10 @@ class WebServerTest : DbTestBase() {
      * the writer runs [info.skyblond.daapu.testutil.writerRunFlow] against
      * [eltm] (one create_entity + add_entity_note round, executed through
      * the real [info.skyblond.daapu.memory.eltm.EltmToolProvider], then
-     * the confirmation). The import endpoint never calls anything else, so
+     * the confirmation). The digest endpoint never calls anything else, so
      * any other request fails the test.
      */
-    private fun importHand(
+    private fun digestHand(
         eltm: EltmService,
         extraction: suspend (HandRunRequest) -> List<HandEvent> = { textRunFlow("likes coffee") },
         writer: suspend (HandRunRequest) -> List<HandEvent> = { writerRunFlow(eltm) },
@@ -888,31 +888,31 @@ class WebServerTest : DbTestBase() {
                 request.systemPrompt?.startsWith("You're maintaining an external long-term memory") == true ->
                     writer(request)
 
-                else -> error("unexpected run on the import endpoint: ${request.systemPrompt}")
+                else -> error("unexpected run on the digest endpoint: ${request.systemPrompt}")
             }
         },
     )
 
-    private fun importText(text: String) = ChatMessagePart.Text(text)
+    private fun digestText(text: String) = ChatMessagePart.Text(text)
 
-    private fun importImage(base64: String = "AAAA") = ChatMessagePart.Attachment(
+    private fun digestImage(base64: String = "AAAA") = ChatMessagePart.Attachment(
         kind = AttachmentKind.Image,
         content = AttachmentContent.Base64(base64),
         mimeType = "image/png",
     )
 
     /**
-     * The import request body, serialized through the real DTO (the
+     * The digest request body, serialized through the real DTO (the
      * polymorphic parts render with the `type` discriminator, exactly the
      * way a client would send them).
      */
-    private fun importBody(
+    private fun digestBody(
         parts: List<ChatMessagePart> = emptyList(),
         date: String? = null,
-    ): String = json.encodeToString(EltmImportRequest(parts = parts, date = date))
+    ): String = json.encodeToString(EltmDigestRequest(parts = parts, date = date))
 
     @Test
-    fun `eltm import rejects an empty or blank-parts request with 400`() {
+    fun `eltm digest rejects an empty or blank-parts request with 400`() {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
@@ -922,7 +922,7 @@ class WebServerTest : DbTestBase() {
                 """{"parts":[{"type":"text","text":""}]}""",
                 """{"parts":[{"type":"text","text":"   "}]}""",
             ).forEach { body ->
-                val response = client.post("/api/eltm/import") {
+                val response = client.post("/api/eltm/digest") {
                     contentType(ContentType.Application.Json)
                     setBody(body)
                 }
@@ -933,16 +933,16 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import rejects a malformed or future date with 400`() {
+    fun `eltm digest rejects a malformed or future date with 400`() {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
             listOf(
-                importBody(listOf(importText("User likes coffee")), date = "2026/01/01"),
-                importBody(listOf(importText("User likes coffee")), date = "not-a-date"),
-                importBody(listOf(importText("User likes coffee")), date = "2099-01-01"),
+                digestBody(listOf(digestText("User likes coffee")), date = "2026/01/01"),
+                digestBody(listOf(digestText("User likes coffee")), date = "not-a-date"),
+                digestBody(listOf(digestText("User likes coffee")), date = "2099-01-01"),
             ).forEach { body ->
-                val response = client.post("/api/eltm/import") {
+                val response = client.post("/api/eltm/digest") {
                     contentType(ContentType.Application.Json)
                     setBody(body)
                 }
@@ -953,18 +953,18 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import extracts the text and writes the facts through the ELTM writer`() {
+    fun `eltm digest extracts the text and writes the facts through the ELTM writer`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(eltm)
+        val hand = digestHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             // the route's own `LocalDate.now()` runs between the two reads,
             // so a midnight flip between the calls cannot flake the
             // "server's today" assertion below
             val before = LocalDate.now()
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importText("I like coffee"))))
+                setBody(digestBody(listOf(digestText("I like coffee"))))
             }
             val after = LocalDate.now()
             assertEquals(HttpStatusCode.Created, response.status)
@@ -972,7 +972,7 @@ class WebServerTest : DbTestBase() {
             assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
             assertTrue(
                 hand.requests[0].systemPrompt!!.startsWith("You're extracting memories from a submission"),
-                "the import extraction uses the user-import-flavored prompt: ${hand.requests[0].systemPrompt}",
+                "the digest extraction uses the user-digest-flavored prompt: ${hand.requests[0].systemPrompt}",
             )
             // the extraction one-shot received the text as ONE user message
             // carrying its reference-date anchor (relative dates resolve
@@ -1006,18 +1006,18 @@ class WebServerTest : DbTestBase() {
         }
         // the writer run landed the fact in the ELTM diary
         val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
-        assertTrue(notes.contains("likes coffee"), "the imported fact must reach the ELTM")
+        assertTrue(notes.contains("likes coffee"), "the digested fact must reach the ELTM")
     }
 
     @Test
-    fun `eltm import anchors the extraction at the optional date while the writer stamps today`() {
+    fun `eltm digest anchors the extraction at the optional date while the writer stamps today`() {
         val eltm = testPostgresEltmService(FakeHand())
         // the scripted writer reads the "current date" off its input the
         // way the real model does, so the recorded note stamps the write
         // day: the reference date only anchors the extraction — the writer
         // always writes with the server's today (the same write day the
         // discard pipeline uses)
-        val hand = importHand(
+        val hand = digestHand(
             eltm,
             writer = { request ->
                 val input = request.messages.single().parts
@@ -1029,9 +1029,9 @@ class WebServerTest : DbTestBase() {
         val before = LocalDate.now()
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importText("I like coffee")), date = "2026-01-01"))
+                setBody(digestBody(listOf(digestText("I like coffee")), date = "2026-01-01"))
             }
             assertEquals(HttpStatusCode.Created, response.status)
             // the reference date also anchors the synthetic text message, so
@@ -1065,19 +1065,19 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import no-ops a pasted skip sentinel without an LLM call`() {
+    fun `eltm digest no-ops a pasted skip sentinel without an LLM call`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(eltm)
+        val hand = digestHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             // the exact sentence and a casing/punctuation near-miss both hit
             // the tolerant input fast path (MemoryExtractionService
-            // .isNothingToRemember, via processUserImport) without any LLM
-            // call, answered by the same 201 as a real import
+            // .isNothingToRemember, via digestUserInput) without any LLM
+            // call, answered by the same 201 as a real digest
             listOf("Nothing worth remember.", "nothing worth remember").forEach { paste ->
-                val response = client.post("/api/eltm/import") {
+                val response = client.post("/api/eltm/digest") {
                     contentType(ContentType.Application.Json)
-                    setBody(importBody(listOf(importText(paste))))
+                    setBody(digestBody(listOf(digestText(paste))))
                 }
                 assertEquals(HttpStatusCode.Created, response.status, "paste: $paste")
             }
@@ -1087,18 +1087,18 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import no-ops when the extractor finds nothing worth remembering`() {
+    fun `eltm digest no-ops when the extractor finds nothing worth remembering`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(
+        val hand = digestHand(
             eltm,
             extraction = { textRunFlow("Nothing worth remember.") },
             writer = { error("the writer must not run for an empty extraction") },
         )
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importText("we just chatted about the weather"))))
+                setBody(digestBody(listOf(digestText("we just chatted about the weather"))))
             }
             assertEquals(HttpStatusCode.Created, response.status)
         }
@@ -1107,21 +1107,21 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import no-ops a near-miss extraction sentinel without the writer`() {
+    fun `eltm digest no-ops a near-miss extraction sentinel without the writer`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(
+        val hand = digestHand(
             eltm,
             // a casing-variant near-miss of the sentinel: the post-extraction
-            // check (MemoryExtractionService.processUserImport) must be
+            // check (MemoryExtractionService.digestUserInput) must be
             // tolerant too
             extraction = { textRunFlow("NOTHING WORTH REMEMBER.") },
             writer = { error("the writer must not run for an empty extraction") },
         )
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importText("we just chatted about the weather"))))
+                setBody(digestBody(listOf(digestText("we just chatted about the weather"))))
             }
             assertEquals(HttpStatusCode.Created, response.status)
         }
@@ -1130,17 +1130,17 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import surfaces a failed writer run as 502 with the reason`() {
+    fun `eltm digest surfaces a failed writer run as 502 with the reason`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(
+        val hand = digestHand(
             eltm,
             writer = { errorRunFlow("upstream", "provider exploded") },
         )
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importText("I like coffee"))))
+                setBody(digestBody(listOf(digestText("I like coffee"))))
             }
             assertEquals(HttpStatusCode.BadGateway, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -1153,17 +1153,17 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import surfaces a failed extraction as 502 with the reason`() {
+    fun `eltm digest surfaces a failed extraction as 502 with the reason`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(
+        val hand = digestHand(
             eltm,
             extraction = { errorRunFlow("upstream", "provider exploded") },
         )
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importText("I like coffee"))))
+                setBody(digestBody(listOf(digestText("I like coffee"))))
             }
             assertEquals(HttpStatusCode.BadGateway, response.status)
             val body = json.parseToJsonElement(response.bodyAsText()).jsonObject
@@ -1177,19 +1177,19 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import passes interleaved parts to the extractor in order`() {
+    fun `eltm digest passes interleaved parts to the extractor in order`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(eltm)
+        val hand = digestHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
                 setBody(
-                    importBody(
+                    digestBody(
                         listOf(
-                            importText("I like coffee"),
-                            importImage(),
-                            importText("Also, I switched from editor A to editor B yesterday."),
+                            digestText("I like coffee"),
+                            digestImage(),
+                            digestText("Also, I switched from editor A to editor B yesterday."),
                         )
                     )
                 )
@@ -1220,20 +1220,20 @@ class WebServerTest : DbTestBase() {
         }
         // the writer run landed the fact in the ELTM diary
         val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
-        assertTrue(notes.contains("likes coffee"), "the imported fact must reach the ELTM")
+        assertTrue(notes.contains("likes coffee"), "the digested fact must reach the ELTM")
     }
 
     @Test
-    fun `eltm import accepts an images-only request without text`() {
+    fun `eltm digest accepts an images-only request without text`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(eltm)
+        val hand = digestHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
-            // no text part at all: images alone are a valid import (the
+            // no text part at all: images alone are a valid digest (the
             // extraction model in the test config supports vision)
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importImage())))
+                setBody(digestBody(listOf(digestImage())))
             }
             assertEquals(HttpStatusCode.Created, response.status)
             assertEquals(2, hand.requests.size, "extraction one-shot + writer run")
@@ -1245,13 +1245,13 @@ class WebServerTest : DbTestBase() {
             assertEquals(AttachmentContent.Base64("AAAA"), attachment.content)
         }
         val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
-        assertTrue(notes.contains("likes coffee"), "the imported fact must reach the ELTM")
+        assertTrue(notes.contains("likes coffee"), "the digested fact must reach the ELTM")
     }
 
     @Test
-    fun `eltm import rejects a malformed or non-image part with 400 and no LLM call`() {
+    fun `eltm digest rejects a malformed or non-image part with 400 and no LLM call`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(eltm)
+        val hand = digestHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             listOf(
@@ -1266,10 +1266,10 @@ class WebServerTest : DbTestBase() {
                 """{"parts":[{"type":"attachment","kind":"image","content":{"type":"base64","base64":"AAAA"},"mimeType":"image/png;charset=x"}]}""",
                 // an undecodable base64 payload (parity with parseImageDataUrl)
                 """{"parts":[{"type":"attachment","kind":"image","content":{"type":"base64","base64":"!!!"},"mimeType":"image/png"}]}""",
-                // a part type no import accepts (tool reasoning)
+                // a part type no digest accepts (tool reasoning)
                 """{"parts":[{"type":"reasoning","content":"r"}]}""",
             ).forEach { body ->
-                val response = client.post("/api/eltm/import") {
+                val response = client.post("/api/eltm/digest") {
                     contentType(ContentType.Application.Json)
                     setBody(body)
                 }
@@ -1281,18 +1281,18 @@ class WebServerTest : DbTestBase() {
     }
 
     @Test
-    fun `eltm import folds whitespace out of base64 payloads like the chat-send path`() {
+    fun `eltm digest folds whitespace out of base64 payloads like the chat-send path`() {
         val eltm = testPostgresEltmService(FakeHand())
-        val hand = importHand(eltm)
+        val hand = digestHand(eltm)
         testApplication {
             application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
             // parity with parseImageDataUrl (see EltmRoute.kt): a folded
             // payload is accepted AND forwarded stripped — the same base64
             // the chat-send data-URL path would accept, so the wire never
             // carries whitespace on either path
-            val response = client.post("/api/eltm/import") {
+            val response = client.post("/api/eltm/digest") {
                 contentType(ContentType.Application.Json)
-                setBody(importBody(listOf(importImage("aGVs\nbG8= "))))
+                setBody(digestBody(listOf(digestImage("aGVs\nbG8= "))))
             }
             assertEquals(HttpStatusCode.Created, response.status)
             val attachment = hand.requests[0].messages[0].parts.last() as ChatMessagePart.Attachment
@@ -1303,7 +1303,7 @@ class WebServerTest : DbTestBase() {
             )
         }
         val notes = runBlocking { TestDb.allEltmNotes().map { it.note } }
-        assertTrue(notes.contains("likes coffee"), "the folded-payload import must reach the ELTM")
+        assertTrue(notes.contains("likes coffee"), "the folded-payload digest must reach the ELTM")
     }
 
     @Test

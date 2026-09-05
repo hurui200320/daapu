@@ -490,9 +490,9 @@ interface EltmService {
      * content hash — any write that changes the visible state moves it.
      * Compared against `chats.eltm_version` for the `eltm-updated`
      * injection flag. A loose indicator for the LLM that the ELTM has been
-     * updated and info in the context **might** be outdated — the store is
-     * never fetched as a whole, so a snapshot digest is impossible, and the
-     * plain version is the right (cheap) signal.
+ * updated and info in the context **might** be outdated — the store is
+ * never fetched as a whole, so a whole-store snapshot check is impossible,
+ * and the plain version is the right (cheap) signal.
      */
     suspend fun version(): String
 }

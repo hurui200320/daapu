@@ -49,7 +49,7 @@ object Personas : Table("personas") {
 /**
  * Simple numeric key-value meta store (`memory_meta_number` in
  * `V1__init.sql`); the only entry is the global ELTM write counter
- * (`eltm_version`) that feeds the eltm-updated digest — every ELTM write
+ * (`eltm_version`) that feeds the eltm-updated version marker — every ELTM write
  * bumps it with an atomic `value = value + 1` UPDATE inside its own
  * transaction.
  */

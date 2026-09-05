@@ -29,7 +29,7 @@ CREATE TABLE chats
 -- this width.
 
 -- Simple key-value meta store for numeric counters; the only entry is the
--- ELTM write counter feeding the eltm-updated digest (bumped with an atomic
+-- ELTM write counter feeding the eltm-updated version marker (bumped with an atomic
 -- `value = value + 1` UPDATE inside every ELTM write transaction).
 CREATE TABLE memory_meta_number
 (

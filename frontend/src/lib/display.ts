@@ -91,12 +91,12 @@ export function messageSpacing(messages: ChatMessage[], i: number): string {
 
 /**
  * Parse an image data URL into the backend-neutral attachment shape (used
- * for the optimistic user bubble AND the ELTM import's wire parts). Mirrors
+ * for the optimistic user bubble AND the ELTM digest's wire parts). Mirrors
  * the server-side regex: non-image MIME types and non-data URLs yield null.
  * The null means "skip" either way, but the validation story differs per
  * caller: the optimistic bubble simply drops the part (the chat-send request
  * still carries the raw data URL, where the backend performs the
- * authoritative validation), while the ELTM import sends the CONVERTED part,
+ * authoritative validation), while the ELTM digest sends the CONVERTED part,
  * validated by the route's attachment checks (see EltmRoute.kt).
  */
 export function dataUrlToImagePart(dataUrl: string): ChatAttachmentPart | null {

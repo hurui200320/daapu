@@ -220,8 +220,8 @@ KDoc of the named files.
   and a failed extraction never fails a chat run. Extracted facts go
   straight to the ELTM writer (`agent/pipeline/eltm/EltmWriterService.kt`
   + `memory/eltm/EltmToolProvider.kt`), which deduplicates re-runs. The
-  manual write path is `POST /api/eltm/import` →
-  `MemoryExtractionService.processUserImport`
+  manual write path is `POST /api/eltm/digest` →
+  `MemoryExtractionService.digestUserInput`
   (`server/endpoint/EltmRoute.kt`; request/response shape in the README
   API table).
 - **Pipeline models**: `memory.compactModel`, `memory.eltm.*`,
@@ -244,7 +244,7 @@ KDoc of the named files.
   `src/lib/ui-store.svelte.ts`, `src/lib/toast-store.svelte.ts`,
   `src/lib/persona-store.svelte.ts`); the run loop
   (`src/lib/stream-session.ts`); the wire client (`src/lib/api.ts`);
-  ELTM browse + import
+  ELTM browse + digest
   (`src/lib/components/EltmView.svelte`, `src/lib/paged-tab.svelte.ts`,
   `src/lib/paging.ts`); personas (`src/lib/components/PersonaView.svelte`,
   `src/lib/components/PersonaDropdown.svelte`); chat UI
@@ -255,7 +255,7 @@ KDoc of the named files.
   `CollapsibleBlock.svelte`); markdown
   (`src/lib/markdown-renderer.ts`); attachments
   (`src/lib/image-attachment.ts` — byte cap + downscale ladder,
-  `src/lib/import-form.ts`); pure display/decision helpers
+  `src/lib/digest-form.ts`); pure display/decision helpers
   (`src/lib/display.ts`, `src/lib/chat-logic.ts`); background-resync
   cadence (`src/lib/resync.ts`), focus trap (`src/lib/focus-trap.ts`),
   misc helpers (`src/lib/utils.ts`); the wire-format mirror

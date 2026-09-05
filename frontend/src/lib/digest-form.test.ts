@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { hasImportInput, moveToSlot, newTextPart, wireImportParts, type ImportDraftPart } from './import-form'
+import { hasDigestInput, moveToSlot, newTextPart, wireDigestParts, type DigestDraftPart } from './digest-form'
 
-const text = (t: string): ImportDraftPart => ({ kind: 'text', text: t })
-const image = (dataUrl: string): ImportDraftPart => ({ kind: 'image', dataUrl })
+const text = (t: string): DigestDraftPart => ({ kind: 'text', text: t })
+const image = (dataUrl: string): DigestDraftPart => ({ kind: 'image', dataUrl })
 
 describe('moveToSlot', () => {
   const list = ['a', 'b', 'c', 'd']
@@ -44,34 +44,34 @@ describe('moveToSlot', () => {
   })
 })
 
-describe('hasImportInput', () => {
+describe('hasDigestInput', () => {
   it('is false for a fresh draft and blank-only text blocks', () => {
-    expect(hasImportInput([newTextPart()])).toBe(false)
-    expect(hasImportInput([text('  '), text('\n\t')])).toBe(false)
+    expect(hasDigestInput([newTextPart()])).toBe(false)
+    expect(hasDigestInput([text('  '), text('\n\t')])).toBe(false)
   })
 
   it('is true for any non-blank text or an image', () => {
-    expect(hasImportInput([text(' x ')]), 'non-blank text').toBe(true)
-    expect(hasImportInput([image('data:image/png;base64,AA==')]), 'image').toBe(true)
+    expect(hasDigestInput([text(' x ')]), 'non-blank text').toBe(true)
+    expect(hasDigestInput([image('data:image/png;base64,AA==')]), 'image').toBe(true)
   })
 
   it('counts a draft image whose data URL does not parse as nothing', () => {
     // the same conversion the submit sends: the button must never be
     // enabled for a request the submit would silently no-op
-    expect(hasImportInput([image('not-a-data-url')])).toBe(false)
-    expect(hasImportInput([image('not-a-data-url'), text('hi')])).toBe(true)
+    expect(hasDigestInput([image('not-a-data-url')])).toBe(false)
+    expect(hasDigestInput([image('not-a-data-url'), text('hi')])).toBe(true)
   })
 })
 
-describe('wireImportParts', () => {
+describe('wireDigestParts', () => {
   it('drops blank text blocks and keeps non-blank text verbatim', () => {
-    const parts: ImportDraftPart[] = [newTextPart(), text('  keep my  spacing  '), text('   ')]
-    expect(wireImportParts(parts)).toEqual([{ type: 'text', text: '  keep my  spacing  ' }])
+    const parts: DigestDraftPart[] = [newTextPart(), text('  keep my  spacing  '), text('   ')]
+    expect(wireDigestParts(parts)).toEqual([{ type: 'text', text: '  keep my  spacing  ' }])
   })
 
   it('converts image drafts into attachment parts, preserving the interleaving', () => {
-    const parts: ImportDraftPart[] = [text('before'), image('data:image/png;base64,aGVsbG8='), text('after')]
-    expect(wireImportParts(parts)).toEqual([
+    const parts: DigestDraftPart[] = [text('before'), image('data:image/png;base64,aGVsbG8='), text('after')]
+    expect(wireDigestParts(parts)).toEqual([
       { type: 'text', text: 'before' },
       { type: 'attachment', kind: 'image', mimeType: 'image/png', content: { type: 'base64', base64: 'aGVsbG8=' } },
       { type: 'text', text: 'after' },
@@ -79,8 +79,8 @@ describe('wireImportParts', () => {
   })
 
   it('strips whitespace from folded base64 payloads', () => {
-    const parts: ImportDraftPart[] = [image('data:image/jpeg;base64,aa bb\ncd ')]
-    expect(wireImportParts(parts)).toEqual([
+    const parts: DigestDraftPart[] = [image('data:image/jpeg;base64,aa bb\ncd ')]
+    expect(wireDigestParts(parts)).toEqual([
       {
         type: 'attachment',
         kind: 'image',
@@ -91,10 +91,10 @@ describe('wireImportParts', () => {
   })
 
   it('skips a draft image whose data URL does not parse', () => {
-    expect(wireImportParts([image('not-a-data-url'), image('data:text/plain;base64,aGk=')])).toEqual([])
+    expect(wireDigestParts([image('not-a-data-url'), image('data:text/plain;base64,aGk=')])).toEqual([])
   })
 
   it('answers an empty list for an all-blank draft', () => {
-    expect(wireImportParts([newTextPart()])).toEqual([])
+    expect(wireDigestParts([newTextPart()])).toEqual([])
   })
 })

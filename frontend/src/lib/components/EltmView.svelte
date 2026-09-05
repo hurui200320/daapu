@@ -6,7 +6,7 @@
     getEntityNotes,
     getEntityRelationships,
     getRelationshipNotes,
-    importEltm,
+    digestEltm,
     listEntities,
     listRelationships,
   } from '../api'
@@ -15,14 +15,14 @@
   import { PagedTab } from '../paged-tab.svelte'
   import { router } from '../router.svelte'
   import { toastStore } from '../toast-store.svelte'
-  import { hasImportInput, moveToSlot, newTextPart, wireImportParts, type ImportDraftPart } from '../import-form'
+  import { hasDigestInput, moveToSlot, newTextPart, wireDigestParts, type DigestDraftPart } from '../digest-form'
   import { browserEncoder, imageFileToDataUrl, MAX_IMAGE_BYTES } from '../image-attachment'
   import { cn, errMsg } from '../utils'
   import ImageLightbox from './ImageLightbox.svelte'
   import { lightboxTriggerBtn } from './ui/message-styles'
   import Button from './ui/button.svelte'
 
-  type Tab = 'entities' | 'relationships' | 'import'
+  type Tab = 'entities' | 'relationships' | 'digest'
 
   interface EntityDetails {
     relationships: RelationshipViewDto[]
@@ -42,7 +42,7 @@
   const TABS: [Tab, string][] = [
     ['entities', 'Entities'],
     ['relationships', 'Relationships'],
-    ['import', 'Import'],
+    ['digest', 'Digest'],
   ]
 
   const entitiesTab = new PagedTab<EntityViewDto, EntityDetails>(
@@ -80,8 +80,8 @@
   let loadedOnce = false
 
   async function refresh() {
-    // the first visit's from-scratch load (later visits and the import
-    // success path resync instead — see submitImport): replace both lists
+    // the first visit's from-scratch load (later visits and the digest
+    // success path resync instead — see submitDigest): replace both lists
     // and clear any stale error banner
     error = null
     try {
@@ -123,20 +123,20 @@
     }
   }
 
-  // ---- Import tab (the manual write path): caller-supplied text/image
+  // ---- Digest tab (the manual write path): caller-supplied text/image
   // parts run through the memory extraction one-shot and then the ELTM
   // writer agent. The request blocks for both stages (minutes are normal),
-  // so the form is its own state machine — `importing` disables everything
+  // so the form is its own state machine — `digesting` disables everything
   // and the busy label explains the wait. Lives in the always-mounted
   // view, so the draft survives switching tabs/chats mid-write. The draft
-  // is an ordered part list (text blocks + images, see import-form.ts for
-  // the pure draft logic), so an email or a document can be imported with
+  // is an ordered part list (text blocks + images, see digest-form.ts for
+  // the pure draft logic), so an email or a document can be digested with
   // its interleaving intact.
-  let parts = $state<ImportDraftPart[]>([newTextPart()])
-  let importDate = $state('')
-  let importing = $state(false)
-  let importError = $state<string | null>(null)
-  let importSuccess = $state(false)
+  let parts = $state<DigestDraftPart[]>([newTextPart()])
+  let digestDate = $state('')
+  let digesting = $state(false)
+  let digestError = $state<string | null>(null)
+  let digestSuccess = $state(false)
   // the hidden file input: the tab renders conditionally, so the ref is
   // $state (the bind:this assignment re-runs on tab toggles) — see
   // MessageList.svelte's scrollEl for the same pattern
@@ -149,7 +149,7 @@
 
   // whether anything meaningful (a non-blank text block or an image) is
   // drafted — gates the submit button, mirroring the server's 400
-  let hasInput = $derived(hasImportInput(parts))
+  let hasInput = $derived(hasDigestInput(parts))
 
   // the placeholder example text rides the FIRST text block only
   let firstTextIndex = $derived(parts.findIndex((p) => p.kind === 'text'))
@@ -186,23 +186,23 @@
     'I went to Paris the week of May 15, 2026 for a work conference. It was amazing!\n' +
     'Also, I switched from editor A to editor B yesterday because of plugin compatibility.'
 
-  async function submitImport() {
-    if (importing) return
-    const wireParts = wireImportParts(parts)
+  async function submitDigest() {
+    if (digesting) return
+    const wireParts = wireDigestParts(parts)
     if (wireParts.length === 0) return
-    importing = true
-    importError = null
-    importSuccess = false
+    digesting = true
+    digestError = null
+    digestSuccess = false
     try {
       // no date = the server's today as the reference date (it only
-      // anchors the extraction — the writer always stamps the import day)
-      await importEltm(wireParts, importDate || undefined)
-      importSuccess = true
+      // anchors the extraction — the writer always stamps the digest day)
+      await digestEltm(wireParts, digestDate || undefined)
+      digestSuccess = true
       // the server no longer reports whether anything was recorded (the
       // response is a bare 201): a no-op (a pasted sentinel or an empty
       // extraction) is an indistinguishable success, so the draft always
       // clears. The optional reference date deliberately stays — a
-      // same-day follow-up import is the common case.
+      // same-day follow-up digest is the common case.
       // The browse lists pick up the new records via the background resync
       // path: unlike refresh() it keeps the loaded pages and the expanded
       // cards' drill-downs (a from-scratch load would collapse them back to
@@ -210,16 +210,16 @@
       parts = [newTextPart()]
       await resync()
     } catch (e) {
-      importError = errMsg(e)
+      digestError = errMsg(e)
     } finally {
-      importing = false
+      digesting = false
     }
   }
 
   // ---- Part blocks: add/remove/reorder. Images ride the composer's
   // pipeline (see image-attachment.ts and Composer.svelte): per-file
   // budget + downscale ladder. No per-chat draft here — the form is the
-  // single always-mounted import tab.
+  // single always-mounted digest tab.
 
   /** Per-attachment byte budget (lives with the pipeline in image-attachment.ts). */
   const toastTooLarge = (name: string) =>
@@ -249,7 +249,7 @@
   let draggableIndex = $state<number | null>(null)
 
   function startDrag(e: DragEvent, index: number) {
-    if (importing) {
+    if (digesting) {
       e.preventDefault()
       return
     }
@@ -297,7 +297,7 @@
   }
 
   /**
-   * Reorder via the shared slot mover (see [moveToSlot] in import-form.ts
+   * Reorder via the shared slot mover (see [moveToSlot] in digest-form.ts
    * for the slot coordinates and the no-op rule). The touch-only move
    * buttons share it: up = slot i-1, down = slot i+2; a no-op returns the
    * same array, so reactivity only fires on real moves.
@@ -314,7 +314,7 @@
    */
   async function addFiles(files: FileList | null, insertAt?: number) {
     if (!files) return
-    const added: ImportDraftPart[] = []
+    const added: DigestDraftPart[] = []
     for (const file of Array.from(files)) {
       const result = await imageFileToDataUrl(file, browserEncoder)
       if (!result.ok) {
@@ -344,9 +344,9 @@
    * append at the end.
    */
   function pasteInTextBlock(e: ClipboardEvent, index: number) {
-    // frozen while importing like every other control: a mid-run paste
+    // frozen while digesting like every other control: a mid-run paste
     // would mutate a draft the success reset then silently wipes
-    if (importing) {
+    if (digesting) {
       e.preventDefault()
       return
     }
@@ -357,9 +357,9 @@
     void addFiles(files, index + 1)
   }
 
-  /** Paste image files anywhere else on the form: they append at the end (frozen while importing — see pasteInTextBlock). */
+  /** Paste image files anywhere else on the form: they append at the end (frozen while digesting — see pasteInTextBlock). */
   function pasteOnForm(e: ClipboardEvent) {
-    if (importing) {
+    if (digesting) {
       e.preventDefault()
       return
     }
@@ -445,7 +445,7 @@
       <h1 class="text-2xl font-semibold tracking-tight">ELTM</h1>
       <p class="text-sm text-muted-foreground">
         External long-term memory: entities, relationships, and diary notes (browse is read-only — the writer agent
-        writes, see Import)
+        writes, see Digest)
       </p>
     </div>
 
@@ -596,17 +596,17 @@
       {/each}
       {@render loadMoreButton(relationshipsTab, () => void loadMore(relationshipsTab))}
     {:else}
-      {#if importError}
+      {#if digestError}
         <div
           class="break-words rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
         >
-          {importError}
+          {digestError}
         </div>
       {/if}
 
-      {#if importSuccess}
+      {#if digestSuccess}
         <div class="rounded-lg border border-border/30 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          Import finished — new records, if any, are on the Entities and Relationships tabs.
+          Digest finished — new records, if any, are on the Entities and Relationships tabs.
         </div>
       {/if}
 
@@ -620,7 +620,7 @@
           <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div class="min-w-0 text-sm text-muted-foreground">
             <p>
-              Import runs the text and image blocks below, in the order you arrange them, through the memory extractor,
+              Digest runs the text and image blocks below, in the order you arrange them, through the memory extractor,
               then the ELTM writer agent records the extracted facts into the store. You can paste general text, raw
               notes, or summarized facts, and interleave images — an email or a document can go in as alternating text
               and images:
@@ -632,11 +632,11 @@
               <li>Relative dates ("yesterday") resolve against the reference date below, or today when none is set</li>
               <li>
                 The reference date only anchors the extraction — the recorded notes are always dated the day of the
-                import
+                digest
               </li>
               <li>
                 Images are read by the extraction model — the server's extraction model must support vision, or the
-                import fails with a clear error
+                digest fails with a clear error
               </li>
               <li>A text that is just "{NOTHING_TO_REMEMBER}" (with no images) is treated as empty (no-op)</li>
             </ul>
@@ -660,7 +660,7 @@
                 dragIndex !== null && dropIndex === i && 'ring-2 ring-ring/60',
                 dragIndex === i && 'opacity-50',
               )}
-              draggable={draggableIndex === i && !importing}
+              draggable={draggableIndex === i && !digesting}
               ondragstart={(e) => startDrag(e, i)}
               ondragover={(e) => onDragOver(e, i)}
               ondragleave={(e) => onDragLeave(e, i)}
@@ -670,11 +670,11 @@
               {#if part.kind === 'text'}
                 <textarea
                   class="min-h-24 w-full resize-y whitespace-pre-wrap break-words rounded-xl border border-border/30 bg-background/60 p-3 text-sm leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
-                  aria-label="Text block to import"
+                  aria-label="Text block to digest"
                   placeholder={firstTextIndex === i ? TEXT_PLACEHOLDER : ''}
                   bind:value={part.text}
                   onpaste={(e) => pasteInTextBlock(e, i)}
-                  disabled={importing}></textarea>
+                  disabled={digesting}></textarea>
               {:else}
                 <!-- @container caps the image at a 1:1 ratio with the block's
                      width (max-h = 100cqw): a long mobile screenshot cannot
@@ -687,7 +687,7 @@
                       'block w-full rounded-xl border border-border/30 bg-background/60 p-2 disabled:pointer-events-none disabled:opacity-50',
                     )}
                     onclick={(e) => openLightbox(e, part.dataUrl)}
-                    disabled={importing}
+                    disabled={digesting}
                     title="view image"
                   >
                     <img
@@ -703,7 +703,7 @@
                 <button
                   type="button"
                   onmousedown={() => (draggableIndex = i)}
-                  disabled={importing}
+                  disabled={digesting}
                   title="drag to reorder"
                   class="inline-flex size-7 cursor-grab items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 no-hover:hidden"
                 >
@@ -712,7 +712,7 @@
                 <button
                   type="button"
                   onclick={() => reorder(i, i - 1)}
-                  disabled={importing || i === 0}
+                  disabled={digesting || i === 0}
                   title="move up"
                   class="hidden size-7 no-hover:flex group-focus-within:flex items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
                 >
@@ -721,7 +721,7 @@
                 <button
                   type="button"
                   onclick={() => reorder(i, i + 2)}
-                  disabled={importing || i === parts.length - 1}
+                  disabled={digesting || i === parts.length - 1}
                   title="move down"
                   class="hidden size-7 no-hover:flex group-focus-within:flex items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
                 >
@@ -730,7 +730,7 @@
                 <button
                   type="button"
                   onclick={() => removePart(i)}
-                  disabled={importing}
+                  disabled={digesting}
                   title="remove block"
                   class="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
                 >
@@ -746,7 +746,7 @@
             <button
               type="button"
               onclick={addTextPart}
-              disabled={importing}
+              disabled={digesting}
               title="add a text block"
               class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
             >
@@ -755,7 +755,7 @@
             <button
               type="button"
               onclick={() => fileInput?.click()}
-              disabled={importing}
+              disabled={digesting}
               title="add image (or paste)"
               class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
             >
@@ -775,19 +775,19 @@
                 type="date"
                 class="rounded-md border border-border/30 bg-background/60 px-2 py-1 text-sm disabled:opacity-50"
                 max={TODAY}
-                bind:value={importDate}
-                disabled={importing}
+                bind:value={digestDate}
+                disabled={digesting}
               />
             </label>
           </div>
-          <Button size="sm" disabled={importing || !hasInput} onclick={() => void submitImport()}>
-            {importing ? 'Writing to the ELTM… this can take a while' : 'Import'}
+          <Button size="sm" disabled={digesting || !hasInput} onclick={() => void submitDigest()}>
+            {digesting ? 'Writing to the ELTM… this can take a while' : 'Digest'}
           </Button>
         </div>
       </div>
 
       {#if lightboxSrc}
-        <ImageLightbox src={lightboxSrc} alt="imported image" onClose={closeLightbox} />
+        <ImageLightbox src={lightboxSrc} alt="digest image" onClose={closeLightbox} />
       {/if}
     {/if}
   </div>

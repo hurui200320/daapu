@@ -146,19 +146,19 @@ internal fun Application.module(koin: Koin) {
                 ErrorResponse(cause.message ?: "Model capability mismatch")
             )
         }
-        // a failed ELTM import behind `POST /api/eltm/import` (the
+        // a failed ELTM digest behind `POST /api/eltm/digest` (the
         // extraction one-shot or the writer run): logged with the stage's
         // stack (the 502 body carries only the failure chain, so without
-        // this a failed import leaves no server-side trace) and answered
+        // this a failed digest leaves no server-side trace) and answered
         // 502 with the real failure reason (upstream error, the writer
-        // round cap, ...) — the importer is interactively waiting and
+        // round cap, ...) — the submitter is interactively waiting and
         // decides on a retry (whatever the writer already recorded sticks,
         // see EltmRoute.kt)
-        exception<EltmImportException> { call, cause ->
-            logger.warn(cause) { "ELTM import failed on ${call.request.uri}" }
+        exception<EltmDigestException> { call, cause ->
+            logger.warn(cause) { "ELTM digest failed on ${call.request.uri}" }
             call.respond(
                 HttpStatusCode.BadGateway,
-                ErrorResponse(cause.message ?: "ELTM import failed")
+                ErrorResponse(cause.message ?: "ELTM digest failed")
             )
         }
         // must be registered before ContentTransformationException: StatusPages

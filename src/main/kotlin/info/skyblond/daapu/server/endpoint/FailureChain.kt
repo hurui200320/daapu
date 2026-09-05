@@ -6,7 +6,7 @@ package info.skyblond.daapu.server.endpoint
  * render as `toString()`). The single traversal both error renderers build
  * on, so their chain shapes cannot drift apart: the SSE `error` event's
  * `errorEventData` (ChatsRoute.kt) keeps the root plus the FIRST cause,
- * the ELTM import's 502 body (EltmRoute.kt) joins the WHOLE chain —
+ * the ELTM digest's 502 body (EltmRoute.kt) joins the WHOLE chain —
  * different depth budgets, one source of the per-link messages.
  */
 internal fun failureChainMessages(e: Throwable): List<String> {

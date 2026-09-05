@@ -429,7 +429,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | `GET /api/eltm/relationships`           | Browse relationships, paged (`?limit`, `?offset`). |
 | `GET /api/eltm/relationships/{id}`      | One relationship's full view (counts, latest note; 404 unknown). |
 | `GET /api/eltm/relationships/{id}/notes` | The relationship's notes, paged, optional `?from`/`?to` date range. |
-| `POST /api/eltm/import`                 | Manual memory import — request/response details below. |
+| `POST /api/eltm/digest`                 | Manual memory digest — request/response details below. |
 | `GET /api/hand/tools`                   | Internal: the hand's per-round tool advertisement (`?runId=...`). |
 | `POST /api/hand/tool`                   | Internal: the hand's tool-execution callback (`runId`-scoped). |
 
@@ -439,7 +439,7 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 
 `GET /api/personas/export` and `POST /api/personas/import` share one payload: a JSON array of `{"name", "systemPrompt", "allowedNamespaces"}` (the export answers it as an attachment named `personas.json`), one entry per persona row in creation order — the code-only default persona is not exported. Names are not unique, and the array preserves same-name rows losslessly. The import skips an entry only when an existing persona with the same name already carries the same (trimmed) system prompt and the same namespace set (order-insensitive); otherwise it creates a new persona with the full create validation. It is fail-fast and partial: the first invalid entry (e.g. a namespace this deployment's chat loop does not serve) fails the request with `400` and the personas created before it stick, so re-running the same file skips them and resumes. The import answers `{"created": [...names], "skipped": [...names]}`.
 
-`POST /api/eltm/import` accepts `{"parts": [...], "date": "YYYY-MM-DD"}` — parts in the user-message wire shape (text parts and/or image attachments; at least one non-blank text part or image is required, and only image attachments are importable). `date` is the optional reference date for resolving relative dates (must not be in the future). The request blocks for the memory-extraction one-shot plus the writer loop (minutes are normal) and responds `201 Created` with an empty body on success — an empty extraction is an indistinguishable no-op — or `502` with the failure chain in the body when a stage fails terminally (whatever the writer already recorded sticks, and the writer deduplicates on retry). No chat lock: nothing here touches the chats table.
+`POST /api/eltm/digest` accepts `{"parts": [...], "date": "YYYY-MM-DD"}` — parts in the user-message wire shape (text parts and/or image attachments; at least one non-blank text part or image is required, and only image attachments can be digested). `date` is the optional reference date for resolving relative dates (must not be in the future). The request blocks for the memory-extraction one-shot plus the writer loop (minutes are normal) and responds `201 Created` with an empty body on success — an empty extraction is an indistinguishable no-op — or `502` with the failure chain in the body when a stage fails terminally (whatever the writer already recorded sticks, and the writer deduplicates on retry). No chat lock: nothing here touches the chats table.
 
 ## References
 

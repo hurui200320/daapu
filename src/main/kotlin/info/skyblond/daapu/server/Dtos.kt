@@ -81,29 +81,30 @@ data class ModelInfo(
 
 // ----------------------------------------------------------------------
 // ELTM views (the `#/eltm` frontend tab): read views for the browse tabs,
-// plus the manual import write's request body (the ONLY endpoint where a
+// plus the manual digest write's request body (the ONLY endpoint where a
 // caller, not the discard pipeline, feeds the ELTM; it answers a bare
 // 201 Created — see EltmRoute.kt)
 // ----------------------------------------------------------------------
 
 /**
- * Request body of `POST /api/eltm/import`: caller-supplied material fed
- * through `MemoryExtractionService.processUserImport` (the memory
+ * Request body of `POST /api/eltm/digest`: caller-supplied material fed
+ * through `MemoryExtractionService.digestUserInput` (the memory
  * extraction one-shot — first-person pronouns resolve to "the user",
  * relative dates resolve against [date] — then the same ELTM writer the
  * extraction pipeline uses). [parts] is an ORDERED list of text and image
  * parts in the user-message wire shape (`agent/chat/ChatMessage.kt`), so
- * email/document-shaped input imports with its interleaving intact (see
+ * email/document-shaped input digests with its interleaving intact (see
  * `EltmRoute.kt` for the part validation: only `text` parts and image
  * `attachment` parts pass). Text may be anything — raw notes, prose,
- * pre-digested facts (the frontend's Import tab carries the full notice);
- * images are read by the extraction model, so it must support vision (a
- * mismatch fails the import with a clear 400). At least one non-blank text
- * part or image must be present. [date] is the optional reference date
- * (`YYYY-MM-DD`); the server's today when absent, and never a future day.
+ * facts already in fact form (the frontend's Digest tab carries the full
+ * notice); images are read by the extraction model, so it must support
+ * vision (a mismatch fails the digest with a clear 400). At least one
+ * non-blank text part or image must be present. [date] is the optional
+ * reference date (`YYYY-MM-DD`); the server's today when absent, and
+ * never a future day.
  */
 @Serializable
-data class EltmImportRequest(
+data class EltmDigestRequest(
     val parts: List<ChatMessagePart> = emptyList(),
     val date: String? = null,
 )

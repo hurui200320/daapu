@@ -35,10 +35,10 @@ import java.time.ZoneId
  * (`agent/chat/ChatService.deleteChat`) and the compaction path
  * (`agent/persist/PersistChatService.compactAndEnqueue`), so the memory
  * work never runs on the request path) and
- * [processUserImport] (the `/api/eltm/import` path, running the same
+ * [digestUserInput] (the `/api/eltm/digest` path, running the same
  * extractor over caller-supplied text/image parts — ONE synthetic
  * message, order preserved — instead of a dropped history; the private
- * [extractFactsFromImport] selects the [ExtractionInput.USER_IMPORT]
+ * [extractFactsFromDigest] selects the [ExtractionInput.USER_DIGEST]
  * flavor of the extractor prompt, so the writer always receives the same
  * fact tone regardless of how the input was written). Both write through
  * [EltmWriterService.writeToEltm].
@@ -56,7 +56,7 @@ import java.time.ZoneId
  *   never fails a run: the worker logs it and the queue's visibility
  *   timeout retries the job — re-extracting from the frozen snapshot,
  *   unlimited (whatever was already recorded sticks: the writer skips
- *   already-recorded content on retry) — while the import route maps a
+ *   already-recorded content on retry) — while the digest route maps a
  *   terminal [IllegalStateException] onto a 502 (see `EltmRoute.kt`).
  */
 class MemoryExtractionService(
@@ -119,12 +119,12 @@ class MemoryExtractionService(
     }
 
     /**
-     * The `/api/eltm/import` entry point (`POST /api/eltm/import`, see
+     * The `/api/eltm/digest` entry point (`POST /api/eltm/digest`, see
      * `server/endpoint/EltmRoute.kt`): run the two-stage pipeline over the
      * caller-supplied [parts] (ordered text and image parts, the
-     * `EltmImportRequest` wire shape) and write the extracted facts into
+     * `EltmDigestRequest` wire shape) and write the extracted facts into
      * the ELTM. [referenceDate] anchors the extraction only
-     * ([extractFactsFromImport] resolves the input's relative dates
+     * ([extractFactsFromDigest] resolves the input's relative dates
      * against it) — the write stage always stamps the extraction day
      * (`LocalDate.now()`, the same "current date" the discard pipeline
      * writes with, keeping event dates from running ahead of the write
@@ -144,7 +144,7 @@ class MemoryExtractionService(
      * validation (only text and image attachments, decodable base64)
      * lives in the route.
      */
-    suspend fun processUserImport(
+    suspend fun digestUserInput(
         parts: List<ChatMessagePart>,
         referenceDate: LocalDate,
     ) {
@@ -157,14 +157,14 @@ class MemoryExtractionService(
         if (!hasImages && (text.isBlank() || isNothingToRemember(text))) {
             return
         }
-        val extraction = extractFactsFromImport(parts, referenceDate)
+        val extraction = extractFactsFromDigest(parts, referenceDate)
         if (!isNothingToRemember(extraction)) {
             eltmWriterService.writeToEltm(extraction, LocalDate.now())
         }
     }
 
     /**
-     * The import path's extraction stage alone ([processUserImport]
+     * The digest path's extraction stage alone ([digestUserInput]
      * decides whether to write): run the same extractor over
      * caller-supplied [parts] instead of a dropped history. The parts
      * become ONE synthetic user message in the given order (an
@@ -180,7 +180,7 @@ class MemoryExtractionService(
      * [NOTHING_TO_REMEMBER_TEXT] sentinel. Throws per the class KDoc
      * (images trip the capability check [extract] runs on every flavor).
      */
-    private suspend fun extractFactsFromImport(
+    private suspend fun extractFactsFromDigest(
         parts: List<ChatMessagePart>,
         referenceDate: LocalDate,
     ): String {
@@ -189,14 +189,14 @@ class MemoryExtractionService(
         require(meaningful.isNotEmpty()) { "cannot extract memories from a blank text without images" }
         require(
             meaningful.all { it !is ChatMessagePart.Attachment || it.kind == AttachmentKind.Image }
-        ) { "only image attachments can be imported" }
+        ) { "only image attachments can be digested" }
         val message = ChatMessage(
             ChatMessageRole.User,
             meaningful,
             createdAt = referenceDate.atStartOfDay(ZoneId.systemDefault()).toInstant(),
         )
-        val extraction = extract(listOf(message), ExtractionInput.USER_IMPORT)
-        logger.info { "Extracted memories from imported input:\n${extraction}" }
+        val extraction = extract(listOf(message), ExtractionInput.USER_DIGEST)
+        logger.info { "Extracted memories from digested input:\n${extraction}" }
         return extraction
     }
 
@@ -206,8 +206,8 @@ class MemoryExtractionService(
      * come from the chat loop's injected in-loop chat): sanitize first, then
      * anchor every user message with its send time. [input] selects the
      * extractor prompt flavor (the discard pipeline always gets
-     * [ExtractionInput.CONVERSATION]; the import path's single synthetic
-     * message gets [ExtractionInput.USER_IMPORT]). The extractor is
+     * [ExtractionInput.CONVERSATION]; the digest path's single synthetic
+     * message gets [ExtractionInput.USER_DIGEST]). The extractor is
      * stateless — the input carries no "now" anywhere (no current date in
      * the prompt), every relative date resolves against the message's own
      * anchor, so extraction time never matters. Fails on anything but a
@@ -247,9 +247,9 @@ class MemoryExtractionService(
 
         /**
          * The tolerant sentinel match, the SINGLE SOURCE for every sentinel
-          * check: the discard pipeline's skip ([processDiscardedMessages])
-          * and the import path's input fast path plus post-extraction check
-          * ([processUserImport]). Trims, ignores casing, trailing
+         * check: the discard pipeline's skip ([processDiscardedMessages])
+           * and the digest path's input fast path plus post-extraction
+           * check ([digestUserInput]). Trims, ignores casing, trailing
          * punctuation and whitespace runs — a near-miss must not reach the
          * writer as a fact batch. Paraphrases this check cannot catch are
          * the writer's own skip-sentinel rule's job (see
@@ -272,8 +272,8 @@ class MemoryExtractionService(
          * conversation-specific rule lines come from the [input]'s slots.
          * [ExtractionInput.CONVERSATION] renders byte-identical to the
          * prompt the discard pipeline always used (pinned by
-         * MemoryExtractionServiceTest), so the import path's
-         * [ExtractionInput.USER_IMPORT] flavor can never drift the discard
+         * MemoryExtractionServiceTest), so the digest path's
+         * [ExtractionInput.USER_DIGEST] flavor can never drift the discard
          * path's extraction.
          */
         internal fun renderExtractorSystemPrompt(input: ExtractionInput): String = """
@@ -304,13 +304,13 @@ ${input.echoRule}- Extract the content of documents or code the user shared, not
 /**
  * Which input shape the extractor prompt describes (see
  * [MemoryExtractionService.renderExtractorSystemPrompt]): the discard
- * pipeline's dropped history ([CONVERSATION]) or the import path's single
+ * pipeline's dropped history ([CONVERSATION]) or the digest path's single
  * synthetic message of caller-supplied text and image parts in the given
- * order ([USER_IMPORT], see `MemoryExtractionService.processUserImport`).
+ * order ([USER_DIGEST], see `MemoryExtractionService.digestUserInput`).
  * The fields are the prompt's per-input slots; everything else in the
- * template is shared verbatim. The [USER_IMPORT] wording covers the whole
+ * template is shared verbatim. The [USER_DIGEST] wording covers the whole
  * input shape — interleaved text and images — so the same flavor serves
- * text-only, images-only and mixed imports.
+ * text-only, images-only and mixed digests.
  */
 internal enum class ExtractionInput(
     /** The header block: framing plus the anchor/relative-date explanation. */
@@ -324,7 +324,7 @@ internal enum class ExtractionInput(
     /**
      * The conversation-only echo-extraction rule, rendered as a full
      * rules-list line including its trailing newline (empty for
-     * [USER_IMPORT]).
+     * [USER_DIGEST]).
      */
     val echoRule: String,
 ) {
@@ -342,7 +342,7 @@ Assistant messages carry no marker: they reply immediately after the preceding u
         coverWhole = "conversation",
         echoRule = "- Do not extract the assistant restating what the user said as a new fact (echo extraction)\n",
     ),
-    USER_IMPORT(
+    USER_DIGEST(
         header = """
 You're extracting memories from a submission the user provided for long-term memory.
 Extract **all** important information from every part, in the order given, into a list of self-contained facts suitable for long-term memory.
