@@ -1,4 +1,4 @@
-package info.skyblond.daapu.memory.eltm
+package info.skyblond.daapu.memory.eltm.postgres
 
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.readMetaCounterTx
@@ -7,6 +7,7 @@ import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandEmbedRequest
 import info.skyblond.daapu.hand.HandEmbedResult
 import info.skyblond.daapu.hand.HandEmbedUsage
+import info.skyblond.daapu.memory.eltm.*
 import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.DeterministicEmbeddings
 import info.skyblond.daapu.testutil.TestDb

@@ -1,12 +1,31 @@
-package info.skyblond.daapu.memory.eltm
+package info.skyblond.daapu.memory.eltm.postgres
 
 import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
 import info.skyblond.daapu.db.*
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
+import info.skyblond.daapu.memory.eltm.CreateEntityResult
+import info.skyblond.daapu.memory.eltm.EltmEntity
+import info.skyblond.daapu.memory.eltm.EltmNote
+import info.skyblond.daapu.memory.eltm.EltmRelationship
+import info.skyblond.daapu.memory.eltm.EltmSearchHits
+import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.EltmSnapshot
+import info.skyblond.daapu.memory.eltm.EntityDraft
+import info.skyblond.daapu.memory.eltm.EntityView
+import info.skyblond.daapu.memory.eltm.EntityWithScore
+import info.skyblond.daapu.memory.eltm.NoteDraft
+import info.skyblond.daapu.memory.eltm.RelationshipDraft
+import info.skyblond.daapu.memory.eltm.RelationshipNotesResult
+import info.skyblond.daapu.memory.eltm.RelationshipView
+import info.skyblond.daapu.memory.eltm.entityEmbeddingText
+import info.skyblond.daapu.memory.eltm.normalizeAttributeKey
+import info.skyblond.daapu.memory.eltm.normalizeName
+import info.skyblond.daapu.memory.eltm.normalizeVerb
+import info.skyblond.daapu.memory.eltm.noteEmbeddingText
+import info.skyblond.daapu.memory.eltm.planAttributeFold
 import org.jetbrains.exposed.v1.core.*
-import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.*
 import java.sql.Connection
 import java.time.LocalDate
@@ -31,6 +50,12 @@ import java.time.LocalDate
  * Decision logic worth unit-testing (normalization, merge/collision
  * planning) lives outside the SQL; the SQL paths are covered by the
  * DB-backed `PostgresEltmServiceTest` (throwaway testcontainers database).
+ *
+ * The ambient-transaction SQL helpers (row mappers, finders, view
+ * builders, the batched note insert, the search SQL bodies) live in the
+ * sibling files `EltmEntityQueries.kt` / `EltmRelationshipQueries.kt` /
+ * `EltmNoteQueries.kt` (same package, internal — every call is inside
+ * withTransaction).
  */
 // TODO: split this to EltmStore, the service should own the embedded text construction, etc.
 class PostgresEltmService(
@@ -420,32 +445,14 @@ class PostgresEltmService(
         // one call per note (see EltmService)
         val embeddings = embedAll(drafts.map { noteEmbeddingText(it.note) })
         return withTransaction {
-            // the whole batch rides ONE JDBC batched INSERT (the generated
-            // ids read back aligned with the input rows — no unique
-            // constraint exists on the add-only notes table, so no conflict
-            // can skew the association), never one INSERT statement per
-            // note
-            val rows = EltmNotes.batchInsert(
-                drafts.zip(embeddings),
-                shouldReturnGeneratedValues = true,
-            ) { (draft, embedding) ->
-                this[EltmNotes.entityId] = entityId
-                this[EltmNotes.relationshipId] = null
-                this[EltmNotes.eventDate] = draft.eventDate
-                this[EltmNotes.note] = draft.note
-                this[EltmNotes.embedding] = embedding
-            }
+            val notes = insertNotes(
+                entityId = entityId,
+                relationshipId = null,
+                drafts = drafts,
+                embeddings = embeddings,
+            )
             bumpWriteVersion()
-            rows.mapIndexed { index, row ->
-                val draft = drafts[index]
-                EltmNote(
-                    id = row[EltmNotes.id],
-                    entityId = entityId,
-                    relationshipId = null,
-                    eventDate = draft.eventDate,
-                    note = draft.note,
-                )
-            }
+            notes
         }
     }
 
@@ -489,31 +496,15 @@ class PostgresEltmService(
                     it[EltmRelationships.valid] = valid
                 }
             }
-            // the whole batch rides ONE JDBC batched INSERT (the generated
-            // ids read back aligned — no unique constraint exists on the
-            // add-only notes table), never one INSERT statement per note
-            val rows = EltmNotes.batchInsert(
-                drafts.zip(embeddings),
-                shouldReturnGeneratedValues = true,
-            ) { (draft, embedding) ->
-                this[EltmNotes.entityId] = null
-                this[EltmNotes.relationshipId] = relationshipId
-                this[EltmNotes.eventDate] = draft.eventDate
-                this[EltmNotes.note] = draft.note
-                this[EltmNotes.embedding] = embedding
-            }
+            val notes = insertNotes(
+                entityId = null,
+                relationshipId = relationshipId,
+                drafts = drafts,
+                embeddings = embeddings,
+            )
             bumpWriteVersion()
             RelationshipNotesResult(
-                notes = rows.mapIndexed { index, row ->
-                    val draft = drafts[index]
-                    EltmNote(
-                        id = row[EltmNotes.id],
-                        entityId = null,
-                        relationshipId = relationshipId,
-                        eventDate = draft.eventDate,
-                        note = draft.note,
-                    )
-                },
+                notes = notes,
                 valid = valid ?: currentValid,
             )
         }
@@ -804,17 +795,6 @@ class PostgresEltmService(
     // reads
     // ------------------------------------------------------------------
 
-    /**
-     * Shared paging guards for every paginated read. The HTTP boundary
-     * mirrors these as 400s (`server/endpoint/Params.kt`); the service-side
-     * check stays because the tools and the pipeline call the service
-     * directly.
-     */
-    private fun requirePaging(limit: Int, offset: Int) {
-        require(limit >= 1) { "limit must be >= 1, got $limit" }
-        require(offset >= 0) { "offset must be >= 0, got $offset" }
-    }
-
     override suspend fun searchEntities(query: String, limit: Int): List<EntityWithScore> {
         require(query.isNotBlank()) { "query must not be blank" }
         require(limit >= 1) { "limit must be >= 1, got $limit" }
@@ -932,56 +912,6 @@ class PostgresEltmService(
         toRelationshipViews(rels)
     }
 
-    private fun toRelationshipViews(rels: List<EltmRelationship>): List<RelationshipView> {
-        if (rels.isEmpty()) return emptyList()
-        // a whole list's endpoint names, note counts and latest notes in
-        // 2 queries instead of the single-subject helpers' 4 per row
-        val names = EltmEntities.selectAll()
-            .where { EltmEntities.id inList rels.flatMap { listOf(it.srcId, it.dstId) } }
-            .associate { it[EltmEntities.id] to it[EltmEntities.canonicalName] }
-        val noteSummary = noteCountsAndLatest(EltmNotes.relationshipId, rels.map { it.id })
-        return rels.map { rel ->
-            RelationshipView(
-                relationship = rel,
-                srcName = names[rel.srcId] ?: "<deleted entity ${rel.srcId}>",
-                dstName = names[rel.dstId] ?: "<deleted entity ${rel.dstId}>",
-                noteCount = noteSummary[rel.id]?.first ?: 0,
-                latestNote = noteSummary[rel.id]?.second,
-            )
-        }
-    }
-
-    /**
-     * Paginated notes of ONE subject, newest event first. The diary ordering
-     * rule is `event_date DESC, id DESC` and exists in exactly three SQL
-     * spots ([noteQuery], [latestNote], [noteCountsAndLatest]) — update
-     * them together or the single-subject and batch views disagree.
-     */
-    private suspend fun noteQuery(
-        column: Column<Long?>,
-        subjectId: Long,
-        from: LocalDate?,
-        to: LocalDate?,
-        limit: Int,
-        offset: Int,
-    ): List<EltmNote> {
-        require(from == null || to == null || !from.isAfter(to)) {
-            "from must not be after to"
-        }
-        requirePaging(limit, offset)
-        return withTransaction {
-            selectNoteContent().where {
-                (column eq subjectId)
-                    .andIfNotNull(from?.let { EltmNotes.eventDate greaterEq it })
-                    .andIfNotNull(to?.let { EltmNotes.eventDate lessEq it })
-            }
-                .orderBy(EltmNotes.eventDate to SortOrder.DESC, EltmNotes.id to SortOrder.DESC)
-                .limit(limit)
-                .offset(offset.toLong())
-                .map { it.toNote() }
-        }
-    }
-
     override suspend fun getEntityNotes(
         entityId: Long,
         from: LocalDate?,
@@ -1015,7 +945,9 @@ class PostgresEltmService(
             "from must not be after to"
         }
         val q = embedText(query)
-        return withTransaction { searchNotesByVector(q, entityId, relationshipId, from, to, limit) }
+        return withTransaction {
+            searchNotesByVector(q, noteSearchThreshold, entityId, relationshipId, from, to, limit)
+        }
     }
 
     override suspend fun searchEntitiesAndNotes(
@@ -1038,43 +970,10 @@ class PostgresEltmService(
                     similarEntities(q, excludeId = null, entityMatchThreshold, entityLimit)
                 } else emptyList(),
                 notes = if (noteLimit > 0) {
-                    searchNotesByVector(q, null, null, null, null, noteLimit)
+                    searchNotesByVector(q, noteSearchThreshold, null, null, null, null, noteLimit)
                 } else emptyList(),
             )
         }
-    }
-
-    /**
-     * The note search's SQL over an ALREADY-EMBEDDED query vector — the
-     * shared body of [searchNotes] (its own embed) and
-     * [searchEntitiesAndNotes] (the one embed feeding both halves).
-     * Ambient transaction.
-     */
-    private fun searchNotesByVector(
-        q: List<Float>,
-        entityId: Long?,
-        relationshipId: Long?,
-        from: LocalDate?,
-        to: LocalDate?,
-        limit: Int,
-    ): List<EltmNote> {
-        val dist = VectorColumnType.cosineDistance(EltmNotes.embedding, q)
-        // pgvector's HNSW index post-filters: a selective WHERE (subject
-        // or date range) can end the index scan early, so this can
-        // return FEWER than [limit] rows even when further matches
-        // exist (pgvector <=0.7 behavior; iterative scans would fix it).
-        // The exact match (similarity 1.0) always survives in practice.
-        return selectNoteContent().where {
-            (dist lessEq 1.0 - noteSearchThreshold)
-                .and(EltmNotes.embedding.isNotNull())
-                .andIfNotNull(entityId?.let { EltmNotes.entityId eq it })
-                .andIfNotNull(relationshipId?.let { EltmNotes.relationshipId eq it })
-                .andIfNotNull(from?.let { EltmNotes.eventDate greaterEq it })
-                .andIfNotNull(to?.let { EltmNotes.eventDate lessEq it })
-        }
-            .orderBy(dist to SortOrder.ASC)
-            .limit(limit)
-            .map { it.toNote() }
     }
 
     // ------------------------------------------------------------------
@@ -1100,341 +999,6 @@ class PostgresEltmService(
     /** Read the global ELTM write counter (the write version). Ambient transaction. */
     private fun currentWriteVersion(): Long = readMetaCounter(ELTM_VERSION_KEY)
 
-    /**
-     * Fail with the merge-instead collision error when the target
-     * (name, category) belongs to a DIFFERENT entity than [entityId] (the
-     * entity's own row is not a collision — [refineEntity] may echo its
-     * current identity). Ambient transaction.
-     */
-    private fun checkNoNameCollision(entityId: Long, name: String, category: String) {
-        findEntityByKey(name, category)?.let { existing ->
-            if (existing[EltmEntities.id] != entityId) {
-                throw IllegalArgumentException(
-                    "an entity \"$name\" (category $category) already exists " +
-                            "as entity ${existing[EltmEntities.id]}: merge the two instead"
-                )
-            }
-        }
-    }
-
-    private fun findEntityByKey(canonicalName: String, category: String): ResultRow? =
-        EltmEntities.selectAll().where {
-            (EltmEntities.canonicalName eq canonicalName) and (EltmEntities.category eq category)
-        }.singleOrNull()
-
-    private fun findEntityRowById(id: Long): ResultRow? =
-        EltmEntities.selectAll().where { EltmEntities.id eq id }.singleOrNull()
-
-    /**
-     * The entity row with `FOR UPDATE` — the read-modify-write lock held
-     * for the whole write transaction, so a concurrent write on the same
-     * entity (set/delete attribute, merge) blocks here until this commit
-     * and then re-reads the fresh state (never a stale read-modify-write).
-     */
-    private fun findEntityRowByIdForUpdate(id: Long): ResultRow? =
-        EltmEntities.selectAll().where { EltmEntities.id eq id }
-            .forUpdate(ForUpdateOption.ForUpdate)
-            .singleOrNull()
-
-    private fun findEntityById(id: Long): EltmEntity? =
-        findEntityRowById(id)?.toEntity()
-
-    private fun findRelationshipById(id: Long): EltmRelationship? =
-        EltmRelationships.selectAll().where { EltmRelationships.id eq id }.singleOrNull()
-            ?.toRelationship()
-
-    /** The ONE row for a triple (full unique index), whatever its validity. */
-    private fun findRelationshipByTriple(srcId: Long, verb: String, dstId: Long): ResultRow? =
-        EltmRelationships.selectAll().where {
-            (EltmRelationships.srcId eq srcId) and
-                    (EltmRelationships.dstId eq dstId) and
-                    (EltmRelationships.verb eq verb)
-        }.singleOrNull()
-
-    /**
-     * The rows for a batch of (canonical name, category) keys in ONE query
-     * (an OR of per-key conjunctions — every disjunct is a point lookup on
-     * the `(canonical_name, category)` unique index), the batched
-     * counterpart of [findEntityByKey] for the bulk create-or-fetch.
-     * Ambient transaction.
-     */
-    private fun findEntitiesByKeys(keys: List<Pair<String, String>>): List<ResultRow> {
-        if (keys.isEmpty()) return emptyList()
-        val cond = keys.map { (name, cat) ->
-            (EltmEntities.canonicalName eq name) and (EltmEntities.category eq cat)
-        }.reduce { a, b -> a or b }
-        return EltmEntities.selectAll().where { cond }.toList()
-    }
-
-    /**
-     * The rows for a batch of (src, verb, dst) triples in ONE query (an OR
-     * of per-triple conjunctions — each disjunct is a point lookup on the
-     * triple's unique index), the batched counterpart of
-     * [findRelationshipByTriple] for the bulk create-or-fetch. Ambient
-     * transaction.
-     */
-    private fun findRelationshipsByTriples(triples: List<Triple<Long, String, Long>>): List<ResultRow> {
-        if (triples.isEmpty()) return emptyList()
-        val cond = triples.map { (srcId, verb, dstId) ->
-            (EltmRelationships.srcId eq srcId) and
-                    (EltmRelationships.dstId eq dstId) and
-                    (EltmRelationships.verb eq verb)
-        }.reduce { a, b -> a or b }
-        return EltmRelationships.selectAll().where { cond }.toList()
-    }
-
-    /**
-     * The single-subject entity view (counts, latest note, attributes) from
-     * the cheap single-subject helpers — the shared builder behind
-     * [getEntity] and the write paths' returned views ([createEntity],
-     * [refineEntity]), so a write's result never needs a follow-up read
-     * transaction. Ambient transaction.
-     */
-    private fun entityViewOf(entity: EltmEntity): EntityView = EntityView(
-        entity = entity,
-        noteCount = countNotes(EltmNotes.entityId, entity.id),
-        relationshipCount = countRelationshipsForEntity(entity.id),
-        latestNote = latestNote(EltmNotes.entityId, entity.id),
-        attributes = attributesOf(entity.id),
-    )
-
-    /**
-     * The single-subject relationship view (endpoint names, note count,
-     * latest note) from the cheap single-subject helpers — a `COUNT`, a
-     * `LIMIT 1` latest-note read and two endpoint name lookups, never the
-     * page builder's batch queries (one row must not pay for a page). The
-     * shared builder behind [getRelationship] and [createRelationship]'s
-     * returned view. Ambient transaction.
-     */
-    private fun relationshipViewOf(rel: EltmRelationship): RelationshipView = RelationshipView(
-        relationship = rel,
-        srcName = entityNameOf(rel.srcId),
-        dstName = entityNameOf(rel.dstId),
-        noteCount = countNotes(EltmNotes.relationshipId, rel.id),
-        latestNote = latestNote(EltmNotes.relationshipId, rel.id),
-    )
-
-    /**
-     * The entity's canonical name, or the defensive placeholder for a gone
-     * row (the merge path re-points relationships before deleting their
-     * loser endpoints, so a live row's endpoints exist — the placeholder
-     * only masks a broken state). Ambient transaction.
-     */
-    private fun entityNameOf(id: Long): String =
-        findEntityRowById(id)?.get(EltmEntities.canonicalName) ?: "<deleted entity $id>"
-
-    /**
-     * The subject's newest note (event date, then id — the same ordering as
-     * [noteQuery] and [noteCountsAndLatest]; the diary ordering rule lives
-     * in exactly those three SQL spots).
-     * The subject is ONE of the two note columns (the
-     * migration CHECK), so callers pass the matching column. Ambient
-     * transaction.
-     */
-    private fun latestNote(column: Column<Long?>, subjectId: Long): EltmNote? =
-        selectNoteContent().where { column eq subjectId }
-            .orderBy(EltmNotes.eventDate to SortOrder.DESC, EltmNotes.id to SortOrder.DESC)
-            .limit(1).singleOrNull()?.toNote()
-
-    /** The subject's diary-note count. Ambient transaction. */
-    private fun countNotes(column: Column<Long?>, subjectId: Long): Int =
-        EltmNotes.selectAll().where { column eq subjectId }.count().toInt()
-
-    /**
-     * The relationships of ONE entity (src OR dst, self-loops counted once —
-     * [relationshipCountsFor]'s rule), delegated to the batch helper so the
-     * counting rule exists in exactly one place. Ambient transaction.
-     */
-    private fun countRelationshipsForEntity(entityId: Long): Int =
-        relationshipCountsFor(listOf(entityId))[entityId] ?: 0
-
-    /**
-     * A content-only query over notes: every column EXCEPT the embedding.
-     * The vectors dominate the row size and no read path consumes them
-     * (a search compares server-side through the `<=>` expression, stored
-     * vectors are only written — see [exportAll] for the same rationale);
-     * the parsed-but-discarded `vector(2000)` per row is pure waste.
-     * Ambient transaction.
-     */
-    private fun selectNoteContent() = EltmNotes.select(
-        EltmNotes.id,
-        EltmNotes.entityId,
-        EltmNotes.relationshipId,
-        EltmNotes.eventDate,
-        EltmNotes.note,
-    )
-
-    /**
-     * Per-subject note counts and latest notes (by event date, then id — the
-     * same ordering as [noteQuery]/[latestNote]; the diary ordering rule
-     * lives in exactly those three SQL spots) for a whole page of subjects,
-     * in TWO bounded queries — a `GROUP BY` count and a `DISTINCT ON`
-     * latest-note select — each returning at most one row per subject,
-     * never materializing the subjects' whole diaries in memory (a heavy
-     * diary must not make its page reads heavy). Ambient transaction.
-     */
-    private fun noteCountsAndLatest(
-        column: Column<Long?>,
-        subjectIds: List<Long>,
-    ): Map<Long, Pair<Int, EltmNote?>> {
-        if (subjectIds.isEmpty()) return emptyMap()
-        // the counts aggregate server-side: one output row per subject
-        val countExpr = EltmNotes.id.count()
-        val counts: Map<Long, Int> = EltmNotes.select(column, countExpr)
-            .where { column inList subjectIds }
-            .groupBy(column)
-            .mapNotNull { row -> row[column]?.let { it to row[countExpr].toInt() } }
-            .toMap()
-        // the latest note per subject: DISTINCT ON keeps the first row per
-        // subject under the ordering — exactly the newest. `withDistinctOn`
-        // prepends the subject column to ORDER BY itself, satisfying
-        // Postgres's leftmost-ORDER-BY requirement on DISTINCT ON.
-        val latest: Map<Long, EltmNote> = selectNoteContent()
-            .where { column inList subjectIds }
-            .withDistinctOn(column to SortOrder.ASC)
-            .orderBy(EltmNotes.eventDate to SortOrder.DESC, EltmNotes.id to SortOrder.DESC)
-            .map { it.toNote() }
-            // a note's subject is exactly one of the two columns (migration
-            // CHECK), so the fallback chain only masks a broken schema
-            .associateBy { it.entityId ?: it.relationshipId ?: error("note has no subject") }
-        return subjectIds.associateWith { id -> (counts[id] ?: 0) to latest[id] }
-    }
-
-    /**
-     * Per-entity relationship counts (the entity as src OR dst) for a whole
-     * page of entities, in ONE query. Ambient transaction.
-     */
-    private fun relationshipCountsFor(entityIds: List<Long>): Map<Long, Int> {
-        if (entityIds.isEmpty()) return emptyMap()
-        return EltmRelationships.select(EltmRelationships.srcId, EltmRelationships.dstId)
-            .where {
-                (EltmRelationships.srcId inList entityIds) or
-                    (EltmRelationships.dstId inList entityIds)
-            }
-            // a self-loop (src == dst, e.g. a merge-invalidated winner—
-            // winner edge) is ONE row: count it once, like
-            // countRelationshipsForEntity and the drill-down list
-            .map { row ->
-                val src = row[EltmRelationships.srcId]
-                val dst = row[EltmRelationships.dstId]
-                if (src == dst) listOf(src) else listOf(src, dst)
-            }
-            .flatten()
-            .groupingBy { it }
-            .eachCount()
-    }
-
-    /**
-     * The current-state attributes of ONE entity, keys alphabetically
-     * ordered. Ambient transaction.
-     */
-    private fun attributesOf(entityId: Long): Map<String, String> =
-        EltmEntityAttributes.selectAll().where { EltmEntityAttributes.entityId eq entityId }
-            .map { it[EltmEntityAttributes.key] to it[EltmEntityAttributes.value] }
-            .toMap()
-            .toSortedMap()
-
-    /**
-     * Per-entity current-state attributes (keys alphabetically ordered) for a
-     * whole page of entities, in ONE query. Ambient transaction.
-     */
-    private fun attributesFor(entityIds: List<Long>): Map<Long, Map<String, String>> {
-        if (entityIds.isEmpty()) return emptyMap()
-        return EltmEntityAttributes.selectAll()
-            .where { EltmEntityAttributes.entityId inList entityIds }
-            .map { it[EltmEntityAttributes.entityId] to (it[EltmEntityAttributes.key] to it[EltmEntityAttributes.value]) }
-            .groupBy({ it.first }, { it.second })
-            .mapValues { (_, pairs) -> pairs.toMap().toSortedMap() }
-    }
-
-    /**
-     * Cosine-similarity search over stored entity embeddings, most similar
-     * first, at or above [threshold], capped at [limit]; [excludeId] (used
-     * for near matches) skips the row itself. Ambient transaction.
-     *
-     * pgvector's HNSW index post-filters: the WHERE above (threshold,
-     * `excludeId`) can end the index scan early, so this can return FEWER
-     * than [limit] rows even when further matches exist (pgvector <=0.7
-     * behavior; iterative scans would fix it). The threshold only ever
-     * DROPS candidates (distance is exact per visited row), so a returned
-     * hit is always genuinely above [threshold].
-     *
-     * The count, latest-note and attribute columns of the original
-     * correlated-subquery SQL come from batch queries over the candidate
-     * ids (Exposed v1 has no scalar subquery in the select list); the
-     * candidate set is at most [limit] rows, so the extra round trips are
-     * negligible.
-     */
-    private fun similarEntities(
-        queryVector: List<Float>,
-        excludeId: Long?,
-        threshold: Double,
-        limit: Int,
-    ): List<EntityWithScore> {
-        val dist = VectorColumnType.cosineDistance(EltmEntities.embedding, queryVector)
-        val candidates = EltmEntities.select(
-            EltmEntities.id,
-            EltmEntities.canonicalName,
-            EltmEntities.category,
-            dist,
-        ).where {
-            (dist lessEq 1.0 - threshold)
-                .and(EltmEntities.embedding.isNotNull())
-                .andIfNotNull(excludeId?.let { EltmEntities.id neq it })
-        }
-            .orderBy(dist to SortOrder.ASC)
-            .limit(limit)
-            .map { it[EltmEntities.id] to it }
-        if (candidates.isEmpty()) return emptyList()
-        val ids = candidates.map { (id, _) -> id }
-        // note counts AND latest notes in ONE query over the candidate ids
-        // (the same batch helper the page reads use), so each hit carries
-        // its full model-visible picture without a per-hit drill-down
-        val noteSummary = noteCountsAndLatest(EltmNotes.entityId, ids)
-        val relationshipCounts = relationshipCountsFor(ids)
-        val attributes = attributesFor(ids)
-        return candidates.map { (id, row) ->
-            EntityWithScore(
-                entity = EltmEntity(
-                    id = id,
-                    canonicalName = row[EltmEntities.canonicalName],
-                    category = row[EltmEntities.category],
-                ),
-                noteCount = noteSummary[id]?.first ?: 0,
-                latestNote = noteSummary[id]?.second,
-                relationshipCount = relationshipCounts[id] ?: 0,
-                score = 1.0 - row[dist],
-                attributes = attributes[id] ?: emptyMap(),
-            )
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // row mapping
-    // ------------------------------------------------------------------
-
-    private fun ResultRow.toEntity(): EltmEntity = EltmEntity(
-        id = this[EltmEntities.id],
-        canonicalName = this[EltmEntities.canonicalName],
-        category = this[EltmEntities.category],
-    )
-
-    private fun ResultRow.toRelationship(): EltmRelationship = EltmRelationship(
-        id = this[EltmRelationships.id],
-        srcId = this[EltmRelationships.srcId],
-        dstId = this[EltmRelationships.dstId],
-        verb = this[EltmRelationships.verb],
-        valid = this[EltmRelationships.valid],
-    )
-
-    private fun ResultRow.toNote(): EltmNote = EltmNote(
-        id = this[EltmNotes.id],
-        entityId = this[EltmNotes.entityId],
-        relationshipId = this[EltmNotes.relationshipId],
-        eventDate = this[EltmNotes.eventDate],
-        note = this[EltmNotes.note],
-    )
-
     // ------------------------------------------------------------------
     // embedding
     // ------------------------------------------------------------------
@@ -1455,17 +1019,6 @@ class PostgresEltmService(
             hand.embed(embeddingModel, chunk, policy).vectors
                 .map { padVector(it, MAX_VECTOR_DIMENSIONS) }
         }
-
-    // ------------------------------------------------------------------
-    // note insert helpers
-    // ------------------------------------------------------------------
-
-    /** Trim the note text and fail fast on a blank one (the stored form). */
-    private fun NoteDraft.validated(): NoteDraft {
-        val trimmed = note.trim()
-        require(trimmed.isNotBlank()) { "note must not be blank" }
-        return NoteDraft(eventDate, trimmed)
-    }
 
     companion object {
         private const val NEAR_MATCH_LIMIT = 5

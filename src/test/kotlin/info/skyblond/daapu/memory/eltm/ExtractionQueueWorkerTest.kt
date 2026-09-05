@@ -12,6 +12,7 @@ import info.skyblond.daapu.hand.assistantMessage
 import info.skyblond.daapu.hand.errorRunFlow
 import info.skyblond.daapu.hand.textRunFlow
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.postgres.PostgresExtractionQueue
 import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.testEltmWriterService

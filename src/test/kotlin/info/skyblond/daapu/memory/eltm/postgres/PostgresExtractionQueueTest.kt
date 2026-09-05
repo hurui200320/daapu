@@ -1,4 +1,4 @@
-package info.skyblond.daapu.memory.eltm
+package info.skyblond.daapu.memory.eltm.postgres
 
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart

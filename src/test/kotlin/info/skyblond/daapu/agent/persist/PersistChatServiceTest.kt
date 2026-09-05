@@ -27,7 +27,7 @@ import info.skyblond.daapu.memory.eltm.EltmNote
 import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
-import info.skyblond.daapu.memory.eltm.PostgresExtractionQueue
+import info.skyblond.daapu.memory.eltm.postgres.PostgresExtractionQueue
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.bumpMetaCounterTx
 import info.skyblond.daapu.testutil.DbTestBase

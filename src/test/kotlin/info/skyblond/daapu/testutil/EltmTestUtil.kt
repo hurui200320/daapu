@@ -8,6 +8,7 @@ import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandClient
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.memory.eltm.*
+import info.skyblond.daapu.memory.eltm.postgres.PostgresEltmService
 
 /**
  * An [EltmWriterService] wired to a scripted [hand] and a real

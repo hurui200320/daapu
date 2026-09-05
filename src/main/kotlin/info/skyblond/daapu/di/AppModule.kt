@@ -36,8 +36,8 @@ import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
-import info.skyblond.daapu.memory.eltm.PostgresEltmService
-import info.skyblond.daapu.memory.eltm.PostgresExtractionQueue
+import info.skyblond.daapu.memory.eltm.postgres.PostgresEltmService
+import info.skyblond.daapu.memory.eltm.postgres.PostgresExtractionQueue
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.onClose
 import org.koin.core.module.dsl.withOptions

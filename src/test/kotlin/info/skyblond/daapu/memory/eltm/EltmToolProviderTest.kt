@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.tool.ToolCallRequest
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
+import info.skyblond.daapu.memory.eltm.postgres.PostgresEltmService
 import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.DeterministicEmbeddings
 import info.skyblond.daapu.testutil.TestDb

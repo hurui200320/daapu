@@ -105,13 +105,18 @@ src/main/kotlin/info/skyblond/daapu/
                              mapping), HandErrors.kt (the error families)
   mcp/                       MCP tool servers (McpToolProvider.kt,
                              ClientEntry.kt, McpExceptions.kt)
-  memory/eltm/               ELTM service + Postgres impl (EltmService.kt,
-                             PostgresEltmService.kt), EltmToolProvider.kt,
-                             the transfer pair (EltmTransfer.kt +
-                             EltmTransferService.kt — the whole-store
-                             export / merge import), the background
-                             extraction queue
+  memory/eltm/               ELTM service + tools (EltmService.kt,
+                             EltmToolProvider.kt), the transfer pair
+                             (EltmTransfer.kt + EltmTransferService.kt —
+                             the whole-store export / merge import), the
+                             background extraction queue
                              (ExtractionQueue.kt + ExtractionQueueWorker.kt)
+  memory/eltm/postgres/      the Postgres impls: PostgresEltmService.kt,
+                             PostgresExtractionQueue.kt; the service's
+                             ambient-transaction SQL helpers (finders, view
+                             builders, note insert, search bodies) live in
+                             EltmEntityQueries.kt / EltmRelationshipQueries.kt /
+                             EltmNoteQueries.kt
   script/                    RefreshEmbedding.kt — one-off
                              embedding-model-switch maintenance (see its KDoc)
   server/                    ktor HTTP API: WebServer.kt, SseEvents.kt (SSE

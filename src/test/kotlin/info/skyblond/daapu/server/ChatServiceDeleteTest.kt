@@ -9,7 +9,7 @@ import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.config.testAppConfig
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.assistantMessage
-import info.skyblond.daapu.memory.eltm.PostgresExtractionQueue
+import info.skyblond.daapu.memory.eltm.postgres.PostgresExtractionQueue
 import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.chatService
