@@ -12,6 +12,7 @@ import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.EltmTransferService
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.server.endpoint.*
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -88,6 +89,7 @@ internal fun Application.module(koin: Koin) {
     val service = koin.get<ChatService>()
     val eltmService = koin.get<EltmService>()
     val memoryExtractionService = koin.get<MemoryExtractionService>()
+    val eltmTransferService = koin.get<EltmTransferService>()
     val handCallback = koin.get<HandCallbackService>()
     val personaService = koin.get<PersonaService>()
     val modelCatalog = koin.get<ModelCatalog>()
@@ -161,6 +163,17 @@ internal fun Application.module(koin: Koin) {
                 ErrorResponse(cause.message ?: "ELTM digest failed")
             )
         }
+        // a failed ELTM import behind `POST /api/eltm/import` (an embedding
+        // call inside the merge — see EltmRoute.kt): the same treatment as
+        // the digest's failure — 502 with the reason, whatever the merge
+        // already wrote sticks and re-running the same file resumes
+        exception<EltmImportException> { call, cause ->
+            logger.warn(cause) { "ELTM import failed on ${call.request.uri}" }
+            call.respond(
+                HttpStatusCode.BadGateway,
+                ErrorResponse(cause.message ?: "ELTM import failed")
+            )
+        }
         // must be registered before ContentTransformationException: StatusPages
         // picks the nearest registered class, so a directly thrown
         // UnsupportedMediaTypeException (e.g. from multipart handling) gets its
@@ -187,7 +200,7 @@ internal fun Application.module(koin: Koin) {
             registerModelsEndpoints(modelCatalog)
             registerHandEndpoints(handCallback)
             registerChatsEndpoints(service)
-            registerEltmEndpoints(eltmService, memoryExtractionService)
+            registerEltmEndpoints(eltmService, memoryExtractionService, eltmTransferService)
             registerPersonasEndpoints(personaService)
         }
         staticWebUi()

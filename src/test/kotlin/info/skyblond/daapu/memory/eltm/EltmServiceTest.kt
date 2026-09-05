@@ -229,6 +229,11 @@ class EltmServiceTest {
             to: java.time.LocalDate?,
             limit: Int,
         ): List<EltmNote> = error("unused")
+
+        override suspend fun setRelationshipValid(relationshipId: Long, valid: Boolean): Boolean =
+            error("unused")
+
+        override suspend fun exportAll(): EltmSnapshot = error("unused")
     }
 
     @Test

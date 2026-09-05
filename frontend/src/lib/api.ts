@@ -4,6 +4,8 @@ import type {
   ChatInfo,
   ChatListPage,
   ChatMessage,
+  EltmExportPayload,
+  EltmImportSummary,
   EntityViewDto,
   EltmNoteDto,
   ModelInfo,
@@ -280,6 +282,27 @@ export async function listRelationships(limit = 100, offset = 0): Promise<Relati
 
 export async function getRelationshipNotes(id: number, limit = ELTM_DRILLDOWN_LIMIT): Promise<EltmNoteDto[]> {
   return getJson(`/api/eltm/relationships/${id}/notes?limit=${limit}`)
+}
+
+// ---- ELTM transfer (the whole-store export / merge import; see `EltmTransfer.kt`) ----
+
+/** The whole ELTM as the transfer payload (`eltm.json`). */
+export async function exportEltm(): Promise<EltmExportPayload> {
+  return getJson('/api/eltm/export')
+}
+
+/**
+ * Import (merge) a transfer payload (`POST /api/eltm/import`): entities
+ * match on (name, category), relationships on the resolved triple, notes
+ * dedup on (date, text). `overwriteAttr` rides the query param (the
+ * backend's default is false): when false an existing attribute key keeps
+ * its value, when true the file's value wins. Fail-fast partial: the first
+ * invalid entry (or a mid-merge embedding failure) fails the request and
+ * everything written before it sticks — re-running the same file resumes.
+ */
+export async function importEltm(payload: EltmExportPayload, overwriteAttr: boolean): Promise<EltmImportSummary> {
+  const res = await request(`/api/eltm/import?overwriteAttr=${overwriteAttr}`, jsonInit('POST', payload))
+  return res.json()
 }
 
 // ---- ELTM digest (the manual write path; see the `#/eltm` Digest tab) ----

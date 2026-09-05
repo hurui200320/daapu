@@ -1,24 +1,40 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { ChevronDown, ChevronRight, ChevronUp, GripVertical, Info, Paperclip, Type, X } from '@lucide/svelte'
+  import {
+    ChevronDown,
+    ChevronRight,
+    ChevronUp,
+    Download,
+    GripVertical,
+    Info,
+    Loader2,
+    Paperclip,
+    Type,
+    Upload,
+    X,
+  } from '@lucide/svelte'
   import {
     ELTM_DRILLDOWN_LIMIT,
+    exportEltm,
     getEntityNotes,
     getEntityRelationships,
     getRelationshipNotes,
     digestEltm,
+    importEltm,
     listEntities,
     listRelationships,
   } from '../api'
-  import type { EltmNoteDto, EntityViewDto, RelationshipViewDto } from '../types'
+  import type { EltmExportPayload, EltmNoteDto, EntityViewDto, RelationshipViewDto } from '../types'
+  import { parseEltmImportFile } from '../eltm-transfer'
   import { onIntervalAndFocus } from '../resync'
   import { PagedTab } from '../paged-tab.svelte'
   import { router } from '../router.svelte'
   import { toastStore } from '../toast-store.svelte'
   import { hasDigestInput, moveToSlot, newTextPart, wireDigestParts, type DigestDraftPart } from '../digest-form'
   import { browserEncoder, imageFileToDataUrl, MAX_IMAGE_BYTES } from '../image-attachment'
-  import { cn, errMsg } from '../utils'
+  import { cn, downloadJsonFile, errMsg } from '../utils'
   import ImageLightbox from './ImageLightbox.svelte'
+  import ImportEltmDialog from './ImportEltmDialog.svelte'
   import { lightboxTriggerBtn } from './ui/message-styles'
   import Button from './ui/button.svelte'
 
@@ -213,6 +229,73 @@
       digestError = errMsg(e)
     } finally {
       digesting = false
+    }
+  }
+
+  // ---- Transfer (export / import-merge): the header buttons. Export
+  // downloads one `eltm.json` (the whole store, see EltmTransferService).
+  // Import parses the picked file (shape check in eltm-transfer.ts), shows
+  // the confirm dialog (the overwrite-attributes decision), then POSTs the
+  // payload verbatim — the merge is fail-fast partial, so even a failure
+  // leaves earlier writes stuck and the lists must resync either way.
+  let exporting = $state(false)
+  let importing = $state(false)
+  let importInput = $state<HTMLInputElement | null>(null)
+  // the parsed file waiting on the confirm dialog
+  let pendingImport = $state<EltmExportPayload | null>(null)
+
+  async function exportAll() {
+    if (exporting) return
+    exporting = true
+    try {
+      const payload = await exportEltm()
+      // the name is hardcoded because fetch does not act on the backend's
+      // Content-Disposition — keep it in sync with the export route
+      // (EltmRoute.kt), like the persona store does with PersonasRoute.kt
+      downloadJsonFile('eltm.json', JSON.stringify(payload))
+    } catch (e) {
+      toastStore.pushError(e)
+    } finally {
+      exporting = false
+    }
+  }
+
+  function onImportPicked(input: HTMLInputElement) {
+    const file = input.files?.[0]
+    // reset so picking the same file again still fires the change event
+    input.value = ''
+    if (!file) return
+    parseEltmImportFile(file)
+      .then((payload) => (pendingImport = payload))
+      .catch((e) => toastStore.pushError(e))
+  }
+
+  async function confirmImport(overwriteAttr: boolean) {
+    const payload = pendingImport
+    if (!payload || importing) return
+    importing = true
+    try {
+      const s = await importEltm(payload, overwriteAttr)
+      toastStore.push(
+        `ELTM imported: ${s.entitiesCreated} entities created, ${s.entitiesMatched} matched; ` +
+          `${s.relationshipsCreated} relationships created, ${s.relationshipsMatched} matched; ` +
+          `${s.notesInserted} notes added, ${s.notesSkipped} duplicates skipped; ` +
+          `${s.attributesWritten} attributes written, ${s.attributesKept} kept`,
+      )
+      pendingImport = null
+    } catch (e) {
+      toastStore.pushError(e)
+    } finally {
+      // a failed merge keeps what it already wrote (fail-fast partial), so
+      // the lists resync on success AND failure (see resync: it keeps the
+      // loaded pages and the expanded cards). Guarded so the busy reset
+      // can never be skipped: importing gates both transfer buttons.
+      try {
+        await resync()
+      } catch {
+        // resync owns its fetch failures; nothing left to report here
+      }
+      importing = false
     }
   }
 
@@ -441,13 +524,63 @@
 
 <div class="h-full overflow-y-auto">
   <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-8">
-    <div>
-      <h1 class="text-2xl font-semibold tracking-tight">ELTM</h1>
-      <p class="text-sm text-muted-foreground">
-        External long-term memory: entities, relationships, and diary notes (browse is read-only — the writer agent
-        writes, see Digest)
-      </p>
+    <div class="flex items-start justify-between gap-2">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">ELTM</h1>
+        <p class="text-sm text-muted-foreground">
+          External long-term memory: entities, relationships, and diary notes (browse is read-only — the writer agent
+          writes, see Digest)
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <!-- labeled buttons: the tray icons alone read backwards (import =
+             arrow INTO the tray, which is Lucide's Download), so the text
+             carries the meaning — same recipe as PersonaView's importer -->
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={importing || exporting}
+          title="Import (merge) memory from an exported file"
+          onclick={() => importInput?.click()}
+        >
+          {#if importing}
+            <Loader2 class="size-4 animate-spin" />
+          {:else}
+            <Download class="size-4" />
+          {/if}
+          Import
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={importing || exporting}
+          title="Export all memory to one JSON file"
+          onclick={() => void exportAll()}
+        >
+          {#if exporting}
+            <Loader2 class="size-4 animate-spin" />
+          {:else}
+            <Upload class="size-4" />
+          {/if}
+          Export
+        </Button>
+      </div>
     </div>
+    <input
+      bind:this={importInput}
+      type="file"
+      accept=".json,application/json"
+      class="hidden"
+      onchange={(e) => onImportPicked(e.currentTarget)}
+    />
+    <ImportEltmDialog
+      open={pendingImport !== null}
+      onClose={() => (pendingImport = null)}
+      entityCount={Object.keys(pendingImport?.entities ?? {}).length}
+      relationshipCount={pendingImport?.relationships.length ?? 0}
+      busy={importing}
+      onConfirm={(overwriteAttr) => void confirmImport(overwriteAttr)}
+    />
 
     <div class="flex gap-2">
       {#each TABS as [value, label] (value)}

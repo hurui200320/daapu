@@ -8,6 +8,7 @@ import info.skyblond.daapu.hand.HandService
 import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.*
+import java.sql.Connection
 import java.time.LocalDate
 
 /**
@@ -391,6 +392,33 @@ class PostgresEltmService(
         }
     }
 
+    override suspend fun setRelationshipValid(relationshipId: Long, valid: Boolean): Boolean =
+        withTransaction {
+            // existence check + change detection, then the atomic UPDATE —
+            // no FOR UPDATE lock needed: validity is not part of the
+            // embedding text, so unlike setEntityAttribute a concurrent
+            // write between the read and the update can never make a
+            // stored embedding diverge (last write wins on a boolean). The
+            // UPDATE's row count IS checked: a concurrent merge fold that
+            // deleted the row between the read and the update fails fast
+            // instead of reporting a write that wrote nothing (and bumping
+            // the counter for it).
+            val current = findRelationshipById(relationshipId)
+                ?: throw IllegalArgumentException("relationship $relationshipId does not exist")
+            if (current.valid == valid) {
+                false
+            } else {
+                val updated = EltmRelationships.update({ EltmRelationships.id eq relationshipId }) {
+                    it[EltmRelationships.valid] = valid
+                }
+                if (updated == 0) {
+                    throw IllegalArgumentException("relationship $relationshipId no longer exists")
+                }
+                bumpWriteVersion()
+                true
+            }
+        }
+
     override suspend fun mergeEntities(winnerId: Long, loserId: Long) = withTransaction {
         require(winnerId != loserId) { "cannot merge an entity into itself" }
         // the WHOLE merge — the reads, the fold's embed and the writes —
@@ -607,6 +635,42 @@ class PostgresEltmService(
                 )
             }
         }
+
+    override suspend fun exportAll(): EltmSnapshot = withTransaction(
+        // REPEATABLE READ, not the default READ COMMITTED: the four SELECTs
+        // below must be ONE snapshot — under READ COMMITTED each statement
+        // takes its own, so the extraction pipeline committing between them
+        // would leak a relationship whose endpoint entity the first select
+        // never saw (breaking the export's uuid join) or notes for a
+        // subject outside the snapshot (silently dropped from the backup).
+        // See EltmService.exportAll. The read-only workload cannot hit the
+        // write-conflict aborts REPEATABLE READ can raise.
+        isolation = Connection.TRANSACTION_REPEATABLE_READ,
+    ) {
+        // the whole store (the snapshot rationale lives on
+        // EltmService.exportAll); only the content columns — the embedding
+        // vectors (2000 dims per row) never travel
+        val entities = EltmEntities
+            .select(EltmEntities.id, EltmEntities.canonicalName, EltmEntities.category)
+            .orderBy(EltmEntities.id to SortOrder.ASC)
+            .map { it.toEntity() }
+        EltmSnapshot(
+            entities = entities,
+            attributes = attributesFor(entities.map { it.id }),
+            relationships = EltmRelationships.selectAll()
+                .orderBy(EltmRelationships.id to SortOrder.ASC)
+                .map { it.toRelationship() },
+            notes = EltmNotes.select(
+                EltmNotes.id,
+                EltmNotes.entityId,
+                EltmNotes.relationshipId,
+                EltmNotes.eventDate,
+                EltmNotes.note,
+                EltmNotes.createdAt,
+            ).orderBy(EltmNotes.eventDate to SortOrder.ASC, EltmNotes.id to SortOrder.ASC)
+                .map { it.toNote() },
+        )
+    }
 
     override suspend fun getEntity(id: Long): EntityView? = withTransaction {
         val entity = findEntityById(id) ?: return@withTransaction null

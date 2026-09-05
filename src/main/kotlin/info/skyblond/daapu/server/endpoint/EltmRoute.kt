@@ -6,7 +6,10 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatValidationException
 import info.skyblond.daapu.agent.chat.imageMimeTypeRegex
 import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
+import info.skyblond.daapu.hand.EmbeddingException
+import info.skyblond.daapu.memory.eltm.EltmExportPayload
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.EltmTransferService
 import info.skyblond.daapu.server.EltmDigestRequest
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
 import info.skyblond.daapu.server.EntityViewDto.Companion.toDto
@@ -46,16 +49,32 @@ private const val MAX_ELTM_PAGE_LIMIT = 500
 class EltmDigestException(message: String, cause: Throwable) : RuntimeException(message, cause)
 
 /**
+ * A terminal failure of the ELTM import behind `POST /api/eltm/import`:
+ * an embedding call inside the merge failed (the hand unreachable, the
+ * content too large for the embedding model — a size validation cannot
+ * know). Mapped to 502 with the real failure reason (WebServer's
+ * StatusPages) — the submitter is interactively waiting and must know why;
+ * whatever the merge already wrote sticks, and re-running the same file
+ * skips the existing content and resumes (see
+ * `EltmTransferService.importEltm`). [cause] carries the stage's exception
+ * for the server-side log only: the response body renders the message
+ * chain, not the stack.
+ */
+class EltmImportException(message: String, cause: Throwable) : RuntimeException(message, cause)
+
+/**
  * The `/api/eltm` routes: the browse-only reads over [EltmService] plus the
- * ONE write endpoint, `POST /digest`, feeding caller-supplied text/image
+ * write endpoints — `POST /digest`, feeding caller-supplied text/image
  * parts through [memoryExtractionService] (both the extraction one-shot
  * and the writer run inside `MemoryExtractionService.digestUserInput`;
  * the same extractor/writer pair the discard pipeline uses — the ELTM is
- * otherwise written only by that pipeline).
+ * otherwise written only by that pipeline), and the transfer pair
+ * (`GET /export` / `POST /import`, see [eltmTransferService]).
  */
 fun Route.registerEltmEndpoints(
     eltmService: EltmService,
     memoryExtractionService: MemoryExtractionService,
+    eltmTransferService: EltmTransferService,
 ) {
     route("/eltm") {
         get("/entities") {
@@ -141,6 +160,48 @@ fun Route.registerEltmEndpoints(
                 eltmService.getRelationshipNotes(id, from, to, limit, offset)
                     .map { it.toDto() }
             )
+        }
+        // export the whole ELTM as the transfer payload (see
+        // EltmTransferService.exportEltm): an attachment named `eltm.json`,
+        // like the persona export. No route conflict: the id-carrying GETs
+        // all live under /entities/... or /relationships/...
+        get("/export") {
+            call.response.header(
+                HttpHeaders.ContentDisposition,
+                ContentDisposition.Attachment
+                    .withParameter(ContentDisposition.Parameters.FileName, "eltm.json")
+                    .toString(),
+            )
+            call.respond(eltmTransferService.exportEltm())
+        }
+        // import (merge) the transfer payload: the exported file posts
+        // verbatim as the body — `overwriteAttr` rides the query param
+        // (missing = false) instead, so the two endpoints share one shape
+        // (see EltmTransfer.kt). The merge semantics, the fail-fast partial
+        // stance and the validation errors (IllegalArgumentException → 400,
+        // earlier writes sticking) are EltmTransferService.importEltm's.
+        // No chat lock: nothing here touches the chats table. Accepted PoC
+        // limits, the same stance as the digest route below: no size cap on
+        // the body and no import concurrency limit (each new note and each
+        // changed attribute costs an embed call through the hand).
+        post("/import") {
+            val overwriteAttr = when (val raw = call.request.queryParameters["overwriteAttr"]) {
+                null -> false
+                else -> raw.toBooleanStrictOrNull()
+                    ?: throw BadRequestException("overwriteAttr must be true or false")
+            }
+            val payload = call.receive<EltmExportPayload>()
+            // an embedding failure mid-merge (hand unreachable, content too
+            // large for the model) is an upstream failure: 502 with the
+            // reason — see EltmImportException (the digest's precedent)
+            val summary = try {
+                eltmTransferService.importEltm(payload, overwriteAttr)
+            } catch (e: IllegalArgumentException) {
+                throw BadRequestException(e.message ?: "Invalid ELTM payload")
+            } catch (e: EmbeddingException) {
+                throw EltmImportException(failureChainMessages(e).joinToString("\nCaused by: "), e)
+            }
+            call.respond(summary)
         }
         // the manual write path: caller-supplied text/image parts in the
         // user-message wire shape (raw notes, prose or facts already in

@@ -12,6 +12,7 @@ import info.skyblond.daapu.agent.context.ContextInjection
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.config.TitleConfig
 import info.skyblond.daapu.config.testAppConfig
+import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandEvent
 import info.skyblond.daapu.hand.HandRunRequest
@@ -41,6 +42,7 @@ import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -1725,6 +1727,209 @@ class WebServerTest : DbTestBase() {
             }
             val personas = json.parseToJsonElement(client.get("/api/personas").bodyAsText()).jsonArray
             assertEquals(1, personas.size, "nothing was created")
+        }
+    }
+
+    // ---- ELTM transfer (`GET /api/eltm/export`, `POST /api/eltm/import`) ----
+
+    @Test
+    fun `eltm export answers the transfer payload as an attachment and the file posts back verbatim`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        runBlocking {
+            val kindle = eltm.createEntity("kindle", "device").entity
+            eltm.setEntityAttribute(kindle.id, "model", "k4")
+            eltm.attachNoteToEntity(kindle.id, LocalDate.of(2026, 8, 17), "bought it")
+            val alice = eltm.createEntity("alice", "person").entity
+            val works = eltm.createRelationship(kindle.id, alice.id, "belongs to")
+            eltm.attachNoteToRelationship(
+                works.id, LocalDate.of(2026, 8, 18), "gave it away", valid = false,
+            )
+        }
+        testApplication {
+            application { module(testKoinApp(eltmService = eltm).koin) }
+            val export = client.get("/api/eltm/export")
+            assertEquals(HttpStatusCode.OK, export.status)
+            assertEquals(
+                "attachment; filename=eltm.json",
+                export.headers[HttpHeaders.ContentDisposition],
+            )
+            val payload = json.parseToJsonElement(export.bodyAsText()).jsonObject
+            val entities = payload["entities"]!!.jsonObject
+            assertEquals(2, entities.size, "the entities are keyed by file uuids")
+            val kindleEntry = entities.values
+                .single { it.jsonObject["name"]!!.jsonPrimitive.content == "kindle" }.jsonObject
+            assertEquals("device", kindleEntry["category"]!!.jsonPrimitive.content)
+            assertEquals("k4", kindleEntry["attributes"]!!.jsonObject["model"]!!.jsonPrimitive.content)
+            val relationships = payload["relationships"]!!.jsonArray
+            assertEquals(1, relationships.size)
+            val relationship = relationships[0].jsonObject
+            assertTrue(relationship["srcUuid"]!!.jsonPrimitive.content in entities.keys)
+            assertTrue(relationship["dstUuid"]!!.jsonPrimitive.content in entities.keys)
+            assertEquals("belongs_to", relationship["verb"]!!.jsonPrimitive.content)
+            assertFalse(relationship["valid"]!!.jsonPrimitive.boolean)
+            // the exported file posts back verbatim as the import body
+            // (no overwriteAttr field anywhere — the decision is the query
+            // param's) and skips everything, already merged
+            val import = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(export.bodyAsText())
+            }
+            assertEquals(HttpStatusCode.OK, import.status)
+            val summary = json.parseToJsonElement(import.bodyAsText()).jsonObject
+            assertEquals(2, summary["entitiesMatched"]!!.jsonPrimitive.long)
+            assertEquals(1, summary["relationshipsMatched"]!!.jsonPrimitive.long)
+            assertEquals(2, summary["notesSkipped"]!!.jsonPrimitive.long)
+            assertEquals(1, summary["attributesKept"]!!.jsonPrimitive.long)
+        }
+    }
+
+    @Test
+    fun `eltm import honors the overwriteAttr query param - default false`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        val kindleId = runBlocking {
+            eltm.createEntity("kindle", "device").entity.also {
+                eltm.setEntityAttribute(it.id, "model", "k4")
+            }.id
+        }
+        val file = """
+            {"entities":{"uuid-a":{"name":"kindle","category":"device",
+             "attributes":{"model":"k9"},"notes":[]}},"relationships":[]}
+        """.trimIndent().replace("\n", "")
+        testApplication {
+            application { module(testKoinApp(eltmService = eltm).koin) }
+            // no param: existing keys keep their values
+            val kept = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(file)
+            }
+            assertEquals(HttpStatusCode.OK, kept.status)
+            val keptSummary = json.parseToJsonElement(kept.bodyAsText()).jsonObject
+            assertEquals(0, keptSummary["attributesWritten"]!!.jsonPrimitive.long)
+            assertEquals(1, keptSummary["attributesKept"]!!.jsonPrimitive.long)
+            assertEquals(
+                "k4",
+                client.get("/api/eltm/entities/$kindleId").bodyAsText()
+                    .let { json.parseToJsonElement(it).jsonObject["attributes"]!!.jsonObject["model"]!! }
+                    .jsonPrimitive.content,
+            )
+
+            // overwriteAttr=true: the file's value wins
+            val overwritten = client.post("/api/eltm/import?overwriteAttr=true") {
+                contentType(ContentType.Application.Json)
+                setBody(file)
+            }
+            assertEquals(HttpStatusCode.OK, overwritten.status)
+            assertEquals(
+                "k9",
+                client.get("/api/eltm/entities/$kindleId").bodyAsText()
+                    .let { json.parseToJsonElement(it).jsonObject["attributes"]!!.jsonObject["model"]!! }
+                    .jsonPrimitive.content,
+            )
+
+            // a garbage flag is a 400 before the body even matters
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.post("/api/eltm/import?overwriteAttr=maybe") {
+                    contentType(ContentType.Application.Json)
+                    setBody(file)
+                }.status,
+            )
+        }
+    }
+
+    @Test
+    fun `eltm import rejects a broken file with 400 and creates nothing`() {
+        val eltm = testPostgresEltmService(FakeHand())
+        testApplication {
+            application { module(testKoinApp(eltmService = eltm).koin) }
+            // a dangling relationship endpoint: the service's validation
+            // fails before the first write and the 400 carries the path
+            val dangling = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"entities":{"uuid-a":{"name":"kindle","category":"device",
+                       "attributes":{},"notes":[]}},
+                       "relationships":[{"srcUuid":"uuid-a","verb":"knows",
+                       "dstUuid":"uuid-ghost","valid":true,"notes":[]}]}""".trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, dangling.status)
+            assertTrue(
+                json.parseToJsonElement(dangling.bodyAsText()).jsonObject["error"]?.jsonPrimitive?.content
+                    ?.contains("does not reference an exported entity") == true,
+                "the 400 must carry the validation reason",
+            )
+            // two entries resolving to the same (name, category) after
+            // normalization: a corrupt backup (the DB holds the key once),
+            // rejected with the duplicate named, nothing written
+            val duplicate = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"entities":{"uuid-a":{"name":"kindle","category":"device",
+                       "attributes":{},"notes":[]},
+                       "uuid-b":{"name":"KINDLE","category":"device","attributes":{},"notes":[]}},
+                       "relationships":[]}""".trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.BadRequest, duplicate.status)
+            assertTrue(
+                json.parseToJsonElement(duplicate.bodyAsText()).jsonObject["error"]?.jsonPrimitive?.content
+                    ?.contains("duplicates entities[uuid-a]") == true,
+                "the 400 must name the duplicated key",
+            )
+            // a body that cannot decode (entities is an array) fails during
+            // the request decode, before the service runs
+            val undecodable = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"entities":[],"relationships":[]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, undecodable.status)
+            assertEquals(
+                0,
+                client.get("/api/eltm/entities").bodyAsText()
+                    .let { json.parseToJsonElement(it).jsonArray.size },
+                "nothing was created",
+            )
+        }
+    }
+
+    @Test
+    fun `eltm import answers 502 when an embedding call fails mid-merge - earlier writes stick`() {
+        // the embed script fails the SECOND entity's create ("bob person"):
+        // the failure is post-validation, so alice's row sticks and the 502
+        // carries the upstream reason (the digest's 502 precedent)
+        val hand = FakeHand(embedScript = { request ->
+            if (request.input.any { "bob" in it }) {
+                throw EmbeddingException(
+                    "invalid_request", "content too large for the embedding model",
+                )
+            }
+            FakeHand().embed(request)
+        })
+        val eltm = testPostgresEltmService(hand)
+        testApplication {
+            application { module(testKoinApp(hand = hand, eltmService = eltm).koin) }
+            val response = client.post("/api/eltm/import") {
+                contentType(ContentType.Application.Json)
+                setBody(
+                    """{"entities":{"uuid-a":{"name":"alice","category":"person",
+                       "attributes":{},"notes":[]},
+                       "uuid-b":{"name":"bob","category":"person","attributes":{},"notes":[]}},
+                       "relationships":[]}""".trimIndent(),
+                )
+            }
+            assertEquals(HttpStatusCode.BadGateway, response.status)
+            assertTrue(
+                json.parseToJsonElement(response.bodyAsText()).jsonObject["error"]?.jsonPrimitive?.content
+                    ?.contains("content too large") == true,
+                "the 502 must carry the upstream reason",
+            )
+            val entities = json.parseToJsonElement(client.get("/api/eltm/entities").bodyAsText()).jsonArray
+            assertEquals(1, entities.size, "the writes before the failure stick")
+            assertEquals(
+                "alice",
+                entities[0].jsonObject["entity"]!!.jsonObject["canonicalName"]!!.jsonPrimitive.content,
+            )
         }
     }
 }

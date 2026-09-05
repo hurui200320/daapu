@@ -123,6 +123,63 @@ export interface RelationshipViewDto {
   latestNote: EltmNoteDto | null
 }
 
+// ---- ELTM transfer (`GET /api/eltm/export` = `POST /api/eltm/import`; authority: `memory/eltm/EltmTransfer.kt`) ----
+
+/** One diary note entry of the transfer payload: event date + text only. */
+export interface EltmExportNote {
+  /** `YYYY-MM-DD` */
+  date: string
+  note: string
+}
+
+/**
+ * One entity entry of the transfer payload. The payload's entities are
+ * keyed by file-scope uuids (minted per export, pure join keys for the
+ * relationships' srcUuid/dstUuid) — import matches on (name, category),
+ * never the uuid.
+ */
+export interface EltmExportEntity {
+  name: string
+  category: string
+  attributes: Record<string, string>
+  notes: EltmExportNote[]
+}
+
+export interface EltmExportRelationship {
+  srcUuid: string
+  verb: string
+  dstUuid: string
+  /** the row's structural state at export time */
+  valid: boolean
+  notes: EltmExportNote[]
+}
+
+/**
+ * The ELTM transfer payload: the export attachment (`eltm.json`) and, the
+ * same shape posted verbatim, the import request body (the `overwriteAttr`
+ * decision travels as a query parameter).
+ */
+export interface EltmExportPayload {
+  entities: Record<string, EltmExportEntity>
+  relationships: EltmExportRelationship[]
+}
+
+/**
+ * The `POST /api/eltm/import` response: the merge's per-kind split.
+ * attributesWritten = keys set (new, or overwritten under overwriteAttr);
+ * attributesKept = existing keys left alone.
+ */
+export interface EltmImportSummary {
+  entitiesCreated: number
+  entitiesMatched: number
+  relationshipsCreated: number
+  relationshipsMatched: number
+  notesInserted: number
+  notesSkipped: number
+  attributesWritten: number
+  attributesKept: number
+}
+
 /** One chat entry of a `GET /api/chats` page (`ChatListPage`): id + title + the persona record. */
 export interface ChatInfo {
   id: string

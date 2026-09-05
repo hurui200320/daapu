@@ -63,8 +63,16 @@ fun initDatabase(url: String, user: String, password: String) {
  * transactional (e.g. HTTP calls) are therefore re-executed too — convert
  * expected SQL errors to non-SQL exceptions inside the block instead of letting
  * them escape.
+ *
+ * @param isolation Overrides the database's default transaction isolation for
+ * this one transaction (`null` keeps the default). The one user is a
+ * multi-statement read that must see ONE snapshot — under READ COMMITTED each
+ * statement gets its own, so a concurrent writer can leak rows into later
+ * queries (see `PostgresEltmService.exportAll` for the full rationale).
  */
-suspend fun <T> withTransaction(block: suspend JdbcTransaction.() -> T): T =
-    withContext(Dispatchers.IO) {
-        inTopLevelSuspendTransaction { block() }
-    }
+suspend fun <T> withTransaction(
+    isolation: Int? = null,
+    block: suspend JdbcTransaction.() -> T,
+): T = withContext(Dispatchers.IO) {
+    inTopLevelSuspendTransaction(transactionIsolation = isolation) { block() }
+}

@@ -115,6 +115,21 @@ data class CreateEntityResult(
 )
 
 /**
+ * The whole-store content snapshot behind the transfer feature
+ * (`EltmTransferService`): every entity (id ascending) with its
+ * current-state attributes, every relationship (id ascending) and every
+ * diary note (chronological). Pure content — no embeddings (recomputed
+ * from the text on import) and no derived counts.
+ */
+data class EltmSnapshot(
+    val entities: List<EltmEntity>,
+    /** Per-entity current-state attributes (keys alphabetically ordered). */
+    val attributes: Map<Long, EntityAttributes>,
+    val relationships: List<EltmRelationship>,
+    val notes: List<EltmNote>,
+)
+
+/**
  * Normalize a name to its canonical form: trim, collapse internal
  * whitespace, lowercase (spaces kept). The canonical form is what the
  * `(canonical_name, category)` uniqueness constraint deduplicates on.
@@ -351,6 +366,20 @@ interface EltmService {
     ): EltmNote
 
     /**
+     * Set a relationship's structural validity directly, WITHOUT a diary
+     * note — the transfer import's merge rule only
+     * (`EltmTransferService.importEltm`; the diary model's own paths always
+     * ride a note via [attachNoteToRelationship], because a bare structural
+     * change carries no reason). Setting the current state is a no-op
+     * (pure read: no write, no counter bump).
+     *
+     * @return `true` when the value changed (a real write), `false` when the
+     * row already held [valid].
+     * @throws IllegalArgumentException when the relationship does not exist.
+     */
+    suspend fun setRelationshipValid(relationshipId: Long, valid: Boolean): Boolean
+
+    /**
      * Set a current-state fact (key-value attribute) on an entity: one row
      * per `(entity, key)` — a new key inserts, an existing key OVERWRITES
      * the value (attributes are facts, not a diary; the notes are the
@@ -410,6 +439,23 @@ interface EltmService {
      * note inline. Paginated via [limit]/[offset].
      */
     suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView>
+
+    /**
+     * The whole-store content snapshot for the transfer feature
+     * (`EltmTransferService`): all entities with their attributes, all
+     * relationships, all diary notes — [EltmSnapshot] for the exact
+     * contents and ordering. Read in ONE transaction at REPEATABLE READ —
+     * a true snapshot: under the default READ COMMITTED each statement of
+     * this multi-query read would take its own snapshot, and the
+     * extraction pipeline committing between them would leak a
+     * relationship whose endpoint entity the entity select never saw
+     * (breaking the export's uuid join) or notes for a subject outside
+     * the snapshot (silently dropped from the backup). Deliberately NOT
+     * selecting the embedding columns: the vectors dominate the row size
+     * and the import re-embeds through the local hand, so they never
+     * travel.
+     */
+    suspend fun exportAll(): EltmSnapshot
 
     /**
      * The entity with its latest diary note inline plus its note and

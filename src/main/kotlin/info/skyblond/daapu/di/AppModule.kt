@@ -33,6 +33,7 @@ import info.skyblond.daapu.hand.HandService
 import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
+import info.skyblond.daapu.memory.eltm.EltmTransferService
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.memory.eltm.PostgresEltmService
@@ -119,6 +120,12 @@ fun appModule(config: AppConfig): Module = module {
             noteSearchThreshold = config.memory.eltm.noteSearchThreshold,
             policy = handPolicy,
         )
+    }
+    // the ELTM transfer pair (export snapshot out, merge import in — see
+    // memory/eltm/EltmTransferService.kt): talks ONLY to the EltmService,
+    // so every import write rides the service's create-or-fetch machinery
+    single<EltmTransferService> {
+        EltmTransferService(eltm = get())
     }
 
     // the MCP tool servers come from config (`mcp.customs` keyed by

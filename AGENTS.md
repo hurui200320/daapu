@@ -107,7 +107,10 @@ src/main/kotlin/info/skyblond/daapu/
                              ClientEntry.kt, McpExceptions.kt)
   memory/eltm/               ELTM service + Postgres impl (EltmService.kt,
                              PostgresEltmService.kt), EltmToolProvider.kt,
-                             the background extraction queue
+                             the transfer pair (EltmTransfer.kt +
+                             EltmTransferService.kt — the whole-store
+                             export / merge import), the background
+                             extraction queue
                              (ExtractionQueue.kt + ExtractionQueueWorker.kt)
   script/                    RefreshEmbedding.kt — one-off
                              embedding-model-switch maintenance (see its KDoc)
