@@ -238,7 +238,7 @@ internal fun Route.staticWebUi(resourcePackage: String = WEB_UI_RESOURCE_PACKAGE
         cacheControl { url ->
             if (url.path.substringAfterLast("$resourcePackage/").startsWith("assets/")) {
                 // content-hashed dist assets: immutable per URL
-                listOf(CacheControl.MaxAge(maxAgeSeconds = 365 * 24 * 3600))
+                listOf(CacheControl.MaxAge(maxAgeSeconds = 7 * 24 * 3600))
             } else {
                 // index.html: revalidate before reuse — a new deploy changes
                 // the hashed names it references

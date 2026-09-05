@@ -61,7 +61,7 @@ class WebUiServingTest {
             // long, index.html is no-cache, and both carry a strong ETag that
             // ConditionalHeaders evaluates into a 304 on revalidation
             assertEquals("no-cache", root.headers[HttpHeaders.CacheControl])
-            assertEquals("max-age=31536000", asset.headers[HttpHeaders.CacheControl])
+            assertEquals("max-age=604800", asset.headers[HttpHeaders.CacheControl])
             val etag = root.headers[HttpHeaders.ETag]
             assertNotNull(etag, "index.html must carry an ETag")
             assertEquals(
