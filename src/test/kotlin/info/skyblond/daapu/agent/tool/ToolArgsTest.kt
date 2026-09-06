@@ -37,9 +37,12 @@ class ToolArgsTest {
 
     @Test
     fun `lenient text still fails a non-primitive value`() {
-        assertFailsWith<IllegalArgumentException> {
-            buildJsonObject { putJsonObject("k") { } }.textArg("k")
-        }
+        assertEquals(
+            "k must be a string",
+            assertFailsWith<IllegalArgumentException> {
+                buildJsonObject { putJsonObject("k") { } }.textArg("k")
+            }.message,
+        )
     }
 
     @Test
@@ -70,6 +73,7 @@ class ToolArgsTest {
     fun `long and int args parse leniently from numbers and numeric strings`() {
         assertEquals(5L, buildJsonObject { put("k", "5") }.longArg("k"))
         assertEquals(5L, buildJsonObject { put("k", 5) }.longArg("k"))
+        assertEquals(5L, buildJsonObject { put("k", " 5 ") }.longArg("k"), "lenient trims like intArg")
         assertNull(buildJsonObject { }.longArg("k"), "absent")
         assertNull(buildJsonObject { put("k", "abc") }.longArg("k"), "garbage")
         assertNull(buildJsonObject { put("k", true) }.longArg("k"), "bool")
@@ -77,17 +81,30 @@ class ToolArgsTest {
 
         assertEquals(5, buildJsonObject { put("k", "5") }.intArg("k"))
         assertEquals(5, buildJsonObject { put("k", 5) }.intArg("k"))
+        assertEquals(5, buildJsonObject { put("k", " 5 ") }.intArg("k"), "lenient trims like strict")
         assertNull(buildJsonObject { put("k", "abc") }.intArg("k"))
     }
 
     @Test
-    fun `strict int rejects strings, floats and non-primitives like zod`() {
+    fun `strict int coerces numeric strings but rejects floats and non-primitives`() {
         assertEquals(5, buildJsonObject { put("k", 5) }.intArg("k", strict = true))
         assertNull(buildJsonObject { }.intArg("k", strict = true), "absent")
+        assertNull(buildJsonObject { put("k", JsonNull) }.intArg("k", strict = true), "explicit null is absent")
+        // the arguments are LLM-authored and the model sometimes emits "5"
+        // for an integer schema: a well-formed numeric string coerces
+        // instead of costing an error round-trip
+        assertEquals(5, buildJsonObject { put("k", "5") }.intArg("k", strict = true))
+        assertEquals(5, buildJsonObject { put("k", " 5 ") }.intArg("k", strict = true))
         assertEquals(
-            "k must be a number",
+            "k must be an integer, got '\"5.5\"'",
             assertFailsWith<IllegalArgumentException> {
-                buildJsonObject { put("k", "5") }.intArg("k", strict = true)
+                buildJsonObject { put("k", "5.5") }.intArg("k", strict = true)
+            }.message,
+        )
+        assertEquals(
+            "k must be an integer, got '\"abc\"'",
+            assertFailsWith<IllegalArgumentException> {
+                buildJsonObject { put("k", "abc") }.intArg("k", strict = true)
             }.message,
         )
         assertEquals(
@@ -121,15 +138,26 @@ class ToolArgsTest {
 
     @Test
     fun `lenient long, int and bool still fail a non-primitive value`() {
-        assertFailsWith<IllegalArgumentException> {
-            buildJsonObject { putJsonObject("k") { } }.longArg("k")
-        }
-        assertFailsWith<IllegalArgumentException> {
-            buildJsonObject { putJsonArray("k") { add("a") } }.intArg("k")
-        }
-        assertFailsWith<IllegalArgumentException> {
-            buildJsonObject { putJsonArray("k") { add("a") } }.boolArg("k")
-        }
+        // a present object/array is a type error naming the key — never a
+        // silent null the caller would mistake for an absent argument
+        assertEquals(
+            "k must be a number",
+            assertFailsWith<IllegalArgumentException> {
+                buildJsonObject { putJsonObject("k") { } }.longArg("k")
+            }.message,
+        )
+        assertEquals(
+            "k must be a number",
+            assertFailsWith<IllegalArgumentException> {
+                buildJsonObject { putJsonArray("k") { add("a") } }.intArg("k")
+            }.message,
+        )
+        assertEquals(
+            "k must be a boolean",
+            assertFailsWith<IllegalArgumentException> {
+                buildJsonObject { putJsonArray("k") { add("a") } }.boolArg("k")
+            }.message,
+        )
     }
 
     // ---------- stringArrayArg ----------

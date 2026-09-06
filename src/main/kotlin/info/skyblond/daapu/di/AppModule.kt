@@ -130,9 +130,10 @@ fun appModule(config: AppConfig): Module = module {
 
     // the MCP tool servers come from config (`mcp.customs` keyed by
     // namespace plus the dedicated `mcp.exa`, merged by
-    // `McpConfig.allServers`); the provider connects eagerly at
-    // construction, so a server that cannot be reached aborts startup
-    // instead of silently degrading every chat run.
+    // `McpConfig.allServers`); the provider connects eagerly at startup
+    // via connectAll (called once from WebServer.startWebServer — never in
+    // the constructor, which must not block), so a server that cannot be
+    // reached aborts startup instead of silently degrading every chat run.
     single<McpToolProvider> {
         McpToolProvider(config.mcp.allServers(), config.mcp.proxy)
     } withOptions { onClose { it?.close() } }

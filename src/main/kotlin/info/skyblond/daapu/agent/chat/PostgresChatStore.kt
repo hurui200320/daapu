@@ -24,7 +24,10 @@ class PostgresChatStore : ChatStore {
         // (the id is immutable and creation-time-ordered — see newChatId in
         // `db/ChatIds.kt`). One extra row beyond the page size tells whether
         // a next page exists without a separate count query.
-        val rows = Chats.selectAll()
+        // Only the listed columns are selected: chat_json (the whole
+        // history, potentially megabytes with image attachments) must never
+        // be loaded for a list view.
+        val rows = Chats.select(Chats.id, Chats.title, Chats.personaId)
             .apply { if (cursor != null) andWhere { Chats.id less cursor } }
             .orderBy(Chats.id to SortOrder.DESC)
             .limit(CHAT_PAGE_SIZE + 1)
@@ -46,17 +49,31 @@ class PostgresChatStore : ChatStore {
         ChatInfo(id, title, personaId)
     }
 
-    override suspend fun load(chatId: String): ChatEntry? = withTransaction {
-        val entry = Chats.selectAll()
-            .where { Chats.id eq chatId }
-            .singleOrNull()
-            ?: return@withTransaction null
-        ChatEntry(
-            info = ChatInfo(entry[Chats.id], entry[Chats.title], entry[Chats.personaId]),
+    override suspend fun load(chatId: String): ChatEntry? {
+        // the JSON decode runs OUTSIDE the transaction: decoding can be
+        // expensive on a large history and must not hold a pooled
+        // connection while it runs.
+        data class RawRow(val id: String, val title: String, val personaId: Long, val chatJson: String, val eltmVersion: String)
+        val row = withTransaction {
+            Chats.select(Chats.id, Chats.title, Chats.personaId, Chats.chatJson, Chats.eltmVersion)
+                .where { Chats.id eq chatId }
+                .singleOrNull()
+                ?.let {
+                    RawRow(
+                        it[Chats.id],
+                        it[Chats.title],
+                        it[Chats.personaId],
+                        it[Chats.chatJson],
+                        it[Chats.eltmVersion],
+                    )
+                }
+        } ?: return null
+        return ChatEntry(
+            info = ChatInfo(row.id, row.title, row.personaId),
             content = ChatContent(
-                messages = ChatCodec.decodeChat(chatId, entry[Chats.chatJson]),
-                eltmVersion = entry[Chats.eltmVersion],
-                personaId = entry[Chats.personaId],
+                messages = ChatCodec.decodeChat(chatId, row.chatJson),
+                eltmVersion = row.eltmVersion,
+                personaId = row.personaId,
             )
         )
     }
@@ -64,7 +81,9 @@ class PostgresChatStore : ChatStore {
     override suspend fun store(chatId: String, chat: ChatContent) {
         // fail fast before anything is written: the same validation the
         // decode path applies (user messages must carry createdAt, the chat
-        // must be re-sendable), so a bad row can never be stored
+        // must be re-sendable), so a bad row can never be stored. Both run
+        // OUTSIDE the transaction: encoding a large history must not hold
+        // a pooled connection.
         ChatCodec.validateChat(chat.messages)
         val chatJson = ChatCodec.encodeChat(chat.messages)
         withTransaction {
@@ -80,8 +99,10 @@ class PostgresChatStore : ChatStore {
     override suspend fun rename(chatId: String, title: String): ChatInfo? = withTransaction {
         // read the row first: the returned ChatInfo must carry the row's
         // ACTUAL persona record (a defaulted personaId would silently report
-        // the reserved default 0 for a chat whose record is a custom persona)
-        val row = Chats.selectAll()
+        // the reserved default 0 for a chat whose record is a custom persona).
+        // Only the persona column is selected: chat_json must never be
+        // loaded for a metadata op (see listChats).
+        val row = Chats.select(Chats.personaId)
             .where { Chats.id eq chatId }
             .singleOrNull()
             ?: return@withTransaction null

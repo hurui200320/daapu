@@ -22,9 +22,6 @@ import info.skyblond.daapu.mcp.MockMcpServer
 import info.skyblond.daapu.mcp.MockTool
 import info.skyblond.daapu.mcp.MockToolReply
 import info.skyblond.daapu.memory.eltm.ClaimedJob
-import info.skyblond.daapu.memory.eltm.EltmEntity
-import info.skyblond.daapu.memory.eltm.EltmNote
-import info.skyblond.daapu.memory.eltm.EltmRelationship
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import info.skyblond.daapu.memory.eltm.postgres.PostgresExtractionQueue

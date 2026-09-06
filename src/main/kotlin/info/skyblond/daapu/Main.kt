@@ -13,9 +13,9 @@ import info.skyblond.daapu.server.startWebServer
 fun main() {
     val config = loadConfig()
     // the MCP tool servers come from config.jsonc too (mcp.customs, validated
-    // by loadConfig): the provider connects eagerly at construction, so a
-    // server that cannot be reached aborts startup instead of silently
-    // degrading every chat run.
+    // by loadConfig): the provider connects eagerly at startup (see
+    // WebServer.startWebServer), so a server that cannot be reached aborts
+    // startup instead of silently degrading every chat run.
     initDatabase(config.database.url, config.database.user, config.database.password)
     startWebServer(config)
 }

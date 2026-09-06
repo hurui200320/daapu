@@ -11,6 +11,7 @@ import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.config.AppConfig
 import info.skyblond.daapu.di.appModule
 import info.skyblond.daapu.hand.HandCallbackService
+import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
@@ -33,6 +34,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.koin.core.Koin
@@ -63,6 +65,17 @@ fun startWebServer(config: AppConfig) {
     // eager resolution: every fail-fast validation above fires here, never
     // mid-run (the resolved service is what the module below serves)
     koinApp.koin.get<ChatService>()
+    // the MCP servers' eager connect (parallel across servers): a server
+    // that cannot be reached aborts startup. Runs here — never in the
+    // provider's constructor, which must not block — alongside the other
+    // eager boot work. On failure the container is closed first so the
+    // per-entry HTTP engines (released only via onClose) never leak.
+    try {
+        runBlocking { koinApp.koin.get<McpToolProvider>().connectAll() }
+    } catch (t: Throwable) {
+        koinApp.close()
+        throw t
+    }
     // the background extraction queue worker (the deletion and compaction
     // paths' async memory extraction, `memory/eltm/ExtractionQueueWorker.kt`):
     // started explicitly because it is deliberately NOT reachable from the

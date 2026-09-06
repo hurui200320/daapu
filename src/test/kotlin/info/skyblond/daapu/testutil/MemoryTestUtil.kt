@@ -65,7 +65,7 @@ suspend fun writerRunFlow(
     val createEvents = toolRoundEvents(createRound, provider)
     val noteRound = addEntityNoteRound(
         "call_note",
-        eltm.searchEntities(name, 1).first().entity.id,
+        eltm.searchEntities(name, 1).first().view.entity.id,
         date,
         note,
     )

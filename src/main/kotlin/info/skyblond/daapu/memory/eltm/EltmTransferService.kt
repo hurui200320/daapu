@@ -1,8 +1,9 @@
 package info.skyblond.daapu.memory.eltm
 
+import info.skyblond.daapu.memory.eltm.model.*
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
-import java.util.UUID
+import java.util.*
 
 /**
  * The transfer service behind `GET /api/eltm/export` and
@@ -314,8 +315,10 @@ class EltmTransferService(private val eltm: EltmService) {
             when {
                 note.entityId != null && note.relationshipId == null ->
                     byEntity.getOrPut(note.entityId) { mutableListOf() }.add(note)
+
                 note.relationshipId != null && note.entityId == null ->
                     byRelationship.getOrPut(note.relationshipId) { mutableListOf() }.add(note)
+
                 else -> error("note ${note.id} must carry exactly one subject")
             }
         }
@@ -381,7 +384,7 @@ class EltmTransferService(private val eltm: EltmService) {
             if (firstUuid != null) {
                 throw IllegalArgumentException(
                     "$path duplicates entities[$firstUuid]: both resolve to " +
-                        "the entity key (\"${key.first}\", \"${key.second}\")"
+                            "the entity key (\"${key.first}\", \"${key.second}\")"
                 )
             }
             val attrKeys = HashMap<String, String>()
@@ -400,7 +403,7 @@ class EltmTransferService(private val eltm: EltmService) {
                 if (firstRawKey != null) {
                     throw IllegalArgumentException(
                         "$path.attributes[$attrKey] duplicates $path.attributes[$firstRawKey]: " +
-                            "both normalize to \"$k\""
+                                "both normalize to \"$k\""
                     )
                 }
             }
@@ -423,7 +426,7 @@ class EltmTransferService(private val eltm: EltmService) {
             if (firstIndex != null) {
                 throw IllegalArgumentException(
                     "$path duplicates relationships[$firstIndex]: both resolve to " +
-                        "the triple (${triple.first} -[${triple.third}]-> ${triple.second})"
+                            "the triple (${triple.first} -[${triple.third}]-> ${triple.second})"
                 )
             }
             rel.notes.forEachIndexed { j, note -> validateNote("$path.notes[$j]", note) }

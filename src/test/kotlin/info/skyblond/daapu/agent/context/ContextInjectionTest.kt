@@ -4,18 +4,14 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
-import info.skyblond.daapu.memory.eltm.EltmEntity
-import info.skyblond.daapu.memory.eltm.EntityWithScore
+import info.skyblond.daapu.memory.eltm.model.EltmEntity
+import info.skyblond.daapu.memory.eltm.model.EntityView
+import info.skyblond.daapu.memory.eltm.model.EntityWithScore
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 
 class ContextInjectionTest {
     private val contextInjection = ContextInjection()
@@ -90,6 +86,56 @@ class ContextInjectionTest {
         assertFalse {
             contextInjection.isInjection(unexpectedAttribute)
         }
+    }
+
+    @Test
+    fun `test isInjection prefix gate is semantic, not just a fast path`() {
+        // the generator emits no XML declaration and no leading whitespace
+        // (see convertToText), so a generated injection always starts with
+        // "<injection>": an XSD-valid injection WITH a declaration or
+        // leading whitespace (e.g. user-pasted XML) is NOT harness — it
+        // survives as user content, and a fresh injection is prepended ahead
+        // of it instead of replacing it
+        val generated = contextInjection.generateInjection(
+            InjectionSpec(
+                time = ZonedDateTime.now(),
+                eltmUpdated = false, relatedEntities = emptyList(), relatedNotes = emptyList()
+            )
+        )
+        assertTrue(generated.text.startsWith("<injection>"))
+        assertTrue { contextInjection.isInjection(generated) }
+
+        val withDeclaration = ChatMessagePart.Text("<?xml version=\"1.0\" encoding=\"UTF-8\"?>${generated.text}")
+        assertFalse(
+            contextInjection.isInjection(withDeclaration),
+            "an XSD-valid injection with a declaration is user content, not harness",
+        )
+        val withWhitespace = ChatMessagePart.Text("  ${generated.text}")
+        assertFalse(
+            contextInjection.isInjection(withWhitespace),
+            "an XSD-valid injection with leading whitespace is user content, not harness",
+        )
+
+        // removeInjection keeps the pasted part; a re-injection prepends a
+        // fresh one ahead of it instead of replacing it
+        val pasted = listOf(
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(withDeclaration, ChatMessagePart.Text("real content")),
+                createdAt = Instant.parse("2026-08-18T12:34:56Z"),
+            ),
+            assistant("done"),
+        )
+        val stripped = contextInjection.removeInjection(pasted)
+        assertEquals(2, stripped[0].parts.size, "the pasted injection is user content and survives")
+        val spec = InjectionSpec(
+            time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
+            eltmUpdated = false, relatedEntities = emptyList(), relatedNotes = emptyList(),
+        )
+        val reinjected = contextInjection.injectContext(pasted, spec)
+        assertEquals(3, reinjected[0].parts.size, "a fresh injection is prepended ahead of the pasted one")
+        assertTrue { contextInjection.isInjection(reinjected[0].parts.first() as ChatMessagePart.Text) }
+        assertEquals(withDeclaration, reinjected[0].parts[1])
     }
 
     @Test
@@ -227,9 +273,12 @@ class ContextInjectionTest {
     @Test
     fun `test injectContext with spec stamps and refreshes idempotently`() {
         val alice = EntityWithScore(
-            entity = EltmEntity(1, "alice", "person"),
-            noteCount = 0, latestNote = null, relationshipCount = 0,
-            score = 0.9, attributes = emptyMap(),
+            view = EntityView(
+                entity = EltmEntity(1, "alice", "person"),
+                noteCount = 0, latestNote = null, relationshipCount = 0,
+                attributes = emptyMap(),
+            ),
+            score = 0.9,
         )
         val spec = InjectionSpec(
             time = ZonedDateTime.of(2026, 8, 19, 10, 0, 0, 0, ZoneId.systemDefault()),
@@ -345,15 +394,17 @@ class ContextInjectionTest {
     fun `test related entities and notes render under memories`() {
         val hits = listOf(
             EntityWithScore(
-                entity = EltmEntity(id = 1, canonicalName = "alice", category = "person"),
-                noteCount = 3,
-                latestNote = null,
-                relationshipCount = 2,
-                score = 0.9,
-                attributes = linkedMapOf(
-                    "real_name" to "Alice Smith",
-                    "job" to "engineer",
+                view = EntityView(
+                    entity = EltmEntity(id = 1, canonicalName = "alice", category = "person"),
+                    noteCount = 3,
+                    latestNote = null,
+                    relationshipCount = 2,
+                    attributes = linkedMapOf(
+                        "real_name" to "Alice Smith",
+                        "job" to "engineer",
+                    ),
                 ),
+                score = 0.9,
             )
         )
         val notes = listOf(
@@ -411,9 +462,12 @@ class ContextInjectionTest {
                 eltmUpdated = false,
                 relatedEntities = listOf(
                     EntityWithScore(
-                        entity = EltmEntity(1, "alice", "person"),
-                        noteCount = 0, latestNote = null, relationshipCount = 0,
-                        score = 0.9, attributes = emptyMap(),
+                        view = EntityView(
+                            entity = EltmEntity(1, "alice", "person"),
+                            noteCount = 0, latestNote = null, relationshipCount = 0,
+                            attributes = emptyMap(),
+                        ),
+                        score = 0.9,
                     )
                 ),
                 relatedNotes = listOf(
@@ -435,10 +489,12 @@ class ContextInjectionTest {
     fun `test related sections sanitize control characters and single-escape markup`() {
         val hits = listOf(
             EntityWithScore(
-                entity = EltmEntity(1, "bad\u0001name", "cat <&"),
-                noteCount = 0, latestNote = null, relationshipCount = 0,
+                view = EntityView(
+                    entity = EltmEntity(1, "bad\u0001name", "cat <&"),
+                    noteCount = 0, latestNote = null, relationshipCount = 0,
+                    attributes = linkedMapOf("k\u0001ey" to "v<&al\u0001ue"),
+                ),
                 score = 1.0,
-                attributes = linkedMapOf("k\u0001ey" to "v<&al\u0001ue"),
             )
         )
         val notes = listOf(

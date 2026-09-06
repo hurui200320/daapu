@@ -40,7 +40,7 @@ data class ToolCallRequest(
  * provider by `runId` and calls [execute]. [specifications] is suspend
  * because a real provider may need to reconnect to tool servers after a
  * transport failure (the MCP provider `mcp/McpToolProvider.kt` connects
- * eagerly at construction and reconnects in-turn on demand).
+ * eagerly at startup and reconnects in-turn on demand).
  *
  * [EmptyToolProvider] is the no-tools fallback: a run through
  * [info.skyblond.daapu.hand.HandService] sends neither tool URL for it, so

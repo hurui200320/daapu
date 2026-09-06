@@ -3,7 +3,7 @@ package info.skyblond.daapu.agent.context
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
-import info.skyblond.daapu.memory.eltm.EntityWithScore
+import info.skyblond.daapu.memory.eltm.model.EntityWithScore
 import org.w3c.dom.Document
 import java.io.StringReader
 import java.io.StringWriter
@@ -15,8 +15,10 @@ import java.time.format.DateTimeFormatter.ISO_LOCAL_DATE
 import java.time.format.DateTimeFormatterBuilder
 import java.time.temporal.ChronoField
 import javax.xml.XMLConstants
+import javax.xml.parsers.DocumentBuilder
 import javax.xml.parsers.DocumentBuilderFactory
 import javax.xml.transform.OutputKeys
+import javax.xml.transform.Transformer
 import javax.xml.transform.TransformerFactory
 import javax.xml.transform.dom.DOMSource
 import javax.xml.transform.stream.StreamResult
@@ -96,15 +98,14 @@ data class InjectionSpec(
  * a part is only recognized as a time anchor when it matches the exact
  * deterministic rendering of the message's own `createdAt`
  * ([hasMetaPart]); a user message that happens to contain a valid
- * `<meta>` with different content is kept as user content. The full
- * injection is only recognized structurally (the XSDs): a user message whose
- * FIRST part is a valid `<injection>` is indistinguishable, and is treated
- * as harness (the same accepted behavior as before this class existed).
- * Only the two shapes the generator actually emits are recognized — the full
- * shape (an [InjectionSpec] with non-null ELTM fields, see [generateInjection])
- * and the time-only simple shape (an all-null [InjectionSpec]); a hybrid
- * (e.g. `eltm-updated` without `<memories>`) validates against neither schema
- * and survives as user content.
+ * `<meta>` with different content is kept as user content. The
+ * injection is recognized exactly as [isInjection] defines (see its KDoc
+ * for the prefix gate): only the two shapes the generator actually emits
+ * are recognized — the full shape (an [InjectionSpec] with non-null ELTM
+ * fields, see [generateInjection]) and the time-only simple shape (an
+ * all-null [InjectionSpec]); a hybrid (e.g. `eltm-updated` without
+ * `<memories>`) validates against neither schema and survives as user
+ * content.
  */
 class ContextInjection {
     companion object {
@@ -147,6 +148,25 @@ class ContextInjection {
                 return false
             }
         }
+
+        // Neither DocumentBuilder nor Transformer is thread-safe, so one
+        // instance per thread: building them via newInstance() on every
+        // call (TransformerFactory.newInstance in particular) is the hot
+        // path's dominant cost — injectContext/removeInjection run these
+        // per message, per run. Retained for the thread's lifetime (bounded
+        // by the pool size — an intentional cache, not a per-request
+        // allocation).
+        private val threadDocumentBuilder: ThreadLocal<DocumentBuilder> =
+            ThreadLocal.withInitial {
+                DocumentBuilderFactory.newInstance().newDocumentBuilder()
+            }
+
+        private val threadTransformer: ThreadLocal<Transformer> =
+            ThreadLocal.withInitial {
+                TransformerFactory.newInstance().newTransformer().apply {
+                    setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes")
+                }
+            }
     }
 
     // Similar to ISO_OFFSET_DATE_TIME but only down to seconds
@@ -178,21 +198,18 @@ class ContextInjection {
     }
 
     fun Document.convertToText(): ChatMessagePart.Text {
-        val transformerFactory = TransformerFactory.newInstance()
-        val transformer = transformerFactory.newTransformer()
-        transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes")
+        // the thread-local transformer is preconfigured with
+        // OMIT_XML_DECLARATION (see the companion); never mutate its
+        // output properties here — it is shared by every call on this
+        // thread
+        val transformer = threadTransformer.get()
         val stringWriter = StringWriter()
         transformer.transform(DOMSource(this), StreamResult(stringWriter))
         return ChatMessagePart.Text(stringWriter.toString())
     }
 
-    // Note we're not reusing the factories and builders,
-    // they should be reused, but they are not guaranteed to be thread safe,
-    // making reusing risky if not properly handled
     fun generateInjection(spec: InjectionSpec): ChatMessagePart.Text {
-        val documentBuilderFactory = DocumentBuilderFactory.newInstance()
-        val documentBuilder = documentBuilderFactory.newDocumentBuilder()
-        val document = documentBuilder.newDocument()
+        val document = threadDocumentBuilder.get().newDocument()
         // injection
         val injection = document.createElement("injection")
         document.appendChild(injection)
@@ -229,10 +246,10 @@ class ContextInjection {
             spec.relatedEntities.forEach { hit ->
                 relatedEntitiesElement.appendChild(
                     document.createElement("entity").apply {
-                        setAttribute("id", hit.entity.id.toString())
-                        setAttribute("name", sanitizeForXml10(hit.entity.canonicalName))
-                        setAttribute("category", sanitizeForXml10(hit.entity.category))
-                        hit.attributes.forEach { (key, value) ->
+                        setAttribute("id", hit.view.entity.id.toString())
+                        setAttribute("name", sanitizeForXml10(hit.view.entity.canonicalName))
+                        setAttribute("category", sanitizeForXml10(hit.view.entity.category))
+                        hit.view.attributes.forEach { (key, value) ->
                             appendChild(
                                 document.createElement("attribute").apply {
                                     setAttribute("key", sanitizeForXml10(key))
@@ -264,11 +281,27 @@ class ContextInjection {
         return document.convertToText()
     }
 
-    fun isInjection(part: ChatMessagePart.Text): Boolean =
-        // only the two generator-emittable shapes count: the full ELTM shape
-        // or the time-only simple shape — a hybrid validates against neither
-        validateAgainst(fullInjectionSchema, part.text) ||
+    /**
+     * Structurally recognizes a harness `<injection>` first part (the same
+     * recognition [injectContext]/[removeInjection] always use).
+     *
+     * The prefix fast-path is SEMANTIC, not just a fast-path: only the two
+     * generator-emittable shapes count (the full ELTM shape or the
+     * time-only simple shape — a hybrid validates against neither), and the
+     * generator emits no XML declaration and no leading whitespace (see
+     * [convertToText]), so a generated injection always starts with
+     * `"<injection>"`. An XSD-valid `<injection>` WITH a declaration or
+     * leading whitespace (e.g. user-pasted XML) is therefore NOT harness —
+     * it survives as user content, and a fresh injection is prepended ahead
+     * of it. The `<meta>` anchor check in [hasMetaPart] is different: there
+     * the follow-up equality against the message's own `createdAt` rendering
+     * makes the same prefix a pure fast-path with no narrowing.
+     */
+    fun isInjection(part: ChatMessagePart.Text): Boolean {
+        if (!part.text.startsWith("<injection>")) return false
+        return validateAgainst(fullInjectionSchema, part.text) ||
             validateAgainst(simpleInjectionSchema, part.text)
+    }
 
     /**
      * The per-message time anchor: `<meta><sent-at>...</sent-at></meta>`,
@@ -278,9 +311,7 @@ class ContextInjection {
      * offsets).
      */
     fun generateMeta(createdAt: Instant): ChatMessagePart.Text {
-        val documentBuilderFactory = DocumentBuilderFactory.newInstance()
-        val documentBuilder = documentBuilderFactory.newDocumentBuilder()
-        val document = documentBuilder.newDocument()
+        val document = threadDocumentBuilder.get().newDocument()
         // meta
         val meta = document.createElement("meta")
         document.appendChild(meta)
@@ -305,6 +336,10 @@ class ContextInjection {
     fun hasMetaPart(message: ChatMessage): Boolean {
         // no first part or first part not text, return false
         val first = message.parts.firstOrNull() as? ChatMessagePart.Text ?: return false
+        // cheap reject before the XSD parses: the serializer emits no
+        // declaration and no leading whitespace (see convertToText), so a
+        // generated anchor always starts with "<meta>"
+        if (!first.text.startsWith("<meta>")) return false
         // first part is not valid meta schema, return false
         if (!validateAgainst(metaSchema, first.text)) return false
         // message has no createdAt, return false

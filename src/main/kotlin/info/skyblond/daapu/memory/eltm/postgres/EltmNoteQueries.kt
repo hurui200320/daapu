@@ -1,8 +1,8 @@
 package info.skyblond.daapu.memory.eltm.postgres
 
 import info.skyblond.daapu.db.*
-import info.skyblond.daapu.memory.eltm.EltmNote
-import info.skyblond.daapu.memory.eltm.NoteDraft
+import info.skyblond.daapu.memory.eltm.model.EltmNote
+import info.skyblond.daapu.memory.eltm.model.NoteDraft
 import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.jdbc.*
 import java.time.LocalDate
@@ -137,33 +137,38 @@ internal fun countNotes(column: Column<Long?>, subjectId: Long): Int =
 /**
  * Per-subject note counts and latest notes (by event date, then id — the
  * same ordering as [noteQuery]/[latestNote]; the diary ordering rule
- * lives in exactly those three SQL spots) for a whole page of subjects,
- * in TWO bounded queries — a `GROUP BY` count and a `DISTINCT ON`
- * latest-note select — each returning at most one row per subject,
- * never materializing the subjects' whole diaries in memory (a heavy
- * diary must not make its page reads heavy). Ambient transaction.
+ * lives in exactly those three SQL spots) for a batch of subjects, in
+ * one query pair per [BULK_QUERY_CHUNK_SIZE] chunk — a `GROUP BY` count
+ * and a `DISTINCT ON` latest-note select — each returning at most one row
+ * per subject, never materializing the subjects' whole diaries in memory
+ * (a heavy diary must not make its page reads heavy). A whole-store
+ * export's caller can pass every id at once. Ambient transaction.
  */
 internal fun noteCountsAndLatest(
     column: Column<Long?>,
     subjectIds: List<Long>,
 ): Map<Long, Pair<Int, EltmNote?>> {
     if (subjectIds.isEmpty()) return emptyMap()
+    val distinct = subjectIds.distinct()
     // the counts aggregate server-side: one output row per subject
     val countExpr = EltmNotes.id.count()
-    val counts: Map<Long, Int> = EltmNotes.select(column, countExpr)
-        .where { column inList subjectIds }
-        .groupBy(column)
-        .mapNotNull { row -> row[column]?.let { it to row[countExpr].toInt() } }
-        .toMap()
+    val counts: Map<Long, Int> = distinct.chunked(BULK_QUERY_CHUNK_SIZE).flatMap { chunk ->
+        EltmNotes.select(column, countExpr)
+            .where { column inList chunk }
+            .groupBy(column)
+            .mapNotNull { row -> row[column]?.let { it to row[countExpr].toInt() } }
+    }.toMap()
     // the latest note per subject: DISTINCT ON keeps the first row per
     // subject under the ordering — exactly the newest. `withDistinctOn`
     // prepends the subject column to ORDER BY itself, satisfying
     // Postgres's leftmost-ORDER-BY requirement on DISTINCT ON.
-    val latest: Map<Long, EltmNote> = selectNoteContent()
-        .where { column inList subjectIds }
-        .withDistinctOn(column to SortOrder.ASC)
-        .orderBy(EltmNotes.eventDate to SortOrder.DESC, EltmNotes.id to SortOrder.DESC)
-        .map { it.toNote() }
+    val latest: Map<Long, EltmNote> = distinct.chunked(BULK_QUERY_CHUNK_SIZE).flatMap { chunk ->
+        selectNoteContent()
+            .where { column inList chunk }
+            .withDistinctOn(column to SortOrder.ASC)
+            .orderBy(EltmNotes.eventDate to SortOrder.DESC, EltmNotes.id to SortOrder.DESC)
+            .map { it.toNote() }
+    }
         // a note's subject is exactly one of the two columns (migration
         // CHECK), so the fallback chain only masks a broken schema
         .associateBy { it.entityId ?: it.relationshipId ?: error("note has no subject") }

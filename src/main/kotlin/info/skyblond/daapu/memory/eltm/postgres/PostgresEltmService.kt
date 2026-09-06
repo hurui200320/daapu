@@ -5,28 +5,11 @@ import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
 import info.skyblond.daapu.db.*
 import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
-import info.skyblond.daapu.memory.eltm.CreateEntityResult
-import info.skyblond.daapu.memory.eltm.EltmEntity
-import info.skyblond.daapu.memory.eltm.EltmNote
-import info.skyblond.daapu.memory.eltm.EltmRelationship
-import info.skyblond.daapu.memory.eltm.EltmSearchHits
-import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.eltm.EltmSnapshot
-import info.skyblond.daapu.memory.eltm.EntityDraft
-import info.skyblond.daapu.memory.eltm.EntityView
-import info.skyblond.daapu.memory.eltm.EntityWithScore
-import info.skyblond.daapu.memory.eltm.NoteDraft
-import info.skyblond.daapu.memory.eltm.RelationshipDraft
-import info.skyblond.daapu.memory.eltm.RelationshipNotesResult
-import info.skyblond.daapu.memory.eltm.RelationshipView
-import info.skyblond.daapu.memory.eltm.entityEmbeddingText
-import info.skyblond.daapu.memory.eltm.normalizeAttributeKey
-import info.skyblond.daapu.memory.eltm.normalizeName
-import info.skyblond.daapu.memory.eltm.normalizeVerb
-import info.skyblond.daapu.memory.eltm.noteEmbeddingText
-import info.skyblond.daapu.memory.eltm.planAttributeFold
-import org.jetbrains.exposed.v1.core.*
-import org.jetbrains.exposed.v1.jdbc.*
+import info.skyblond.daapu.memory.eltm.*
+import info.skyblond.daapu.memory.eltm.model.*
+import kotlinx.coroutines.CancellationException
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.update
 import java.sql.Connection
 import java.time.LocalDate
 
@@ -67,6 +50,12 @@ class PostgresEltmService(
     private val noteSearchThreshold: Double,
     private val policy: HandRunPolicy,
 ) : EltmService {
+
+    private suspend fun embedText(text: String): List<Float> =
+        hand.embedText(embeddingModel, text, policy)
+
+    private suspend fun embedAll(texts: List<String>): List<List<Float>> =
+        hand.embedAll(embeddingModel, texts, policy)
 
     // ------------------------------------------------------------------
     // writes
@@ -231,15 +220,20 @@ class PostgresEltmService(
         require(v.isNotBlank()) { "relationship verb must not be blank" }
         // ONE transaction for the whole create-or-fetch — the endpoint
         // checks, the find-or-insert and the returned view's reads (no
-        // embed exists on this path). The endpoint check rides the SAME
+        // embed exists on this path). The pre-insert check rides the SAME
         // transaction, which also decides the missing id — no second
         // re-query, and the message matches the state that failed the
-        // check. The returned view rides the same transaction too, so the
-        // caller never pays a read-after-write round trip.
+        // check. The same probes re-run only when the trailing view build
+        // reports the concurrent-merge torn window (see below), so the
+        // two messages stay consistent. The returned view rides the same
+        // transaction too, so the caller never pays a read-after-write
+        // round trip.
         return withTransaction {
+            // PK-only probes: the check needs nothing but existence (never
+            // the full rows with their embedding vectors)
             val missingEntityId = when {
-                findEntityById(srcId) == null -> srcId
-                findEntityById(dstId) == null -> dstId
+                !entityIdExists(srcId) -> srcId
+                !entityIdExists(dstId) -> dstId
                 else -> null
             }
             require(missingEntityId == null) { "entity $missingEntityId does not exist" }
@@ -266,6 +260,25 @@ class PostgresEltmService(
                 }
             }
             relationshipViewOf(rel)
+            // a null is the same torn window the read paths close with
+            // REPEATABLE READ (see listRelationships): a concurrent
+            // merge landing between the statements above folded the row
+            // away or took an endpoint. Distinguish the two for a clear
+            // message (never a bare error()): a cascade-deleted row
+            // looks row-gone too, so the endpoint is named first.
+                ?: run {
+                    val missingEndpoint = when {
+                        !entityIdExists(srcId) -> srcId
+                        !entityIdExists(dstId) -> dstId
+                        else -> null
+                    }
+                    if (missingEndpoint != null) {
+                        throw IllegalArgumentException("entity $missingEndpoint no longer exists")
+                    }
+                    throw IllegalArgumentException(
+                        "relationship ($srcId -[$v]-> $dstId) was removed by a concurrent merge, retry the call"
+                    )
+                }
         }
     }
 
@@ -301,20 +314,35 @@ class PostgresEltmService(
         val drafts = notes.map { it.validated() }
         if (drafts.isEmpty()) return emptyList()
         // fail fast on a missing subject with a clear message before the
-        // embed call (the FK would catch it later with a SQL error)
-        require(withTransaction { findEntityById(entityId) != null }) {
+        // embed call (the FK would catch it later with a SQL error). A
+        // PK-only probe: the check needs nothing but existence, never the
+        // full row with its embedding vector.
+        require(withTransaction { entityIdExists(entityId) }) {
             "entity $entityId does not exist"
         }
         // the batch's embeddings ride the hand's batched /v1/embed — never
         // one call per note (see EltmService)
         val embeddings = embedAll(drafts.map { noteEmbeddingText(it.note) })
         return withTransaction {
-            val notes = insertNotes(
-                entityId = entityId,
-                relationshipId = null,
-                drafts = drafts,
-                embeddings = embeddings,
-            )
+            val notes = try {
+                insertNotes(
+                    entityId = entityId,
+                    relationshipId = null,
+                    drafts = drafts,
+                    embeddings = embeddings,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // a subject deleted/merged between the existence check
+                // above and this insert surfaces as an FK violation: fail
+                // fast with the same clear message instead of letting the
+                // raw SQLException escape (which would make Exposed
+                // re-run this block and risk inserting the batch twice —
+                // the notes table has no uniqueness guard).
+                if (!e.isForeignKeyViolation()) throw e
+                throw IllegalArgumentException("entity $entityId does not exist", e)
+            }
             bumpWriteVersion()
             notes
         }
@@ -338,8 +366,9 @@ class PostgresEltmService(
         }
         // fail fast on a missing subject with a clear message before the
         // embed call (the FK would catch it later with a SQL error); the
-        // check also reads the current validity — the post-attach state the
-        // result reports when no [valid] argument moves it
+        // full row is intentional here, not the PK-only probe — the
+        // check also reads the current validity, the post-attach state
+        // the result reports when no [valid] argument moves it
         val currentValid = withTransaction {
             val rel = findRelationshipById(relationshipId)
                 ?: throw IllegalArgumentException("relationship $relationshipId does not exist")
@@ -360,12 +389,24 @@ class PostgresEltmService(
                     it[EltmRelationships.valid] = valid
                 }
             }
-            val notes = insertNotes(
-                entityId = null,
-                relationshipId = relationshipId,
-                drafts = drafts,
-                embeddings = embeddings,
-            )
+            val notes = try {
+                insertNotes(
+                    entityId = null,
+                    relationshipId = relationshipId,
+                    drafts = drafts,
+                    embeddings = embeddings,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // same FK-race stance as attachNotesToEntity: a
+                // relationship merged away between the existence check
+                // and this insert must fail fast with a clear message,
+                // never escape as a retryable raw SQLException (the
+                // notes table cannot dedupe a retried batch).
+                if (!e.isForeignKeyViolation()) throw e
+                throw IllegalArgumentException("relationship $relationshipId does not exist", e)
+            }
             bumpWriteVersion()
             RelationshipNotesResult(
                 notes = notes,
@@ -566,7 +607,19 @@ class PostgresEltmService(
     }
 
     override suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView> =
-        withTransaction {
+        withTransaction(
+            // REPEATABLE READ, not the default READ COMMITTED: the page
+            // builder reads the relationship rows first and their endpoints
+            // second (see toRelationshipViews) — under READ COMMITTED each
+            // statement takes its own snapshot, so a concurrent merge
+            // landing between the two reads a torn state (a found row whose
+            // endpoint is gone) and fails fast with a 500. One snapshot for
+            // the whole page read closes that millisecond window; the
+            // fail-fast stays as the genuinely-broken-state guard. The
+            // read-only workload cannot hit the write-conflict aborts
+            // REPEATABLE READ can raise.
+            isolation = Connection.TRANSACTION_REPEATABLE_READ,
+        ) {
             requirePaging(limit, offset)
             // the whole page's views ride the batch builder
             // selectRelationshipViews (EltmRelationshipQueries.kt)
@@ -602,7 +655,16 @@ class PostgresEltmService(
         entityViewOf(entity)
     }
 
-    override suspend fun getRelationship(id: Long): RelationshipView? = withTransaction {
+    override suspend fun getRelationship(id: Long): RelationshipView? = withTransaction(
+        // REPEATABLE READ, not the default READ COMMITTED: the view builder
+        // reads the relationship row first and its endpoints second (see
+        // relationshipViewOf) — under READ COMMITTED a concurrent merge
+        // landing between the two reads a torn state (a found row whose
+        // endpoint is gone) and maps it to a false 404. One snapshot for
+        // the whole read closes that millisecond window; read-only, so no
+        // write-conflict aborts (see listRelationships).
+        isolation = Connection.TRANSACTION_REPEATABLE_READ,
+    ) {
         val rel = findRelationshipById(id) ?: return@withTransaction null
         // the single-subject cheap helpers, NOT the page builder's batch
         // queries — one row must never pay for a page (and never
@@ -610,16 +672,38 @@ class PostgresEltmService(
         relationshipViewOf(rel)
     }
 
+    override suspend fun getEntitiesByIds(ids: List<Long>): Map<Long, EltmEntity> =
+        withTransaction { selectEntitiesByIds(ids) }
+
+    override suspend fun getResolvedRelationships(ids: List<Long>): Map<Long, ResolvedRelationship> =
+        withTransaction { selectResolvedRelationships(ids) }
+
     override suspend fun entityExists(entityId: Long): Boolean =
-        withTransaction { findEntityRowById(entityId) != null }
+        withTransaction {
+            // the ambient PK-only probe — the full row (the 2000-dim
+            // embedding vector included) must never be loaded for a 404
+            // probe
+            entityIdExists(entityId)
+        }
 
     override suspend fun relationshipExists(relationshipId: Long): Boolean =
-        withTransaction { findRelationshipById(relationshipId) != null }
+        withTransaction {
+            // the ambient PK-only probe — the full row must never be
+            // loaded for a 404 probe (see entityExists)
+            relationshipIdExists(relationshipId)
+        }
 
     override suspend fun getRelationships(
         entityId: Long,
         includeInvalid: Boolean,
-    ): List<RelationshipView> = withTransaction {
+    ): List<RelationshipView> = withTransaction(
+        // REPEATABLE READ, not the default READ COMMITTED: the drill-down
+        // rides the same two-statement batch builder as listRelationships
+        // (rows first, endpoints second — see toRelationshipViews), so the
+        // same concurrent-merge torn window applies. One snapshot for the
+        // whole read; read-only, so no write-conflict aborts.
+        isolation = Connection.TRANSACTION_REPEATABLE_READ,
+    ) {
         // the whole drill-down rides the batch builder
         // selectEntityRelationshipViews (EltmRelationshipQueries.kt), not
         // a per-row view build
@@ -628,27 +712,19 @@ class PostgresEltmService(
 
     override suspend fun getEntityNotes(
         entityId: Long,
-        from: LocalDate?,
-        to: LocalDate?,
-        limit: Int,
-        offset: Int,
+        from: LocalDate?, to: LocalDate?,
+        limit: Int, offset: Int,
     ): List<EltmNote> = noteQuery(EltmNotes.entityId, entityId, from, to, limit, offset)
 
     override suspend fun getRelationshipNotes(
         relationshipId: Long,
-        from: LocalDate?,
-        to: LocalDate?,
-        limit: Int,
-        offset: Int,
+        from: LocalDate?, to: LocalDate?,
+        limit: Int, offset: Int,
     ): List<EltmNote> = noteQuery(EltmNotes.relationshipId, relationshipId, from, to, limit, offset)
 
     override suspend fun searchNotes(
-        query: String,
-        entityId: Long?,
-        relationshipId: Long?,
-        from: LocalDate?,
-        to: LocalDate?,
-        limit: Int,
+        query: String, entityId: Long?, relationshipId: Long?,
+        from: LocalDate?, to: LocalDate?, limit: Int,
     ): List<EltmNote> {
         require(query.isNotBlank()) { "query must not be blank" }
         require(entityId == null || relationshipId == null) {
@@ -713,36 +789,7 @@ class PostgresEltmService(
     /** Read the global ELTM write counter (the write version). Ambient transaction. */
     private fun currentWriteVersion(): Long = readMetaCounter(ELTM_VERSION_KEY)
 
-    // ------------------------------------------------------------------
-    // embedding
-    // ------------------------------------------------------------------
-
-    /** The padded vector for ONE text (entity texts, search queries). */
-    private suspend fun embedText(text: String): List<Float> =
-        embedAll(listOf(text)).single()
-
-    /**
-     * The padded vectors for a whole batch of texts, at most
-     * [EMBED_BATCH_SIZE] inputs per hand `/v1/embed` call — the batch is
-     * the point (never one HTTP round trip per note), the cap keeps one
-     * batch inside the embedding gateway's per-request input limits. An
-     * empty batch calls nothing.
-     */
-    private suspend fun embedAll(texts: List<String>): List<List<Float>> =
-        texts.chunked(EMBED_BATCH_SIZE).flatMap { chunk ->
-            hand.embed(embeddingModel, chunk, policy).vectors
-                .map { padVector(it, MAX_VECTOR_DIMENSIONS) }
-        }
-
     companion object {
         private const val NEAR_MATCH_LIMIT = 5
-
-        /**
-         * Per-embed-call input cap: embedding gateways cap the `input`
-         * array (and its total tokens), so an over-cap batch splits into
-         * several calls instead of one request the gateway refuses.
-         * Internal so the DB-backed tests can build an over-cap batch.
-         */
-        internal const val EMBED_BATCH_SIZE = 64
     }
 }

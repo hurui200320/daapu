@@ -2,14 +2,12 @@ package info.skyblond.daapu.server
 
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
-import info.skyblond.daapu.memory.eltm.EltmEntity
-import info.skyblond.daapu.memory.eltm.EltmNote
-import info.skyblond.daapu.memory.eltm.EltmRelationship
-import info.skyblond.daapu.memory.eltm.EntityView
-import info.skyblond.daapu.memory.eltm.RelationshipView
+import info.skyblond.daapu.memory.eltm.model.EltmEntity
+import info.skyblond.daapu.memory.eltm.model.EltmNote
+import info.skyblond.daapu.memory.eltm.model.EntityView
+import info.skyblond.daapu.memory.eltm.model.RelationshipView
 import info.skyblond.daapu.server.EltmEntityDto.Companion.toDto
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
-import info.skyblond.daapu.server.EltmRelationshipDto.Companion.toDto
 import kotlinx.serialization.Serializable
 
 /**
@@ -131,17 +129,7 @@ data class EltmRelationshipDto(
     val dstId: Long,
     val verb: String,
     val valid: Boolean,
-) {
-    companion object {
-        fun EltmRelationship.toDto() = EltmRelationshipDto(
-            id = id,
-            srcId = srcId,
-            dstId = dstId,
-            verb = verb,
-            valid = valid,
-        )
-    }
-}
+)
 
 @Serializable
 data class EltmNoteDto(
@@ -192,9 +180,15 @@ data class RelationshipViewDto(
 ) {
     companion object {
         fun RelationshipView.toDto() = RelationshipViewDto(
-            relationship = relationship.toDto(),
-            srcName = srcName,
-            dstName = dstName,
+            relationship = EltmRelationshipDto(
+                id = relationship.id,
+                srcId = relationship.src.id,
+                dstId = relationship.dst.id,
+                verb = relationship.verb,
+                valid = relationship.valid,
+            ),
+            srcName = relationship.src.canonicalName,
+            dstName = relationship.dst.canonicalName,
             noteCount = noteCount,
             latestNote = latestNote?.toDto(),
         )

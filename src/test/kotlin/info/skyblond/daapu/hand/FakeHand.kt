@@ -35,7 +35,7 @@ class FakeHand(
     val requests = java.util.concurrent.CopyOnWriteArrayList<HandRunRequest>()
     val embedRequests = java.util.concurrent.CopyOnWriteArrayList<HandEmbedRequest>()
 
-    override suspend fun run(request: HandRunRequest): Flow<HandEvent> = flow {
+    override fun run(request: HandRunRequest): Flow<HandEvent> = flow {
         requests += request
         runScript(request).forEach { emit(it) }
     }

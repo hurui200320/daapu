@@ -30,7 +30,12 @@ class VectorColumnType(
     override fun valueFromDB(value: Any): List<Float> = when (value) {
         is PGobject -> parseVector(value.value)
         is String -> parseVector(value)
-        is List<*> -> value.map { (it as Number).toFloat() }
+        is List<*> -> value.map {
+            check(it is Number) {
+                "vector column holds a non-numeric element (${it?.let { e -> e::class.simpleName } ?: "null"})"
+            }
+            it.toFloat()
+        }
         else -> parseVector(value.toString())
     }
 
@@ -58,9 +63,15 @@ class VectorColumnType(
 
     private fun parseVector(text: String?): List<Float> {
         if (text.isNullOrBlank()) return emptyList()
-        return text.removePrefix("[").removeSuffix("]")
-            .split(",")
-            .map { it.trim().toFloat() }
+        // a corrupt stored vector must fail loudly with the value attached,
+        // never escape as a bare NumberFormatException from deep in a read
+        return try {
+            text.removePrefix("[").removeSuffix("]")
+                .split(",")
+                .map { it.trim().toFloat() }
+        } catch (e: NumberFormatException) {
+            throw IllegalStateException("stored vector is not a float list: '${text.take(80)}'", e)
+        }
     }
 
     companion object {

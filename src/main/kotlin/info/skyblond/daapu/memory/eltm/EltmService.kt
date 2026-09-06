@@ -1,138 +1,8 @@
 package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.hand.EmbeddingException
+import info.skyblond.daapu.memory.eltm.model.*
 import java.time.LocalDate
-
-/**
- * One ELTM entity: a named thing with a category. The category disambiguates
- * homonyms ("Apple" as fruit vs company). All descriptive content lives in
- * the diary notes, never here.
- */
-data class EltmEntity(
-    val id: Long,
-    val canonicalName: String,
-    val category: String,
-)
-
-/**
- * An entity's structured key-value facts (e.g. a kindle's `model`, a
- * person's `realname`/`nickname`), complementary to the diary notes:
- * attributes are CURRENT-STATE facts (one row per (entity, key); setting
- * the same key again overwrites, deleting removes), the notes are the
- * temporal narrative. Keys are canonicalized like verbs; values must be
- * single-line. The entity embedding text appends them as `key: value`
- * lines alphabetically by key, so facts are semantically searchable.
- */
-typealias EntityAttributes = Map<String, String>
-
-/**
- * One ELTM relationship: a directed edge (source entity, verb, destination
- * entity) with a structural [valid] state. Storage semantics (one row per
- * triple, the flag vs the content-bearing diary notes) in
- * [info.skyblond.daapu.db.EltmRelationships]; an ending invalidates it, and
- * a re-establishment is a diary event (a note with `valid=true`).
- */
-data class EltmRelationship(
-    val id: Long,
-    val srcId: Long,
-    val dstId: Long,
-    val verb: String,
-    val valid: Boolean,
-)
-
-/**
- * One ELTM diary note: an add-only entry attached to exactly ONE subject (an
- * entity or a relationship), carrying the LLM-resolved absolute [eventDate]
- * of the event. A new note supersedes older information; nothing is ever
- * removed.
- */
-data class EltmNote(
-    val id: Long,
-    val entityId: Long?,
-    val relationshipId: Long?,
-    val eventDate: LocalDate,
-    val note: String,
-)
-
-/**
- * One diary note waiting to be attached: the absolute event date plus the
- * note text (trimmed and blank-checked by the store, like a stored note).
- * The draft for the bulk attaches ([EltmService.attachNotesToEntity] /
- * [EltmService.attachNotesToRelationship]); the stored row is [EltmNote].
- */
-data class NoteDraft(
-    val eventDate: LocalDate,
-    val note: String,
-)
-
-/**
- * An entity read view carrying its latest diary note inline plus its
- * content-backed prominence counters (the "how much do we know" signal:
- * [noteCount] diary entries, [relationshipCount] relationships in BOTH
- * directions, valid or invalidated — each triple counts once, `valid` is a
- * state, not a second row; drill into history via
- * [EltmService.getEntityNotes]) and its [attributes] (current-state facts,
- * keys alphabetically ordered).
- */
-data class EntityView(
-    val entity: EltmEntity,
-    val noteCount: Int,
-    val relationshipCount: Int,
-    val latestNote: EltmNote?,
-    val attributes: EntityAttributes,
-)
-
-/**
- * A relationship read view carrying both endpoint names, its diary-note
- * count, and its latest diary note inline.
- */
-data class RelationshipView(
-    val relationship: EltmRelationship,
-    val srcName: String,
-    val dstName: String,
-    val noteCount: Int,
-    val latestNote: EltmNote?,
-)
-
-/**
- * A vector-search hit: the entity plus its cosine similarity, its
- * content-backed prominence counters (diary-note count and relationship
- * degree), its latest diary note, and its [attributes] (current-state
- * facts, keys alphabetically ordered) — the whole model-visible picture in
- * one batch, so the writer LLM can weigh candidates beyond similarity
- * without a per-hit drill-down.
- */
-data class EntityWithScore(
-    val entity: EltmEntity,
-    val noteCount: Int,
-    val latestNote: EltmNote?,
-    val relationshipCount: Int,
-    val score: Double,
-    val attributes: EntityAttributes,
-)
-
-/**
- * One entity waiting to be created or fetched by its `(name, category)`
- * key: the draft for the bulk create ([EltmService.createEntities] /
- * [EltmService.createRelationships]'s endpoints), the stored row is
- * [EltmEntity]. Normalized exactly like [EltmService.createEntity]'s
- * arguments.
- */
-data class EntityDraft(
-    val name: String,
-    val category: String,
-)
-
-/**
- * One relationship waiting to be created or fetched by its triple: the
- * draft for the bulk create ([EltmService.createRelationships]). The verb
- * is normalized exactly like [EltmService.createRelationship]'s argument.
- */
-data class RelationshipDraft(
-    val srcId: Long,
-    val verb: String,
-    val dstId: Long,
-)
 
 /**
  * The result of appending diary notes to a relationship
@@ -175,8 +45,8 @@ data class CreateEntityResult(
      */
     val nearMatches: List<EntityWithScore>,
 ) {
-    /** [view.entity] — the created/fetched row itself. */
-    val entity: EltmEntity get() = view.entity
+    val entity: EltmEntity
+        get() = view.entity
 }
 
 /**
@@ -407,8 +277,8 @@ interface EltmService {
      * write counter in the same transaction. The whole sequence — the
      * endpoint checks, the find-or-insert and the returned view's reads —
      * runs in ONE transaction (no embed call exists on this path), and the
-     * returned view carries the endpoint names, the note count and the
-     * latest note, so a caller never needs a follow-up read.
+     * returned view carries the resolved relationship, the note count and
+     * the latest note, so a caller never needs a follow-up read.
      */
     suspend fun createRelationship(srcId: Long, dstId: Long, verb: String): RelationshipView
 
@@ -620,8 +490,8 @@ interface EltmService {
 
     /**
      * All relationships (active and invalidated), ordered by id ascending,
-     * each with its endpoint names, its note count, and its latest diary
-     * note inline. Paginated via [limit]/[offset].
+     * each resolved with its note count and its latest diary note inline.
+     * Paginated via [limit]/[offset].
      */
     suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView>
 
@@ -649,16 +519,42 @@ interface EltmService {
     suspend fun getEntity(id: Long): EntityView?
 
     /**
-     * The entity's relationships in BOTH directions, each with its latest
-     * note inline and its note count; active only unless [includeInvalid].
+     * The entity's relationships in BOTH directions, each resolved with
+     * its latest note inline and its note count; active only unless
+     * [includeInvalid].
      */
     suspend fun getRelationships(entityId: Long, includeInvalid: Boolean): List<RelationshipView>
 
     /**
-     * One relationship with its endpoint names, its latest note inline, and
-     * its note count, or null when missing.
+     * One relationship with its endpoints resolved, its latest note
+     * inline, and its note count, or null when missing.
      */
     suspend fun getRelationship(id: Long): RelationshipView?
+
+    /**
+     * The entities for a batch of ids in ONE transaction — the batched
+     * counterpart of [getEntity] for readers that only need the identity
+     * (name + category), like the context injection's related-note
+     * resolution. Only the content columns are read (no counts, no latest
+     * note, no attributes). An empty input answers an empty map with no
+     * query; ids with no row are absent from the map.
+     */
+    suspend fun getEntitiesByIds(ids: List<Long>): Map<Long, EltmEntity>
+
+    /**
+     * The [ResolvedRelationship]s for a batch of relationship ids in ONE
+     * transaction — the batched counterpart of [getRelationship] for
+     * readers that only need the resolved identity (no note count, no
+     * latest note), like the context injection's related-note resolution.
+     * One bounded `inList` read per `BULK_QUERY_CHUNK_SIZE` chunk (the
+     * rows, then their endpoints), never the page builder's batch queries.
+     * An empty input answers an empty map with no query; ids with no row
+     * are absent from the map. A found row whose endpoint is gone fails
+     * fast (a broken state or a concurrent merge landing mid-read — see
+     * `toRelationshipViews` in `EltmRelationshipQueries.kt`), never a
+     * silent drop.
+     */
+    suspend fun getResolvedRelationships(ids: List<Long>): Map<Long, ResolvedRelationship>
 
     /**
      * Cheap existence probe for an entity (a single indexed lookup) — the
@@ -741,9 +637,9 @@ interface EltmService {
      * content hash — any write that changes the visible state moves it.
      * Compared against `chats.eltm_version` for the `eltm-updated`
      * injection flag. A loose indicator for the LLM that the ELTM has been
- * updated and info in the context **might** be outdated — the store is
- * never fetched as a whole, so a whole-store snapshot check is impossible,
- * and the plain version is the right (cheap) signal.
+     * updated and info in the context **might** be outdated — the store is
+     * never fetched as a whole, so a whole-store snapshot check is impossible,
+     * and the plain version is the right (cheap) signal.
      */
     suspend fun version(): String
 }

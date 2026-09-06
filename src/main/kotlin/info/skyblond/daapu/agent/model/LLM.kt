@@ -97,11 +97,14 @@ class LLM(
      * callers may fail fast before any LLM call.
      */
     fun checkPromptContentCapabilities(chat: List<ChatMessage>) {
-        chat.flatMap { message ->
-            message.parts.flatMap { part ->
+        // sequences throughout: this runs before every hand round over the
+        // full prompt, so the intermediate lists of the flatMap chain
+        // would be pure allocation churn
+        chat.asSequence().flatMap { message ->
+            message.parts.asSequence().flatMap { part ->
                 when (part) {
-                    is ChatMessagePart.ToolResult -> part.parts
-                    else -> listOf(part)
+                    is ChatMessagePart.ToolResult -> part.parts.asSequence()
+                    else -> sequenceOf(part)
                 }
             }
         }

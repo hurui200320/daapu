@@ -1,10 +1,13 @@
 package info.skyblond.daapu.memory.eltm.postgres
 
-import info.skyblond.daapu.db.*
+import info.skyblond.daapu.db.EltmEntities
+import info.skyblond.daapu.db.EltmEntityAttributes
+import info.skyblond.daapu.db.EltmNotes
+import info.skyblond.daapu.db.VectorColumnType
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.eltm.EntityView
-import info.skyblond.daapu.memory.eltm.EntityWithScore
-import info.skyblond.daapu.memory.eltm.EltmEntity
+import info.skyblond.daapu.memory.eltm.model.EltmEntity
+import info.skyblond.daapu.memory.eltm.model.EntityView
+import info.skyblond.daapu.memory.eltm.model.EntityWithScore
 import org.jetbrains.exposed.v1.core.*
 import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.*
@@ -35,6 +38,33 @@ internal fun findEntityRowById(id: Long): ResultRow? =
     EltmEntities.selectAll().where { EltmEntities.id eq id }.singleOrNull()
 
 /**
+ * How many keys/triples/ids one batched lookup statement carries (see
+ * [findEntitiesByKeys], `findRelationshipsByTriples`, [selectEntitiesByIds],
+ * `selectResolvedRelationships`, [attributesFor], `relationshipCountsFor`,
+ * `noteCountsAndLatest`): bounds a single statement's OR-chain and
+ * `inList` parameter count so large transfer imports and batched reads
+ * stay planner-friendly.
+ */
+internal const val BULK_QUERY_CHUNK_SIZE = 500
+
+/**
+ * The entities for a batch of ids, in one query per
+ * [BULK_QUERY_CHUNK_SIZE] chunk — the batched counterpart of
+ * [findEntityRowById] for identity-only readers (name + category, no
+ * counts/notes/attributes). An empty input answers an empty map with no
+ * query; ids with no row are absent. Ambient transaction.
+ */
+internal fun selectEntitiesByIds(ids: List<Long>): Map<Long, EltmEntity> {
+    val distinct = ids.distinct()
+    if (distinct.isEmpty()) return emptyMap()
+    return distinct.chunked(BULK_QUERY_CHUNK_SIZE).flatMap { chunk ->
+        EltmEntities.select(EltmEntities.id, EltmEntities.canonicalName, EltmEntities.category)
+            .where { EltmEntities.id inList chunk }
+            .map { it.toEntity() }
+    }.associateBy { it.id }
+}
+
+/**
  * The entity row with `FOR UPDATE` — the read-modify-write lock held
  * for the whole write transaction, so a concurrent write on the same
  * entity (set/delete attribute, merge) blocks here until this commit
@@ -47,6 +77,20 @@ internal fun findEntityRowByIdForUpdate(id: Long): ResultRow? =
 
 internal fun findEntityById(id: Long): EltmEntity? =
     findEntityRowById(id)?.toEntity()
+
+/**
+ * Cheap existence probe for an entity (a single indexed PK lookup) — the
+ * ambient-transaction counterpart of [PostgresEltmService.entityExists]
+ * for callers already inside a transaction, which must never nest
+ * `withTransaction` (see `db/Database.kt`). Only the id column is read:
+ * the full row (the 2000-dim embedding vector included) must never be
+ * loaded for a 404 check. Ambient transaction.
+ */
+internal fun entityIdExists(id: Long): Boolean =
+    EltmEntities.select(EltmEntities.id)
+        .where { EltmEntities.id eq id }
+        .limit(1)
+        .singleOrNull() != null
 
 /**
  * The create-or-fetch insert for ONE (name, category) key: INSERT ... ON
@@ -112,6 +156,12 @@ internal suspend fun bulkCreateOrFetchEntities(
     var insertedAny = false
     if (missing.isNotEmpty()) {
         val embeddings = embedMissing(missing)
+        // like insertNotes: the embed lambda must return one vector per
+        // key — fail fast instead of letting zip silently truncate a
+        // misaligned pair and reporting a misleading "not visible" error
+        require(embeddings.size == missing.size) {
+            "embeddings (${embeddings.size}) must align with missing (${missing.size})"
+        }
         for ((key, embedding) in missing.zip(embeddings)) {
             // the single createEntity insert path, per key: ON CONFLICT
             // DO NOTHING RETURNING adopts a concurrent same-key insert
@@ -140,18 +190,23 @@ internal suspend fun bulkCreateOrFetchEntities(
 }
 
 /**
- * The rows for a batch of (canonical name, category) keys in ONE query
- * (an OR of per-key conjunctions — every disjunct is a point lookup on
- * the `(canonical_name, category)` unique index), the batched
- * counterpart of [findEntityByKey] for the bulk create-or-fetch.
- * Ambient transaction.
+ * The rows for a batch of (canonical name, category) keys, in one query
+ * per [BULK_QUERY_CHUNK_SIZE] chunk (an OR of per-key conjunctions per
+ * chunk — every disjunct is a point lookup on the `(canonical_name,
+ * category)` unique index), the batched counterpart of [findEntityByKey]
+ * for the bulk create-or-fetch. Chunked so a large import never builds a
+ * thousands-disjunct WHERE in one statement. Duplicate keys dedupe before
+ * chunking (a duplicate disjunct is pure waste). Ambient transaction.
  */
 internal fun findEntitiesByKeys(keys: List<Pair<String, String>>): List<ResultRow> {
-    if (keys.isEmpty()) return emptyList()
-    val cond = keys.map { (name, cat) ->
-        (EltmEntities.canonicalName eq name) and (EltmEntities.category eq cat)
-    }.reduce { a, b -> a or b }
-    return EltmEntities.selectAll().where { cond }.toList()
+    val distinct = keys.distinct()
+    if (distinct.isEmpty()) return emptyList()
+    return distinct.chunked(BULK_QUERY_CHUNK_SIZE).flatMap { chunk ->
+        val cond = chunk.map { (name, cat) ->
+            (EltmEntities.canonicalName eq name) and (EltmEntities.category eq cat)
+        }.reduce { a, b -> a or b }
+        EltmEntities.selectAll().where { cond }.toList()
+    }
 }
 
 /**
@@ -162,24 +217,18 @@ internal fun findEntitiesByKeys(keys: List<Pair<String, String>>): List<ResultRo
  * Ambient transaction.
  */
 internal fun checkNoNameCollision(entityId: Long, name: String, category: String) {
-    findEntityByKey(name, category)?.let { existing ->
-        if (existing[EltmEntities.id] != entityId) {
-            throw IllegalArgumentException(
-                "an entity \"$name\" (category $category) already exists " +
-                        "as entity ${existing[EltmEntities.id]}: merge the two instead"
-            )
-        }
+    // id-only read: the check needs nothing but the holder's id (never
+    // the full row with its embedding vector) for the merge-instead error
+    val existingId = EltmEntities.select(EltmEntities.id).where {
+        (EltmEntities.canonicalName eq name) and (EltmEntities.category eq category)
+    }.singleOrNull()?.get(EltmEntities.id)
+    if (existingId != null && existingId != entityId) {
+        throw IllegalArgumentException(
+            "an entity \"$name\" (category $category) already exists " +
+                    "as entity $existingId: merge the two instead"
+        )
     }
 }
-
-/**
- * The entity's canonical name, or the defensive placeholder for a gone
- * row (the merge path re-points relationships before deleting their
- * loser endpoints, so a live row's endpoints exist — the placeholder
- * only masks a broken state). Ambient transaction.
- */
-internal fun entityNameOf(id: Long): String =
-    findEntityRowById(id)?.get(EltmEntities.canonicalName) ?: "<deleted entity $id>"
 
 /**
  * The current-state attributes of ONE entity, keys alphabetically
@@ -193,13 +242,18 @@ internal fun attributesOf(entityId: Long): Map<String, String> =
 
 /**
  * Per-entity current-state attributes (keys alphabetically ordered) for a
- * whole page of entities, in ONE query. Ambient transaction.
+ * batch of entities, in one query per [BULK_QUERY_CHUNK_SIZE] chunk — a
+ * whole-store export passes every id at once (see
+ * [PostgresEltmService.exportAll]). Chunks are disjoint id sets, so the
+ * per-chunk rows merge without overlap. Ambient transaction.
  */
 internal fun attributesFor(entityIds: List<Long>): Map<Long, Map<String, String>> {
     if (entityIds.isEmpty()) return emptyMap()
-    return EltmEntityAttributes.selectAll()
-        .where { EltmEntityAttributes.entityId inList entityIds }
-        .map { it[EltmEntityAttributes.entityId] to (it[EltmEntityAttributes.key] to it[EltmEntityAttributes.value]) }
+    return entityIds.distinct().chunked(BULK_QUERY_CHUNK_SIZE).flatMap { chunk ->
+        EltmEntityAttributes.selectAll()
+            .where { EltmEntityAttributes.entityId inList chunk }
+            .map { it[EltmEntityAttributes.entityId] to (it[EltmEntityAttributes.key] to it[EltmEntityAttributes.value]) }
+    }
         .groupBy({ it.first }, { it.second })
         .mapValues { (_, pairs) -> pairs.toMap().toSortedMap() }
 }
@@ -252,16 +306,18 @@ internal fun similarEntities(
     val attributes = attributesFor(ids)
     return candidates.map { (id, row) ->
         EntityWithScore(
-            entity = EltmEntity(
-                id = id,
-                canonicalName = row[EltmEntities.canonicalName],
-                category = row[EltmEntities.category],
+            view = EntityView(
+                entity = EltmEntity(
+                    id = id,
+                    canonicalName = row[EltmEntities.canonicalName],
+                    category = row[EltmEntities.category],
+                ),
+                noteCount = noteSummary[id]?.first ?: 0,
+                relationshipCount = relationshipCounts[id] ?: 0,
+                latestNote = noteSummary[id]?.second,
+                attributes = attributes[id] ?: emptyMap(),
             ),
-            noteCount = noteSummary[id]?.first ?: 0,
-            latestNote = noteSummary[id]?.second,
-            relationshipCount = relationshipCounts[id] ?: 0,
             score = 1.0 - row[dist],
-            attributes = attributes[id] ?: emptyMap(),
         )
     }
 }
@@ -310,7 +366,7 @@ internal fun writeEntityAttributes(
 internal fun deleteEntityAttributeRow(entityId: Long, key: String) {
     EltmEntityAttributes.deleteWhere {
         (EltmEntityAttributes.entityId eq entityId) and
-            (EltmEntityAttributes.key eq key)
+                (EltmEntityAttributes.key eq key)
     }
 }
 

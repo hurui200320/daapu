@@ -176,13 +176,19 @@ class FsToolProviderTest {
             )
             assertTrue(tail.isError, "expected error for tail=$bad")
         }
-        // non-numbers are rejected like the server's zod number schema
-        for (bad in listOf("1", "abc")) {
+        // non-numbers are rejected; a well-formed numeric string still
+        // coerces (see intArg — the model sometimes emits numbers as
+        // strings), while garbage does not
+        for (bad in listOf("abc")) {
             val head = provider.execute(
                 request("fs__read_text_file", buildJsonObject { put("path", "hello.txt"); put("head", bad) })
             )
             assertTrue(head.isError, "expected error for head=$bad")
         }
+        val numericString = provider.execute(
+            request("fs__read_text_file", buildJsonObject { put("path", "hello.txt"); put("head", "1") })
+        )
+        assertFalse(numericString.isError, "numeric-string head must coerce: ${numericString.text()}")
         // ...but a float IS a valid zod `z.number()` — the server would read
         // with it (truncating through its comparison loops); only whole
         // numbers are accepted here

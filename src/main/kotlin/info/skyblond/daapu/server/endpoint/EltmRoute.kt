@@ -93,10 +93,6 @@ fun Route.registerEltmEndpoints(
                     ?: throw NotFoundException("Entity $id not found")
             )
         }
-        // TODO: the existence checks below run `getEntity`/
-        //     `getRelationship`, which build the FULL view (counts +
-        //     latest note, 3-4 queries) just to 404-check; a cheap
-        //     id-exists query would do
         get("/entities/{entityId}/relationships") {
             val id = call.longParam("entityId")
             // parse the filter before the existence check: a bad
@@ -107,7 +103,9 @@ fun Route.registerEltmEndpoints(
                 else -> raw.toBooleanStrictOrNull()
                     ?: throw BadRequestException("includeInvalid must be true or false")
             }
-            if (eltmService.getEntity(id) == null) {
+            // the cheap existence probe, not the full view (counts +
+            // latest note): a 404 check must not pay for a page
+            if (!eltmService.entityExists(id)) {
                 throw NotFoundException("Entity $id not found")
             }
             call.respond(
@@ -123,7 +121,7 @@ fun Route.registerEltmEndpoints(
             val limit = call.pageLimitParam(DEFAULT_ELTM_PAGE_LIMIT, MAX_ELTM_PAGE_LIMIT)
             val offset = call.pageOffsetParam()
             checkDateRange(from, to)
-            if (eltmService.getEntity(id) == null) {
+            if (!eltmService.entityExists(id)) {
                 throw NotFoundException("Entity $id not found")
             }
             call.respond(
@@ -154,7 +152,7 @@ fun Route.registerEltmEndpoints(
             val limit = call.pageLimitParam(DEFAULT_ELTM_PAGE_LIMIT, MAX_ELTM_PAGE_LIMIT)
             val offset = call.pageOffsetParam()
             checkDateRange(from, to)
-            if (eltmService.getRelationship(id) == null) {
+            if (!eltmService.relationshipExists(id)) {
                 throw NotFoundException("Relationship $id not found")
             }
             call.respond(

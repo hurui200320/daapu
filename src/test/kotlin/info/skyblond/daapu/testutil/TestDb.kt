@@ -8,7 +8,6 @@ import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.EltmEntities
-import info.skyblond.daapu.db.EltmEntityAttributes
 import info.skyblond.daapu.db.EltmNotes
 import info.skyblond.daapu.db.EltmRelationships
 import info.skyblond.daapu.db.MemoryMetaNumber
@@ -16,11 +15,10 @@ import info.skyblond.daapu.db.PendingExtractions
 import info.skyblond.daapu.db.Personas
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.db.withTransaction
-import info.skyblond.daapu.memory.eltm.EltmEntity
-import info.skyblond.daapu.memory.eltm.EltmNote
-import info.skyblond.daapu.memory.eltm.EltmRelationship
+import info.skyblond.daapu.memory.eltm.model.EltmEntity
+import info.skyblond.daapu.memory.eltm.model.EltmNote
+import info.skyblond.daapu.memory.eltm.model.EltmRelationship
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll

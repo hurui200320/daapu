@@ -1,23 +1,32 @@
 package info.skyblond.daapu.memory.eltm.postgres
 
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
+import info.skyblond.daapu.db.EltmEntities
+import info.skyblond.daapu.db.EltmRelationships
 import info.skyblond.daapu.db.readMetaCounterTx
+import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandEmbedRequest
 import info.skyblond.daapu.hand.HandEmbedResult
 import info.skyblond.daapu.hand.HandEmbedUsage
 import info.skyblond.daapu.memory.eltm.*
+import info.skyblond.daapu.memory.eltm.model.*
 import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.DeterministicEmbeddings
 import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.testAxisVector
 import info.skyblond.daapu.testutil.testEmbeddingModel
 import info.skyblond.daapu.testutil.testPostgresEltmService
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
@@ -114,7 +123,7 @@ class PostgresEltmServiceTest : DbTestBase() {
         assertTrue(first.nearMatches.isEmpty(), "the first create has no other entity to match")
 
         val second = service.createEntity("Kindle", "Gadget")
-        assertEquals(listOf(first.entity.id), second.nearMatches.map { it.entity.id })
+        assertEquals(listOf(first.entity.id), second.nearMatches.map { it.view.entity.id })
         assertEquals(0.8, second.nearMatches.single().score, 1e-6)
     }
 
@@ -256,8 +265,8 @@ class PostgresEltmServiceTest : DbTestBase() {
         val rel = view.relationship
         assertEquals("works_at", rel.verb, "the verb is normalized")
         assertTrue(rel.valid)
-        assertEquals("alice", view.srcName, "the view's endpoint names ride the create's transaction")
-        assertEquals("acme", view.dstName)
+        assertEquals(a, rel.src, "the view's endpoints ride the create's transaction")
+        assertEquals(b, rel.dst)
         val versionAfterCreate = service.version().toLong()
 
         val again = service.createRelationship(a.id, b.id, "works_at").relationship
@@ -353,6 +362,27 @@ class PostgresEltmServiceTest : DbTestBase() {
         )
         assertEquals(created[0].id, created[1].id, "duplicate keys fold onto ONE row")
         assertEquals(1, TestDb.allEltmEntities().size)
+    }
+
+    @Test
+    fun `bulk lookups chunk past BULK_QUERY_CHUNK_SIZE without losing rows`() = runBlocking {
+        val service = service()
+        // an over-chunk batch exercises the chunked OR-query: every key
+        // must resolve in input order
+        val drafts = (1..(BULK_QUERY_CHUNK_SIZE + 37)).map { EntityDraft("bulk-entity-$it", "bulk") }
+        val created = service.createEntities(drafts)
+        assertEquals(drafts.size, created.size)
+        assertEquals(drafts.size, created.map { it.id }.toSet().size)
+        val again = service.createEntities(drafts)
+        assertEquals(created.map { it.id }, again.map { it.id }, "re-fetch resolves identically")
+
+        // the relationship half chunks the same way
+        val triples = created.take(BULK_QUERY_CHUNK_SIZE + 11).windowed(2, 1) { (a, b) ->
+            RelationshipDraft(a.id, "bulk_rel", b.id)
+        }
+        val rels = service.createRelationships(triples)
+        assertEquals(triples.size, rels.size)
+        assertEquals(triples.size, rels.map { it.id }.toSet().size)
     }
 
     @Test
@@ -514,7 +544,7 @@ class PostgresEltmServiceTest : DbTestBase() {
         val entity = service.createEntity("kindle", "device").entity
         val versionBefore = service.version().toLong()
 
-        val count = PostgresEltmService.EMBED_BATCH_SIZE + 1
+        val count = EMBED_BATCH_SIZE + 1
         val drafts = (1..count).map { NoteDraft(day.plusDays(it.toLong()), "note $it") }
         val embedsBefore = hand.embedRequests.size
         val notes = service.attachNotesToEntity(entity.id, drafts)
@@ -837,7 +867,7 @@ class PostgresEltmServiceTest : DbTestBase() {
         // the self-loop edge was invalidated in place, its note survived
         val selfLoopView = assertIs<RelationshipView>(service.getRelationship(selfLoopEdge))
         assertTrue(
-            selfLoopView.relationship.srcId == winner.id && selfLoopView.relationship.dstId == winner.id,
+            selfLoopView.relationship.src == winner && selfLoopView.relationship.dst == winner,
             "the winner—loser edge became a winner—winner self-loop",
         )
         assertFalse(selfLoopView.relationship.valid, "a self-loop is invalidated, not kept")
@@ -847,6 +877,162 @@ class PostgresEltmServiceTest : DbTestBase() {
             listOf(winner.id),
             service.getEntityNotes(winner.id, null, null, 10, 0).map { it.entityId },
         )
+    }
+
+    @Test
+    fun `attaching a note to a merged-away subject fails with a clear message, never raw SQL`() = runBlocking {
+        val service = service()
+        val winner = service.createEntity("apple", "company").entity
+        val loser = service.createEntity("apple inc", "company").entity
+        val third = service.createEntity("tim cook", "person").entity
+        // colliding edges: the loser's row folds into the survivor and its
+        // id is gone after the merge
+        service.createRelationship(winner.id, third.id, "employs")
+        val folded = service.createRelationship(loser.id, third.id, "employs").relationship
+        service.mergeEntities(winner.id, loser.id)
+        // the loser entity row is gone: the pre-check fails fast, and the
+        // FK-violation catch guarantees the same contract under a race
+        // (subject deleted between the check and the insert)
+        try {
+            service.attachNoteToEntity(loser.id, day, "late note")
+            fail("a merged-away entity must fail fast")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains(loser.id.toString()), expected.message)
+        }
+        try {
+            service.attachNoteToRelationship(folded.id, day, "late note")
+            fail("a folded-away relationship must fail fast")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains(folded.id.toString()), expected.message)
+        }
+    }
+
+    @Test
+    fun `attaching a note to a subject deleted mid-embed fails with a clear message, never raw SQL`() = runBlocking {
+        // the FK-violation catch, not the pre-check: the existence check
+        // passes, then the subject row is deleted while the note
+        // embeddings are in flight (the embed call is the gap between the
+        // check and the insert — the same seam the concurrent-insert test
+        // uses), so the insert hits the FK and must convert to
+        // IllegalArgumentException (a raw SQLException escaping would make
+        // Exposed retry the block and risk inserting the batch twice).
+        val enteredEmbed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val allowEmbed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val hand = FakeHand(embedScript = { request ->
+            enteredEmbed.complete(Unit)
+            allowEmbed.await()
+            allOnesResult(request)
+        })
+        // the setup writes ride a plain hand: the gated hand above must
+        // serve ONLY the attach under test — a setup embed would trip the
+        // gate and deadlock the test body itself
+        val setup = service(FakeHand())
+        val service = service(hand)
+        val entity = setup.createEntity("kindle", "device").entity
+        val a = setup.createEntity("a", "x").entity
+        val b = setup.createEntity("b", "x").entity
+        val rel = setup.createRelationship(a.id, b.id, "knows").relationship
+
+        val entityJob = async {
+            runCatching { service.attachNoteToEntity(entity.id, day, "late note") }
+        }
+        // bounded rendezvous: a regression in the interleaving must fail
+        // the test, never hang the suite (the suite has no global timeout)
+        withTimeout(30_000) { enteredEmbed.await() }
+        withTransaction { EltmEntities.deleteWhere { EltmEntities.id eq entity.id } }
+        allowEmbed.complete(Unit)
+        val entityError = assertIs<IllegalArgumentException>(
+            entityJob.await().exceptionOrNull(),
+            "an entity deleted mid-embed must fail with IllegalArgumentException",
+        )
+        assertTrue(entityError.message!!.contains(entity.id.toString()), entityError.message)
+
+        val enteredRelEmbed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val allowRelEmbed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val relHand = FakeHand(embedScript = { request ->
+            enteredRelEmbed.complete(Unit)
+            allowRelEmbed.await()
+            allOnesResult(request)
+        })
+        val relService = service(relHand)
+        val relJob = async {
+            runCatching { relService.attachNoteToRelationship(rel.id, day, "late note") }
+        }
+        withTimeout(30_000) { enteredRelEmbed.await() }
+        withTransaction { EltmRelationships.deleteWhere { EltmRelationships.id eq rel.id } }
+        allowRelEmbed.complete(Unit)
+        val relError = assertIs<IllegalArgumentException>(
+            relJob.await().exceptionOrNull(),
+            "a relationship deleted mid-embed must fail with IllegalArgumentException",
+        )
+        assertTrue(relError.message!!.contains(rel.id.toString()), relError.message)
+    }
+
+    @Test
+    fun `batched identity reads resolve present rows and skip missing ones`() = runBlocking {
+        val service = service()
+        val alice = service.createEntity("alice", "person").entity
+        val acme = service.createEntity("acme", "company").entity
+        val rel = service.createRelationship(alice.id, acme.id, "works at").relationship
+
+        assertEquals(emptyMap(), service.getEntitiesByIds(emptyList()), "empty input: no query, empty map")
+        assertEquals(emptyMap(), service.getResolvedRelationships(emptyList()))
+
+        val entities = service.getEntitiesByIds(listOf(alice.id, 4242L, alice.id))
+        assertEquals(mapOf(alice.id to alice), entities, "present rows resolve, missing and duplicate ids collapse")
+        val resolved = service.getResolvedRelationships(listOf(rel.id, 4242L))
+        assertEquals(mapOf(rel.id to rel), resolved, "missing ids drop out")
+    }
+
+    @Test
+    fun `batched identity reads chunk past BULK_QUERY_CHUNK_SIZE without losing rows`() = runBlocking {
+        val service = service()
+        // an over-chunk batch exercises the chunked inList reads in
+        // selectEntitiesByIds/selectResolvedRelationships plus the
+        // endpoint inList over 2*N ids: every row must resolve in full.
+        // The creates ride the bulk path (one embed series for the whole
+        // batch): 537 single creates would embed 537 times.
+        val created = service.createEntities(
+            (1..(BULK_QUERY_CHUNK_SIZE + 37)).map { EntityDraft("chunk-entity-$it", "bulk") }
+        )
+        val gotEntities = service.getEntitiesByIds(created.map { it.id } + listOf(4242L))
+        assertEquals(
+            created.associateBy { it.id },
+            gotEntities,
+            "every present row resolves, the missing id drops out",
+        )
+
+        val rels = service.createRelationships(
+            created.windowed(2, 1) { (a, b) -> RelationshipDraft(a.id, "chunk_rel", b.id) }
+        )
+        val expected = rels.mapIndexed { index, rel ->
+            rel.id to ResolvedRelationship(rel.id, created[index], "chunk_rel", created[index + 1], true)
+        }.toMap()
+        val gotResolved = service.getResolvedRelationships(rels.map { it.id } + listOf(4242L))
+        assertEquals(
+            expected,
+            gotResolved,
+            "every present relationship resolves, the missing id drops out",
+        )
+    }
+
+    @Test
+    fun `batch relationship reads fail fast on a row whose endpoint is gone`() {
+        // pins checkAllResolved at the builder level: a torn read (a
+        // concurrent merge landing between the relationship-row read and
+        // the endpoint read) must fail loudly, never silently drop the row
+        // and punch holes in limit/offset pages. No service path is used:
+        // through the service a dangling endpoint is unrepresentable (the
+        // FK cascade deletes the relationship with its endpoint).
+        val a = EltmEntity(1, "alive", "x")
+        val rel = EltmRelationship(7, srcId = 1, dstId = 2, verb = "knows", valid = true)
+        val resolved = resolveRelationships(listOf(rel), mapOf(1L to a))
+        assertTrue(resolved.isEmpty(), "the endpoint-missing row resolves to nothing")
+        val torn = assertFailsWith<TornRelationshipReadException> {
+            checkAllResolved(listOf(rel), resolved)
+        }
+        assertEquals(listOf(7L), torn.relationshipIds)
+        assertTrue(torn.message!!.contains("7"), torn.message)
     }
 
     @Test
@@ -865,7 +1051,7 @@ class PostgresEltmServiceTest : DbTestBase() {
         // both edges re-point to the same winner—winner triple: the first
         // becomes the invalidated self-loop row, the second folds into it
         val selfLoops = service.getRelationships(winner.id, includeInvalid = true)
-            .filter { it.relationship.srcId == winner.id && it.relationship.dstId == winner.id }
+            .filter { it.relationship.src == winner && it.relationship.dst == winner }
         assertEquals(1, selfLoops.size, "exactly ONE row per triple, even after the collapse")
         assertEquals(2, selfLoops.single().noteCount, "both diary notes survive on the survivor")
         assertFalse(selfLoops.single().relationship.valid)
@@ -932,9 +1118,9 @@ class PostgresEltmServiceTest : DbTestBase() {
         val hits = service.searchEntities(storedText, 5)
         assertEquals(1, hits.size)
         val hit = hits.single()
-        assertEquals(created.entity.id, hit.entity.id)
+        assertEquals(created.entity.id, hit.view.entity.id)
         assertEquals(1.0, hit.score, 1e-6, "the query vector IS the stored vector")
-        assertEquals(1, hit.attributes.size)
+        assertEquals(1, hit.view.attributes.size)
 
         // a different text hashes to a near-orthogonal vector: no hit
         assertTrue(service.searchEntities("completely unrelated", 5).isEmpty())
@@ -1005,7 +1191,7 @@ class PostgresEltmServiceTest : DbTestBase() {
         val embedsBefore = hand.embedRequests.size
 
         val hits = service.searchEntitiesAndNotes("ali", entityLimit = 5, noteLimit = 5)
-        assertEquals(listOf(alice.id), hits.entities.map { it.entity.id })
+        assertEquals(listOf(alice.id), hits.entities.map { it.view.entity.id })
         assertEquals(1, hits.notes.size)
         assertEquals("met alice", hits.notes.single().note)
         assertEquals(
@@ -1046,7 +1232,7 @@ class PostgresEltmServiceTest : DbTestBase() {
     // ------------------------------------------------------------------
 
     @Test
-    fun `views carry counts, latest note, attributes and endpoint names`() = runBlocking {
+    fun `views carry counts, latest note, attributes and resolved endpoints`() = runBlocking {
         val service = service()
         val entity = service.createEntity("alice", "person").entity
         val other = service.createEntity("acme", "company").entity
@@ -1062,8 +1248,8 @@ class PostgresEltmServiceTest : DbTestBase() {
         assertEquals(mapOf("city" to "berlin"), view.attributes)
 
         val rel = service.listRelationships(10, 0).single()
-        assertEquals("alice", rel.srcName)
-        assertEquals("acme", rel.dstName)
+        assertEquals(entity, rel.relationship.src)
+        assertEquals(other, rel.relationship.dst)
         assertEquals(0, rel.noteCount)
 
         // the batch page view agrees with the single-subject view
@@ -1077,6 +1263,40 @@ class PostgresEltmServiceTest : DbTestBase() {
         val ids = (1..3).map { service.createEntity("entity$it", "x").entity.id }.sorted()
         assertEquals(ids.drop(1), service.listEntities(2, 1).map { it.entity.id })
         assertTrue(service.listEntities(10, 3).isEmpty(), "an offset past the end is empty")
+    }
+
+    @Test
+    fun `page batch helpers chunk past BULK_QUERY_CHUNK_SIZE without losing rows`() = runBlocking {
+        val service = service()
+        // an over-chunk population where EVERY entity carries content, so
+        // listEntities' three batch helpers (attributesFor,
+        // relationshipCountsFor, noteCountsAndLatest) all run over-chunk:
+        // one attribute, one note, and (except the last) one outgoing
+        // chain edge per entity. One row over the boundary is enough to
+        // span two chunks — the bulk-create test above keeps the wider
+        // margin for the OR-query path.
+        val created = service.createEntities(
+            (1..(BULK_QUERY_CHUNK_SIZE + 1)).map { EntityDraft("page-entity-$it", "bulk") }
+        )
+        created.forEachIndexed { index, entity ->
+            service.setEntityAttribute(entity.id, "seq", "$index")
+            service.attachNoteToEntity(entity.id, day, "note $index")
+        }
+        service.createRelationships(
+            created.windowed(2, 1) { (a, b) -> RelationshipDraft(a.id, "page_rel", b.id) }
+        )
+        val page = service.listEntities(created.size, 0)
+        assertEquals(created.map { it.id }, page.map { it.entity.id }, "id order, no row lost")
+        page.forEachIndexed { index, view ->
+            assertEquals(mapOf("seq" to "$index"), view.attributes, "attributes of entity $index")
+            assertEquals(1, view.noteCount, "note count of entity $index")
+            assertEquals("note $index", view.latestNote?.note, "latest note of entity $index")
+            val expectedRels = when (index) {
+                0, created.lastIndex -> 1
+                else -> 2
+            }
+            assertEquals(expectedRels, view.relationshipCount, "relationship count of entity $index")
+        }
     }
 
     @Test

@@ -13,11 +13,13 @@ import info.skyblond.daapu.testutil.testEltmWriterService
 import info.skyblond.daapu.testutil.testAxisVector
 import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import java.time.LocalDate
 import kotlin.test.*
 
@@ -210,6 +212,68 @@ class EltmToolProviderTest : DbTestBase() {
     }
 
     @Test
+    fun `a present-but-unparseable limit or offset is an error, not a silent default`() = runBlocking {
+        val eltm = eltm()
+        val alice = eltm.createEntity("Alice", "person").entity
+        val provider = EltmToolProvider(eltm)
+        // a float limit must not silently fall back to the default 5
+        val floatLimit = provider.execute(
+            toolCall(
+                "c1",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("limit", 2.5)
+                },
+            ),
+        )
+        assertTrue(floatLimit.isError, "float limit must error: ${textOf(floatLimit)}")
+        assertTrue(textOf(floatLimit).contains("limit"), textOf(floatLimit))
+        assertTrue(textOf(floatLimit).contains("2.5"), "the offending value must reach the model: ${textOf(floatLimit)}")
+        // a string offset must not silently fall back to 0
+        val stringOffset = provider.execute(
+            toolCall(
+                "c2",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("offset", "two")
+                },
+            ),
+        )
+        assertTrue(stringOffset.isError, "string offset must error: ${textOf(stringOffset)}")
+        assertTrue(textOf(stringOffset).contains("offset"), textOf(stringOffset))
+        assertTrue(textOf(stringOffset).contains("two"), "the offending value must reach the model: ${textOf(stringOffset)}")
+        // ...but a well-formed numeric string coerces: the model sometimes
+        // emits numbers as strings, which must not cost an error round-trip
+        val numericString = provider.execute(
+            toolCall(
+                "c3",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("limit", "5")
+                },
+            ),
+        )
+        assertFalse(numericString.isError, "numeric-string limit must coerce: ${textOf(numericString)}")
+        // ...and an explicit JSON null is absent, not a value: optional
+        // pagination args fall back to their defaults (see intArg strict)
+        val nullPaging = provider.execute(
+            toolCall(
+                "c4",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    put("limit", JsonNull)
+                    put("offset", JsonNull)
+                },
+            ),
+        )
+        assertFalse(nullPaging.isError, "null limit/offset must default: ${textOf(nullPaging)}")
+    }
+
+    @Test
     fun `get_relationship_notes pages latest-first`() = runBlocking {
         val eltm = eltm()
         val alice = eltm.createEntity("Alice", "person").entity
@@ -313,6 +377,22 @@ class EltmToolProviderTest : DbTestBase() {
         )
         assertTrue(badTo.isError)
         assertTrue(textOf(badTo).contains("YYYY-MM-DD"), textOf(badTo))
+
+        // a present object is a type error naming the key, not
+        // jsonPrimitive's key-less "not a JsonPrimitive"
+        val objectFrom = provider.execute(
+            toolCall(
+                "c3",
+                "get_entity_notes",
+                buildJsonObject {
+                    put("entity_id", alice.id)
+                    putJsonObject("from") { put("year", 2026) }
+                },
+            ),
+        )
+        assertTrue(objectFrom.isError)
+        assertTrue(textOf(objectFrom).contains("from"), textOf(objectFrom))
+        assertTrue(textOf(objectFrom).contains("YYYY-MM-DD"), textOf(objectFrom))
     }
 
     @Test
@@ -726,6 +806,30 @@ class EltmToolProviderTest : DbTestBase() {
         assertTrue(result.isError)
         assertTrue(textOf(result).contains("999"), textOf(result))
     }
+
+    @Test
+    fun `create_relationship with an object endpoint is a keyed type error, not a missing id`() =
+        runBlocking {
+            val eltm = eltm()
+            val alice = eltm.createEntity("Alice", "person").entity
+            val provider = EltmToolProvider(eltm)
+
+            val result = provider.execute(
+                toolCall(
+                    "c1", "create_relationship", buildJsonObject {
+                        put("src_id", alice.id)
+                        putJsonObject("dst_id") { put("id", 5) }
+                        put("verb", "works_at")
+                    },
+                ),
+            )
+            assertTrue(result.isError, "a present object is a type error: ${textOf(result)}")
+            assertTrue(
+                textOf(result).contains("dst_id must be a number"),
+                "the keyed message names the argument: ${textOf(result)}",
+            )
+            Unit
+        }
 
     @Test
     fun `add_relationship_note's valid flag closes and revives the relationship idempotently`() =

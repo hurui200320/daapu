@@ -17,9 +17,9 @@ import kotlin.test.*
 
 /**
  * Pins the MCP tool provider's lifecycle and error policy (#8): eager connect
- * at construction (a server that cannot be reached aborts startup) + client
- * caching (per-request turn construction must not reconnect per run),
- * `{namespace}__{tool}` name namespacing, the error-result vs
+ * at startup via connectAll (a server that cannot be reached aborts startup)
+ * + client caching (per-request turn construction must not reconnect per
+ * run), `{namespace}__{tool}` name namespacing, the error-result vs
  * transport-failure split, the no-in-turn-retry drop-report policy, and the
  * reconnect-on-next-run behavior.
  */
@@ -30,11 +30,12 @@ class McpToolProviderTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `clients connect eagerly at construction and are cached across runs`() {
+    fun `clients connect eagerly at startup and are cached across runs`() {
         val server = MockMcpServer(listOf(addTool()))
         val provider = McpToolProvider(mapOf("calc" to httpConfig(server)))
         try {
-            assertEquals(1, server.initializeCount.get(), "the client connects at construction")
+            runBlocking { provider.connectAll() }
+            assertEquals(1, server.initializeCount.get(), "the client connects at startup")
             val specs = runBlocking { provider.specifications() }
             assertEquals(1, server.initializeCount.get(), "no reconnect for a cached client")
             assertEquals(listOf("calc__add"), specs.map { it.name })
@@ -52,23 +53,25 @@ class McpToolProviderTest {
     @Test
     fun `an unreachable server fails startup`() {
         val good = MockMcpServer(listOf(echoTool()))
-        // port 1: connection refused — the eager connect must abort construction
+        // port 1: connection refused — the eager connect must abort startup
+        val provider = McpToolProvider(
+            mapOf(
+                "good" to httpConfig(good),
+                "dead" to McpServerConfig(
+                    type = McpTransportType.Http,
+                    url = "http://127.0.0.1:1/mcp",
+                    reconnectAttempts = 2,
+                    reconnectDelayMs = 50,
+                    toolExecutionTimeoutSeconds = 0,
+                ),
+            )
+        )
         try {
             assertFailsWith<McpTransportException> {
-                McpToolProvider(
-                    mapOf(
-                        "good" to httpConfig(good),
-                        "dead" to McpServerConfig(
-                            type = McpTransportType.Http,
-                            url = "http://127.0.0.1:1/mcp",
-                            reconnectAttempts = 2,
-                            reconnectDelayMs = 50,
-                            toolExecutionTimeoutSeconds = 0,
-                        ),
-                    )
-                )
+                runBlocking { provider.connectAll() }
             }
         } finally {
+            provider.close()
             good.close()
         }
     }
@@ -76,13 +79,14 @@ class McpToolProviderTest {
     @Test
     fun `a server that fails initialize retries reconnectAttempts times then fails startup`() {
         // the server answers initialize with 500: the eager connect retries
-        // `reconnectAttempts` times, then aborts construction
+        // `reconnectAttempts` times, then aborts startup
         val server = MockMcpServer(listOf(echoTool()), failInitialize = true)
+        val provider = McpToolProvider(
+            mapOf("calc" to httpConfig(server, reconnectAttempts = 2, reconnectDelayMs = 50))
+        )
         try {
             assertFailsWith<McpTransportException> {
-                McpToolProvider(
-                    mapOf("calc" to httpConfig(server, reconnectAttempts = 2, reconnectDelayMs = 50))
-                )
+                runBlocking { provider.connectAll() }
             }
             assertEquals(
                 2,
@@ -90,6 +94,7 @@ class McpToolProviderTest {
                 "exactly reconnectAttempts connect attempts"
             )
         } finally {
+            provider.close()
             server.close()
         }
     }
@@ -409,10 +414,11 @@ class McpToolProviderTest {
         )
         val port = server.port
         try {
+            runBlocking { provider.connectAll() }
             // no specifications() before the kill: the client caches listTools
             // after the first success, so advertisement on the dead server
             // must fail on a cache-miss to reach the drop-reconnect path
-            assertEquals(1, server.initializeCount.get(), "eager connect at construction")
+            assertEquals(1, server.initializeCount.get(), "eager connect at startup")
 
             // kill the server: the first advertisement drops the dead client,
             // the reconnect cannot restore it (the server is still down), and
@@ -466,10 +472,11 @@ class McpToolProviderTest {
             )
         )
         try {
+            runBlocking { provider.connectAll() }
             assertEquals(
                 1,
                 countFile.readLines().count { it == "initialize" },
-                "eager connect at construction"
+                "eager connect at startup"
             )
             assertEquals(
                 listOf("local__echo", "local__die"),
@@ -555,10 +562,11 @@ class McpToolProviderTest {
             )
         )
         try {
+            runBlocking { provider.connectAll() }
             assertEquals(
                 1,
                 countFile.readLines().count { it == "initialize" },
-                "eager connect at construction"
+                "eager connect at startup"
             )
             provider.close()
             // give the process a moment to be destroyed
@@ -617,17 +625,19 @@ class McpToolProviderTest {
         val server = MockMcpServer(listOf(addTool()))
         // a port that is guaranteed to have no listener: bind and free it
         val deadProxyPort = ServerSocket(0).use { it.localPort }
+        val provider = McpToolProvider(
+            mapOf("calc" to httpConfig(server, reconnectAttempts = 1)),
+            proxy = McpProxyConfig("127.0.0.1", deadProxyPort),
+        )
         try {
             // without the proxy the eager connect would succeed (the mock
             // server is up); a failure proves the client routed through the
             // dead proxy instead
             assertFailsWith<McpTransportException> {
-                McpToolProvider(
-                    mapOf("calc" to httpConfig(server, reconnectAttempts = 1)),
-                    proxy = McpProxyConfig("127.0.0.1", deadProxyPort),
-                )
+                runBlocking { provider.connectAll() }
             }
         } finally {
+            provider.close()
             server.close()
         }
     }

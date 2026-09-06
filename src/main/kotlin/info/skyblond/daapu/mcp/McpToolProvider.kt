@@ -13,8 +13,12 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.modelcontextprotocol.kotlin.sdk.types.McpException
 import io.modelcontextprotocol.kotlin.sdk.types.RPCError
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
 
 /**
  * The model-visible answer for a transport failure: the connection is
@@ -31,10 +35,13 @@ internal const val TRANSPORT_FAILURE_MESSAGE =
  *
  * Lifecycle:
  * - Clients are cached long-lived per server, and connected EAGERLY at
- *   construction: a server that cannot be reached aborts startup with
- *   [McpTransportException] (fail fast — a broken entry blocks the app rather
- *   than silently degrading every chat run). The initialize handshake
- *   (~0.5–11s) is paid once per server, never per run. `listTools` is cached
+ *   startup via [connectAll] (NOT in the constructor: the constructor only
+ *   builds the entries, so it never blocks a thread — the DI container
+ *   calls [connectAll] once at boot, where a server that cannot be
+ *   reached aborts startup with [McpTransportException], fail fast — a
+ *   broken entry blocks the app rather than silently degrading every chat
+ *   run). The initialize handshake (~0.5–11s) is paid once per server, in
+ *   parallel across servers, never per run. `listTools` is cached
  *   client-side (default), so per-round advertisement is a local lookup.
  * - A transport failure mid-execution (connect refused, stdio process died)
  *   drops the cached client and answers an *error tool-result* — no in-turn
@@ -76,24 +83,55 @@ class McpToolProvider(
         ClientEntry(namespace, config, proxy)
     }
 
-    init {
-        // eager connect: a server that cannot be reached fails startup. On
-        // failure, close the already-connected entries so no client is leaked.
-        val connected = mutableListOf<ClientEntry>()
-        try {
-            runBlocking {
-                entries.values.forEach { entry ->
-                    logger.info { "Initializing MCP server ${entry.namespace}" }
-                    entry.getConnectedClient()
-                    connected += entry
-                }
+    /**
+     * Eager-connect every server, in parallel: a server that cannot be
+     * reached fails startup (see the class KDoc). Call once at boot, from
+     * a coroutine — never from the constructor, which must not block. On
+     * failure every entry is dropped so no client is leaked.
+     *
+     * A [supervisorScope] (not a plain `coroutineScope`): one server's
+     * failure must not cancel a sibling's in-flight connect — a sibling
+     * cancelled after spawning its stdio process (or its HTTP session) but
+     * before publishing it into `clientRef` would orphan it (in neither
+     * `clientRef` nor the failure's `connected` set, so neither the drop
+     * nor a later `close()` destroys it). Every child runs to completion
+     * here; the first failure is rethrown after all entries are dropped.
+     * An outer cancellation also drops every entry (in [NonCancellable] —
+     * the dropping itself must not be cancelled) before propagating, so a
+     * cancelled boot never strands a half-connected client either.
+     */
+    suspend fun connectAll() {
+        val failures = try {
+            supervisorScope {
+                entries.values.map { entry ->
+                    async {
+                        try {
+                            logger.info { "Initializing MCP server ${entry.namespace}" }
+                            entry.getConnectedClient()
+                            null
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (t: Throwable) {
+                            entry.namespace to t
+                        }
+                    }
+                }.awaitAll().filterNotNull()
             }
         } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                entries.values.forEach { runCatching { it.dropConnection() } }
+            }
             throw e
-        } catch (t: Throwable) {
-            runBlocking { connected.forEach { it.dropConnection() } }
-            throw t
         }
+        val failure = failures.firstOrNull() ?: return
+        failures.drop(1).forEach { (namespace, cause) ->
+            logger.error(cause) { "MCP server $namespace also failed to connect" }
+        }
+        withContext(NonCancellable) {
+            entries.values.forEach { it.dropConnection() }
+        }
+        failures.drop(1).forEach { failure.second.addSuppressed(it.second) }
+        throw failure.second
     }
 
     override fun namespaces(): Set<String> = entries.keys

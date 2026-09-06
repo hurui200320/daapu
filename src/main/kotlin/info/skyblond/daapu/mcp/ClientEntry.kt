@@ -41,8 +41,9 @@ internal class ConnectedClient(val client: Client, val process: Process?)
  *
  * Connection lifecycle:
  * - [getConnectedClient] builds and connects a client on demand (the
- *   provider connects eagerly at construction; a transport failure later in a
- *   run drops the client so the next [getConnectedClient] call reconnects).
+ *   provider connects eagerly at startup via McpToolProvider.connectAll; a
+ *   transport failure later in a run drops the client so the next
+ *   [getConnectedClient] call reconnects).
  *   The connect itself retries up to [McpServerConfig.reconnectAttempts]
  *   times, waiting [McpServerConfig.reconnectDelayMs] between attempts, then
  *   throws [McpTransportException].

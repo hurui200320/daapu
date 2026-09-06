@@ -4,8 +4,8 @@ import info.skyblond.daapu.agent.tool.ToolTransportException
 
 /**
  * The MCP transport itself failed (connect refused, stdio process died, ...).
- * Thrown by [McpToolProvider] at construction — a server that cannot be
- * reached aborts startup — and from [McpToolProvider.specifications] when the
+ * Thrown by [McpToolProvider.connectAll] at startup — a server that cannot
+ * be reached aborts startup — and from [McpToolProvider.specifications] when the
  * tool-list refresh cannot restore a dropped connection: the model cannot
  * react to a dead transport, so the chat run fails and surfaces a clear SSE
  * `error` event.

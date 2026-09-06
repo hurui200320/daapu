@@ -29,8 +29,13 @@ interface HandClient : AutoCloseable {
      * [HandRunException] (when the hand's error envelope is present) or
      * [HandUpstreamException]; a transport failure may propagate the raw
      * exception.
+     *
+     * A cold flow factory (not suspend): nothing happens until collected,
+     * and each flow is single-collect — collecting twice re-sends the same
+     * request (the runId registration that must not repeat lives in
+     * [HandService.run], not here).
      */
-    suspend fun run(request: HandRunRequest): Flow<HandEvent>
+    fun run(request: HandRunRequest): Flow<HandEvent>
 
     /**
      * One `/v1/embed` call: a single OpenAI-compatible embedding request
@@ -75,7 +80,7 @@ class HttpHandClient(
         install(SSE)
     }
 
-    override suspend fun run(request: HandRunRequest): Flow<HandEvent> = flow {
+    override fun run(request: HandRunRequest): Flow<HandEvent> = flow {
         // capture the flow's emit so nested lambdas (with their own
         // receivers) can still send events
         val emitEvent: suspend (HandEvent) -> Unit = { emit(it) }

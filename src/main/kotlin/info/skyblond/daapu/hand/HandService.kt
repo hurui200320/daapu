@@ -61,8 +61,11 @@ class HandService(
      * runId (generated here when absent) before the request is sent and
      * evicted when the stream ends, so the hand's tool callbacks can always
      * resolve their provider and model.
+     *
+     * A cold flow factory (not suspend): registration happens on collect,
+     * and each flow is single-collect.
      */
-    suspend fun run(
+    fun run(
         request: HandRunRequest,
         toolProvider: ToolProvider,
         model: LLM,

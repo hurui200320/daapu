@@ -13,7 +13,7 @@ import info.skyblond.daapu.agent.persona.Persona
 import info.skyblond.daapu.agent.tool.ToolProvider
 import info.skyblond.daapu.hand.*
 import info.skyblond.daapu.memory.eltm.EltmService
-import info.skyblond.daapu.memory.eltm.EntityWithScore
+import info.skyblond.daapu.memory.eltm.model.EntityWithScore
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.ZonedDateTime

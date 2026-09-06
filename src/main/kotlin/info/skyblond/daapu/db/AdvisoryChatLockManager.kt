@@ -31,10 +31,11 @@ class AdvisoryLockConflictException(message: String, cause: Throwable? = null) :
  * unreachable, which lands on the same Hikari transient timeout and is
  * indistinguishable here (a dead DB breaks the DB-fronted app well before a
  * chat run anyway, e.g. the chat-list read). A third, rarer cause shares the
- * budget: with `minimumIdle = 0` the pool keeps no idle connections, so EVERY
- * acquire also pays the fresh-connection setup (TCP + auth + TLS handshake) —
- * a remote database with a slow handshake eats into the same timeout even when
- * the pool is neither full nor unreachable. The caller maps this onto 503
+ * budget: only one warm connection is kept (`minimumIdle = 1`), so a burst
+ * of concurrent acquires beyond it still pays the fresh-connection setup
+ * (TCP + auth + TLS handshake) — a remote database with a slow handshake
+ * eats into the same timeout even when the pool is neither full nor
+ * unreachable. The caller maps this onto 503
  * via [info.skyblond.daapu.agent.chat.ChatLockPoolExhaustedException].
  */
 class AdvisoryLockPoolExhaustedException(message: String, cause: Throwable? = null) :
@@ -156,15 +157,17 @@ class AdvisoryChatLockManager(database: DatabaseConfig) {
     /**
      * The dedicated pool. `maximumPoolSize` = `database.lockPoolSize` (the
      * concurrent-holder cap); no Flyway — migrations are the main pool's
-     * job (db/Database.kt), and advisory locks touch no tables. `minimumIdle
-     * = 0` + a short [IDLE_TIMEOUT_MS]: a connection exists only while a
-     * lock is held (plus a small idle tail) — the pool never parks idle
-     * sessions (an idle retirement also CLOSES the session, releasing any
-     * advisory lock still on it), and a hold is never starved by
-     * housekeeping. The zero idle count also means every acquire pays the
-     * fresh-connection setup (TCP + auth + TLS) out of the same
-     * `connectionTimeout` budget as a full pool or an unreachable database —
-     * see [AdvisoryLockPoolExhaustedException]. `connectionTimeout` =
+     * job (db/Database.kt), and advisory locks touch no tables.
+     * `minimumIdle = 1` + a short [IDLE_TIMEOUT_MS]: one warm connection
+     * is kept so the common case (a free pool) never pays the
+     * fresh-connection setup (TCP + auth + TLS) out of the
+     * `connectionTimeout` budget — with zero idle every acquire paid it,
+     * and a remote database with a slow handshake ate into the same
+     * budget as a full pool or an unreachable database (see
+     * [AdvisoryLockPoolExhaustedException]). The single idle connection
+     * holds no advisory lock (locks live only on checked-out holder
+     * sessions), and an idle retirement CLOSES the session, so idling can
+     * never strand a lock. `connectionTimeout` =
      * `database.lockConnectionTimeout` (default 3s, deliberately far below
      * Hikari's 30s default): a waiter must not hang half a minute in front
      * of a full pool — that both stalls the client and pins a
@@ -194,7 +197,7 @@ class AdvisoryChatLockManager(database: DatabaseConfig) {
             password = database.password
             maximumPoolSize = database.lockPoolSize
             connectionTimeout = connectionTimeoutMs.toLong()
-            minimumIdle = 0
+            minimumIdle = 1
             idleTimeout = IDLE_TIMEOUT_MS.toLong()
             poolName = "daapu-chat-advisory-locks"
             connectionInitSql = "SET statement_timeout = $connectionTimeoutMs"
@@ -314,8 +317,16 @@ class AdvisoryChatLockManager(database: DatabaseConfig) {
          * database. Internal so tests can take the same key through raw SQL
          * (no manager instance — no pool — needed).
          */
+        // one digest per thread: getInstance + digest per acquire is pure
+        // overhead on the chat-run hot path, and MessageDigest is not
+        // thread-safe — digest() also resets, so reuse is sound. Retained
+        // for the thread's lifetime (bounded by the pool size — an
+        // intentional cache, not a per-request allocation).
+        private val threadDigest: ThreadLocal<MessageDigest> =
+            ThreadLocal.withInitial { MessageDigest.getInstance("SHA-256") }
+
         internal fun lockKey(chatId: String): Long {
-            val digest = MessageDigest.getInstance("SHA-256")
+            val digest = threadDigest.get()
                 .digest("$KEY_NAMESPACE:$chatId".toByteArray(Charsets.UTF_8))
             var key = 0L
             for (i in 0 until 8) {

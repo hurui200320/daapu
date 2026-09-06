@@ -3,6 +3,7 @@ package info.skyblond.daapu.memory.eltm
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.*
 import info.skyblond.daapu.hand.EmbeddingException
+import info.skyblond.daapu.memory.eltm.model.EltmNote
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
@@ -229,10 +230,10 @@ class EltmToolProvider(
                         val lines = mutableListOf<String>()
                         for (hit in hits) {
                             lines += buildString {
-                                append(entityHeader(hit.entity.id, hit.entity.canonicalName, hit.entity.category))
-                                append(" - similarity ${"%.3f".format(hit.score)}, notes ${hit.noteCount}, relations ${hit.relationshipCount}")
-                                appendAttributesBlock(hit.attributes)
-                                hit.latestNote?.let {
+                                append(entityHeader(hit.view.entity.id, hit.view.entity.canonicalName, hit.view.entity.category))
+                                append(" - similarity ${"%.3f".format(hit.score)}, notes ${hit.view.noteCount}, relations ${hit.view.relationshipCount}")
+                                appendAttributesBlock(hit.view.attributes)
+                                hit.view.latestNote?.let {
                                     append("\nLatest note (${it.eventDate}): ${it.note}")
                                 }
                             }
@@ -250,9 +251,10 @@ class EltmToolProvider(
                     val views = eltmService.getRelationships(id, includeInvalid)
                     if (views.isEmpty()) textResult(request, "No relationships.")
                     else views.joinToString("\n\n") { view ->
+                        val rel = view.relationship
                         buildString {
-                            append("# Relationship ${view.relationship.id}: \"${view.srcName}\" - ${view.relationship.verb} - \"${view.dstName}\"")
-                            append(" (${if (view.relationship.valid) "active" else "invalidated"}, notes ${view.noteCount})")
+                            append("# Relationship ${rel.id}: \"${rel.src.canonicalName}\" - ${rel.verb} - \"${rel.dst.canonicalName}\"")
+                            append(" (${if (rel.valid) "active" else "invalidated"}, notes ${view.noteCount})")
                             view.latestNote?.let {
                                 append("\nLatest note (${it.eventDate}): ${it.note}")
                             }
@@ -312,9 +314,9 @@ class EltmToolProvider(
                         } else {
                             append("\nNear matches (check for duplicates):")
                             result.nearMatches.forEach { match ->
-                                append("\n- ${entityHeader(match.entity.id, match.entity.canonicalName, match.entity.category)}")
-                                append(" - similarity ${"%.3f".format(match.score)}, notes ${match.noteCount}, relations ${match.relationshipCount}")
-                                appendAttributesBlock(match.attributes, indent = "  ")
+                                append("\n- ${entityHeader(match.view.entity.id, match.view.entity.canonicalName, match.view.entity.category)}")
+                                append(" - similarity ${"%.3f".format(match.score)}, notes ${match.view.noteCount}, relations ${match.view.relationshipCount}")
+                                appendAttributesBlock(match.view.attributes, indent = "  ")
                             }
                         }
                     }.let { textResult(request, it) }
@@ -358,8 +360,8 @@ class EltmToolProvider(
                     val rel = view.relationship
                     textResult(
                         request,
-                        "Relationship ${rel.id}: \"${view.srcName}\" - ${rel.verb} - " +
-                                "\"${view.dstName}\" " +
+                        "Relationship ${rel.id}: \"${rel.src.canonicalName}\" - ${rel.verb} - " +
+                                "\"${rel.dst.canonicalName}\" " +
                                 "(${if (rel.valid) "active" else "invalidated"}, notes ${view.noteCount})"
                     )
                 }
@@ -520,7 +522,14 @@ class EltmToolProvider(
      * silently ignored filter).
      */
     private fun JsonObject.strictDate(key: String): LocalDate? {
-        val raw = this[key]?.jsonPrimitive?.contentOrNull ?: return null
+        val raw = try {
+            this[key]?.jsonPrimitive?.contentOrNull ?: return null
+        } catch (e: IllegalArgumentException) {
+            // a present object/array is a type error naming this key —
+            // jsonPrimitive's own message carries no key, and execute only
+            // surfaces e.message (see limitArg)
+            throw IllegalArgumentException("$key must be a valid date in YYYY-MM-DD format", e)
+        }
         return try {
             LocalDate.parse(raw)
         } catch (e: DateTimeParseException) {
@@ -557,24 +566,40 @@ class EltmToolProvider(
 
     /**
      * The paginated-read `limit` argument (default 5, must be >= 1).
-     * Invalid values throw [IllegalArgumentException] — execute's catch
-     * maps it onto the same model-visible error the former inline checks
-     * produced.
+     * Strict: a present-but-unparseable value (e.g. a float or a garbage
+     * string) throws [IllegalArgumentException] instead of silently falling
+     * back to the default — the model must see that its argument was
+     * invalid. A well-formed numeric string (`"5"`) still coerces (see
+     * `intArg` — the model sometimes emits numbers as strings). Execute's
+     * catch maps the throw onto the model-visible error.
      */
     private fun JsonObject.limitArg(): Int {
-        val limit = intArg("limit") ?: 5
-        require(limit >= 1) { "limit must be >= 1" }
+        // strict intArg throws on any present non-whole-number (float,
+        // garbage string, object/array) — the catch renames it to the
+        // pagination contract, keeping the offending value in the message
+        // (execute only surfaces e.message, never the cause chain);
+        // absent stays the default
+        val limit = try {
+            intArg("limit", strict = true)
+        } catch (e: IllegalArgumentException) {
+            throw IllegalArgumentException("limit must be an integer >= 1 (${e.message})", e)
+        } ?: 5
+        require(limit >= 1) { "limit must be >= 1, got $limit" }
         return limit
     }
 
     /**
-     * [limitArg] plus the `offset` argument (default 0, must be >= 0) — the
-     * pagination pair of the diary read tools.
+     * [limitArg] plus the `offset` argument (default 0, must be >= 0),
+     * strict like [limitArg] — the pagination pair of the diary read tools.
      */
     private fun JsonObject.limitOffsetArgs(): Pair<Int, Int> {
         val limit = limitArg()
-        val offset = intArg("offset") ?: 0
-        require(offset >= 0) { "offset must be >= 0" }
+        val offset = try {
+            intArg("offset", strict = true)
+        } catch (e: IllegalArgumentException) {
+            throw IllegalArgumentException("offset must be an integer >= 0 (${e.message})", e)
+        } ?: 0
+        require(offset >= 0) { "offset must be >= 0, got $offset" }
         return limit to offset
     }
 

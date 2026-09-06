@@ -31,7 +31,7 @@ import org.koin.dsl.module
  *
  * [mcpToolProvider] defaults to an EMPTY provider: [testAppConfig] carries
  * the REQUIRED exa server (a live `https://mcp.exa.ai/mcp` URL), and the
- * production provider connects eagerly at construction — tests must never
+ * production provider connects eagerly at startup — tests must never
  * touch the network. Pass a provider explicitly to exercise MCP wiring.
  *
  * The stores ([ChatStore], [PersonaStore], [EltmService]) are the PRODUCTION

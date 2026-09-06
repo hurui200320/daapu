@@ -2,6 +2,7 @@ package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
+import info.skyblond.daapu.memory.eltm.model.EltmRelationship
 import info.skyblond.daapu.memory.eltm.postgres.PostgresEltmService
 import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.TestDb

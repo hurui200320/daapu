@@ -1,6 +1,7 @@
 package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.db.padVector
+import info.skyblond.daapu.memory.eltm.model.*
 import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
@@ -67,12 +68,19 @@ class EltmServiceTest {
     @Test
     fun `noteEmbeddingText is the trimmed note`() {
         assertEquals("bought a kindle", noteEmbeddingText("  bought a kindle  "))
-        assertEquals("a\nb", noteEmbeddingText("  a\nb  "), "internal newlines are content, not structure")
+        assertEquals(
+            "a\nb",
+            noteEmbeddingText("  a\nb  "),
+            "internal newlines are content, not structure"
+        )
         assertEquals("", noteEmbeddingText("   "), "the blank check stays at the call site")
         // the shape must be reproducible from the stored row: what the
         // service stores IS the trimmed text, so refreshing an existing
         // note re-embeds exactly the text it was embedded with before
-        assertEquals(noteEmbeddingText("  hello  "), noteEmbeddingText(noteEmbeddingText("  hello  ")))
+        assertEquals(
+            noteEmbeddingText("  hello  "),
+            noteEmbeddingText(noteEmbeddingText("  hello  "))
+        )
     }
 
     // ------------------------------------------------------------------
@@ -152,6 +160,7 @@ class EltmServiceTest {
         private var writeVersion: Long,
     ) : EltmService {
         override suspend fun version(): String = writeVersion.toString()
+
         // the store operations are exercised through the real
         // PostgresEltmService (test database) in the writer tests
         override suspend fun createEntity(name: String, category: String): CreateEntityResult =
@@ -160,7 +169,11 @@ class EltmServiceTest {
         override suspend fun createEntities(entries: List<EntityDraft>): List<EltmEntity> =
             error("unused")
 
-        override suspend fun createRelationship(srcId: Long, dstId: Long, verb: String): RelationshipView =
+        override suspend fun createRelationship(
+            srcId: Long,
+            dstId: Long,
+            verb: String
+        ): RelationshipView =
             error("unused")
 
         override suspend fun createRelationships(triples: List<RelationshipDraft>): List<EltmRelationship> =
@@ -222,6 +235,12 @@ class EltmServiceTest {
         ): EltmSearchHits = error("unused")
 
         override suspend fun getEntity(id: Long): EntityView? = error("unused")
+        override suspend fun getEntitiesByIds(ids: List<Long>): Map<Long, EltmEntity> =
+            error("unused")
+
+        override suspend fun getResolvedRelationships(ids: List<Long>): Map<Long, ResolvedRelationship> =
+            error("unused")
+
         override suspend fun listEntities(limit: Int, offset: Int): List<EntityView> =
             error("unused")
 
