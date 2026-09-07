@@ -55,6 +55,8 @@ Dockerfile                   multi-stage: frontend dist → `frontend` classpath
                              config.jsonc out of every build context); dev has
                              no such package — see server/WebServer.kt
                              staticWebUi
+docker/container-readme.md   the agent's runtime orientation readme, baked
+                             to /root/README.md by the Dockerfile
 src/main/resources/
   frontend/                  the packaged web UI (Docker-built artifact,
                              gitignored — absent in dev)

@@ -53,6 +53,9 @@ RUN apt-get update \
 COPY --from=ghcr.io/astral-sh/uv:0.12.9 /uv /uvx /usr/local/bin/
 WORKDIR /app
 COPY --from=brain-build /src/build/install/daapu/ ./
+# the agent's runtime orientation readme — content lives in
+# docker/container-readme.md; baked at root's home (/root/README.md)
+COPY docker/container-readme.md /root/README.md
 # config.jsonc is mounted read-only into the workdir at run time
 # (loadConfig reads ./config.jsonc) — never bake it into the image; note
 # the bash tool's root can read it regardless (the container is the
