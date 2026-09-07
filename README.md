@@ -118,7 +118,11 @@ because the API carries no authentication — widen the binding deliberately
 if the host must serve a LAN. The frontend dist is baked into the brain
 image by the
 multi-stage `Dockerfile` (stage 1 builds the frontend, stage 2 copies it
-into the `frontend` classpath package before the Gradle build, stage 3 runs
+into the `frontend` classpath package before the Gradle build, stage 3
+snapshots the build-context source — the worktree as filtered by
+`.dockerignore`, so uncommitted edits ship too while `config.jsonc` and
+`.git` never enter — baked to
+`/root/daapu` for the agent to read — and stage 4 runs
 the distribution on a toolbox base: zulu JDK 25 on Ubuntu, with node 24 and
 python3 + uv for the stdio MCP servers plus curl/wget/git — no separate
 frontend server exists. The container runs as root on purpose: the brain's

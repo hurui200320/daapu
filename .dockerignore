@@ -1,28 +1,28 @@
 # SECRETS FIRST: config.jsonc holds API keys and must never enter a build
-# context or image layer (see README Configuration)
+# context or image layer (see README Configuration). It is gitignored and
+# only ever exists uncommitted in the worktree — and the Dockerfile's
+# source-snapshot stage copies the whole (filtered) build context, so THIS
+# list, not git, is what keeps it out of the image and /root/daapu.
 config.jsonc
-config.example.jsonc
 
-# stale/derived frontend artifacts: the image builds them fresh (the dist
-# lands in src/main/resources/frontend only inside the Docker build)
+# derived artifacts: the image builds them fresh (the frontend dist lands in
+# src/main/resources/frontend only inside the Docker build; hand-pi builds
+# from its own context, hand-pi/Dockerfile)
 frontend/dist/
 frontend/node_modules/
+hand-pi/dist/
+hand-pi/node_modules/
 src/main/resources/frontend/
 
-# the hand builds from its own context (hand-pi/Dockerfile)
-hand-pi/
-
-# nothing the JVM build (-x test) needs
-src/test/
-
-# local tooling, IDE files, git, and the compose files themselves
+# local tooling, IDE files (any depth — hand-pi has its own), git internals,
+# host-specific compose extras, and local backups — none of these belong in
+# the image or the /root/daapu snapshot
 .git/
 .gradle/
 .kotlin/
-.idea/
+**/.idea/
 build/
 out/
 sql-backup/
 .playwright-mcp/
-compose.yaml
-*.md
+compose.override.yaml

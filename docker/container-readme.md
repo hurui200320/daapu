@@ -14,6 +14,12 @@ as user may recreate the container during the session.
 ## Filesystem
 
 - `/root` — root's home (you are root; the `fs` tools' `~` resolves here).
+- `/root/daapu` — a snapshot of this project's own source code (the build
+  machine's worktree at image build time, as filtered by `.dockerignore`:
+  brain, hand-pi, frontend, docs, and `config.example.jsonc`). Read it to
+  understand the system you are running in. Note this is a copy, not a
+  checkout: there is no `.git`, and editing it changes nothing about the
+  running `/app` process.
 - `/app` — the brain application: the installed distribution, and the JVM
   process's working directory.
 - `/app/config.jsonc` — the deployment config, bind-mounted **read-only**

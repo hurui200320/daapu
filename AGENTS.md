@@ -48,15 +48,17 @@ config.schema.json           JSON Schema mirroring config/Config.kt
 compose.yaml                 dev PostgreSQL (pgvector/pgvector:pg18-trixie)
                              + the deployment stack (hand, brain)
 Dockerfile                   multi-stage: frontend dist → `frontend` classpath
-                             package → Gradle installDist → zulu JDK toolbox
-                             runtime (node/python for stdio MCP servers; root
+                             package → Gradle installDist → worktree source
+                             snapshot (the build context as filtered by
+                             .dockerignore — config.jsonc never enters) →
+                             zulu JDK toolbox runtime (/root/daapu source
+                             copy, node/python for stdio MCP servers; root
                              for the brain's bash tool — installs are
-                             per-container ephemeral) (.dockerignore keeps
-                             config.jsonc out of every build context); dev has
-                             no such package — see server/WebServer.kt
-                             staticWebUi
+                             per-container ephemeral); dev has no such
+                             package — see server/WebServer.kt staticWebUi
 docker/container-readme.md   the agent's runtime orientation readme, baked
-                             to /root/README.md by the Dockerfile
+                             to /root/README.md by the Dockerfile (mentions
+                             the /root/daapu source snapshot)
 src/main/resources/
   frontend/                  the packaged web UI (Docker-built artifact,
                              gitignored — absent in dev)
