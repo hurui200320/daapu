@@ -228,6 +228,14 @@ class EltmServiceTest {
         override suspend fun searchEntities(query: String, limit: Int): List<EntityWithScore> =
             error("unused")
 
+        override suspend fun findEntities(
+            name: String?,
+            category: String?,
+            attr: String?,
+            limit: Int,
+            offset: Int,
+        ): List<EntityView> = error("unused")
+
         override suspend fun searchEntitiesAndNotes(
             query: String,
             entityLimit: Int,

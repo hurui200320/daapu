@@ -4,17 +4,21 @@ import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.tool.*
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.memory.eltm.model.EltmNote
+import info.skyblond.daapu.memory.eltm.model.EntityView
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
+import java.util.regex.Pattern
+import java.util.regex.PatternSyntaxException
 
 /**
  * The ELTM tools backed by an [EltmService]: the read tools (entity /
- * relationship lookup, diary notes, semantic note search) and — unless
- * [readOnly] — the write tools. Each tool mirrors ONE [EltmService] method
- * one-to-one (entities and relationships are never mixed in one tool).
+ * relationship lookup, diary notes, semantic note search, lexical entity
+ * listing) and — unless [readOnly] — the write tools. Each tool mirrors
+ * ONE [EltmService] method one-to-one (entities and relationships are
+ * never mixed in one tool).
  *
  * The RW provider is the ONLY ELTM write path (the chat model never writes
  * the ELTM directly; the extraction pipeline drives the writer agent); the
@@ -59,11 +63,23 @@ class EltmToolProvider(
     private val readSpecs = listOf(
         ToolSpec(
             name = "search_entities",
-            description = "Semantic search over entities; returns matching entities with their similarity, attributes and latest note inline. Call this BEFORE creating an entity to find an existing one.",
+            description = "Semantic search over entities; returns matching entities with their similarity, attributes and latest note inline. Call this BEFORE creating an entity to find an existing one. Matches by MEANING, not spelling — for a known name, category or attribute value use ls_entities (verbatim matching) instead.",
             schema = objectSchema(
                 required = listOf("query"),
                 "query" to stringSchema("The entity to search for, e.g. \"alice\""),
                 "limit" to integerSchema("Max results (default 5)"),
+            ),
+        ),
+        ToolSpec(
+            name = "ls_entities",
+            description = "List entities by VERBATIM case-insensitive regex match on name and/or category and/or attributes — the lexical counterpart of search_entities, for a known name (e.g. the canonical \"user\" entity) or an exact fact where semantic search can miss. An attribute matches when its `key=value` line matches the attr regex. Note the `key=value` (equals, no space) syntax differs from the `key: value` rendering in the results: author the pattern with '='. Filters combine with AND; omit them all (or pass \"*\") to browse every entity, id order, paginated.",
+            schema = objectSchema(
+                required = emptyList(),
+                "name" to stringSchema("Case-insensitive regex on the entity's canonical name, e.g. \"^user$\"; omit or \"*\" for no filter"),
+                "category" to stringSchema("Case-insensitive regex on the category, e.g. \"person\"; omit or \"*\" for no filter"),
+                "attr" to stringSchema("Case-insensitive regex matched against every attribute's `key=value` line, e.g. \"^model=kindle\"; omit or \"*\" for no filter"),
+                "limit" to integerSchema("Max results (default 5)"),
+                "offset" to integerSchema("Pagination offset (default 0)"),
             ),
         ),
         ToolSpec(
@@ -227,18 +243,25 @@ class EltmToolProvider(
                     if (hits.isEmpty()) {
                         textResult(request, "No matching entities.")
                     } else {
-                        val lines = mutableListOf<String>()
-                        for (hit in hits) {
-                            lines += buildString {
-                                append(entityHeader(hit.view.entity.id, hit.view.entity.canonicalName, hit.view.entity.category))
-                                append(" - similarity ${"%.3f".format(hit.score)}, notes ${hit.view.noteCount}, relations ${hit.view.relationshipCount}")
-                                appendAttributesBlock(hit.view.attributes)
-                                hit.view.latestNote?.let {
-                                    append("\nLatest note (${it.eventDate}): ${it.note}")
-                                }
-                            }
-                        }
-                        textResult(request, lines.joinToString("\n\n"))
+                        textResult(
+                            request,
+                            hits.joinToString("\n\n") {
+                                renderEntityView(it.view, similarity = it.score)
+                            },
+                        )
+                    }
+                }
+
+                "ls_entities" -> {
+                    val nameFilter = args.regexFilterArg("name")
+                    val categoryFilter = args.regexFilterArg("category")
+                    val attrFilter = args.regexFilterArg("attr")
+                    val (limit, offset) = args.limitOffsetArgs()
+                    val views = eltmService.findEntities(nameFilter, categoryFilter, attrFilter, limit, offset)
+                    if (views.isEmpty()) {
+                        textResult(request, "No matching entities.")
+                    } else {
+                        textResult(request, views.joinToString("\n\n") { renderEntityView(it) })
                     }
                 }
 
@@ -544,10 +567,31 @@ class EltmToolProvider(
         "# Entity $id - \"$canonicalName\" ($category)"
 
     /**
+     * The full entity rendering shared by the entity-listing read tools
+     * (search_entities and ls_entities): the header, the counts, the
+     * alphabetized attributes block and the latest note, so both tools
+     * answer the same EntityView with the same shape. [similarity]
+     * (search_entities' hit score) inserts the `similarity 0.912,`
+     * segment after the dash (create_entity/refine_entity render the
+     * header/counts/attributes inline, without the latest note).
+     */
+    private fun renderEntityView(view: EntityView, similarity: Double? = null): String {
+        val detail = similarity?.let { " similarity ${"%.3f".format(it)}," } ?: ""
+        return buildString {
+            append(entityHeader(view.entity.id, view.entity.canonicalName, view.entity.category))
+            append(" -$detail notes ${view.noteCount}, relations ${view.relationshipCount}")
+            appendAttributesBlock(view.attributes)
+            view.latestNote?.let {
+                append("\nLatest note (${it.eventDate}): ${it.note}")
+            }
+        }
+    }
+
+    /**
      * The alphabetized `Attributes:` block of an entity render ([indent]
      * nests it, e.g. under a near match); empty attributes append nothing.
      * The shared shape keeps the model's view of an entity identical across
-     * search_entities, create_entity and refine_entity.
+     * every entity-rendering tool (see [renderEntityView]).
      */
     private fun StringBuilder.appendAttributesBlock(
         attributes: Map<String, String>,
@@ -601,6 +645,32 @@ class EltmToolProvider(
         } ?: 0
         require(offset >= 0) { "offset must be >= 0, got $offset" }
         return limit to offset
+    }
+
+    /**
+     * An optional regex filter argument (ls_entities' name/category/attr):
+     * absent or blank ([textArg]'s blank-to-null) or the explicit wildcard
+     * `"*"` mean no condition; any other value is pre-checked with
+     * [Pattern.compile] — strict like [limitArg]: a garbage pattern is a
+     * model-visible error naming the argument, never a silent no-filter.
+     * The pre-check is best-effort only, and the dialect mismatch cuts
+     * BOTH ways: a pattern Kotlin accepts but PostgreSQL's `~*` rejects
+     * (e.g. `\Q…\E` quoting, named groups, possessive quantifiers)
+     * passes here and is converted to a model-visible error by the
+     * service (see [EltmService.findEntities]); a pattern PostgreSQL
+     * accepts but Kotlin rejects (the word-boundary escapes `\y`/`\m`/`\M`)
+     * is refused here with the same argument-naming error — the model
+     * must stick to the regex subset both engines accept.
+     */
+    private fun JsonObject.regexFilterArg(key: String): String? {
+        val raw = textArg(key) ?: return null
+        if (raw == "*") return null
+        return try {
+            Pattern.compile(raw)
+            raw
+        } catch (e: PatternSyntaxException) {
+            throw IllegalArgumentException("$key must be a valid regex: ${e.message}", e)
+        }
     }
 
     /**

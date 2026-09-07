@@ -33,3 +33,12 @@ fun Throwable.isUniqueViolation(): Boolean = hasSqlState("23505")
  * already attempted (see `db/Database.kt`).
  */
 fun Throwable.isForeignKeyViolation(): Boolean = hasSqlState("23503")
+
+/**
+ * Whether [this] or any of its causes is an invalid-regular-expression
+ * error (SQLState `2201B`) — PostgreSQL's `~` / `~*` rejecting a pattern.
+ * Like [isUniqueViolation], callers convert it to a non-SQL exception
+ * inside the transaction so `withTransaction` does not retry the
+ * deterministically failing read (see `db/Database.kt`).
+ */
+fun Throwable.isInvalidRegex(): Boolean = hasSqlState("2201B")

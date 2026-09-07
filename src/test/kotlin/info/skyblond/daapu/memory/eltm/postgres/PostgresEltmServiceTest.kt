@@ -1144,6 +1144,132 @@ class PostgresEltmServiceTest : DbTestBase() {
     }
 
     @Test
+    fun `findEntities filters by regex on name, category and any attribute, AND-combined`() =
+        runBlocking {
+            val service = service()
+            val alice = service.createEntity("alice", "person").entity
+            service.setEntityAttribute(alice.id, "model", "kindle paperwhite")
+            service.setEntityAttribute(alice.id, "nickname", "ally")
+            val acme = service.createEntity("acme", "company").entity
+            service.setEntityAttribute(acme.id, "model", "thinkpad")
+            service.attachNoteToEntity(acme.id, LocalDate.of(2026, 8, 10), "shipped the thing")
+
+            // the attr filter matches when ANY attribute's `key=value` line
+            // matches — the key-only pattern hits both model holders
+            assertEquals(
+                setOf(alice.id, acme.id),
+                service.findEntities(name = null, category = null, attr = "^model=", limit = 10, offset = 0)
+                    .map { it.entity.id }.toSet(),
+            )
+            assertEquals(
+                listOf(alice.id),
+                service.findEntities(name = null, category = null, attr = "paperwhite", limit = 10, offset = 0)
+                    .map { it.entity.id },
+            )
+            // the nickname line matches too — not just the model line
+            assertEquals(
+                listOf(alice.id),
+                service.findEntities(name = null, category = null, attr = "^nickname=ally$", limit = 10, offset = 0)
+                    .map { it.entity.id },
+            )
+
+            // name filter, case-insensitive (`~*`): the pattern is uppercase
+            // against the lowercase canonical name
+            assertEquals(
+                listOf(alice.id),
+                service.findEntities(name = "^ALICE$", category = null, attr = null, limit = 10, offset = 0)
+                    .map { it.entity.id },
+            )
+
+            // filters AND together
+            assertEquals(
+                listOf(alice.id),
+                service.findEntities(name = "a", category = "person", attr = "kindle", limit = 10, offset = 0)
+                    .map { it.entity.id },
+            )
+            assertTrue(
+                service.findEntities(name = "a", category = "^company$", attr = "kindle", limit = 10, offset = 0)
+                    .isEmpty(),
+                "the person-only attribute matches no company",
+            )
+
+            // paging applies WITH the filter: name "a" matches both entities
+            // (id order), so the second page of one is acme
+            assertEquals(
+                listOf(acme.id),
+                service.findEntities(name = "a", category = null, attr = null, limit = 1, offset = 1)
+                    .map { it.entity.id },
+            )
+
+            // the view is full: counts, attributes, latest note
+            val view = service.findEntities(name = "^acme$", category = null, attr = null, limit = 10, offset = 0)
+                .single()
+            assertEquals(1, view.noteCount)
+            assertEquals(mapOf("model" to "thinkpad"), view.attributes)
+            assertEquals("shipped the thing", view.latestNote?.note)
+
+            assertTrue(
+                service.findEntities(name = "^nonexistent$", category = null, attr = null, limit = 10, offset = 0)
+                    .isEmpty(),
+            )
+        }
+
+    @Test
+    fun `findEntities without filters browses in id order with paging`() = runBlocking {
+        val service = service()
+        val first = service.createEntity("alice", "person").entity
+        val second = service.createEntity("bob", "person").entity
+        val third = service.createEntity("acme", "company").entity
+
+        assertEquals(
+            listOf(first.id, second.id, third.id),
+            service.findEntities(name = null, category = null, attr = null, limit = 10, offset = 0)
+                .map { it.entity.id },
+            "all-null filters are the plain browse, id ascending",
+        )
+        // the browse is listEntities' page, not a degenerate WHERE
+        assertEquals(
+            service.listEntities(2, 1).map { it.entity.id },
+            service.findEntities(name = null, category = null, attr = null, limit = 2, offset = 1)
+                .map { it.entity.id },
+        )
+    }
+
+    @Test
+    fun `findEntities validates its paging arguments`() = runBlocking {
+        val service = service()
+        try {
+            service.findEntities(null, null, null, 0, 0)
+            fail("limit 0 must fail")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("limit"))
+        }
+        try {
+            service.findEntities(null, null, null, 5, -1)
+            fail("a negative offset must fail")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("offset"))
+        }
+    }
+
+    @Test
+    fun `findEntities converts a postgres-invalid regex to an IllegalArgumentException`() = runBlocking {
+        val service = service()
+        // \Q...\E literal quoting: Java-valid (the tool layer's pre-check
+        // passes it) but rejected by PostgreSQL's ~* — converted INSIDE the
+        // transaction to a non-SQL exception so withTransaction does not
+        // retry the deterministically failing read (see db/Database.kt and
+        // db/SqlErrors.isInvalidRegex). The error fires on an empty table
+        // too: PostgreSQL validates the pattern even when no row is read.
+        val e = assertFailsWith<IllegalArgumentException> {
+            service.findEntities("\\Qalice\\E", null, null, 10, 0)
+        }
+        assertTrue(e.message!!.contains("regular expression"), e.message)
+        // the server's complaint rides the message — the model needs it
+        assertTrue(e.message!!.contains("invalid"), e.message)
+    }
+
+    @Test
     fun `searchNotes honors subject and date filters`() = runBlocking {
         val embeddings = DeterministicEmbeddings()
         val service = service(FakeHand(embedScript = embeddings.script))

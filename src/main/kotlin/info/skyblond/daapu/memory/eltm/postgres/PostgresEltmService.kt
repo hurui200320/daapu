@@ -82,7 +82,7 @@ class PostgresEltmService(
                 // (EltmEntityQueries.kt)
                 val inserted = insertEntityRow(canonical, cat, embedding)
                 if (inserted != null) {
-                    bumpWriteVersion()
+                    bumpEltmWriteVersion()
                     inserted
                 } else {
                     findEntityByKey(canonical, cat)
@@ -108,14 +108,8 @@ class PostgresEltmService(
     override suspend fun createEntities(entries: List<EntityDraft>): List<EltmEntity> {
         if (entries.isEmpty()) return emptyList()
         // normalize/validate every entry up front (fail fast before any
-        // work), naming the offending index
-        val normalized = entries.mapIndexed { index, (name, category) ->
-            val canonical = normalizeName(name)
-            val cat = category.trim().lowercase()
-            require(canonical.isNotBlank()) { "entity name must not be blank (entry $index)" }
-            require(cat.isNotBlank()) { "entity category must not be blank (entry $index)" }
-            canonical to cat
-        }
+        // work) — normalizeEntityDrafts (EltmService.kt)
+        val normalized = normalizeEntityDrafts(entries)
         // the bulk create-or-fetch (the batch unit's semantics:
         // EltmService.createEntities): ONE transaction holds the batched
         // key lookups, the batched embeds, the per-key ON CONFLICT inserts
@@ -133,7 +127,7 @@ class PostgresEltmService(
             // only a real insert bumps the write counter — a fully
             // conflict-adopted batch is a pure read (per-entity
             // semantics preserved)
-            if (insertedAny) bumpWriteVersion()
+            if (insertedAny) bumpEltmWriteVersion()
             rows.map { it.toEntity() }
         }
     }
@@ -141,15 +135,9 @@ class PostgresEltmService(
     override suspend fun refineEntity(
         entityId: Long, newName: String?, newCategory: String?,
     ): EntityView {
-        val canonical = newName?.let {
-            normalizeName(it).also { name ->
-                require(name.isNotBlank()) { "entity name must not be blank" }
-            }
-        }
-        val trimmedCategory = newCategory?.trim()?.lowercase()
-        if (trimmedCategory != null) {
-            require(trimmedCategory.isNotBlank()) { "entity category must not be blank" }
-        }
+        // up-front normalization (fail fast on a blank provided field) —
+        // normalizeRefineTarget (EltmService.kt)
+        val (canonical, trimmedCategory) = normalizeRefineTarget(newName, newCategory)
         // like setEntityAttributes: ONE transaction for the whole
         // read-modify-write, the hand embed call included — the connection is
         // held across the embed. The entity row is locked FOR UPDATE before
@@ -208,7 +196,7 @@ class PostgresEltmService(
                     e,
                 )
             }
-            bumpWriteVersion()
+            bumpEltmWriteVersion()
             entityViewOf(EltmEntity(entityId, newCanonical, newCat))
         }
     }
@@ -248,7 +236,7 @@ class PostgresEltmService(
             val rel = findRelationshipByTriple(srcId, v, dstId)?.toRelationship() ?: run {
                 val insertedId = insertRelationshipRow(srcId, dstId, v)
                 if (insertedId != null) {
-                    bumpWriteVersion()
+                    bumpEltmWriteVersion()
                     // a fresh row always starts active (the column default)
                     // — constructed directly, no trailing re-read (a re-read
                     // in a SEPARATE transaction could even miss the row: a
@@ -302,7 +290,7 @@ class PostgresEltmService(
             val (rels, insertedAny) = bulkCreateOrFetchRelationships(normalized)
             // only a real insert bumps the write counter — a fully
             // conflict-adopted batch is a pure read
-            if (insertedAny) bumpWriteVersion()
+            if (insertedAny) bumpEltmWriteVersion()
             rels
         }
     }
@@ -343,7 +331,7 @@ class PostgresEltmService(
                 if (!e.isForeignKeyViolation()) throw e
                 throw IllegalArgumentException("entity $entityId does not exist", e)
             }
-            bumpWriteVersion()
+            bumpEltmWriteVersion()
             notes
         }
     }
@@ -407,7 +395,7 @@ class PostgresEltmService(
                 if (!e.isForeignKeyViolation()) throw e
                 throw IllegalArgumentException("relationship $relationshipId does not exist", e)
             }
-            bumpWriteVersion()
+            bumpEltmWriteVersion()
             RelationshipNotesResult(
                 notes = notes,
                 valid = valid ?: currentValid,
@@ -425,22 +413,8 @@ class PostgresEltmService(
 
     override suspend fun setEntityAttributes(entityId: Long, values: Map<String, String>): Int {
         // normalize/validate every entry up front (fail fast before any
-        // write). One row per (entity, key): two raw keys that canonicalize
-        // alike fold onto one entry, the later value wins (the map's own
-        // semantics)
-        val normalized = LinkedHashMap<String, String>()
-        for ((key, value) in values) {
-            val k = normalizeAttributeKey(key)
-            val v = value.trim()
-            require(k.isNotBlank()) { "attribute key must not be blank" }
-            require(v.isNotBlank()) { "attribute value must not be blank" }
-            // the value is appended to the entity embedding text as a single
-            // `key: value` line: a newline would corrupt the line structure
-            require(v.none { it == '\n' || it == '\r' }) {
-                "attribute value must be a single line"
-            }
-            normalized[k] = v
-        }
+        // write) — normalizeAttributeValues (EltmService.kt)
+        val normalized = normalizeAttributeValues(values)
         if (normalized.isEmpty()) return 0
         // ONE transaction for the whole read-modify-write, the hand embed
         // call included: the connection is held across the embed (the price
@@ -475,7 +449,7 @@ class PostgresEltmService(
             // re-embedded vector ride writeEntityAttributes
             // (EltmEntityQueries.kt)
             writeEntityAttributes(entityId, changed, embedding)
-            bumpWriteVersion()
+            bumpEltmWriteVersion()
             changed.size
         }
     }
@@ -505,7 +479,7 @@ class PostgresEltmService(
             )
             deleteEntityAttributeRow(entityId, k)
             updateEntityEmbedding(entityId, embedding)
-            bumpWriteVersion()
+            bumpEltmWriteVersion()
         }
     }
 
@@ -531,7 +505,7 @@ class PostgresEltmService(
                 if (updated == 0) {
                     throw IllegalArgumentException("relationship $relationshipId no longer exists")
                 }
-                bumpWriteVersion()
+                bumpEltmWriteVersion()
                 true
             }
         }
@@ -581,7 +555,7 @@ class PostgresEltmService(
         executeEntityMerge(winnerId, loserId, foldPlan, winnerEmbedding)
         // one bump for the whole transactional merge (the loser delete is
         // the reliable change signal; the re-points ride the same commit)
-        bumpWriteVersion()
+        bumpEltmWriteVersion()
     }
 
     // ------------------------------------------------------------------
@@ -604,6 +578,38 @@ class PostgresEltmService(
         // of the single-subject helpers' 5 per row (the single-subject
         // reads stay per-row: one row, five queries)
         selectEntityViews(limit, offset)
+    }
+
+    override suspend fun findEntities(
+        name: String?,
+        category: String?,
+        attr: String?,
+        limit: Int,
+        offset: Int,
+    ): List<EntityView> = withTransaction {
+        requirePaging(limit, offset)
+        // the lexical-filter page builder (EltmEntityQueries.kt) — no embed
+        // call; the READ COMMITTED stance lives with the shared page
+        // assembly (entityPageViewsOf, EltmEntityQueries.kt)
+        try {
+            selectEntityViewsFiltered(name, category, attr, limit, offset)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // a pattern the tool layer's Java-side pre-check accepts can
+            // still be Postgres-invalid (the dialect mismatch is documented
+            // on EltmService.findEntities): convert the expected SQL error
+            // to a non-SQL exception INSIDE the block so withTransaction
+            // does not retry the deterministically failing read (see the
+            // retry note in db/Database.kt). The message keeps the
+            // server's complaint — the model needs it to fix the pattern.
+            if (!e.isInvalidRegex()) throw e
+            throw IllegalArgumentException(
+                "a filter pattern is not a valid PostgreSQL regular expression " +
+                        "(stick to the regex subset both engines accept): ${e.message}",
+                e,
+            )
+        }
     }
 
     override suspend fun listRelationships(limit: Int, offset: Int): List<RelationshipView> =
@@ -771,23 +777,7 @@ class PostgresEltmService(
     // ------------------------------------------------------------------
 
     override suspend fun version(): String =
-        withTransaction { currentWriteVersion() }.toString()
-
-    // ------------------------------------------------------------------
-    // shared helpers (ambient transaction: only called inside withTransaction)
-    // ------------------------------------------------------------------
-
-    /**
-     * Atomically bump the global ELTM write counter
-     * (`memory_meta_number.eltm_version`, see `db/MetaCounter.kt`) by one.
-     * Called inside the same transaction as every visible-state write, so
-     * the bump commits with the write — the version moves
-     * exactly when the ELTM changes.
-     */
-    private fun bumpWriteVersion() = bumpMetaCounter(ELTM_VERSION_KEY)
-
-    /** Read the global ELTM write counter (the write version). Ambient transaction. */
-    private fun currentWriteVersion(): Long = readMetaCounter(ELTM_VERSION_KEY)
+        withTransaction { currentEltmWriteVersion() }.toString()
 
     companion object {
         private const val NEAR_MATCH_LIMIT = 5

@@ -154,6 +154,65 @@ fun planAttributeFold(
     )
 }
 
+/**
+ * The entity-batch up-front normalization ([PostgresEltmService.createEntities]'s
+ * first step): one (canonical name, category) pair per entry, the whole
+ * batch failing fast on a blank field — naming the offending entry's
+ * index — before any lookup, embed or write.
+ */
+internal fun normalizeEntityDrafts(entries: List<EntityDraft>): List<Pair<String, String>> =
+    entries.mapIndexed { index, (name, category) ->
+        val canonical = normalizeName(name)
+        val cat = category.trim().lowercase()
+        require(canonical.isNotBlank()) { "entity name must not be blank (entry $index)" }
+        require(cat.isNotBlank()) { "entity category must not be blank (entry $index)" }
+        canonical to cat
+    }
+
+/**
+ * The refine-target up-front normalization ([PostgresEltmService.refineEntity]'s
+ * first step): a null keeps the current identity, a provided name/category
+ * is canonicalized and must not be blank.
+ */
+internal fun normalizeRefineTarget(
+    newName: String?,
+    newCategory: String?,
+): Pair<String?, String?> {
+    val canonical = newName?.let {
+        normalizeName(it).also { name ->
+            require(name.isNotBlank()) { "entity name must not be blank" }
+        }
+    }
+    val trimmedCategory = newCategory?.trim()?.lowercase()
+    if (trimmedCategory != null) {
+        require(trimmedCategory.isNotBlank()) { "entity category must not be blank" }
+    }
+    return canonical to trimmedCategory
+}
+
+/**
+ * The attribute-batch up-front normalization ([PostgresEltmService.setEntityAttributes]'s
+ * first step): one canonical `(key, single-line non-blank value)` entry per
+ * input, later keys winning on a canonical-key collision (the map's own
+ * semantics). An empty result is the caller's no-op batch.
+ */
+internal fun normalizeAttributeValues(values: Map<String, String>): LinkedHashMap<String, String> {
+    val normalized = LinkedHashMap<String, String>()
+    for ((key, value) in values) {
+        val k = normalizeAttributeKey(key)
+        val v = value.trim()
+        require(k.isNotBlank()) { "attribute key must not be blank" }
+        require(v.isNotBlank()) { "attribute value must not be blank" }
+        // the value is appended to the entity embedding text as a single
+        // `key: value` line: a newline would corrupt the line structure
+        require(v.none { it == '\n' || it == '\r' }) {
+            "attribute value must be a single line"
+        }
+        normalized[k] = v
+    }
+    return normalized
+}
+
 private val WHITESPACE_REGEX = Regex("\\s+")
 
 /**
@@ -168,8 +227,9 @@ private val WHITESPACE_REGEX = Regex("\\s+")
  * and queries are padded identically — cosine similarity is invariant under
  * zero-padding, so switching embedding models never needs a schema change.
  *
- * The paged reads ([listEntities], [listRelationships], [getEntityNotes],
- * [getRelationshipNotes]) use classic limit/offset paging DELIBERATELY, not
+ * The paged reads ([listEntities], [findEntities], [listRelationships],
+ * [getEntityNotes], [getRelationshipNotes]) use classic limit/offset
+ * paging DELIBERATELY, not
  * the keyset cursors of `GET /api/chats` (see `PostgresChatStore.listChats`):
  * chats need keyset because a chat can be deleted mid-walk while its
  * consumer only re-reads the newest page, so a skipped chat stays missed.
@@ -480,11 +540,42 @@ interface EltmService {
     suspend fun searchEntities(query: String, limit: Int): List<EntityWithScore>
 
     /**
+     * The lexical counterpart of [searchEntities]: entities matching the
+     * verbatim regex filters, AND-combined — [name] on the canonical name,
+     * [category] on the category, [attr] on ANY of the entity's attributes
+     * rendered as `key=value` lines. A null filter imposes no condition;
+     * the whole-store browse is the all-null call. Ordered by id ascending
+     * for a stable page, paginated via [limit]/[offset] (the interface
+     * KDoc's deliberate limit/offset stance). No embedding is involved:
+     * the filters are applied case-insensitively by PostgreSQL's `~*`
+     * operator, so a known-name lookup (e.g. the canonical "user" entity)
+     * is deterministic where the semantic search can miss — the entity
+     * vector embeds the attributes too and drifts as they accumulate.
+     *
+     * The regex dialect is PostgreSQL's, and the caller-side validation
+     * (see the tool layer's `ls_entities`) is a best-effort
+     * [java.util.regex.Pattern] pre-check, not a dialect guarantee — the
+     * mismatch cuts both ways: a pattern Kotlin accepts but PostgreSQL's
+     * `~*` rejects is converted to an [IllegalArgumentException] INSIDE the
+     * transaction (a deterministic failure must not be retried — see the
+     * retry note in `db/Database.kt`), and a Postgres-valid pattern the
+     * pre-check rejects is refused with a model-visible error (see the
+     * tool layer's `regexFilterArg`).
+     */
+    suspend fun findEntities(
+        name: String?,
+        category: String?,
+        attr: String?,
+        limit: Int,
+        offset: Int,
+    ): List<EntityView>
+
+    /**
      * All entities (whatever their prominence), ordered by id ascending for
      * a stable page, each with its note and relationship counts and its
      * latest diary note inline. Paginated via [limit]/[offset] — the
-     * frontend ELTM view's browse-all surface (the investigate sub-agent
-     * uses [searchEntities] instead).
+     * frontend ELTM view's browse-all surface (the LLM readers reach the
+     * store through [searchEntities] / [findEntities] instead).
      */
     suspend fun listEntities(limit: Int, offset: Int): List<EntityView>
 

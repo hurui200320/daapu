@@ -382,14 +382,95 @@ internal fun updateEntityEmbedding(entityId: Long, embedding: List<Float>) {
  * latest notes and attributes in bounded batch queries (see
  * [noteCountsAndLatest]) instead of [entityViewOf]'s 5 per-row queries
  * (the single-subject reads stay per-row: one row, five queries).
- * Ambient transaction.
+ * Content columns only — the embedding vector never travels for a page
+ * render (see [selectAllEntityContent]). Ambient transaction.
  */
 internal fun selectEntityViews(limit: Int, offset: Int): List<EntityView> {
-    val entities = EltmEntities.selectAll()
+    val entities = EltmEntities.select(
+        EltmEntities.id,
+        EltmEntities.canonicalName,
+        EltmEntities.category,
+    )
         .orderBy(EltmEntities.id to SortOrder.ASC)
         .limit(limit)
         .offset(offset.toLong())
         .map { it.toEntity() }
+    return entityPageViewsOf(entities)
+}
+
+/**
+ * One page of full entity views filtered by the lexical regex filters
+ * ([EltmService.findEntities]'s SQL body): [name] on the canonical name,
+ * [category] on the category, [attr] on ANY of the entity's attributes
+ * rendered as `key=value` — AND-combined. Id order for a stable page.
+ * Content columns only (see [selectEntityViews]).
+ *
+ * The matching is PostgreSQL's case-insensitive `~*` operator — Exposed's
+ * [org.jetbrains.exposed.v1.core.RegexpOp] with `caseSensitive = false`
+ * — with the patterns bound as query parameters. The attr filter is a
+ * correlated EXISTS subquery over the entity's attribute rows; the outer
+ * reference (`EltmEntities.id`) resolves at the outer query. Ambient
+ * transaction.
+ */
+internal fun selectEntityViewsFiltered(
+    name: String?,
+    category: String?,
+    attr: String?,
+    limit: Int,
+    offset: Int,
+): List<EntityView> {
+    // all filters null: the plain id-order browse — no WHERE clause at all
+    if (name == null && category == null && attr == null) {
+        return selectEntityViews(limit, offset)
+    }
+    // typed Op<Boolean>: the bare inferred element type is the intersection
+    // `Op<Boolean> & Op.OpBoolean`, which `and`'s plain Op<Boolean> return
+    // cannot feed back into as the reduce accumulator
+    val conditions: List<Op<Boolean>> = listOfNotNull(
+        name?.let { EltmEntities.canonicalName.regexp(stringParam(it), caseSensitive = false) },
+        category?.let { EltmEntities.category.regexp(stringParam(it), caseSensitive = false) },
+        attr?.let { pattern ->
+            exists(
+                EltmEntityAttributes.selectAll().where {
+                    (EltmEntityAttributes.entityId eq EltmEntities.id) and
+                            concat(
+                                EltmEntityAttributes.key,
+                                stringParam("="),
+                                EltmEntityAttributes.value,
+                            ).regexp(stringParam(pattern), caseSensitive = false)
+                },
+            )
+        },
+    )
+    val entities = EltmEntities.select(
+        EltmEntities.id,
+        EltmEntities.canonicalName,
+        EltmEntities.category,
+    )
+        .where(conditions.reduce { a, b -> a and b })
+        .orderBy(EltmEntities.id to SortOrder.ASC)
+        .limit(limit)
+        .offset(offset.toLong())
+        .map { it.toEntity() }
+    return entityPageViewsOf(entities)
+}
+
+/**
+ * The shared page assembly behind [selectEntityViews] and
+ * [selectEntityViewsFiltered]: a whole page's counts, latest notes and
+ * attributes in bounded batch queries (see [noteCountsAndLatest]) instead
+ * of [entityViewOf]'s 5 per-row queries (the single-subject reads stay
+ * per-row: one row, five queries). Ambient transaction.
+ *
+ * This is why the entity page reads stay on the caller's plain READ
+ * COMMITTED: the follow-ups are batched lookups over the already-fetched
+ * candidate ids, so a candidate merged away mid-read is simply MISSED
+ * from the maps (a zeroed view, not a failure) — no endpoint joins,
+ * unlike the relationship page builders' torn-endpoint risk (see
+ * `PostgresEltmService.listRelationships` for why THOSE need REPEATABLE
+ * READ).
+ */
+private fun entityPageViewsOf(entities: List<EltmEntity>): List<EntityView> {
     val noteSummary = noteCountsAndLatest(EltmNotes.entityId, entities.map { it.id })
     val relationshipCounts = relationshipCountsFor(entities.map { it.id })
     val attributes = attributesFor(entities.map { it.id })

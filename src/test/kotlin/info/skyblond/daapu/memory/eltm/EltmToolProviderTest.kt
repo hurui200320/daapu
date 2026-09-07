@@ -50,12 +50,13 @@ class EltmToolProviderTest : DbTestBase() {
         (result.parts.single() as ChatMessagePart.Text).text
 
     @Test
-    fun `the writer advertises the thirteen eltm tools in order with integer ids`() {
+    fun `the writer advertises the fourteen eltm tools in order with integer ids`() {
         val provider = EltmToolProvider(eltm())
         val specs = runBlocking { provider.specifications() }
         assertEquals(
             listOf(
                 "search_entities",
+                "ls_entities",
                 "get_relationships",
                 "get_entity_notes",
                 "get_relationship_notes",
@@ -85,12 +86,13 @@ class EltmToolProviderTest : DbTestBase() {
     }
 
     @Test
-    fun `the read-only provider advertises exactly the five read tools`() {
+    fun `the read-only provider advertises exactly the six read tools`() {
         val provider = EltmToolProvider(eltm(), readOnly = true)
         val specs = runBlocking { provider.specifications() }
         assertEquals(
             listOf(
                 "search_entities",
+                "ls_entities",
                 "get_relationships",
                 "get_entity_notes",
                 "get_relationship_notes",
@@ -151,6 +153,182 @@ class EltmToolProviderTest : DbTestBase() {
         assertFalse(text.contains("bob"), "the orthogonal entity does not surface")
         assertTrue(text.contains("similarity"), text)
     }
+
+    @Test
+    fun `ls_entities finds a known-name entity the semantic search misses`() = runBlocking {
+        // the observed failure mode: the query "user" is near-orthogonal to
+        // the stored "user person" embedding text (both fall back to their
+        // distinct SHA-256 hash vectors), below the match threshold — while
+        // the lexical filter is exact. Attributes and the latest note ride
+        // the same shared render as search_entities' hits
+        val eltm = eltm(DeterministicEmbeddings())
+        val user = eltm.createEntity("user", "person").entity
+        eltm.setEntityAttribute(user.id, "realname", "Alice")
+        eltm.attachNoteToEntity(user.id, LocalDate.parse("2026-08-18"), "prefers dark mode")
+        val provider = EltmToolProvider(eltm)
+
+        val semantic = provider.execute(
+            toolCall("c1", "search_entities", buildJsonObject { put("query", "user") })
+        )
+        assertFalse(semantic.isError, textOf(semantic))
+        assertEquals("No matching entities.", textOf(semantic))
+
+        val lexical = provider.execute(
+            toolCall("c2", "ls_entities", buildJsonObject { put("name", "^user$") })
+        )
+        assertFalse(lexical.isError, textOf(lexical))
+        val text = textOf(lexical)
+        assertTrue(text.contains("# Entity ${user.id} - \"user\" (person)"), text)
+        assertTrue(text.contains("realname: Alice"), "attributes render inline: $text")
+        assertTrue(text.contains("prefers dark mode"), "the latest note renders inline: $text")
+        assertFalse(text.contains("similarity"), "no similarity in the lexical listing: $text")
+    }
+
+    @Test
+    fun `ls_entities filters by name, category and attribute, AND-combined`() = runBlocking {
+        val eltm = eltm()
+        val alice = eltm.createEntity("alice", "person").entity
+        eltm.setEntityAttribute(alice.id, "model", "kindle paperwhite")
+        val acme = eltm.createEntity("acme", "company").entity
+        eltm.setEntityAttribute(acme.id, "model", "thinkpad")
+        val aliceCorp = eltm.createEntity("alice corp", "company").entity
+        val provider = EltmToolProvider(eltm)
+
+        // attr matches ANY attribute's `key=value` line
+        val byKindle = provider.execute(
+            toolCall("c1", "ls_entities", buildJsonObject { put("attr", "^model=kindle") })
+        )
+        assertFalse(byKindle.isError, textOf(byKindle))
+        assertTrue(textOf(byKindle).contains("alice"), textOf(byKindle))
+        assertFalse(textOf(byKindle).contains("acme"), "the thinkpad holder does not match: ${textOf(byKindle)}")
+
+        // filters AND together: the person category excludes alice corp
+        val combined = provider.execute(
+            toolCall("c2", "ls_entities", buildJsonObject {
+                put("name", "alice")
+                put("category", "^person$")
+            })
+        )
+        assertFalse(combined.isError, textOf(combined))
+        assertTrue(textOf(combined).contains("# Entity ${alice.id}"), textOf(combined))
+        assertFalse(textOf(combined).contains("alice corp"), "the category filter excludes it: ${textOf(combined)}")
+
+        // a name substring matches (unanchored regex), case-insensitively:
+        // the pattern is uppercase, the stored canonical name is lowercase
+        val upperPattern = provider.execute(
+            toolCall("c3", "ls_entities", buildJsonObject { put("name", "^ALICE") })
+        )
+        assertFalse(upperPattern.isError, textOf(upperPattern))
+        assertTrue(textOf(upperPattern).contains("alice corp"), textOf(upperPattern))
+
+        val none = provider.execute(
+            toolCall("c4", "ls_entities", buildJsonObject { put("name", "^nonexistent$") })
+        )
+        assertFalse(none.isError, textOf(none))
+        assertEquals("No matching entities.", textOf(none))
+    }
+
+    @Test
+    fun `ls_entities without filters browses all entities in id order with paging`() = runBlocking {
+        val eltm = eltm()
+        val first = eltm.createEntity("alice", "person").entity
+        val second = eltm.createEntity("bob", "person").entity
+        val third = eltm.createEntity("acme", "company").entity
+        val provider = EltmToolProvider(eltm, readOnly = true)
+
+        val wildcard = provider.execute(
+            toolCall("c1", "ls_entities", buildJsonObject { put("name", "*") })
+        )
+        assertFalse(wildcard.isError, textOf(wildcard))
+        val ids = listOf(first.id, second.id, third.id)
+        val positions = ids.map { id ->
+            textOf(wildcard).indexOf("# Entity $id -").also { assertNotEquals(-1, it, textOf(wildcard)) }
+        }
+        assertEquals(positions, positions.sorted(), "id ascending: ${textOf(wildcard)}")
+
+        val paged = provider.execute(
+            toolCall("c2", "ls_entities", buildJsonObject {
+                put("limit", 1)
+                put("offset", 1)
+            })
+        )
+        assertFalse(paged.isError, textOf(paged))
+        assertTrue(textOf(paged).contains("# Entity ${second.id} -"), textOf(paged))
+        assertFalse(textOf(paged).contains("# Entity ${first.id} -"), textOf(paged))
+        assertFalse(
+            textOf(paged).contains("# Entity ${third.id} -"),
+            "limit 1 caps the page at one entity: ${textOf(paged)}"
+        )
+
+        // a blank filter is no filter too (textArg's blank-to-null):
+        // identical page to the wildcard browse
+        val blank = provider.execute(
+            toolCall("c3", "ls_entities", buildJsonObject { put("name", "   ") })
+        )
+        assertFalse(blank.isError, textOf(blank))
+        assertEquals(textOf(wildcard), textOf(blank))
+    }
+
+    @Test
+    fun `an invalid ls_entities regex filter is an error naming the argument`() = runBlocking {
+        val provider = EltmToolProvider(eltm())
+
+        val badName = provider.execute(
+            toolCall("c1", "ls_entities", buildJsonObject { put("name", "[") })
+        )
+        assertTrue(badName.isError, "a garbage pattern must error: ${textOf(badName)}")
+        assertTrue(
+            textOf(badName).contains("name must be a valid regex"),
+            "the argument is named: ${textOf(badName)}"
+        )
+
+        val badAttr = provider.execute(
+            toolCall("c2", "ls_entities", buildJsonObject { put("attr", "(((") })
+        )
+        assertTrue(badAttr.isError, textOf(badAttr))
+        assertTrue(
+            textOf(badAttr).contains("attr must be a valid regex"),
+            "the argument is named: ${textOf(badAttr)}"
+        )
+
+        // the dialect mismatch cuts both ways: `\y` is a Postgres-valid
+        // word boundary the Kotlin pre-check rejects — refused here with
+        // the same argument-naming error (see regexFilterArg)
+        val badBoundary = provider.execute(
+            toolCall("c3", "ls_entities", buildJsonObject { put("name", "\\yuser\\y") })
+        )
+        assertTrue(badBoundary.isError, textOf(badBoundary))
+        assertTrue(
+            textOf(badBoundary).contains("name must be a valid regex"),
+            "the argument is named: ${textOf(badBoundary)}"
+        )
+    }
+
+    @Test
+    fun `a kotlin-valid but postgres-invalid ls_entities regex fails fast with a model-visible error`() =
+        runBlocking {
+            val provider = EltmToolProvider(eltm())
+            // \Q...\E literal quoting: Java-valid (passes the pre-check)
+            // but rejected by PostgreSQL's ~* — the service converts the
+            // SQL error to an IllegalArgumentException INSIDE the
+            // transaction so withTransaction does not retry the
+            // deterministic failure (see PostgresEltmService.findEntities):
+            // a named error, never the generic wrapper or the pre-check's
+            // argument-naming error
+            val result = provider.execute(
+                toolCall("c1", "ls_entities", buildJsonObject { put("name", "\\Qalice\\E") })
+            )
+            assertTrue(result.isError, textOf(result))
+            assertFalse(
+                textOf(result).contains("must be a valid regex"),
+                "it passed the pre-check: ${textOf(result)}",
+            )
+            assertFalse(
+                textOf(result).contains("ELTM tool"),
+                "not the generic catch-all: ${textOf(result)}",
+            )
+            assertTrue(textOf(result).contains("invalid regular expression"), textOf(result))
+        }
 
     @Test
     fun `get_relationships returns both directions with endpoint names and the latest note`() =
@@ -1389,14 +1567,14 @@ class EltmToolProviderTest : DbTestBase() {
         val provider = EltmToolProvider(eltm(), namespace = "eltm")
         assertEquals(setOf("eltm"), provider.namespaces())
         val specs = runBlocking { provider.specifications() }
-        assertEquals(13, specs.size)
+        assertEquals(14, specs.size)
         assertTrue(
             specs.all { it.name.startsWith("eltm__") },
             "every advertised name carries the namespace prefix: ${specs.map { it.name }}"
         )
         assertEquals(
-            listOf("eltm__search_entities", "eltm__get_relationships"),
-            specs.take(2).map { it.name },
+            listOf("eltm__search_entities", "eltm__ls_entities", "eltm__get_relationships"),
+            specs.take(3).map { it.name },
         )
         // the blank provider is the one-shot shape: bare names, no namespace
         assertEquals(emptySet(), EltmToolProvider(eltm()).namespaces())

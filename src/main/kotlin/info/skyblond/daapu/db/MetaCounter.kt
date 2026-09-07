@@ -47,3 +47,15 @@ suspend fun bumpMetaCounterTx(key: String): Unit = withTransaction { bumpMetaCou
 
 /** [readMetaCounter] in its own transaction. */
 suspend fun readMetaCounterTx(key: String): Long = withTransaction { readMetaCounter(key) }
+
+/**
+ * [bumpMetaCounter] on the ELTM write counter ([ELTM_VERSION_KEY]) — the
+ * ELTM write paths' one-call bump. AMBIENT transaction.
+ */
+internal fun bumpEltmWriteVersion() = bumpMetaCounter(ELTM_VERSION_KEY)
+
+/**
+ * [readMetaCounter] on the ELTM write counter ([ELTM_VERSION_KEY]) — the
+ * `EltmService.version()` backing read. AMBIENT transaction.
+ */
+internal fun currentEltmWriteVersion(): Long = readMetaCounter(ELTM_VERSION_KEY)
