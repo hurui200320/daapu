@@ -202,6 +202,49 @@ class ConfigTest {
         assertEquals(64, config.hand.maxRounds)
         assertEquals(0, config.hand.maxRetries)
         assertEquals(300_000, config.hand.streamIdleTimeoutMs)
+        assertFalse(config.observability.oneShotTrace, "the trace is off by default")
+    }
+
+    @Test
+    fun `observability section decodes and is strict on unknown keys`() {
+        // the explicit knob round-trips (the one-shot trace: agent/pipeline/
+        // OneShotTrace.kt, wired in di/AppModule.kt)
+        val config = decodeAppConfig(
+            """
+            {
+                $hand
+                "database": { "url": "u", "user": "p", "password": "p" },
+                "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                "title": { "model": "t" },
+                "observability": { "oneShotTrace": true },
+            }
+            """.trimIndent()
+        )
+        assertTrue(config.observability.oneShotTrace)
+
+        // parsing is strict (mirroring the schema's additionalProperties:
+        // false): an unknown key inside the section fails decode like any
+        // other section
+        val e = assertFailsWith<SerializationException> {
+            decodeAppConfig(
+                """
+                {
+                    $hand
+                    "database": { "url": "u", "user": "p", "password": "p" },
+                    "providers": { "bifrost": { "apiKey": "k", "baseUrl": "http://h" } },
+                    "mcp": { "exa": { "type": "http", "url": "https://mcp.exa.ai/mcp", "toolExecutionTimeoutSeconds": 120 } },
+                    "memory": { "compactModel": "x", "eltm": { "extractionModel": "x", "embeddingModel": "bifrost/embed", "writerModel": "w", "rewriteModel": "rw", "rewriteRounds": 5, "relatedEntitiesLimit": 5, "relatedNotesLimit": 5, "queueWorkers": 1, "jobTimeoutMinutes": 30, "retryDelayMinutes": 5 } },
+                    "agent": { "investigator": { "model": "i", "allowedNamespaces": ["eltm"] } },
+                    "title": { "model": "t" },
+                    "observability": { "unknownFutureKey": true },
+                }
+                """.trimIndent()
+            )
+        }
+        assertTrue(e.message!!.contains("unknownFutureKey"), e.message)
     }
 
     @Test

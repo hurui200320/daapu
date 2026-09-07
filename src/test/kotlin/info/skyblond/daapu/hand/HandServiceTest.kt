@@ -421,6 +421,194 @@ class HandServiceTest {
         assertEquals("context_exhausted", e.type)
     }
 
+    // ------------------------------------------------------------------
+    // collect observer (see CollectRunObserver / agent/pipeline/OneShotTrace.kt)
+    // ------------------------------------------------------------------
+
+    /** Records every [CollectRunObserver.onCollect] call, passing the inputs through verbatim. */
+    private class RecordingObserver : CollectRunObserver {
+        class Observation(
+            val label: String?,
+            val request: HandRunRequest,
+            val messages: List<ChatMessage>,
+            val error: Exception?,
+        )
+
+        val observations = mutableListOf<Observation>()
+
+        override suspend fun onCollect(
+            label: String?,
+            request: HandRunRequest,
+            messages: List<ChatMessage>,
+            error: Exception?,
+        ) {
+            observations += Observation(label, request, messages, error)
+        }
+    }
+
+    @Test
+    fun `the collect observer sees the label, request and messages on success`() {
+        runBlocking {
+            val observer = RecordingObserver()
+            val hand = FakeHand(
+                runScript = {
+                    val call = ChatMessagePart.ToolCall(
+                        id = "call_1",
+                        tool = "flag",
+                        args = JsonObject(emptyMap()),
+                    )
+                    listOf(
+                        HandEvent.AssistantMessage(
+                            assistantMessage(parts = listOf(call), finishReason = "tool_calls")
+                        ),
+                        HandEvent.ToolCall("call_1", "flag", call.args),
+                        HandEvent.ToolResult("call_1", "flag", listOf(ChatMessagePart.Text("done")), false),
+                        HandEvent.AssistantMessage(assistantMessage("finished")),
+                        HandEvent.Done("stop"),
+                    )
+                }
+            )
+            val service = HandService(
+                hand, HandCallbackService("test-token"),
+                "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+                collectObserver = observer,
+            )
+            val request = runRequest()
+
+            service.runCollect(request, OneToolProvider, model(), label = "Test stage")
+
+            val observation = observer.observations.single()
+            assertEquals("Test stage", observation.label)
+            assertSame(
+                request,
+                observation.request,
+                "the observer sees the caller's request verbatim (the generated " +
+                        "runId is internal to HandService.run and not visible here)",
+            )
+            assertEquals(3, observation.messages.size, "assistant + tool result + final assistant")
+            assertNull(observation.error)
+        }
+    }
+
+    @Test
+    fun `the collect observer receives a null label when none is passed`() {
+        runBlocking {
+            val observer = RecordingObserver()
+            val hand = FakeHand(runScript = { textRunFlow("the answer") })
+            val service = HandService(
+                hand, HandCallbackService("test-token"),
+                "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+                collectObserver = observer,
+            )
+
+            service.runCollectPartial(runRequest(), EmptyToolProvider, model())
+
+            assertNull(observer.observations.single().label)
+        }
+    }
+
+    @Test
+    fun `the collect observer sees the partial history on a terminal hand error`() {
+        runBlocking {
+            val observer = RecordingObserver()
+            val hand = FakeHand(
+                runScript = {
+                    listOf(
+                        HandEvent.AssistantMessage(assistantMessage("partial")),
+                        HandEvent.RunError("round_limit", "maxRounds reached"),
+                    )
+                }
+            )
+            val service = HandService(
+                hand, HandCallbackService("test-token"),
+                "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+                collectObserver = observer,
+            )
+
+            val result = service.runCollectPartial(runRequest(), EmptyToolProvider, model(), label = "Test stage")
+
+            assertEquals("round_limit", result.exception?.type)
+            val observation = observer.observations.single()
+            assertEquals("round_limit", assertIs<HandRunException>(observation.error).type)
+            assertEquals(1, observation.messages.size, "the partial history before the error")
+        }
+    }
+
+    @Test
+    fun `the collect observer sees the partial history before a transport failure is rethrown`() {
+        runBlocking {
+            val observer = RecordingObserver()
+            val boom = RuntimeException("wire cut")
+            val hand = FakeHand(runScript = { throw boom })
+            val service = HandService(
+                hand, HandCallbackService("test-token"),
+                "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+                collectObserver = observer,
+            )
+
+            val e = assertFailsWith<RuntimeException> {
+                service.runCollectPartial(runRequest(), EmptyToolProvider, model(), label = "Test stage")
+            }
+            assertSame(boom, e, "the transport failure propagates untouched")
+            val observation = observer.observations.single()
+            assertSame(boom, observation.error, "the observer still sees the failure")
+            assertTrue(observation.messages.isEmpty(), "nothing was collected before the drop")
+        }
+    }
+
+    @Test
+    fun `the collect observer is skipped on cancellation`() {
+        runBlocking {
+            val observer = RecordingObserver()
+            val hand = FakeHand(runScript = { awaitCancellation() })
+            val service = HandService(
+                hand, HandCallbackService("test-token"),
+                "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+                collectObserver = observer,
+            )
+
+            val job = launch {
+                service.runCollectPartial(runRequest(), EmptyToolProvider, model(), label = "Test stage")
+            }
+            // wait until the run is in flight, then abort it
+            withTimeout(5_000) {
+                while (hand.requests.isEmpty()) delay(10)
+            }
+            job.cancelAndJoin()
+
+            assertTrue(
+                observer.observations.isEmpty(),
+                "a cancelled run is a teardown, not a diagnosis target",
+            )
+        }
+    }
+
+    @Test
+    fun `a failing collect observer never breaks the run`() {
+        runBlocking {
+            val hand = FakeHand(runScript = { textRunFlow("the answer") })
+            val observer = object : CollectRunObserver {
+                override suspend fun onCollect(
+                    label: String?,
+                    request: HandRunRequest,
+                    messages: List<ChatMessage>,
+                    error: Exception?,
+                ) {
+                    throw IllegalStateException("observer boom")
+                }
+            }
+            val service = HandService(
+                hand, HandCallbackService("test-token"),
+                "http://127.0.0.1:9/api/hand/tool", "http://127.0.0.1:9/api/hand/tools",
+                collectObserver = observer,
+            )
+
+            val messages = service.runCollect(runRequest(), EmptyToolProvider, model(), label = "Test stage")
+
+            assertEquals(1, messages.size, "the run succeeds despite the observer failure")
+        }
+    }
+
     private fun embeddingModel(dimensions: Int = 1536) = EmbeddingModel(
         provider = ModelProvider("bifrost", "http://127.0.0.1:9/v1", "test"),
         modelId = "zenmux sub/google/gemini-embedding-2",

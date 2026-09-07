@@ -54,6 +54,14 @@ class HandService(
     private val toolCallbackUrl: String,
     /** This brain's tool-listing endpoint the hand queries per LLM request. */
     private val toolListUrl: String,
+    /**
+     * The collect-run observability hook (see [CollectRunObserver]); null
+     * = no observability. Fires after every collect run ends — never on
+     * the streaming [run] path — and its failures are downgraded to a
+     * warning (see [notifyCollectObserver]): observability must never
+     * break a run.
+     */
+    private val collectObserver: CollectRunObserver? = null,
 ) : AutoCloseable {
     /**
      * The chat round loop as a stream of [HandEvent]s (see
@@ -106,13 +114,17 @@ class HandService(
      *   the retries are exhausted);
      * - a dropped connection before a terminal event: throws
      *   [HandUpstreamException].
+     *
+     * [label] names the pipeline stage for the [CollectRunObserver] (see
+     * [runCollectPartial]).
      */
     suspend fun runCollect(
         request: HandRunRequest,
         toolProvider: ToolProvider,
         model: LLM,
+        label: String? = null,
     ): List<ChatMessage> {
-        val result = runCollectPartial(request, toolProvider, model)
+        val result = runCollectPartial(request, toolProvider, model, label)
         result.exception?.let { throw it }
         return result.result
     }
@@ -124,6 +136,11 @@ class HandService(
      * diagnostic action trace) from a failed run instead of losing it.
      * [runCollect] delegates here and rethrows the captured exception.
      *
+     * [label] names the pipeline stage for the [CollectRunObserver], which
+     * fires once the run ends — success, hand error, or a transport-level
+     * failure (the observer sees the partial history before the exception
+     * is rethrown; cancellation skips it — see [CollectRunObserver]).
+     *
      * A dropped connection before a terminal event still throws
      * [HandUpstreamException] — a dead transport carries no recoverable
      * partial state worth distinguishing, the caller treats it as terminal.
@@ -132,44 +149,78 @@ class HandService(
         request: HandRunRequest,
         toolProvider: ToolProvider,
         model: LLM,
+        label: String? = null,
     ): HandRunResult {
         val messages = mutableListOf<ChatMessage>()
         var terminal: HandEvent.Done? = null
         var error: HandRunException? = null
-        run(request, toolProvider, model).collect { event ->
-            when (event) {
-                // per-round authoritative message; the deltas are dropped
-                is HandEvent.AssistantMessage -> messages += event.message
-                // paired with the assistant's tool_call parts by id: the args
-                // already live in the call, so no extra lookup is needed
-                is HandEvent.ToolResult -> messages += ChatMessage(
-                    ChatMessageRole.ToolResult,
-                    listOf(
-                        ChatMessagePart.ToolResult(
-                            id = event.id,
-                            tool = event.name,
-                            parts = event.parts,
-                            isError = event.isError,
-                        )
-                    ),
-                )
+        try {
+            run(request, toolProvider, model).collect { event ->
+                when (event) {
+                    // per-round authoritative message; the deltas are dropped
+                    is HandEvent.AssistantMessage -> messages += event.message
+                    // paired with the assistant's tool_call parts by id: the args
+                    // already live in the call, so no extra lookup is needed
+                    is HandEvent.ToolResult -> messages += ChatMessage(
+                        ChatMessageRole.ToolResult,
+                        listOf(
+                            ChatMessagePart.ToolResult(
+                                id = event.id,
+                                tool = event.name,
+                                parts = event.parts,
+                                isError = event.isError,
+                            )
+                        ),
+                    )
 
-                is HandEvent.Done -> terminal = event
-                is HandEvent.Retry -> logger.info { "one-shot retry: ${event.message}" }
-                // RunError is terminal (the hand closes the stream on it), so
-                // capturing it instead of throwing keeps the partial history;
-                // the rest of the flow carries nothing more to collect
-                is HandEvent.RunError -> error = HandRunException(event.type, event.message)
-                // stream noise or display echoes: nothing to collect
-                is HandEvent.TextDelta,
-                is HandEvent.ReasoningDelta,
-                is HandEvent.ToolCall -> Unit
+                    is HandEvent.Done -> terminal = event
+                    is HandEvent.Retry -> logger.info { "one-shot retry: ${event.message}" }
+                    // RunError is terminal (the hand closes the stream on it), so
+                    // capturing it instead of throwing keeps the partial history;
+                    // the rest of the flow carries nothing more to collect
+                    is HandEvent.RunError -> error = HandRunException(event.type, event.message)
+                    // stream noise or display echoes: nothing to collect
+                    is HandEvent.TextDelta,
+                    is HandEvent.ReasoningDelta,
+                    is HandEvent.ToolCall -> Unit
+                }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // a transport-level failure (dropped stream, dead connection): the
+            // observer still gets what was collected before the drop, then the
+            // exception propagates untouched
+            notifyCollectObserver(label, request, messages, e)
+            throw e
         }
         // defensive: [HandClient.run] already fails a stream that closes
         // without a terminal event, so this should not be reachable
         check(terminal != null || error != null) { "one-shot run ended without a terminal event" }
+        notifyCollectObserver(label, request, messages, error)
         return HandRunResult(messages.toList(), error)
+    }
+
+    /**
+     * Fires [collectObserver] once, downgrading its failures to a warning —
+     * observability must never break a run (cancellation still propagates).
+     * Only `Exception`s are contained: an `Error` (e.g. an OOM while the
+     * observer renders an unbounded trace) propagates and fails the run.
+     */
+    private suspend fun notifyCollectObserver(
+        label: String?,
+        request: HandRunRequest,
+        messages: List<ChatMessage>,
+        error: Exception?,
+    ) {
+        val observer = collectObserver ?: return
+        try {
+            observer.onCollect(label, request, messages.toList(), error)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warn(e) { "collect run observer failed (run is unaffected): ${e.message}" }
+        }
     }
 
     /**

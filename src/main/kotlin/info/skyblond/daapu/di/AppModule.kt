@@ -7,6 +7,7 @@ import info.skyblond.daapu.agent.chat.PostgresChatStore
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.pipeline.TitleGenerator
+import info.skyblond.daapu.agent.pipeline.OneShotTracer
 import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionService
 import info.skyblond.daapu.memory.eltm.EltmToolProvider
 import info.skyblond.daapu.agent.pipeline.eltm.EltmWriterService
@@ -75,6 +76,9 @@ fun appModule(config: AppConfig): Module = module {
             handCallback = get(),
             toolCallbackUrl = config.hand.toolCallbackUrl,
             toolListUrl = config.hand.toolListUrl,
+            // the one-shot trace (`observability.oneShotTrace`, see
+            // agent/pipeline/OneShotTrace.kt): stateless, so no lifecycle
+            collectObserver = if (config.observability.oneShotTrace) OneShotTracer() else null,
         )
     } withOptions { onClose { it?.close() } }
 

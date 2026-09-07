@@ -481,6 +481,18 @@
           "description": "Stream idle timeout per round in ms; 0 = disabled."
         }
       }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Observability knobs: console diagnostics for the otherwise hidden pipeline runs. Nothing here affects behavior — these knobs only decide what is logged.",
+      "properties": {
+        "oneShotTrace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log the full transcript of every collect run (HandService.runCollect/runCollectPartial — the one-shot pipelines: title generation, query rewrite, compaction summarization, memory extraction, the ELTM writer — plus the investigate sub-agent and its partial-history summarizer) to the console under the logger name \"OneShotTrace\" (agent/pipeline/OneShotTrace.kt): the system prompt, the input messages, and the per-round transcript (reasoning, text, tool calls with args, tool results, per-round token usage, finish reasons), including the partial history of failed runs. Content is logged verbatim and untruncated — chat content can be sensitive — while attachments render as size placeholders, never their bytes; a long investigation produces a long log. Default off."
+        }
+      }
     }
   },
   "definitions": {

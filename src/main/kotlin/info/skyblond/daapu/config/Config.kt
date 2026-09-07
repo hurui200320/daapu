@@ -59,6 +59,8 @@ data class AppConfig(
     val title: TitleConfig,
     /** The hand-pi execution service. */
     val hand: HandConfig,
+    /** The observability knobs (see `ObservabilityConfig`): what gets logged, never how the app behaves. */
+    val observability: ObservabilityConfig = ObservabilityConfig(),
     // editor hint declared by config.schema.json and config.example.jsonc;
     // a known field so the strict parser accepts files that carry it
     @SerialName("\$schema")

@@ -75,6 +75,9 @@ suspend fun HandService.runOneShotCollect(
         ),
         toolProvider = toolProvider,
         model = model,
+        // the stage label also flows to the collect observer (the one-shot
+        // trace, see agent/pipeline/OneShotTrace.kt)
+        label = label,
     )
 } catch (e: CancellationException) {
     throw e

@@ -68,6 +68,8 @@ class InvestigatorService(
                 ),
                 toolProvider = toolProvider,
                 model = model,
+                // the one-shot trace (agent/pipeline/OneShotTrace.kt)
+                label = "Investigator",
             )
         } catch (e: CancellationException) {
             throw e
@@ -128,6 +130,8 @@ class InvestigatorService(
                 ),
                 toolProvider = EmptyToolProvider,
                 model = model,
+                // the one-shot trace (agent/pipeline/OneShotTrace.kt)
+                label = "Investigator partial summary",
             ).lastMessageText()
         } catch (e: CancellationException) {
             throw e
