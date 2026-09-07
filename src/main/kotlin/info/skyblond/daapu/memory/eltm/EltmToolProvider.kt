@@ -253,7 +253,7 @@ class EltmToolProvider(
                     else views.joinToString("\n\n") { view ->
                         val rel = view.relationship
                         buildString {
-                            append("# Relationship ${rel.id}: \"${rel.src.canonicalName}\" - ${rel.verb} - \"${rel.dst.canonicalName}\"")
+                            append("# Relationship ${rel.id}: \"${rel.src.canonicalName}\"(#${rel.src.id}) - ${rel.verb} - \"${rel.dst.canonicalName}\"(#${rel.dst.id})")
                             append(" (${if (rel.valid) "active" else "invalidated"}, notes ${view.noteCount})")
                             view.latestNote?.let {
                                 append("\nLatest note (${it.eventDate}): ${it.note}")
