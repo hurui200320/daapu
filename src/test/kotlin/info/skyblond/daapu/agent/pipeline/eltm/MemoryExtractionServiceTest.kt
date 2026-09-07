@@ -229,6 +229,7 @@ Focus on:
 
 Rules:
 - Each fact must be self-contained: replace pronouns with the entity name or "the user"
+- When multiple distinct things share a name, include the distinguishing context (e.g. employer, project, city) whenever the name appears in a fact
 - Rich, not atomic: one fact may span 1-3 sentences when the context matters, but keep it under ~80 words
 - Write facts in the same language as the conversation
 - Do not invent details that are not present in the history
@@ -263,6 +264,7 @@ Rules:
 - If the input is only the skip sentinel "Nothing worth remember." (any casing or trivial rewording), there is nothing to record: reply with a short confirmation and make no tool calls.
 - "The user" maps to the canonical entity with name "user" (category "person").
 - When new entity should be created but without a defined name, include words like "unknown", "unspecified" in the name with some description. E.g. "unknown chinese company", or "unspecified female friend", etc.
+- When two DIFFERENT things share the same name and category (e.g. two colleagues both named "John"), disambiguate the NAME with a short parenthetical context taken from the input: "John (Apple Inc)" vs "John (IBM)". Keep a name bare when only one entity of that name exists. When one input introduces several same-name entities, qualify each of them; when the store already has a same-name entity that is a DIFFERENT thing, the NEW entity takes the qualified name (leave the existing one unchanged). Never invent the qualifier, it must come from the input.
 - Timeless structured facts about an entity (model, realname, nickname, serial numbers, etc.) are ATTRIBUTES (set_entity_attribute), not notes. Use notes only for dated events and narrative. Attribute values must be a single line. Before setting an attribute, check the entity's current attributes (search_entities renders them in the hits) and skip facts already recorded.
 - Before creating an entity, call search_entities and ls_entities to find existing ones. create_entity returns near matches: if one of them is the same thing, use that id; if you discover true duplicates, call merge_entities with the better-canonical entity as winner_id. To refine an EXISTING entity's identity (e.g. a placeholder "friend" now identified as "Alice", or a re-categorization), call refine_entity with its id and the new name and/or category: the entity keeps its id, so its notes, relationships and attributes stay attached. Only merge when two entities are true duplicates.
 - A note belongs to exactly one subject. An event about a relationship (met, broke up, started working together) attaches to that relationship. An event about one entity attaches to that entity. It may mention other entities by name in the text, but must NOT be duplicated under each of them.
@@ -292,6 +294,7 @@ Rules:
         // the input-neutral focus list and fact rules survive verbatim
         assertTrue(prompt.contains("Focus on:"), prompt)
         assertTrue(prompt.contains("replace pronouns with the entity name or \"the user\""), prompt)
+        assertTrue(prompt.contains("multiple distinct things share a name"), prompt)
         assertTrue(prompt.contains("same language as the input"), prompt)
         assertTrue(prompt.contains("Cover the whole input"), prompt)
         assertTrue(

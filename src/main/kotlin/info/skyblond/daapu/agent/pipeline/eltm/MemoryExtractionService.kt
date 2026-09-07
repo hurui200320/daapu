@@ -290,6 +290,7 @@ Focus on:
 
 Rules:
 - Each fact must be self-contained: replace pronouns with the entity name or "the user"
+- When multiple distinct things share a name, include the distinguishing context (e.g. employer, project, city) whenever the name appears in a fact
 - Rich, not atomic: one fact may span 1-3 sentences when the context matters, but keep it under ~80 words
 - Write facts in the same language as the ${input.languageOf}
 - Do not invent details that are not present in the ${input.presentIn}
