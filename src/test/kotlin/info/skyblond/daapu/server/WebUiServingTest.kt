@@ -4,13 +4,13 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.application.*
-import io.ktor.server.plugins.conditionalheaders.ConditionalHeaders
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.testing.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -28,11 +28,10 @@ class WebUiServingTest {
     fun `the packaged web UI is served from the resource package`() {
         testApplication {
             application {
-                // the ETag/304 half of the caching contract requires this
-                // install (see module) — the static responder only attaches
-                // the versions
-                install(ConditionalHeaders)
                 routing {
+                    // staticWebUi installs ConditionalHeaders itself (and
+                    // strips the content classes' Last-Modified, see
+                    // StripStaticLastModified)
                     staticWebUi()
                 }
             }
@@ -59,15 +58,46 @@ class WebUiServingTest {
 
             // caching contract (see staticWebUi): content-hashed assets cache
             // long, index.html is no-cache, and both carry a strong ETag that
-            // ConditionalHeaders evaluates into a 304 on revalidation
+            // ConditionalHeaders evaluates into a 304 on revalidation — with
+            // the auto-attached Last-Modified stripped (see
+            // StripStaticLastModified), the ETag is the sole validator
             assertEquals("no-cache", root.headers[HttpHeaders.CacheControl])
             assertEquals("max-age=604800", asset.headers[HttpHeaders.CacheControl])
+            assertNull(root.headers[HttpHeaders.LastModified])
+            assertNull(asset.headers[HttpHeaders.LastModified])
             val etag = root.headers[HttpHeaders.ETag]
             assertNotNull(etag, "index.html must carry an ETag")
             assertEquals(
                 HttpStatusCode.NotModified,
                 client.get("/") { header(HttpHeaders.IfNoneMatch, etag) }.status,
                 "revalidating index.html must answer 304",
+            )
+        }
+    }
+
+    @Test
+    fun `a stale ETag plus If-Modified-Since still gets the fresh file`() {
+        testApplication {
+            application {
+                routing {
+                    staticWebUi()
+                }
+            }
+            // the browser-realistic revalidation: browsers send BOTH validators
+            // they hold. ConditionalHeaders answers 304 if ANY version matches
+            // (no If-None-Match precedence), so before the Last-Modified strip
+            // (see StripStaticLastModified) the jar-constant Last-Modified
+            // turned every refresh into a stale 304 — the UI never updated
+            // without disabling the browser cache. The far-future date matches
+            // nothing ever; only the mismatching ETag may decide.
+            val stale = client.get("/") {
+                header(HttpHeaders.IfNoneMatch, "\"stale-etag\"")
+                header(HttpHeaders.IfModifiedSince, "Fri, 01 Feb 2038 00:00:00 GMT")
+            }
+            assertEquals(HttpStatusCode.OK, stale.status)
+            assertTrue(
+                stale.bodyAsText().contains("daapu test ui"),
+                "a stale ETag must get the fresh file, got ${stale.status}",
             )
         }
     }

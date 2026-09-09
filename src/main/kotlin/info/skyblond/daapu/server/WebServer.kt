@@ -18,8 +18,11 @@ import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.server.endpoint.*
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.http.*
+import io.ktor.http.content.LastModifiedVersion
+import io.ktor.http.content.versions
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
+import io.ktor.server.application.hooks.ResponseBodyReadyForSend
 import io.ktor.server.engine.*
 import io.ktor.server.http.content.ETagProvider
 import io.ktor.server.http.content.staticResources
@@ -114,11 +117,6 @@ internal fun Application.module(koin: Koin) {
     // without this install ktor answers 404 for HEAD, so a HEAD-based probe
     // (monitors, proxies, link checkers) would report a healthy UI as down
     install(AutoHeadResponse)
-    // conditional requests (If-None-Match → 304) for the static web UI's
-    // ETags (see staticWebUi): the static responder only ATTACHES the ETag
-    // versions to the response content — this plugin evaluates them. API
-    // responses carry no versions, so this is a no-op outside the packaged UI.
-    install(ConditionalHeaders)
     install(StatusPages) {
         exception<CancellationException> { _, cause ->
             // the client disconnected mid-stream (the sink wrapper in
@@ -235,6 +233,32 @@ internal fun Application.module(koin: Koin) {
 private const val WEB_UI_RESOURCE_PACKAGE = "frontend"
 
 /**
+ * Strip the [LastModifiedVersion] that ktor's static-content classes auto-attach
+ * to the served files (JarFileContent stamps it from the jar entry time, and
+ * Gradle 9's reproducible-archive default makes every entry time the fixed
+ * 1980-02-01 constant — the same value on every rebuild). Without the strip,
+ * [ConditionalHeaders] below would answer 304 to every revalidation regardless
+ * of the ETag: it checks each version independently and reports not-modified
+ * if ANY one matches (RFC 9110 §13.1.3's If-None-Match precedence is not
+ * honored), and browsers send BOTH validators on refresh — so the
+ * never-changing Last-Modified would pin index.html to its first download
+ * forever while the content SHA-256 ETag correctly reports the change. After
+ * the strip the ETag is the web UI's sole validator. Installed on the routing
+ * root like [ConditionalHeaders] (the static UI is the only content carrying
+ * versions, so the strip is a no-op for API responses) and MUST be installed
+ * BEFORE it — same node, same send-pipeline phase, so insertion order is
+ * execution order. A `modify {}` block cannot do this job: it runs before the
+ * content object exists.
+ */
+private val StripStaticLastModified = createRouteScopedPlugin("StripStaticLastModified") {
+    on(ResponseBodyReadyForSend) { _, content ->
+        if (content.versions.any { it is LastModifiedVersion }) {
+            content.versions = content.versions.filterNot { it is LastModifiedVersion }
+        }
+    }
+}
+
+/**
  * Serve the packaged web UI from classpath resources: the Docker build
  * copies the frontend dist into [WEB_UI_RESOURCE_PACKAGE] before the Gradle
  * build packages it into the application jar, so the deployed brain serves
@@ -253,11 +277,17 @@ private const val WEB_UI_RESOURCE_PACKAGE = "frontend"
  * Caching: the vite dist's `assets/` files are content-hashed (immutable
  * per URL) and are cached long; `index.html` references those hashes and is
  * served `no-cache` (revalidated every load; the strong content ETag turns
- * that into a cheap 304 — evaluated by the `ConditionalHeaders` install in
- * `module`). The assets decision reads the in-package path back out of the
- * resource URL (the part after the last `resourcePackage/` segment).
+ * that into a cheap 304 — evaluated by the `ConditionalHeaders` install
+ * below, with the content classes' auto-attached Last-Modified stripped
+ * first: see [StripStaticLastModified] for why that strip is load-bearing).
+ * The assets decision reads the in-package path back out of the resource
+ * URL (the part after the last `resourcePackage/` segment).
  */
 internal fun Route.staticWebUi(resourcePackage: String = WEB_UI_RESOURCE_PACKAGE) {
+    // install order is load-bearing: strip before evaluate, see
+    // StripStaticLastModified
+    install(StripStaticLastModified)
+    install(ConditionalHeaders)
     staticResources("/", resourcePackage, index = "index.html") {
         cacheControl { url ->
             if (url.path.substringAfterLast("$resourcePackage/").startsWith("assets/")) {
