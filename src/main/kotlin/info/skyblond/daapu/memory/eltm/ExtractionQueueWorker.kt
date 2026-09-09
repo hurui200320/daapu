@@ -1,6 +1,7 @@
 package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
+import info.skyblond.daapu.db.isEltmMaintenanceModeEnabledTx
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -42,6 +43,12 @@ private val logger = KotlinLogging.logger {}
  * `CoroutineExceptionHandler` logs it loudly and the remaining workers keep
  * draining (`SupervisorJob`); the dead worker's in-flight job re-emerges
  * via its lease.
+ *
+ * Maintenance mode (`gsg_meta_number.eltm_maintenance`, the same flag the
+ * guarded routes check — see `server/endpoint/MaintenanceRoute.kt`): the
+ * loop pauses instead of claiming. An enqueued job stays queued, its
+ * lease untouched, and drains when the mode is turned off; a job already
+ * being processed when the flag flips finishes normally.
  *
  * Lifecycle: [start] launches the loops (called once at startup by
  * `server/WebServer.kt`, after the graph's eager resolution); [stop]
@@ -92,15 +99,19 @@ class ExtractionQueueWorker(
     private suspend fun pollLoop() {
         while (currentCoroutineContext().isActive) {
             val job = try {
-                queue.claim()
+                // the ELTM maintenance gate (the same flag the guarded
+                // routes check, db/MetaNumber.kt): while the mode is on no
+                // job is claimed — queued jobs keep their lease and drain
+                // once the mode is turned off
+                if (isEltmMaintenanceModeEnabledTx()) null else queue.claim()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // a failed claim (DB hiccup) is not a job failure: nothing
-                // was claimed, just back off and poll again
-                logger.warn(e) { "Extraction queue claim failed, polling again after the interval" }
-                delay(pollIntervalMs)
-                continue
+                // a failed poll (the maintenance read or the claim, a DB
+                // hiccup) is not a job failure: nothing was claimed, just
+                // back off and poll again
+                logger.warn(e) { "Extraction queue poll failed, polling again after the interval" }
+                null
             }
             if (job == null) {
                 delay(pollIntervalMs)

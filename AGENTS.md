@@ -97,7 +97,7 @@ src/main/kotlin/info/skyblond/daapu/
                              is the root)
   db/                        Exposed tables (Tables.kt), advisory chat locks
                              (AdvisoryChatLockManager.kt),
-                             VectorColumnType.kt, MetaCounter.kt, Database.kt
+                             VectorColumnType.kt, MetaNumber.kt, Database.kt
                              (pool/Flyway init, the withTransaction seam),
                              ChatIds.kt, SqlErrors.kt
   di/                        the Koin module (AppModule.kt)
@@ -127,8 +127,8 @@ src/main/kotlin/info/skyblond/daapu/
                              embedding-model-switch maintenance (see its KDoc)
   server/                    ktor HTTP API: WebServer.kt, SseEvents.kt (SSE
                              event mapping), Dtos.kt, endpoint/ (Chats/
-                             Models/Personas/Eltm/Hand routes, FailureChain.kt,
-                             Params.kt)
+                             Models/Personas/Eltm/Hand/Maintenance routes,
+                             FailureChain.kt, Params.kt)
 src/main/resources/
   db/migration/              Flyway schema: V1__init.sql, V2__personas.sql,
                              V3__pending_extractions.sql
@@ -192,11 +192,19 @@ KDoc of the named files.
   Write path = extraction only (below); the chat loop reads the ELTM only
   through `gsg__investigate`; the investigator gets the read-only tool
   subset. The global write counter (`gsg_meta_number.eltm_version`,
-  `db/MetaCounter.kt`, read via `EltmService.version()`) drives the
+  `db/MetaNumber.kt`, read via `EltmService.version()`) drives the
   injection decision; the persist loop stamps its value into the per-chat
   `chats.eltm_version` fingerprint only on the successful store. Vector
   column encoding: `db/VectorColumnType.kt` (with `MAX_VECTOR_DIMENSIONS`
   in `config/Config.kt`).
+- **ELTM maintenance mode** (`server/endpoint/MaintenanceRoute.kt`): the
+  `gsg_meta_number.eltm_maintenance` flag (helpers in `db/MetaNumber.kt`)
+  freezes the ELTM's readers and writers while on — the route guard
+  (`requireEltmNotInMaintenance`, 503) covers the four entry points
+  (chat send, chat delete, ELTM digest, ELTM import; the blocked list and
+  the accepted limits live in its KDoc), and the extraction worker pauses
+  its drain (`ExtractionQueueWorker.kt`). Toggle via
+  `GET/PUT /api/maintenance` (the frontend's `#/maintenance` tab).
 - **Context injection** (`agent/context/ContextInjection.kt`):
   deterministic `<meta>` sent-at anchors on user messages plus the full
   `<injection>` on the latest one (chat loop only); harness XML is
@@ -264,7 +272,8 @@ KDoc of the named files.
   tab/chat switches because the form is never `{#if}`-mounted,
   `src/lib/paged-tab.svelte.ts`, `src/lib/paging.ts`); personas
   (`src/lib/components/PersonaView.svelte`,
-  `src/lib/components/PersonaDropdown.svelte`); chat UI
+  `src/lib/components/PersonaDropdown.svelte`); maintenance
+  (`src/lib/components/MaintenanceView.svelte`); chat UI
   (`src/lib/components/ChatView.svelte`, `Composer.svelte`,
   `MessageList.svelte` + `MessageItem.svelte`, `Sidebar.svelte`,
   `ModelDropdown.svelte`, the rename/delete/truncate dialogs,

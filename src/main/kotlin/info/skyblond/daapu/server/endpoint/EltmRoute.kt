@@ -184,6 +184,7 @@ fun Route.registerEltmEndpoints(
         // the body and no import concurrency limit (each new note and each
         // changed attribute costs an embed call through the hand).
         post("/import") {
+            requireEltmNotInMaintenance()
             val overwriteAttr = when (val raw = call.request.queryParameters["overwriteAttr"]) {
                 null -> false
                 else -> raw.toBooleanStrictOrNull()
@@ -225,6 +226,7 @@ fun Route.registerEltmEndpoints(
         // the parts and no digest concurrency limit (each digest is one
         // extraction one-shot plus one minutes-long writer loop).
         post("/digest") {
+            requireEltmNotInMaintenance()
             val request = call.receive<EltmDigestRequest>()
             // the polymorphic decode accepts any ChatMessagePart the wire
             // can carry; only text and IMAGE attachments are digestible —

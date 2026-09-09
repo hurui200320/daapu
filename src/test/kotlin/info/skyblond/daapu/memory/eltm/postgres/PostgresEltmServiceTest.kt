@@ -3,7 +3,7 @@ package info.skyblond.daapu.memory.eltm.postgres
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.EltmEntities
 import info.skyblond.daapu.db.EltmRelationships
-import info.skyblond.daapu.db.readMetaCounterTx
+import info.skyblond.daapu.db.readMetaNumberTx
 import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.hand.FakeHand
@@ -1453,7 +1453,7 @@ class PostgresEltmServiceTest : DbTestBase() {
         assertNull(service.getEntity(4242L))
         assertNull(service.getRelationship(4242L))
 
-        assertEquals(service.version().toLong(), readMetaCounterTx(ELTM_VERSION_KEY))
+        assertEquals(service.version().toLong(), readMetaNumberTx(ELTM_VERSION_KEY))
     }
 
     @Test

@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.DEFAULT_CHAT_TITLE
 import info.skyblond.daapu.agent.persona.DEFAULT_PERSONA_ID
 import info.skyblond.daapu.agent.persona.Persona
+import info.skyblond.daapu.db.ELTM_MAINTENANCE_KEY
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.EltmEntities
@@ -86,8 +87,8 @@ object TestDb {
 
     /**
      * Wipe every table and restore the pristine `V1__init.sql` state (the
-     * `eltm_version` counter row back at 0, every BIGSERIAL sequence back
-     * at 1): the per-test isolation point. `TRUNCATE ... RESTART IDENTITY
+     * seeded `gsg_meta_number` counter rows back at 0, every BIGSERIAL
+     * sequence back at 1): the per-test isolation point. `TRUNCATE ... RESTART IDENTITY
      * CASCADE` handles FKs and sequences in one statement.
      *
      * KEEP THE TABLE LIST IN SYNC with `V1__init.sql`: a future migration
@@ -103,10 +104,14 @@ object TestDb {
                             "eltm_entities, eltm_entity_attributes, eltm_relationships, eltm_notes " +
                             "RESTART IDENTITY CASCADE"
                 )
-                // the migration's seed row, restored through the table mapping
-                // (no string SQL for the values)
+                // the migration's seed rows, restored through the table
+                // mapping (no string SQL for the values)
                 GsgMetaNumber.insert {
                     it[GsgMetaNumber.key] = ELTM_VERSION_KEY
+                    it[GsgMetaNumber.value] = 0L
+                }
+                GsgMetaNumber.insert {
+                    it[GsgMetaNumber.key] = ELTM_MAINTENANCE_KEY
                     it[GsgMetaNumber.value] = 0L
                 }
             }

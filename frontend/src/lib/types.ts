@@ -255,3 +255,13 @@ export interface StreamEvent {
   event: string
   data: string
 }
+
+/**
+ * The ELTM maintenance-mode flag: the response of `GET /api/maintenance`
+ * and `PUT /api/maintenance` (whose body is `{ enabled }`, the same field;
+ * authority: `server/endpoint/MaintenanceRoute.kt` — what the mode blocks
+ * lives there).
+ */
+export interface MaintenanceStatus {
+  enabled: boolean
+}

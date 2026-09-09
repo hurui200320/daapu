@@ -31,6 +31,11 @@ describe('parseHash', () => {
     expect(parseHash('#/personas/')).toEqual({ name: 'personas' })
   })
 
+  it('maps the maintenance route with and without trailing slash', () => {
+    expect(parseHash('#/maintenance')).toEqual({ name: 'maintenance' })
+    expect(parseHash('#/maintenance/')).toEqual({ name: 'maintenance' })
+  })
+
   it('falls back to chat home for unknown or empty hashes without mutating the URL itself', () => {
     const CHAT_HOME = { name: 'chat', chatId: null }
     expect(parseHash('')).toEqual(CHAT_HOME)

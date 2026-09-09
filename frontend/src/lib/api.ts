@@ -8,6 +8,7 @@ import type {
   EltmImportSummary,
   EntityViewDto,
   EltmNoteDto,
+  MaintenanceStatus,
   ModelInfo,
   Persona,
   PersonaExportFile,
@@ -329,4 +330,17 @@ export type EltmDigestPart = TextPart | ChatAttachmentPart
  */
 export async function digestEltm(parts: EltmDigestPart[], date?: string): Promise<void> {
   await request('/api/eltm/digest', jsonInit('POST', { parts, date }))
+}
+
+// ---- maintenance mode (the `#/maintenance` tab) ----
+
+/** The ELTM maintenance-mode flag (what it blocks: see MaintenanceRoute.kt). */
+export async function getMaintenanceStatus(): Promise<MaintenanceStatus> {
+  return getJson('/api/maintenance')
+}
+
+/** Turn ELTM maintenance mode on/off; returns the applied state (idempotent). */
+export async function setMaintenance(enabled: boolean): Promise<MaintenanceStatus> {
+  const res = await request('/api/maintenance', jsonInit('PUT', { enabled }))
+  return res.json()
 }

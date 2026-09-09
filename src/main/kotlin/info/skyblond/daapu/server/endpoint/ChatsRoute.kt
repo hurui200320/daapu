@@ -55,6 +55,10 @@ fun Route.registerChatsEndpoints(service: ChatService) {
             )
         }
         delete("/{chatId}") {
+            // the deletion feeds the history into the extraction queue, so
+            // it is one of the ELTM-touching operations the guard blocks
+            // (the full scope: see [requireEltmNotInMaintenance])
+            requireEltmNotInMaintenance()
             val id = call.chatIdParam()
             if (!service.deleteChat(id)) throw NotFoundException("Chat $id not found")
             call.respond(HttpStatusCode.NoContent)
@@ -125,13 +129,17 @@ fun Route.registerChatsEndpoints(service: ChatService) {
 /**
  * Stream a chat run as Server-Sent Events.
  *
- * Validation and the per-chat lock happen BEFORE the response starts, so
- * malformed requests get a plain 400/409. Once the stream starts, the run's
- * outcome is delivered as events (`text`, `reasoning`, `tool_call`,
- * `tool_result`, `retry`, `done`, `error`); a 200 response is
- * already committed then.
+ * Validation, the maintenance-mode guard and the per-chat lock happen
+ * BEFORE the response starts, so malformed requests get a plain 400, a
+ * blocked operation a plain 503, and a lock conflict a plain 409. Once
+ * the stream starts, the run's outcome is delivered as events
+ * (`text`, `reasoning`, `tool_call`, `tool_result`, `retry`, `done`,
+ * `error`); a 200 response is already committed then.
  */
 private suspend fun handleChatMessage(call: ApplicationCall, service: ChatService) {
+    // before any body receive or validation, so maintenance mode answers a
+    // plain 503 (see [requireEltmNotInMaintenance] for the blocking scope)
+    requireEltmNotInMaintenance()
     val chatId = call.chatIdParam()
     val request = call.receive<SendMessageRequest>()
     val setup = service.prepareRun(

@@ -194,3 +194,22 @@ data class RelationshipViewDto(
         )
     }
 }
+
+// ----------------------------------------------------------------------
+// Maintenance mode (the `#/maintenance` frontend tab)
+// ----------------------------------------------------------------------
+
+/**
+ * Response body of `GET /api/maintenance` and `PUT /api/maintenance`:
+ * whether ELTM maintenance mode is currently on (the
+ * `gsg_meta_number.eltm_maintenance` flag, see `db/MetaNumber.kt`).
+ */
+@Serializable
+data class MaintenanceStatusResponse(val enabled: Boolean)
+
+/**
+ * Request body of `PUT /api/maintenance`: [enabled] turns ELTM maintenance
+ * mode on or off. Idempotent — setting the current state again is a no-op.
+ */
+@Serializable
+data class SetMaintenanceRequest(val enabled: Boolean)

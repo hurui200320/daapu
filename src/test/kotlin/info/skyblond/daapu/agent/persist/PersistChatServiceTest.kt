@@ -26,7 +26,7 @@ import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import info.skyblond.daapu.memory.eltm.postgres.PostgresExtractionQueue
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
-import info.skyblond.daapu.db.bumpMetaCounterTx
+import info.skyblond.daapu.db.bumpMetaNumberTx
 import info.skyblond.daapu.testutil.DbTestBase
 import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.testPostgresEltmService
@@ -338,7 +338,7 @@ class PersistChatServiceTest : DbTestBase() {
         assertEquals("0", store.storedEltmVersion)
 
         // an ELTM write bumps the version: the next run must flag again
-        runBlocking { bumpMetaCounterTx(ELTM_VERSION_KEY) }
+        runBlocking { bumpMetaNumberTx(ELTM_VERSION_KEY) }
         outcome = run(store = store, eltmService = eltm)
         assertNull(outcome.error)
         assertTrue(
@@ -358,7 +358,7 @@ class PersistChatServiceTest : DbTestBase() {
 
         // a failed run must not touch the stored version: history stays
         // at the last good state
-        runBlocking { bumpMetaCounterTx(ELTM_VERSION_KEY) }
+        runBlocking { bumpMetaNumberTx(ELTM_VERSION_KEY) }
         val failed = run(
             store = store,
             eltmService = eltm,

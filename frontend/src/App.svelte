@@ -5,6 +5,7 @@
   import { personaStore } from './lib/persona-store.svelte'
   import ChatView from './lib/components/ChatView.svelte'
   import EltmView from './lib/components/EltmView.svelte'
+  import MaintenanceView from './lib/components/MaintenanceView.svelte'
   import PersonaView from './lib/components/PersonaView.svelte'
   import Sidebar from './lib/components/Sidebar.svelte'
   import IconButton from './lib/components/ui/icon-button.svelte'
@@ -112,6 +113,9 @@
     </div>
     <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'personas'}>
       <PersonaView />
+    </div>
+    <div class="flex min-h-0 flex-1 flex-col" class:hidden={router.current.name !== 'maintenance'}>
+      <MaintenanceView />
     </div>
   </main>
 </div>

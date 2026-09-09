@@ -4,6 +4,8 @@ import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
+import info.skyblond.daapu.db.setEltmMaintenanceMode
+import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.hand.FakeHand
 import info.skyblond.daapu.hand.HandEvent
 import info.skyblond.daapu.hand.HandRunPolicy
@@ -122,6 +124,33 @@ class ExtractionQueueWorkerTest : DbTestBase() {
         assertEquals(2, hand.requests.size, "extractor run + writer run")
         // the completed job left no row behind
         assertTrue(TestDb.allExtractionJobs().none { it.id == jobId })
+    }
+
+    /**
+     * The maintenance gate (`gsg_meta_number.eltm_maintenance`): while the
+     * flag is on the loop claims nothing — the job keeps waiting with its
+     * lease untouched and no LLM run fires — and drains normally once the
+     * mode is turned off.
+     */
+    @Test
+    fun `maintenance mode pauses the drain until turned off`() = runBlocking {
+        val eltm = testPostgresEltmService(FakeHand())
+        val hand = oneShotHand(eltm)
+        queue.enqueue(listOf(user("u1"), assistantMessage("a1")))
+        withTransaction { setEltmMaintenanceMode(true) }
+        startWorker(hand, eltm)
+
+        // several poll intervals (25ms each) pass with the gate closed: a
+        // broken gate would have claimed and drained the job within the
+        // first one (the FakeHand pipelines are instantaneous)
+        delay(200)
+        assertEquals(1, TestDb.allExtractionJobs().size, "the queued job must wait while maintenance is on")
+        assertTrue(hand.requests.isEmpty(), "no extraction may run while maintenance is on")
+
+        withTransaction { setEltmMaintenanceMode(false) }
+        awaitUntil { TestDb.allExtractionJobs().isEmpty() }
+        val notes = TestDb.allEltmNotes().map { it.note }
+        assertTrue(notes.contains("likes coffee"), "the job drains once the mode is off")
     }
 
     @Test

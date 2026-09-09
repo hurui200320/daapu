@@ -141,6 +141,16 @@ internal fun Application.module(koin: Koin) {
                 ErrorResponse(cause.message ?: "Chat lock pool timed out")
             )
         }
+        // an operation blocked by ELTM maintenance mode (the guarded
+        // routes' guard, endpoint/MaintenanceRoute.kt): the same
+        // retry-later 503 as the lock pool, but an expected admin state —
+        // never logged, unlike the error paths below
+        exception<EltmMaintenanceException> { call, cause ->
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                ErrorResponse(cause.message ?: "ELTM maintenance mode is enabled")
+            )
+        }
         exception<ChatValidationException> { call, cause ->
             call.respond(HttpStatusCode.BadRequest, ErrorResponse(cause.message ?: "Bad request"))
         }
@@ -215,6 +225,7 @@ internal fun Application.module(koin: Koin) {
             registerChatsEndpoints(service)
             registerEltmEndpoints(eltmService, memoryExtractionService, eltmTransferService)
             registerPersonasEndpoints(personaService)
+            registerMaintenanceEndpoints()
         }
         staticWebUi()
     }

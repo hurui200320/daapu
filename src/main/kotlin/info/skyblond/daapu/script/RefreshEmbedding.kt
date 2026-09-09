@@ -9,7 +9,7 @@ import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.EltmEntities
 import info.skyblond.daapu.db.EltmEntityAttributes
 import info.skyblond.daapu.db.EltmNotes
-import info.skyblond.daapu.db.bumpMetaCounterTx
+import info.skyblond.daapu.db.bumpMetaNumberTx
 import info.skyblond.daapu.db.initDatabase
 import info.skyblond.daapu.db.padVector
 import info.skyblond.daapu.db.withTransaction
@@ -45,7 +45,7 @@ import org.koin.dsl.koinApplication
  * written batches stay written, a failed run is safely re-runnable.
  *
  * On full success the global ELTM write counter (`gsg_meta_number.
- * eltm_version`, `db/MetaCounter.kt`'s [ELTM_VERSION_KEY]) is bumped ONCE, so
+ * eltm_version`, `db/MetaNumber.kt`'s [ELTM_VERSION_KEY]) is bumped ONCE, so
  * every chat's next run flags `eltm-updated` — the retrieval results are
  * different under the new model.
  *
@@ -94,7 +94,7 @@ private suspend fun reembedAll(
     }
     // ONE bump for the whole successful refresh (so the next chat run flags
     // eltm-updated), via the same helper the service's write path uses
-    bumpMetaCounterTx(ELTM_VERSION_KEY)
+    bumpMetaNumberTx(ELTM_VERSION_KEY)
     logger.info { "done: re-embedded $entityCount entities and $noteCount notes " +
             "(eltm_version bumped so the next chat run flags eltm-updated)" }
 }

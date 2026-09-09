@@ -14,6 +14,7 @@
     Trash2,
     Upload,
     UserRound,
+    Wrench,
   } from '@lucide/svelte'
   import { DropdownMenu } from 'bits-ui'
   import { SvelteSet } from 'svelte/reactivity'
@@ -56,10 +57,10 @@
   const route = $derived(router.current)
   const activeChatId = $derived(store.streaming ? store.chatId : route.name === 'chat' ? route.chatId : null)
 
-  // the nav links' active highlight (rail + full sidebar): the four sites
-  // must agree on the streaming rule — while a run streams the highlights
-  // stay with the stream, so the ELTM/personas links stay unmarked even
-  // though their views can be opened mid-run
+  // the nav links' active highlight (rail + full sidebar): every site must
+  // agree on the streaming rule — while a run streams the highlights
+  // stay with the stream, so the ELTM/personas/maintenance links stay
+  // unmarked even though their views can be opened mid-run
   const navActive = (name: Route['name']): string | false =>
     !store.streaming && route.name === name && 'bg-accent text-accent-foreground'
 
@@ -122,13 +123,16 @@
         <SquarePen class="size-5" />
       </IconButton>
       <div class="flex-1"></div>
-      <!-- the two anchors below reuse IconButton's visual recipe (they
-           cannot BE buttons: they are real links for middle-click) -->
+      <!-- the view anchors below reuse IconButton's visual recipe (they
+            cannot BE buttons: they are real links for middle-click) -->
       <a title="personas" href={viewHref('personas')} class={cn(iconButtonClass(), navActive('personas'))}>
         <UserRound class="size-5" />
       </a>
       <a title="eltm" href={viewHref('eltm')} class={cn(iconButtonClass(), navActive('eltm'))}>
         <Network class="size-5" />
+      </a>
+      <a title="maintenance" href={viewHref('maintenance')} class={cn(iconButtonClass(), navActive('maintenance'))}>
+        <Wrench class="size-5" />
       </a>
     </div>
   {:else}
@@ -310,7 +314,7 @@
     <div class="border-t border-sidebar-border p-2">
       <!-- while a run streams, the highlights stay with the stream: mid-run
            chat-route changes are deferred until the run ends, so the chat
-           row follows store.chatId; the ELTM/personas links stay unmarked
+           row follows store.chatId; the ELTM/personas/maintenance links stay unmarked
            even though their views can be opened mid-run (the chat view
            stays mounted, CSS-hidden) -->
       <a
@@ -328,6 +332,14 @@
       >
         <Network class="size-4" />
         ELTM
+      </a>
+      <a
+        href={viewHref('maintenance')}
+        class={cn(buttonVariants({ variant: 'ghost', class: 'w-full justify-start' }), navActive('maintenance'))}
+        onclick={() => (uiStore.mobileNavOpen = false)}
+      >
+        <Wrench class="size-4" />
+        Maintenance
       </a>
     </div>
   {/if}
