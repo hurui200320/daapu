@@ -428,10 +428,11 @@ class EltmTransferServiceTest : DbTestBase() {
     @Test
     fun `importEltm is fail-fast partial and resumable`() = runBlocking {
         // the embed script fails BOB'S NOTE ("met bob"): the entity bulk (a
-        // single batched embed for both entities) succeeds, and the failure
-        // lands mid-note-pass — alice's earlier writes stick. A failure IN
-        // the entity bulk itself would roll the whole batch (nothing
-        // written), which is the same resumable stance one boundary later.
+        // single batched embed for both entities) and the whole
+        // relationship stage succeed, and the failure lands mid-note-stage
+        // — alice's earlier writes stick. A failure IN the entity bulk
+        // itself would roll the whole batch (nothing written), which is
+        // the same resumable stance one boundary later.
         val hand = FakeHand(embedScript = { request ->
             if (request.input.any { "met bob" in it }) {
                 throw EmbeddingException("invalid_request", "content too large for the embedding model")
@@ -451,28 +452,155 @@ class EltmTransferServiceTest : DbTestBase() {
         assertFailsWith<EmbeddingException> {
             transfer.importEltm(payload, overwriteAttr = false)
         }
-        // the entity bulk succeeded before the note failure: both rows
-        // exist, alice's note attached, bob's did not
+        // the entity and relationship stages succeeded before the note
+        // failure: both rows and the relationship exist, alice's note
+        // attached, bob's did not
         assertEquals(
             listOf("alice", "bob"),
             TestDb.allEltmEntities().map { it.canonicalName }.sorted(),
             "the bulk-created entities stick",
         )
         assertEquals(1, TestDb.allEltmNotes().size, "alice's note sticks, bob's does not")
-        assertTrue(TestDb.allEltmRelationships().isEmpty(), "the relationship pass never ran")
+        assertEquals(1, TestDb.allEltmRelationships().size, "the relationship stage ran before the note stage")
 
         // re-running the same file with a healthy hand resumes: both
-        // entities match (dedup), bob's note and the relationship land
+        // entities and the relationship match (dedup), bob's note lands
         val (freshEltm, freshTransfer) = service()
         val summary = freshTransfer.importEltm(payload, overwriteAttr = false)
         assertEquals(0, summary.entitiesCreated, "both entities match")
         assertEquals(2, summary.entitiesMatched)
-        assertEquals(1, summary.relationshipsCreated)
+        assertEquals(0, summary.relationshipsCreated, "the relationship matches — stage 2 already created it")
+        assertEquals(1, summary.relationshipsMatched)
         assertEquals(1, summary.notesInserted, "only bob's note; alice's is deduped")
         assertEquals(1, summary.notesSkipped)
         assertEquals(2, freshEltm.listEntities(100, 0).size)
         assertEquals(2, TestDb.allEltmNotes().size)
     }
+
+    @Test
+    fun `importEltm flips validity with the note attach - a failed embed lands neither, a re-run heals`() =
+        runBlocking {
+            // the chosen staging (class KDoc): a SNAPSHOT row's flip rides
+            // its stage-3 note attach in ONE transaction — a note-stage
+            // embed failure lands NEITHER the flip nor the justifying note
+            // (no transiently unexplained flip); re-running the file heals.
+            // The seed texts never contain the trigger, so the failing hand
+            // only trips on the file's note.
+            val hand = FakeHand(embedScript = { request ->
+                if (request.input.any { "ended" in it }) {
+                    throw EmbeddingException("invalid_request", "content too large for the embedding model")
+                }
+                FakeHand().embed(request)
+            })
+            val (eltm, transfer) = service(hand)
+            val a = eltm.createEntity("alice", "person").entity
+            val b = eltm.createEntity("bob", "person").entity
+            val works = eltm.createRelationship(a.id, b.id, "works with").relationship
+            eltm.attachNoteToRelationship(works.id, day, "still going")
+            assertTrue(relationshipRow().valid)
+
+            // the file's newest note (day3) is newer than the DB's (day):
+            // the file wins, and the note's embed fails — the combined call
+            // lands nothing
+            val payload = EltmExportPayload(
+                entities = mapOf(
+                    "a" to entity("alice", "person"),
+                    "b" to entity("bob", "person"),
+                ),
+                relationships = listOf(
+                    rel("a", "works with", "b", valid = false,
+                        notes = listOf(EltmExportNote(day3.toString(), "ended"))),
+                ),
+            )
+            assertFailsWith<EmbeddingException> {
+                transfer.importEltm(payload, overwriteAttr = false)
+            }
+            assertTrue(relationshipRow().valid, "the flip is atomic with its note: neither landed")
+            assertEquals(1, TestDb.allEltmNotes().size, "the justifying note did not land")
+
+            // a healthy re-run heals: the decision re-derives identically
+            // (nothing landed), and the flip + note land together
+            val (_, freshTransfer) = service()
+            val summary = freshTransfer.importEltm(payload, overwriteAttr = false)
+            assertEquals(0, summary.relationshipsCreated)
+            assertEquals(1, summary.relationshipsMatched)
+            assertEquals(1, summary.notesInserted, "the justifying note lands on the re-run")
+            assertEquals(0, summary.notesSkipped)
+            assertFalse(relationshipRow().valid, "the flip landed with its note")
+            assertEquals(
+                listOf(day to "still going", day3 to "ended"),
+                TestDb.allEltmNotes().sortedBy { it.eventDate }.map { it.eventDate to it.note },
+                "both the seeded and the justifying note are present",
+            )
+        }
+
+    @Test
+    fun `importEltm heals across relationships - an earlier flip and note stick, a later failure resumes`() =
+        runBlocking {
+            // the cross-subject heal (class KDoc): relationship m's combined
+            // flip + note attach lands, a LATER relationship's attach fails.
+            // The re-run re-derives m's decision to "the DB wins" (its
+            // justifying note is now the snapshot's newest) — which must
+            // no-op, never un-flip — while k's flip and note land. The seed
+            // texts never contain the trigger.
+            val hand = FakeHand(embedScript = { request ->
+                if (request.input.any { "carol left" in it }) {
+                    throw EmbeddingException("invalid_request", "content too large for the embedding model")
+                }
+                FakeHand().embed(request)
+            })
+            val (eltm, transfer) = service(hand)
+            val a = eltm.createEntity("alice", "person").entity
+            val b = eltm.createEntity("bob", "person").entity
+            val c = eltm.createEntity("carol", "person").entity
+            val mentorsBob = eltm.createRelationship(a.id, b.id, "mentors").relationship
+            val mentorsCarol = eltm.createRelationship(a.id, c.id, "mentors").relationship
+            eltm.attachNoteToRelationship(mentorsBob.id, day, "still going")
+            eltm.attachNoteToRelationship(mentorsCarol.id, day, "still going")
+
+            val payload = EltmExportPayload(
+                entities = mapOf(
+                    "a" to entity("alice", "person"),
+                    "b" to entity("bob", "person"),
+                    "c" to entity("carol", "person"),
+                ),
+                relationships = listOf(
+                    rel("a", "mentors", "b", valid = false,
+                        notes = listOf(EltmExportNote(day2.toString(), "bob left"))),
+                    rel("a", "mentors", "c", valid = false,
+                        notes = listOf(EltmExportNote(day3.toString(), "carol left"))),
+                ),
+            )
+            assertFailsWith<EmbeddingException> {
+                transfer.importEltm(payload, overwriteAttr = false)
+            }
+            val failed = TestDb.allEltmRelationships().associateBy { it.id }
+            assertFalse(failed.getValue(mentorsBob.id).valid, "bob's flip landed with its note")
+            assertTrue(failed.getValue(mentorsCarol.id).valid, "carol's flip is atomic with its failed note")
+
+            // the re-run: bob's decision re-derives to "the DB wins" (its
+            // justifying note is now the snapshot's newest) — a no-op that
+            // must NOT un-flip — while carol's flip and note land
+            val (_, freshTransfer) = service()
+            val summary = freshTransfer.importEltm(payload, overwriteAttr = false)
+            assertEquals(0, summary.relationshipsCreated)
+            assertEquals(2, summary.relationshipsMatched)
+            assertEquals(1, summary.notesInserted, "only carol's note; bob's is deduped")
+            assertEquals(1, summary.notesSkipped, "bob's justifying note is skipped on the re-run")
+            val healed = TestDb.allEltmRelationships().associateBy { it.id }
+            assertFalse(healed.getValue(mentorsBob.id).valid, "the re-run never un-flips")
+            assertFalse(healed.getValue(mentorsCarol.id).valid, "carol's flip lands with its note")
+            assertEquals(
+                listOf(
+                    day to "still going",
+                    day to "still going",
+                    day2 to "bob left",
+                    day3 to "carol left",
+                ),
+                TestDb.allEltmNotes().sortedBy { it.eventDate }.map { it.eventDate to it.note },
+                "both seeded notes, bob's justifying note and carol's are present",
+            )
+        }
 
     @Test
     fun `importEltm rolls the whole entity bulk back when its embed fails`() = runBlocking {

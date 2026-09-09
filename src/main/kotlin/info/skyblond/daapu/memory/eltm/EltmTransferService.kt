@@ -1,6 +1,7 @@
 package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.memory.eltm.model.*
+import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
 import java.util.*
@@ -42,17 +43,33 @@ import java.util.*
  *   truth for what it holds. A row created by THIS import always takes the
  *   file's state: nothing pre-exists to protect. Notes never carry their
  *   structural flag (not stored), so validity can never be replayed from
- *   the file's notes — hence [EltmService.setRelationshipValid].
+ *   the file's notes — the file's state must be written explicitly. HOW a
+ *   flip lands keeps the diary model's coupling (a structural change
+ *   carries its reason, see [EltmService.attachNotesToRelationship]): a
+ *   SNAPSHOT row's flip rides its stage-3 note attach in ONE transaction —
+ *   a row the file wins always has its newest file note missing from the
+ *   snapshot (else the DB would be at least as new and the file would not
+ *   win), so a note is always there to carry the flip. A created row
+ *   without file notes takes its state right in the relationship stage,
+ *   via the note-less [EltmService.setRelationshipValid] — necessarily
+ *   there: the rule gives note-less matched rows to the DB, so a re-run
+ *   could never re-derive that flip. Re-running the file heals every
+ *   partial state: each flip re-derives to the same value or no-ops, and
+ *   the notes dedup-resume.
  * - Fail-fast partial, like the persona import: the whole file is
  *   validated BEFORE the first write (a broken file creates nothing), then
- *   entries process in order and the first failure aborts the request with
- *   everything already written sticking — the partial boundary is the
- *   batch, not the row: the entity pass resolves ALL file entities up
- *   front in ONE bulk create-or-fetch ([EltmService.createEntities] — one
- *   batched embed call series, one transaction, one counter bump; never a
- *   per-entity embed call and create-or-fetch chain), the relationship
- *   pass likewise ([EltmService.createRelationships]), and each entity's
- *   attribute write set and each subject's note batch are ONE transaction
+ *   the merge runs as three stages — entities with their attributes,
+ *   relationships (a created note-less row takes its state here, see the
+ *   valid rule above), then every subject's notes, a snapshot row's
+ *   validity flip riding its note attach — and the first failure aborts
+ *   the request with everything already written sticking; the partial
+ *   boundary is the batch, not the row: the
+ *   entity stage resolves ALL file entities up front in ONE bulk
+ *   create-or-fetch ([EltmService.createEntities] — one batched embed
+ *   call series, one transaction, one counter bump; never a per-entity
+ *   embed call and create-or-fetch chain), the relationship stage likewise
+ *   ([EltmService.createRelationships]), and each entity's attribute
+ *   write set and each subject's note batch are ONE transaction
  *   (embeddings ride the hand's batched `/v1/embed` — see
  *   [EltmService.attachNotesToEntity]); re-running the same file skips the
  *   existing content (dedup) and resumes.
@@ -153,7 +170,8 @@ class EltmTransferService(private val eltm: EltmService) {
         var attributesWritten = 0
         var attributesKept = 0
 
-        // ---- entity pass: file uuid -> db id --------------------------
+        // ---- stage 1: entities and their attributes -------------------
+        logger.info { "ELTM import stage 1 (entities and attrs) start" }
         // file uuid to db id
         val entityIds = HashMap<String, Long>(payload.entities.size)
         val pendingCreates = ArrayList<Pair<String, EntityDraft>>()
@@ -176,19 +194,17 @@ class EltmTransferService(private val eltm: EltmService) {
             if (entity.id in snapshotEntityIds) entitiesMatched++ else entitiesCreated++
         }
 
-        // ---- per-entity attributes and notes ---------------------------
+        // attributes: the kept/written decision reads the snapshot's
+        // state — the file holds each attribute key once (validate), so
+        // there are no in-file writes to track. The snapshot-vs-live races
+        // here (an identical concurrent value counts as kept; a
+        // concurrently created key is overwritten even under
+        // overwriteAttr=false) are the class KDoc's concurrency stance.
+        // The entity's whole write set rides ONE setEntityAttributes call:
+        // one embed, one transaction, one counter bump — never a re-embed
+        // per key.
         for ((uuid, entry) in payload.entities) {
             val entityId = entityIds.getValue(uuid)
-
-            // attributes: the kept/written decision reads the snapshot's
-            // state — the file holds each attribute key once (validate),
-            // so there are no in-file writes to track. The snapshot-vs-live
-            // races here (an identical concurrent value counts as kept; a
-            // concurrently created key is overwritten even under
-            // overwriteAttr=false) are the class KDoc's concurrency stance.
-            // The entity's whole write set rides ONE setEntityAttributes
-            // call: one embed, one transaction, one counter bump — never a
-            // re-embed per key.
             val snapshotAttrs = attributesByEntity[entityId].orEmpty()
             val pendingAttrs = LinkedHashMap<String, String>()
             for ((rawKey, rawValue) in entry.attributes) {
@@ -206,18 +222,13 @@ class EltmTransferService(private val eltm: EltmService) {
                 attributesWritten += written
                 attributesKept += pendingAttrs.size - written
             }
-
-            importNotes(entry.notes, entityNotes[entityId].orEmpty()) {
-                eltm.attachNotesToEntity(entityId, it)
-            }.let { (inserted, skipped) ->
-                notesInserted += inserted
-                notesSkipped += skipped
-            }
         }
 
-        // ---- relationship pass ----------------------------------------
+        // ---- stage 2: relationships and their structural state ---------
+        logger.info { "ELTM import stage 2 (relationships) start" }
         // array[index] = relationship to exist (true = exist, false = created)
-        val resolvedRelationships = arrayOfNulls<Pair<EltmRelationship, Boolean>>(payload.relationships.size)
+        val resolvedRelationships =
+            arrayOfNulls<Pair<EltmRelationship, Boolean>>(payload.relationships.size)
         val pendingRelationships = ArrayList<Pair<Int, RelationshipDraft>>()
         payload.relationships.forEachIndexed { index, rel ->
             val srcId = entityIds.getValue(rel.srcUuid)
@@ -234,7 +245,7 @@ class EltmTransferService(private val eltm: EltmService) {
         val createdRelationships = eltm.createRelationships(pendingRelationships.map { it.second })
         for ((pair, relationship) in pendingRelationships.zip(createdRelationships)) {
             resolvedRelationships[pair.first] = relationship to false
-            // by-row counting, as in the entity pass: a concurrent merge can
+            // by-row counting, as in the entity stage: a concurrent merge can
             // re-point a snapshot row onto this triple between the snapshot
             // and the write — that row was matched
             if (relationship.id in snapshotRelationshipIds) {
@@ -244,28 +255,20 @@ class EltmTransferService(private val eltm: EltmService) {
             }
         }
 
+        // the file's structural state for the SNAPSHOT rows the file wins,
+        // applied in stage 3 riding each row's note attach (index = file
+        // relationship index)
+        val validTargets = arrayOfNulls<Boolean>(payload.relationships.size)
         for ((index, rel) in payload.relationships.withIndex()) {
             val (relationship, snapshotHeld) = resolvedRelationships[index]
-                ?: error("relationship $index was not resolved by either pass")
+                ?: error("relationship $index was not resolved by the relationship stage")
             // the snapshot's row for this triple, or null when the snapshot
             // did not hold it (this import's creation, or a concurrent
             // writer's mid-import one)
             val existing = if (snapshotHeld) relationship else null
 
-            // the file's notes first: a mid-import failure (an embedding
-            // call) leaves none of that subject's batch (the class KDoc's
-            // batch boundary) — a validity flip never lands without its
-            // justifying notes (the coupling the diary model's own paths
-            // get in one transaction, see attachNotesToRelationship)
-            importNotes(rel.notes, relationshipNotes[relationship.id].orEmpty()) {
-                eltm.attachNotesToRelationship(relationship.id, it).notes
-            }.let { (inserted, skipped) ->
-                notesInserted += inserted
-                notesSkipped += skipped
-            }
-
             // the valid rule (class KDoc), decided from the PRE-import
-            // snapshot state — the notes attached above are not in it
+            // snapshot state — the stage-3 notes are not in it
             val fileLatest = rel.notes.maxOfOrNull { LocalDate.parse(it.date) }
             val dbLatest = relationshipNotes[relationship.id]
                 .orEmpty()
@@ -279,11 +282,48 @@ class EltmTransferService(private val eltm: EltmService) {
             }
 
             if (fileWins && relationship.valid != rel.valid) {
-                eltm.setRelationshipValid(relationship.id, rel.valid)
+                if (existing == null && rel.notes.isEmpty()) {
+                    // if not exist in db and no notes, we can set valid right now
+                    eltm.setRelationshipValid(relationship.id, rel.valid)
+                } else {
+                    // otherwise we record the valid and set it in stage 3
+                    validTargets[index] = rel.valid
+                }
             }
         }
 
-        return EltmImportSummary(
+        // ---- stage 3: every subject's notes + the snapshot rows' flips -
+        logger.info { "ELTM import stage 3 (notes) start" }
+        for ((uuid, entry) in payload.entities) {
+            val entityId = entityIds.getValue(uuid)
+            val (pending, skipped) = pendingNotes(entry.notes, entityNotes[entityId].orEmpty())
+            notesSkipped += skipped
+            if (pending.isNotEmpty()) {
+                notesInserted += eltm.attachNotesToEntity(entityId, pending).size
+            }
+        }
+
+        for ((index, rel) in payload.relationships.withIndex()) {
+            val relationship = resolvedRelationships[index]?.first
+                ?: error("relationship $index was not resolved by the relationship stage")
+            val targetValid = validTargets[index]
+            val (pending, skipped) = pendingNotes(
+                rel.notes,
+                relationshipNotes[relationship.id].orEmpty()
+            )
+            notesSkipped += skipped
+            if (pending.isNotEmpty()) {
+                // create pending notes and set valid flag
+                notesInserted += eltm.attachNotesToRelationship(
+                    relationship.id, pending, valid = targetValid,
+                ).notes.size
+            } else if (targetValid != null) {
+                // no notes pending to create, but we still need to set valid flag
+                eltm.setRelationshipValid(relationship.id, targetValid)
+            }
+        }
+
+        val summary = EltmImportSummary(
             entitiesCreated = entitiesCreated,
             entitiesMatched = entitiesMatched,
             relationshipsCreated = relationshipsCreated,
@@ -293,6 +333,14 @@ class EltmTransferService(private val eltm: EltmService) {
             attributesWritten = attributesWritten,
             attributesKept = attributesKept,
         )
+        logger.info {
+            "ELTM import finished: entities created=${summary.entitiesCreated} " +
+                    "matched=${summary.entitiesMatched}, relationships " +
+                    "created=${summary.relationshipsCreated} matched=${summary.relationshipsMatched}, " +
+                    "notes inserted=${summary.notesInserted} skipped=${summary.notesSkipped}, " +
+                    "attributes written=${summary.attributesWritten} kept=${summary.attributesKept}"
+        }
+        return summary
     }
 
     // ------------------------------------------------------------------
@@ -329,15 +377,14 @@ class EltmTransferService(private val eltm: EltmService) {
      * Dedup [notes] against the subject's [existingNotes] (the snapshot's
      * rows for this subject): an exact (event date, trimmed text) match —
      * in the DB or earlier in the same list, tracked in the seen-set — is
-     * skipped, the rest is appended through ONE bulk [attach] call (batched
-     * embeds, one transaction for the subject's whole batch).
-     * @return the inserted and skipped counts.
+     * skipped. The caller appends the rest through ONE bulk attach call
+     * (batched embeds, one transaction for the subject's whole batch).
+     * @return the drafts to attach (possibly empty) and the skipped count.
      */
-    private suspend fun importNotes(
+    private fun pendingNotes(
         notes: List<EltmExportNote>,
         existingNotes: List<EltmNote>,
-        attach: suspend (List<NoteDraft>) -> List<EltmNote>,
-    ): Pair<Int, Int> {
+    ): Pair<List<NoteDraft>, Int> {
         // stored notes are trimmed by the service, so the comparison is exact
         val seen = existingNotes.mapTo(HashSet()) { it.eventDate to it.note }
         val pending = ArrayList<NoteDraft>()
@@ -352,9 +399,7 @@ class EltmTransferService(private val eltm: EltmService) {
             pending += NoteDraft(date, text)
             seen += date to text
         }
-        if (pending.isEmpty()) return 0 to skipped
-        val inserted = attach(pending).size
-        return inserted to skipped
+        return pending to skipped
     }
 
     /**
@@ -443,4 +488,8 @@ class EltmTransferService(private val eltm: EltmService) {
     }
 
     private fun EltmNote.toExport() = EltmExportNote(date = eventDate.toString(), note = note)
+
+    companion object {
+        private val logger = KotlinLogging.logger {}
+    }
 }

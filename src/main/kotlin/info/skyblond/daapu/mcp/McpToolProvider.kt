@@ -108,6 +108,7 @@ class McpToolProvider(
                         try {
                             logger.info { "Initializing MCP server ${entry.namespace}" }
                             entry.getConnectedClient()
+                            logger.info { "MCP server ${entry.namespace} connected" }
                             null
                         } catch (e: CancellationException) {
                             throw e
