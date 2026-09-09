@@ -10,7 +10,7 @@ import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.EltmEntities
 import info.skyblond.daapu.db.EltmNotes
 import info.skyblond.daapu.db.EltmRelationships
-import info.skyblond.daapu.db.MemoryMetaNumber
+import info.skyblond.daapu.db.GsgMetaNumber
 import info.skyblond.daapu.db.PendingExtractions
 import info.skyblond.daapu.db.Personas
 import info.skyblond.daapu.db.initDatabase
@@ -99,15 +99,15 @@ object TestDb {
         runBlocking {
             withTransaction {
                 exec(
-                    "TRUNCATE chats, personas, pending_extractions, memory_meta_number, " +
+                    "TRUNCATE chats, personas, pending_extractions, gsg_meta_number, " +
                             "eltm_entities, eltm_entity_attributes, eltm_relationships, eltm_notes " +
                             "RESTART IDENTITY CASCADE"
                 )
                 // the migration's seed row, restored through the table mapping
                 // (no string SQL for the values)
-                MemoryMetaNumber.insert {
-                    it[MemoryMetaNumber.key] = ELTM_VERSION_KEY
-                    it[MemoryMetaNumber.value] = 0L
+                GsgMetaNumber.insert {
+                    it[GsgMetaNumber.key] = ELTM_VERSION_KEY
+                    it[GsgMetaNumber.value] = 0L
                 }
             }
         }

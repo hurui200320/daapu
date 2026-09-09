@@ -18,7 +18,7 @@ CREATE TABLE chats
 -- + notes (the diary: add-only, strictly single-subject).
 -- Entities and relationships carry no timestamps: their content lives in the
 -- notes, and change detection rides a single global write counter
--- (memory_meta_number.eltm_version) bumped atomically by every write.
+-- (gsg_meta_number.eltm_version) bumped atomically by every write.
 --
 -- Every vector column is fixed at 2000 dimensions, pgvector's HNSW indexing
 -- limit for the `vector` type (MAX_VECTOR_DIMENSIONS in config/Config.kt).
@@ -28,15 +28,14 @@ CREATE TABLE chats
 -- a schema change. Only that the model's output dimensions do not exceed
 -- this width.
 
--- Simple key-value meta store for numeric counters; the only entry is the
--- ELTM write counter feeding the eltm-updated version marker (bumped with an atomic
--- `value = value + 1` UPDATE inside every ELTM write transaction).
-CREATE TABLE memory_meta_number
+-- Simple key-value meta store for numeric counters/entries.
+CREATE TABLE gsg_meta_number
 (
     key   TEXT PRIMARY KEY,
     value BIGINT NOT NULL
 );
-INSERT INTO memory_meta_number (key, value) VALUES ('eltm_version', 0);
+INSERT INTO gsg_meta_number (key, value) VALUES ('eltm_version', 0);
+INSERT INTO gsg_meta_number (key, value) VALUES ('eltm_maintenance', 0);
 
 CREATE TABLE eltm_entities
 (

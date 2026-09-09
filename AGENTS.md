@@ -191,7 +191,7 @@ KDoc of the named files.
   schema and invariants: `EltmService.kt`, `db/migration/V1__init.sql`).
   Write path = extraction only (below); the chat loop reads the ELTM only
   through `gsg__investigate`; the investigator gets the read-only tool
-  subset. The global write counter (`memory_meta_number.eltm_version`,
+  subset. The global write counter (`gsg_meta_number.eltm_version`,
   `db/MetaCounter.kt`, read via `EltmService.version()`) drives the
   injection decision; the persist loop stamps its value into the per-chat
   `chats.eltm_version` fingerprint only on the successful store. Vector

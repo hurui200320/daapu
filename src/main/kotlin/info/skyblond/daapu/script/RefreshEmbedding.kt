@@ -44,7 +44,7 @@ import org.koin.dsl.koinApplication
  * hand already retries `hand.maxRetries` times per request): already
  * written batches stay written, a failed run is safely re-runnable.
  *
- * On full success the global ELTM write counter (`memory_meta_number.
+ * On full success the global ELTM write counter (`gsg_meta_number.
  * eltm_version`, `db/MetaCounter.kt`'s [ELTM_VERSION_KEY]) is bumped ONCE, so
  * every chat's next run flags `eltm-updated` — the retrieval results are
  * different under the new model.

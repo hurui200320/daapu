@@ -252,7 +252,7 @@ interface EltmService {
      * the read views' computed note/relationship counts — there is nothing
      * else to touch. Otherwise the name+category text is embedded and
      * inserted, and the global write counter
-     * (`memory_meta_number.eltm_version`) is bumped in the same transaction
+     * (`gsg_meta_number.eltm_version`) is bumped in the same transaction
      * (a concurrent run's unique violation is caught and turned into a
      * re-select of the existing row — true create-or-fetch semantics, an
      * unhandled violation would fail the whole run as `tool_transport`).
@@ -723,7 +723,7 @@ interface EltmService {
 
     /**
      * The current ELTM version, read from the store: the global write
-     * counter (`memory_meta_number.eltm_version`), bumped atomically by
+     * counter (`gsg_meta_number.eltm_version`), bumped atomically by
      * every visible-state write inside ITS transaction. NOT a
      * content hash — any write that changes the visible state moves it.
      * Compared against `chats.eltm_version` for the `eltm-updated`
