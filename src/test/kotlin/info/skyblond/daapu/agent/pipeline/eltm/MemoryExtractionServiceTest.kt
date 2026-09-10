@@ -291,6 +291,11 @@ Rules:
         assertTrue(prompt.contains("<meta><sent-at>"), prompt)
         assertTrue(prompt.contains("the input's reference time"), prompt)
         assertTrue(prompt.contains("never resolve against \"now\""), prompt)
+        // the digest-only user-provided-context convention: free-form
+        // (not strict XML), interpretive, never a meta-fact
+        assertTrue(prompt.contains("<user-provided-context>"), prompt)
+        assertTrue(prompt.contains("free-form, not strict XML"), prompt)
+        assertTrue(prompt.contains("Do not record \"the user provided context about X\""), prompt)
         // the input-neutral focus list and fact rules survive verbatim
         assertTrue(prompt.contains("Focus on:"), prompt)
         assertTrue(prompt.contains("replace pronouns with the entity name or \"the user\""), prompt)

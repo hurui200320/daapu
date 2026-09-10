@@ -298,6 +298,11 @@
         <li>First-person pronouns ("I", "my") are automatically mapped to "the user"</li>
         <li>Entities, relationships, and diary notes are extracted and recorded automatically</li>
         <li>Provide clear context and absolute dates ("the week of May 15, 2026") when possible</li>
+        <li>
+          Make the first part a dedicated text block holding
+          &lt;user-provided-context&gt;...&lt;/user-provided-context&gt; for your own free-form explanation of what the
+          input is (e.g. an email, a PDF, a contract) — the extractor uses it to interpret the rest
+        </li>
         <li>Relative dates ("yesterday") resolve against the reference date below, or today when none is set</li>
         <li>
           The reference date only anchors the extraction — the recorded notes are always dated the day of the digest

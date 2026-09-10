@@ -268,7 +268,8 @@ class MemoryExtractionService(
          * The extractor system prompt for one [ExtractionInput]. The
          * absolute-dates line, the focus list and the fact rules are
          * input-neutral and shared verbatim below (single source); the
-         * header (framing + anchor explanation) and the few
+         * header (framing + anchor explanation +, for [ExtractionInput.USER_DIGEST],
+         * the optional user-provided-context explanation) and the few
          * conversation-specific rule lines come from the [input]'s slots.
          * [ExtractionInput.CONVERSATION] renders byte-identical to the
          * prompt the discard pipeline always used (pinned by
@@ -314,7 +315,10 @@ ${input.echoRule}- Extract the content of documents or code the user shared, not
  * text-only, images-only and mixed digests.
  */
 internal enum class ExtractionInput(
-    /** The header block: framing plus the anchor/relative-date explanation. */
+    /**
+     * The header block: framing, the anchor/relative-date explanation, and
+     * (USER_DIGEST only) the optional user-provided-context explanation.
+     */
     val header: String,
     /** Rules slot: what the facts' language follows. */
     val languageOf: String,
@@ -351,7 +355,9 @@ If the input is already a list of facts, repeat it as-is (make sure don't lose a
 
 The input opens with a <meta><sent-at>...</sent-at></meta> marker carrying the input's reference time.
 Resolve every relative date or time ("today", "last week", "in two months") against that reference time.
-The reference time can be much older than the moment of extraction, so never resolve against "now".""".trimIndent(),
+The reference time can be much older than the moment of extraction, so never resolve against "now".
+
+The user's content may open with a `<user-provided-context>` block to provide some context or explanation of what the input is (e.g. an email, a PDF, a contract). Its content is free-form, not strict XML. Treat everything between the tags as the explanation. Use it to interpret the rest of the input; it is user-provided information like any other part, so facts may draw on it. Do not record "the user provided context about X" as a fact.""".trimIndent(),
         languageOf = "input",
         presentIn = "input",
         coverWhole = "input",
