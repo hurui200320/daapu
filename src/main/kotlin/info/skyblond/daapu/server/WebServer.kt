@@ -14,6 +14,7 @@ import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
+import info.skyblond.daapu.memory.eltm.EmbeddingRefreshService
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.server.endpoint.*
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -109,6 +110,7 @@ internal fun Application.module(koin: Koin) {
     val handCallback = koin.get<HandCallbackService>()
     val personaService = koin.get<PersonaService>()
     val modelCatalog = koin.get<ModelCatalog>()
+    val embeddingRefreshService = koin.get<EmbeddingRefreshService>()
 
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true })
@@ -147,6 +149,15 @@ internal fun Application.module(koin: Koin) {
             call.respond(
                 HttpStatusCode.ServiceUnavailable,
                 ErrorResponse(cause.message ?: "ELTM maintenance mode is enabled")
+            )
+        }
+        // a re-embed start that cannot proceed (maintenance mode off, or a
+        // refresh already running — endpoint/MaintenanceRoute.kt): an
+        // expected admin state like the 503 above, never logged
+        exception<ReembedConflictException> { call, cause ->
+            call.respond(
+                HttpStatusCode.Conflict,
+                ErrorResponse(cause.message ?: "Cannot start the re-embed job")
             )
         }
         exception<ChatValidationException> { call, cause ->
@@ -223,7 +234,7 @@ internal fun Application.module(koin: Koin) {
             registerChatsEndpoints(service)
             registerEltmEndpoints(eltmService, memoryExtractionService, eltmTransferService)
             registerPersonasEndpoints(personaService)
-            registerMaintenanceEndpoints()
+            registerMaintenanceEndpoints(embeddingRefreshService)
         }
         staticWebUi()
     }

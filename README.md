@@ -440,6 +440,8 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 | `POST /api/eltm/import`                 | Import (merge) an exported payload (503 during ELTM maintenance); `?overwriteAttr` controls attribute overwrites (details below). |
 | `GET /api/maintenance`                  | The ELTM maintenance-mode flag as `{"enabled": bool}`.        |
 | `PUT /api/maintenance`                  | Set the flag (`{"enabled": bool}`, idempotent); answers the applied state. |
+| `GET /api/maintenance/reembed`          | The re-embed job's status as `{"state", "entities", "notes", "error"}` (never blocked). |
+| `POST /api/maintenance/reembed`         | Start the background re-embed job — re-embed every stored ELTM vector with the configured embedding model (409 unless maintenance mode is on or while a job runs; 202 + the running status). |
 | `GET /api/hand/tools`                   | Internal: the hand's per-round tool advertisement (`?runId=...`). |
 | `POST /api/hand/tool`                   | Internal: the hand's tool-execution callback (`runId`-scoped). |
 
@@ -456,6 +458,10 @@ All endpoints are under `/api` (see `server/WebServer.kt`; the two internal
 ## Maintenance mode
 
 `GET/PUT /api/maintenance` read and set the ELTM maintenance mode (the `gsg_meta_number.eltm_maintenance` flag; the web UI's `#/maintenance` tab is its interface). While enabled, every operation that reads or writes the long-term memory answers `503` with the reason: `POST /api/chats/{id}/messages` (the memory injection and the investigator read the ELTM, compaction enqueues extraction), `DELETE /api/chats/{id}` (deletion enqueues the history for extraction), `POST /api/eltm/digest` and `POST /api/eltm/import`. The background extraction worker pauses too — no job is claimed while the flag is on, queued extractions keep waiting and drain once the mode is turned off. Everything else keeps working: listing/reading/renaming/truncating/forking/importing/exporting chats, all ELTM reads, personas, models — and the toggle itself is never blocked, so the mode can always be turned back off. Accepted limits: the check is advisory (a run that passed the guard just before the flag flips still proceeds), and an extraction already in flight when the flag flips finishes normally.
+
+### Re-embedding all memory vectors
+
+`POST /api/maintenance/reembed` re-embeds EVERY stored ELTM vector (entities and notes) with the embedding model the config currently points to (`memory.eltm.embeddingModel`) — run it after switching embedding models, since old vectors are useless to a new model and cosine similarities across models are not comparable. The typical flow: change `memory.eltm.embeddingModel` in `config.jsonc`, restart the server (the model resolves once at boot), enable maintenance mode, press the button in the `#/maintenance` tab, and turn the mode off once the job reports finished. The route answers `409` unless maintenance mode is on (the freeze is the run's safety — no ELTM writes happen while the job runs; the ELTM read endpoints stay open, see Maintenance mode above) or while a job is already running; otherwise `202` with the running status. The job is a background fire-and-forget: rows are processed in id order, page by page, each batch written in its own transaction, and the progress goes to the SERVER LOG (per-page "re-embedded N so far" lines), not the API. `GET /api/maintenance/reembed` reports the phase — `idle`, `running`, `finished` (with the entity/note counts), or `failed` (with the reason; already-written batches stay written, and the job is safely re-runnable). On full success the global ELTM version counter is bumped once, so every chat's next run flags `eltm-updated`. Turning maintenance mode off mid-run is allowed: the job keeps going, and a search in that window sees a mix of old and new vectors (mid-refresh writes already embed with the new model, so re-embedding them is a harmless no-op).
 
 ## References
 

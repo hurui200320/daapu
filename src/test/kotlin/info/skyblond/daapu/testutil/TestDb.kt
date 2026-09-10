@@ -9,12 +9,14 @@ import info.skyblond.daapu.db.ELTM_MAINTENANCE_KEY
 import info.skyblond.daapu.db.ELTM_VERSION_KEY
 import info.skyblond.daapu.db.Chats
 import info.skyblond.daapu.db.EltmEntities
+import info.skyblond.daapu.db.EltmEntityAttributes
 import info.skyblond.daapu.db.EltmNotes
 import info.skyblond.daapu.db.EltmRelationships
 import info.skyblond.daapu.db.GsgMetaNumber
 import info.skyblond.daapu.db.PendingExtractions
 import info.skyblond.daapu.db.Personas
 import info.skyblond.daapu.db.initDatabase
+import info.skyblond.daapu.db.readMetaNumber
 import info.skyblond.daapu.db.withTransaction
 import info.skyblond.daapu.memory.eltm.model.EltmEntity
 import info.skyblond.daapu.memory.eltm.model.EltmNote
@@ -193,6 +195,64 @@ object TestDb {
             )
         }
     }
+
+    /**
+     * Insert an `eltm_entities` row directly (a fixture, NOT the service's
+     * create-or-fetch path), optionally with attributes and a stale
+     * embedding (the full column width — pgvector's `vector(2000)` is
+     * fixed-width); returns the DB-assigned id.
+     */
+    suspend fun seedEltmEntity(
+        name: String,
+        category: String,
+        attributes: Map<String, String> = emptyMap(),
+        embedding: List<Float>? = null,
+    ): Long = withTransaction {
+        val id = EltmEntities.insert {
+            it[canonicalName] = name
+            it[EltmEntities.category] = category
+            it[EltmEntities.embedding] = embedding
+        } get EltmEntities.id
+        attributes.forEach { (key, value) ->
+            EltmEntityAttributes.insert {
+                it[entityId] = id
+                it[EltmEntityAttributes.key] = key
+                it[EltmEntityAttributes.value] = value
+            }
+        }
+        id
+    }
+
+    /**
+     * Insert an `eltm_notes` row attached to an entity (the CHECK demands
+     * exactly one subject; entity-attached is enough for the fixtures).
+     */
+    suspend fun seedEltmNote(
+        entityId: Long,
+        text: String,
+        embedding: List<Float>? = null,
+    ): Long = withTransaction {
+        EltmNotes.insert {
+            it[EltmNotes.entityId] = entityId
+            it[EltmNotes.relationshipId] = null
+            it[eventDate] = java.time.LocalDate.of(2026, 1, 1)
+            it[note] = text
+            it[EltmNotes.embedding] = embedding
+        } get EltmNotes.id
+    }
+
+    /** Every entity's stored embedding in id order (null = never embedded). */
+    suspend fun allEltmEntityEmbeddings(): List<List<Float>?> = withTransaction {
+        EltmEntities.selectAll().orderBy(EltmEntities.id).map { it[EltmEntities.embedding] }
+    }
+
+    /** Every note's stored embedding in id order (null = never embedded). */
+    suspend fun allEltmNoteEmbeddings(): List<List<Float>?> = withTransaction {
+        EltmNotes.selectAll().orderBy(EltmNotes.id).map { it[EltmNotes.embedding] }
+    }
+
+    /** The global ELTM write counter's current value (`gsg_meta_number.eltm_version`). */
+    suspend fun eltmVersion(): Long = withTransaction { readMetaNumber(ELTM_VERSION_KEY) }
 
     // ------------------------------------------------------------------
     // raw extraction-queue access (test fixtures and assertions over the

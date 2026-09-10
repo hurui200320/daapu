@@ -17,12 +17,16 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -33,8 +37,9 @@ import kotlin.test.assertTrue
  * (`server/endpoint/MaintenanceRoute.kt`): the toggle endpoints, the 503
  * block on the four guarded routes (fired before any body validation), the
  * read-only surface staying open while enabled, and the recovery after the
- * mode is turned off. The worker-side pause is pinned by
- * `ExtractionQueueWorkerTest`.
+ * mode is turned off — plus the re-embed job's endpoints (the 409 gate,
+ * the 202 start, the status shape). The worker-side pause is pinned by
+ * `ExtractionQueueWorkerTest`; the job itself by `EmbeddingRefreshServiceTest`.
  */
 class MaintenanceRouteTest : DbTestBase() {
 
@@ -200,6 +205,104 @@ class MaintenanceRouteTest : DbTestBase() {
             assertEquals(false, client.putMaintenance(false))
             assertEquals(HttpStatusCode.NoContent, client.delete("/api/chats/chat-1").status)
             assertTrue(store.load("chat-1") == null, "the delete went through after disabling")
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // the re-embed job's HTTP surface (GET/POST /api/maintenance/reembed)
+    // ------------------------------------------------------------------
+
+    /** `GET /api/maintenance/reembed` parsed as JSON. */
+    private suspend fun HttpClient.reembedStatus(): JsonObject =
+        json.parseToJsonElement(get("/api/maintenance/reembed").bodyAsText()).jsonObject
+
+    /** Poll until the job leaves the running phase (or fail on the deadline). */
+    private suspend fun HttpClient.awaitReembedDone() {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (reembedStatus()["state"]!!.jsonPrimitive.content == "running") {
+            check(System.currentTimeMillis() < deadline) { "re-embed job did not finish within 10s" }
+            delay(25)
+        }
+    }
+
+    @Test
+    fun `reembed status is readable and idle by default, without maintenance mode`() {
+        testApplication {
+            application { module(testKoinApp().koin) }
+            val response = client.get("/api/maintenance/reembed")
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals("idle", client.reembedStatus()["state"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `reembed start is refused with 409 while maintenance mode is off, before any embed`() {
+        val hand = FakeHand()
+        testApplication {
+            application { module(testKoinApp(hand = hand).koin) }
+            val response = client.post("/api/maintenance/reembed")
+            assertEquals(HttpStatusCode.Conflict, response.status)
+            assertTrue(hand.embedRequests.isEmpty(), "a refused start must not embed anything")
+        }
+    }
+
+    @Test
+    fun `reembed starts under maintenance mode, runs through the hand and reports finished`() {
+        val entityId = runBlocking { TestDb.seedEltmEntity("kindle", "device", embedding = null) }
+        runBlocking { TestDb.seedEltmNote(entityId, "a note") }
+        enableMaintenance()
+        val hand = FakeHand()
+        testApplication {
+            application { module(testKoinApp(hand = hand).koin) }
+            val response = client.post("/api/maintenance/reembed")
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            // the fake embed is instantaneous, so the 202's body may already
+            // say finished — only the terminal status is deterministic
+            client.awaitReembedDone()
+            val status = client.reembedStatus()
+            assertEquals("finished", status["state"]!!.jsonPrimitive.content)
+            assertEquals(1L, status["entities"]!!.jsonPrimitive.long)
+            assertEquals(1L, status["notes"]!!.jsonPrimitive.long)
+            assertEquals(2, hand.embedRequests.size, "one embed batch for the entity, one for the note")
+            assertEquals(1L, TestDb.eltmVersion(), "the finished job bumps the counter once")
+        }
+    }
+
+    @Test
+    fun `a second reembed start is refused with 409 while one runs`() {
+        runBlocking { TestDb.seedEltmEntity("kindle", "device") }
+        enableMaintenance()
+        // the gated embed keeps the job in the running phase until released
+        val gate = CompletableDeferred<Unit>()
+        val hand = FakeHand(embedScript = { request ->
+            gate.await()
+            FakeHand().embed(request)
+        })
+        testApplication {
+            application { module(testKoinApp(hand = hand).koin) }
+            assertEquals(HttpStatusCode.Accepted, client.post("/api/maintenance/reembed").status)
+            val second = client.post("/api/maintenance/reembed")
+            assertEquals(HttpStatusCode.Conflict, second.status, "a running job refuses the second start")
+            assertEquals("running", client.reembedStatus()["state"]!!.jsonPrimitive.content)
+
+            gate.complete(Unit)
+            client.awaitReembedDone()
+            assertEquals("finished", client.reembedStatus()["state"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `a failed reembed run reports the failure reason through the status endpoint`() {
+        runBlocking { TestDb.seedEltmEntity("kindle", "device") }
+        enableMaintenance()
+        val hand = FakeHand(embedScript = { error("upstream broke") })
+        testApplication {
+            application { module(testKoinApp(hand = hand).koin) }
+            assertEquals(HttpStatusCode.Accepted, client.post("/api/maintenance/reembed").status)
+            client.awaitReembedDone()
+            val status = client.reembedStatus()
+            assertEquals("failed", status["state"]!!.jsonPrimitive.content)
+            assertEquals("upstream broke", status["error"]!!.jsonPrimitive.content)
         }
     }
 }

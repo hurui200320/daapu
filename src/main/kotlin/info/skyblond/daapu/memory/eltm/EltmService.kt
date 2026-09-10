@@ -105,7 +105,7 @@ internal fun entityEmbeddingText(
 /**
  * The note embedding text: currently the trimmed note itself — no decoration
  * (no date, no subject). The single point to change if the format ever
- * evolves; the re-embed helper (`EmbeddingRefreshMain`) and the write path
+ * evolves; the re-embed job (`EmbeddingRefreshService`) and the write path
  * both derive the vector from the stored note through this function, so a
  * format change never strands old embeddings. The trimmed form is what the
  * service validates and stores, so the function applied to the stored row

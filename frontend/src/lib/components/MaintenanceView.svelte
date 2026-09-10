@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { getMaintenanceStatus, setMaintenance } from '../api'
+  import { getMaintenanceStatus, getReembedStatus, setMaintenance, startReembed } from '../api'
   import { router } from '../router.svelte'
   import { toastStore } from '../toast-store.svelte'
+  import Button from './ui/button.svelte'
   import Switch from './ui/switch.svelte'
   import { errMsg } from '../utils'
+  import type { ReembedStatus } from '../types'
 
   // the server's flag, never optimistic: every toggle and every visit
   // re-reads the state, so a failed toggle or a concurrent flip (another
@@ -14,9 +16,17 @@
   // a toggle failure goes to the toast stack instead (an action, not content)
   let error = $state<string | null>(null)
 
+  // the re-embed job's status snapshot: also re-read on every visit and
+  // after every action. No polling — the job's progress goes to the server
+  // log, so 'running' stays until the next visit re-reads it.
+  let reembed = $state<ReembedStatus | null>(null)
+  let reembedBusy = $state(false)
+
   async function refresh() {
     try {
-      enabled = (await getMaintenanceStatus()).enabled
+      const [maintenance, reembedStatus] = await Promise.all([getMaintenanceStatus(), getReembedStatus()])
+      enabled = maintenance.enabled
+      reembed = reembedStatus
       error = null
     } catch (e) {
       error = errMsg(e)
@@ -42,10 +52,27 @@
     }
   }
 
+  async function startRefresh() {
+    if (reembedBusy || !enabled || reembed?.state === 'running') return
+    reembedBusy = true
+    try {
+      reembed = await startReembed()
+      error = null
+    } catch (e) {
+      toastStore.pushError(e)
+    } finally {
+      // same re-read pattern as the toggle: a refused start (409) leaves
+      // the server's truth (e.g. a job another tab started) on screen
+      await refresh()
+      reembedBusy = false
+    }
+  }
+
   // Fetch only while the view is visible (it stays mounted, CSS-hidden on
-  // the other routes): every visit re-reads the flag — one cheap GET,
-  // always fresh. No background polling: a concurrent flip (another tab)
-  // self-corrects on the next visit or toggle, both of which re-read.
+  // the other routes): every visit re-reads the flag and the job status —
+  // two cheap GETs, always fresh. No background polling: a concurrent flip
+  // (another tab) self-corrects on the next visit or toggle, both of which
+  // re-read.
   $effect(() => {
     if (router.current.name !== 'maintenance') return
     void refresh()
@@ -90,6 +117,54 @@
           onCheckedChange={(next) => void toggle(next)}
           class="-mt-0.5"
         />
+      </div>
+    </div>
+    <div class="rounded-xl border border-border/60 bg-muted/40 p-4">
+      <div class="flex flex-col gap-3 text-sm">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <label for="reembed-start">Re-embed all memory vectors</label>
+            <p class="text-xs text-muted-foreground">
+              Re-embed every stored entity and note vector with the configured embedding model (<code
+                >memory.eltm.embeddingModel</code
+              >) — run this after switching embedding models: old vectors are useless to a new model. The typical flow:
+              change the model in the config, restart the server, enable maintenance mode above, then start the job. It
+              runs in the background; the progress goes to the server log, and the outcome shows here on your next
+              visit.
+            </p>
+          </div>
+          <!-- disabled unless maintenance mode is on (the freeze is the
+               run's safety) and no job is running; the id mirrors the
+               switch's naming pattern -->
+          <Button
+            id="reembed-start"
+            size="sm"
+            class="shrink-0"
+            disabled={reembedBusy || !enabled || reembed?.state === 'running'}
+            onclick={() => void startRefresh()}
+          >
+            {reembedBusy || reembed?.state === 'running' ? 'Running…' : 'Start'}
+          </Button>
+        </div>
+        {#if reembed}
+          {#if reembed.state === 'running'}
+            <p class="text-xs text-muted-foreground">
+              A refresh is running in the background — watch the server log for progress; this page shows the outcome on
+              the next visit.
+            </p>
+          {:else if reembed.state === 'finished'}
+            <p class="text-xs text-muted-foreground">
+              Last refresh finished: re-embedded {reembed.entities}
+              {reembed.entities === 1 ? 'entity' : 'entities'} and {reembed.notes}
+              {reembed.notes === 1 ? 'note' : 'notes'} with the configured model.
+            </p>
+          {:else if reembed.state === 'failed'}
+            <p class="text-xs text-destructive">
+              Last refresh failed: {reembed.error}. Already-written batches stay written — the job is safely
+              re-runnable.
+            </p>
+          {/if}
+        {/if}
       </div>
     </div>
   </div>

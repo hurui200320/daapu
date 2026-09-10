@@ -213,3 +213,20 @@ data class MaintenanceStatusResponse(val enabled: Boolean)
  */
 @Serializable
 data class SetMaintenanceRequest(val enabled: Boolean)
+
+/**
+ * Response body of `GET /api/maintenance/reembed` and the 202 of
+ * `POST /api/maintenance/reembed`: the in-server re-embed job's phase
+ * ([state]: "idle" | "running" | "finished" | "failed"). [entities] and
+ * [notes] carry the finished job's summary (0 otherwise), [error] the
+ * failed job's reason (null otherwise). The job runs in the background —
+ * its progress goes to the server log, not this DTO (authority:
+ * `memory/eltm/EmbeddingRefreshService.kt`).
+ */
+@Serializable
+data class ReembedStatusResponse(
+    val state: String,
+    val entities: Long = 0L,
+    val notes: Long = 0L,
+    val error: String? = null,
+)

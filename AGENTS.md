@@ -114,7 +114,11 @@ src/main/kotlin/info/skyblond/daapu/
                              (EltmTransfer.kt + EltmTransferService.kt —
                              the whole-store export / merge import), the
                              background extraction queue
-                             (ExtractionQueue.kt + ExtractionQueueWorker.kt)
+                             (ExtractionQueue.kt + ExtractionQueueWorker.kt),
+                             the in-server re-embed job
+                             (EmbeddingRefreshService.kt — maintenance-tab
+                             button, see its KDoc), the shared embed
+                             batching (EltmEmbeddingHelper.kt)
   memory/eltm/postgres/      the Postgres impls: PostgresEltmService.kt,
                              PostgresExtractionQueue.kt; the service's
                              ambient-transaction SQL bodies (finders,
@@ -123,8 +127,6 @@ src/main/kotlin/info/skyblond/daapu/
                              fold-and-delete writes) live in
                              EltmEntityQueries.kt / EltmRelationshipQueries.kt /
                              EltmNoteQueries.kt / EltmMergeQueries.kt
-  script/                    RefreshEmbedding.kt — one-off
-                             embedding-model-switch maintenance (see its KDoc)
   server/                    ktor HTTP API: WebServer.kt, SseEvents.kt (SSE
                              event mapping), Dtos.kt, endpoint/ (Chats/
                              Models/Personas/Eltm/Hand/Maintenance routes,
@@ -204,7 +206,11 @@ KDoc of the named files.
   (chat send, chat delete, ELTM digest, ELTM import; the blocked list and
   the accepted limits live in its KDoc), and the extraction worker pauses
   its drain (`ExtractionQueueWorker.kt`). Toggle via
-  `GET/PUT /api/maintenance` (the frontend's `#/maintenance` tab).
+  `GET/PUT /api/maintenance` (the frontend's `#/maintenance` tab). The
+  same tab's re-embed button (`GET/POST /api/maintenance/reembed`) drives
+  the in-server embedding refresh (`memory/eltm/EmbeddingRefreshService.kt`):
+  maintenance mode must be ON to start it, turning the mode off mid-run
+  lets it finish, and its progress is log-only.
 - **Context injection** (`agent/context/ContextInjection.kt`):
   deterministic `<meta>` sent-at anchors on user messages plus the full
   `<injection>` on the latest one (chat loop only); harness XML is

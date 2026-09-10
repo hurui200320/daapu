@@ -265,3 +265,20 @@ export interface StreamEvent {
 export interface MaintenanceStatus {
   enabled: boolean
 }
+
+/**
+ * The ELTM embedding-refresh job's status: the response of
+ * `GET /api/maintenance/reembed` and `POST /api/maintenance/reembed`
+ * (authority: `server/endpoint/MaintenanceRoute.kt`). The job runs in the
+ * background — progress goes to the server log, so `running` is the last
+ * state this tab sees until the next visit re-reads it.
+ */
+export interface ReembedStatus {
+  state: 'idle' | 'running' | 'finished' | 'failed'
+  /** The finished job's re-embedded entity count (0 otherwise). */
+  entities: number
+  /** The finished job's re-embedded note count (0 otherwise). */
+  notes: number
+  /** The failed job's reason (null otherwise). */
+  error: string | null
+}

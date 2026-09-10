@@ -4,6 +4,7 @@ import info.skyblond.daapu.agent.ModelCatalog
 import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.ChatStore
 import info.skyblond.daapu.agent.chat.PostgresChatStore
+import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.agent.model.LLM
 import info.skyblond.daapu.agent.model.LLMCapability
 import info.skyblond.daapu.agent.pipeline.TitleGenerator
@@ -35,6 +36,7 @@ import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
+import info.skyblond.daapu.memory.eltm.EmbeddingRefreshService
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.memory.eltm.postgres.PostgresEltmService
@@ -115,16 +117,29 @@ fun appModule(config: AppConfig): Module = module {
     }
     single<EltmService> {
         PostgresEltmService(
-            embeddingModel = get<ModelCatalog>().findEmbeddingModel(config.memory.eltm.embeddingModel)
-                ?: throw IllegalArgumentException(
-                    "memory.eltm.embeddingModel '${config.memory.eltm.embeddingModel}' is not in the model catalog"
-                ),
+            embeddingModel = requiredEmbeddingModel("memory.eltm.embeddingModel", config.memory.eltm.embeddingModel),
             hand = get(),
             entityMatchThreshold = config.memory.eltm.entityMatchThreshold,
             noteSearchThreshold = config.memory.eltm.noteSearchThreshold,
             policy = handPolicy,
         )
     }
+    // the in-server ELTM re-embed job (`memory/eltm/EmbeddingRefreshService.kt`,
+    // started by `POST /api/maintenance/reembed`): re-embeds every stored
+    // vector with the SAME boot-resolved model the ELTM service above
+    // embeds with, so the refresh and the write path can never disagree.
+    // Not reachable from the ChatService graph root — `server/WebServer.kt`
+    // resolves it for the maintenance routes, so the lookup's fail-fast
+    // still fires at boot. stop() (the onClose callback, fired by the
+    // shutdown hook) cancels a running job — abandoned on purpose, the
+    // written batches stay and the run is re-runnable next boot.
+    single<EmbeddingRefreshService> {
+        EmbeddingRefreshService(
+            hand = get(),
+            model = requiredEmbeddingModel("memory.eltm.embeddingModel", config.memory.eltm.embeddingModel),
+            policy = handPolicy,
+        )
+    } withOptions { onClose { it?.close() } }
     // the ELTM transfer pair (export snapshot out, merge import in — see
     // memory/eltm/EltmTransferService.kt): talks ONLY to the EltmService,
     // so every import write rides the service's create-or-fetch machinery
@@ -378,3 +393,13 @@ private fun Scope.requiredLlm(
     }
     return model
 }
+
+/**
+ * Resolve the REQUIRED ELTM embedding model from the catalog by its config
+ * key (`memory.eltm.embeddingModel`): fail fast with the config key in the
+ * error. Both consumers — the ELTM service and the re-embed job — resolve
+ * through this, so they always embed with the same model.
+ */
+private fun Scope.requiredEmbeddingModel(configKey: String, id: String): EmbeddingModel =
+    get<ModelCatalog>().findEmbeddingModel(id)
+        ?: throw IllegalArgumentException("$configKey '$id' is not in the model catalog")

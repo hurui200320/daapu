@@ -1,4 +1,4 @@
-package info.skyblond.daapu.memory.eltm.postgres
+package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.agent.model.EmbeddingModel
 import info.skyblond.daapu.config.MAX_VECTOR_DIMENSIONS
@@ -7,10 +7,15 @@ import info.skyblond.daapu.hand.HandRunPolicy
 import info.skyblond.daapu.hand.HandService
 
 /**
- * Per-embed-call input cap: embedding gateways cap the `input`
- * array (and its total tokens), so an over-cap batch splits into
- * several calls instead of one request the gateway refuses.
- * Internal so the DB-backed tests can build an over-cap batch.
+ * Per-embed-call input cap, shared by every ELTM embed consumer: the
+ * Postgres write path (below) and the re-embed job
+ * (`EmbeddingRefreshService`). Embedding gateways cap the `input` array
+ * (and its total tokens), so an over-cap batch splits into several calls
+ * instead of one request the gateway refuses; for the re-embed job the
+ * chunk is also the write-back transaction boundary, so one chunk = one
+ * `/v1/embed` call + one written batch (the partial-progress boundary
+ * when a run fails). Internal so the DB-backed tests can build an
+ * over-cap batch.
  */
 internal const val EMBED_BATCH_SIZE = 64
 
@@ -19,7 +24,9 @@ internal const val EMBED_BATCH_SIZE = 64
  * [EMBED_BATCH_SIZE] inputs per hand `/v1/embed` call — the batch is
  * the point (never one HTTP round trip per note), the cap keeps one
  * batch inside the embedding gateway's per-request input limits. An
- * empty batch calls nothing.
+ * empty batch calls nothing. Callers needing chunk-granular handling
+ * (the re-embed job writes each chunk back in its own transaction)
+ * pass one [EMBED_BATCH_SIZE]-sized chunk at a time.
  */
 suspend fun HandService.embedAll(
     embeddingModel: EmbeddingModel,

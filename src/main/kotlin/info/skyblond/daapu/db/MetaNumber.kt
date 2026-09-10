@@ -9,8 +9,9 @@ import org.jetbrains.exposed.v1.jdbc.*
  * `V1__init.sql`; the table itself is the generic [GsgMetaNumber] KV
  * store). Every ELTM write bumps it atomically inside its own transaction;
  * the persist loop compares it against `chats.eltm_version` for the
- * `eltm-updated` injection flag, and the re-embed script bumps it once on
- * success so the next chat run re-flags.
+ * `eltm-updated` injection flag, and the re-embed job
+ * (`memory/eltm/EmbeddingRefreshService.kt`) bumps it once on success so
+ * the next chat run re-flags.
  */
 internal const val ELTM_VERSION_KEY = "eltm_version"
 

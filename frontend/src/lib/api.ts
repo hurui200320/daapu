@@ -14,6 +14,7 @@ import type {
   PersonaExportFile,
   PersonaImportResult,
   RelationshipViewDto,
+  ReembedStatus,
   StreamEvent,
   TextPart,
 } from './types'
@@ -342,5 +343,21 @@ export async function getMaintenanceStatus(): Promise<MaintenanceStatus> {
 /** Turn ELTM maintenance mode on/off; returns the applied state (idempotent). */
 export async function setMaintenance(enabled: boolean): Promise<MaintenanceStatus> {
   const res = await request('/api/maintenance', jsonInit('PUT', { enabled }))
+  return res.json()
+}
+
+/** The ELTM embedding-refresh job's status (never blocked by maintenance mode). */
+export async function getReembedStatus(): Promise<ReembedStatus> {
+  return getJson('/api/maintenance/reembed')
+}
+
+/**
+ * Start the background job re-embedding every stored ELTM vector with the
+ * configured embedding model; 409 unless maintenance mode is on or while a
+ * job already runs, 202 + the running status otherwise. Fire-and-forget:
+ * the progress goes to the server log.
+ */
+export async function startReembed(): Promise<ReembedStatus> {
+  const res = await request('/api/maintenance/reembed', { method: 'POST' })
   return res.json()
 }
