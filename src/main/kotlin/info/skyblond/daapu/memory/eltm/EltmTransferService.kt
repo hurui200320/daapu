@@ -2,6 +2,10 @@ package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.memory.eltm.model.*
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
 import java.util.*
@@ -71,7 +75,16 @@ import java.util.*
  *   ([EltmService.createRelationships]), and each entity's attribute
  *   write set and each subject's note batch are ONE transaction
  *   (embeddings ride the hand's batched `/v1/embed` — see
- *   [EltmService.attachNotesToEntity]); re-running the same file skips the
+ *   [EltmService.attachNotesToEntity]); those per-subject write sets run
+ *   chunked-parallel (IMPORT_ATTR_BATCH_SIZE / IMPORT_NOTE_BATCH_SIZE —
+ *   the subjects are disjoint and every merge decision rides the
+ *   pre-import snapshot, so parallelism changes only wall time and never
+ *   a successful run's merge result; on failure a chunk is attempted in
+ *   full before its first error aborts: everything before it landed,
+ *   nothing after started, and within it each subject either landed
+ *   whole or rolled back whole — possibly more than a sequential run
+ *   would leave, which the re-run's dedup absorbs, see
+ *   [runChunkInParallel]); re-running the same file skips the
  *   existing content (dedup) and resumes.
  *
  * Concurrency stance: the merge decisions read ONE pre-import snapshot
@@ -203,7 +216,7 @@ class EltmTransferService(private val eltm: EltmService) {
         // The entity's whole write set rides ONE setEntityAttributes call:
         // one embed, one transaction, one counter bump — never a re-embed
         // per key.
-        for ((uuid, entry) in payload.entities) {
+        payload.entities.asSequence().mapNotNull { (uuid, entry) ->
             val entityId = entityIds.getValue(uuid)
             val snapshotAttrs = attributesByEntity[entityId].orEmpty()
             val pendingAttrs = LinkedHashMap<String, String>()
@@ -217,11 +230,19 @@ class EltmTransferService(private val eltm: EltmService) {
                     pendingAttrs[k] = v
                 }
             }
-            if (pendingAttrs.isNotEmpty()) {
-                val written = eltm.setEntityAttributes(entityId, pendingAttrs)
-                attributesWritten += written
-                attributesKept += pendingAttrs.size - written
-            }
+            if (pendingAttrs.isNotEmpty()) entityId to pendingAttrs
+            else null
+        }.chunked(IMPORT_ATTR_BATCH_SIZE).forEach { chunk ->
+            // parallel over the chunk, folded AFTER the complete join
+            // (runChunkInParallel): the summary counters are plain locals,
+            // never mutated concurrently
+            val writtenPerEntity = runChunkInParallel(
+                chunk.map { (entityId, pendingAttrs) ->
+                    { eltm.setEntityAttributes(entityId, pendingAttrs) }
+                }
+            )
+            attributesWritten += writtenPerEntity.sum()
+            attributesKept += chunk.sumOf { (_, attrs) -> attrs.size } - writtenPerEntity.sum()
         }
 
         // ---- stage 2: relationships and their structural state ---------
@@ -294,16 +315,22 @@ class EltmTransferService(private val eltm: EltmService) {
 
         // ---- stage 3: every subject's notes + the snapshot rows' flips -
         logger.info { "ELTM import stage 3 (notes) start" }
-        for ((uuid, entry) in payload.entities) {
+        payload.entities.asSequence().mapNotNull { (uuid, entry) ->
             val entityId = entityIds.getValue(uuid)
             val (pending, skipped) = pendingNotes(entry.notes, entityNotes[entityId].orEmpty())
             notesSkipped += skipped
-            if (pending.isNotEmpty()) {
-                notesInserted += eltm.attachNotesToEntity(entityId, pending).size
-            }
+            if (pending.isNotEmpty()) entityId to pending
+            else null
+        }.chunked(IMPORT_NOTE_BATCH_SIZE).forEach { chunk ->
+            val inserted = runChunkInParallel(
+                chunk.map { (entityId, pending) ->
+                    { eltm.attachNotesToEntity(entityId, pending).size }
+                }
+            ).sum()
+            notesInserted += inserted
         }
 
-        for ((index, rel) in payload.relationships.withIndex()) {
+        payload.relationships.withIndex().asSequence().map { (index, rel) ->
             val relationship = resolvedRelationships[index]?.first
                 ?: error("relationship $index was not resolved by the relationship stage")
             val targetValid = validTargets[index]
@@ -312,15 +339,25 @@ class EltmTransferService(private val eltm: EltmService) {
                 relationshipNotes[relationship.id].orEmpty()
             )
             notesSkipped += skipped
-            if (pending.isNotEmpty()) {
-                // create pending notes and set valid flag
-                notesInserted += eltm.attachNotesToRelationship(
-                    relationship.id, pending, valid = targetValid,
-                ).notes.size
-            } else if (targetValid != null) {
-                // no notes pending to create, but we still need to set valid flag
-                eltm.setRelationshipValid(relationship.id, targetValid)
-            }
+            Triple(relationship, pending, targetValid)
+        }.chunked(IMPORT_NOTE_BATCH_SIZE).forEach { chunk ->
+            val inserted = runChunkInParallel(
+                chunk.map { (relationship, pending, targetValid) ->
+                    {
+                        if (pending.isNotEmpty()) {
+                            // create pending notes and set valid flag
+                            eltm.attachNotesToRelationship(
+                                relationship.id, pending, valid = targetValid,
+                            ).notes.size
+                        } else if (targetValid != null) {
+                            // no notes pending to create, but we still need to set valid flag
+                            eltm.setRelationshipValid(relationship.id, targetValid)
+                            0
+                        } else 0
+                    }
+                }
+            ).sum()
+            notesInserted += inserted
         }
 
         val summary = EltmImportSummary(
@@ -400,6 +437,32 @@ class EltmTransferService(private val eltm: EltmService) {
             seen += date to text
         }
         return pending to skipped
+    }
+
+    /**
+     * Run [works] in parallel and join COMPLETELY: every work runs to
+     * completion even when a sibling fails — the first failure (in chunk
+     * order) is rethrown only after the join, so a failing parallel chunk
+     * aborts the import with all its non-failing subjects' writes landed
+     * and nothing cancelled mid-flight. That keeps the partial boundary
+     * at the chunk (the class KDoc's fail-fast stance), instead of the
+     * timing-dependent sibling set a fail-fast awaitAll would leave — a
+     * cancelled sibling suspended at a transaction dispatch boundary
+     * would silently never run. CancellationException is NOT captured:
+     * a cancelled caller (a disconnected request) must not keep firing
+     * embeds, so it propagates immediately.
+     */
+    private suspend fun <T> runChunkInParallel(works: List<suspend () -> T>): List<T> {
+        val results = coroutineScope {
+            works.map { work ->
+                async {
+                    runCatching { work() }
+                        .onFailure { if (it is CancellationException) throw it }
+                }
+            }.awaitAll()
+        }
+        results.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
+        return results.map { it.getOrThrow() }
     }
 
     /**
@@ -491,5 +554,21 @@ class EltmTransferService(private val eltm: EltmService) {
 
     companion object {
         private val logger = KotlinLogging.logger {}
+
+        /**
+         * How many subject-writes (an entity's attribute write set, a
+         * subject's note batch) run in parallel per chunk (this one for
+         * the attribute stage; [IMPORT_NOTE_BATCH_SIZE] for the notes
+         * stages). MUST stay well under the database pool max — each
+         * parallel write opens its own transaction, and
+         * [EltmService.setEntityAttributes] holds its connection (plus
+         * the entity's FOR UPDATE lock) across the embed HTTP call. Also
+         * weigh the embedding gateway's concurrency limits: a 429 storm
+         * pays the hand's retry backoff and erodes the gain.
+         */
+        private const val IMPORT_ATTR_BATCH_SIZE = 4
+
+        /** The notes stages' [IMPORT_ATTR_BATCH_SIZE] — same sizing constraints. */
+        private const val IMPORT_NOTE_BATCH_SIZE = 4
     }
 }

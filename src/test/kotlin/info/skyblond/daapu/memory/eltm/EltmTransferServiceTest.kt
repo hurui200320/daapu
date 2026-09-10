@@ -169,6 +169,51 @@ class EltmTransferServiceTest : DbTestBase() {
         }
 
     @Test
+    fun `importEltm counts every subject exactly across the chunked-parallel batches`() = runBlocking {
+        // more subjects than a chunk (IMPORT_ATTR_BATCH_SIZE /
+        // IMPORT_NOTE_BATCH_SIZE = 4): the summary counters must fold
+        // across chunk boundaries — every note and attribute lands and is
+        // counted exactly once
+        val (_, transfer) = service()
+        val entityCount = 10
+        val relationshipCount = 5
+        val payload = EltmExportPayload(
+            entities = (1..entityCount).associate { i ->
+                "e$i" to entity(
+                    "e$i", "person",
+                    attributes = mapOf("attr" to "v$i"),
+                    notes = listOf(EltmExportNote(day.toString(), "note $i")),
+                )
+            },
+            relationships = (1..relationshipCount).map { i ->
+                rel("e$i", "knows", "e${i + 1}",
+                    notes = listOf(EltmExportNote(day2.toString(), "rel note $i")))
+            },
+        )
+        val summary = transfer.importEltm(payload, overwriteAttr = false)
+        assertEquals(entityCount, summary.entitiesCreated)
+        assertEquals(relationshipCount, summary.relationshipsCreated)
+        assertEquals(entityCount, summary.attributesWritten, "one attribute per entity, all counted")
+        assertEquals(entityCount + relationshipCount, summary.notesInserted,
+            "every subject's note counted once")
+        assertEquals(0, summary.notesSkipped)
+        assertEquals(entityCount + relationshipCount, TestDb.allEltmNotes().size, "every note landed")
+
+        // the re-run keeps the exact counting on the dedup path (kept /
+        // skipped) across the same chunk boundaries
+        val again = transfer.importEltm(payload, overwriteAttr = false)
+        assertEquals(0, again.entitiesCreated)
+        assertEquals(entityCount, again.entitiesMatched)
+        assertEquals(0, again.relationshipsCreated)
+        assertEquals(relationshipCount, again.relationshipsMatched)
+        assertEquals(0, again.attributesWritten)
+        assertEquals(entityCount, again.attributesKept, "every identical attribute counted once")
+        assertEquals(0, again.notesInserted)
+        assertEquals(entityCount + relationshipCount, again.notesSkipped)
+        assertEquals(entityCount + relationshipCount, TestDb.allEltmNotes().size, "no duplicated notes")
+    }
+
+    @Test
     fun `importEltm matches entities on (name, category) regardless of uuid`() =
         runBlocking {
             val (eltm, transfer) = service()
@@ -630,6 +675,101 @@ class EltmTransferServiceTest : DbTestBase() {
         val summary = freshTransfer.importEltm(payload, overwriteAttr = false)
         assertEquals(2, summary.entitiesCreated, "the re-run rebuilds everything")
         assertEquals(2, freshEltm.listEntities(100, 0).size)
+    }
+
+    @Test
+    fun `importEltm attribute stage is fail-fast partial and resumable`() = runBlocking {
+        // the attr stage is chunked-parallel (IMPORT_ATTR_BATCH_SIZE = 4):
+        // a failing attribute re-embed (inside setEntityAttributes'
+        // transaction, under the entity's FOR UPDATE lock) rolls its OWN
+        // subject back whole, its non-failing chunk siblings land, the
+        // later chunk never starts. The re-run dedups the landed attrs
+        // and sets the rest. The trigger text rides an attribute VALUE,
+        // so the entity bulk's name+category embeds never trip it.
+        val attrValue: (Int) -> String = { if (it == 3) "boom" else "v$it" }
+        val hand = FakeHand(embedScript = { request ->
+            if (request.input.any { "boom" in it }) {
+                throw EmbeddingException("invalid_request", "content too large for the embedding model")
+            }
+            FakeHand().embed(request)
+        })
+        val (eltm, transfer) = service(hand)
+        val payload = EltmExportPayload(
+            entities = (1..6).associate { i ->
+                "e$i" to entity("e$i", "person", attributes = mapOf("attr" to attrValue(i)))
+            },
+            relationships = emptyList(),
+        )
+        assertFailsWith<EmbeddingException> {
+            transfer.importEltm(payload, overwriteAttr = false)
+        }
+        // the entity bulk landed; in the failing chunk (entities 1-4) the
+        // siblings' attrs stuck, entity 3's rolled back whole, and chunk 2
+        // (entities 5, 6) never ran
+        val attrs = eltm.listEntities(100, 0).associate { it.entity.canonicalName to it.attributes }
+        assertEquals(
+            (1..6).map { "e$it" }.sorted(),
+            attrs.keys.sorted(),
+            "the entity bulk landed before the attr failure",
+        )
+        assertEquals(mapOf("attr" to "v1"), attrs.getValue("e1"))
+        assertEquals(mapOf("attr" to "v2"), attrs.getValue("e2"))
+        assertEquals(emptyMap<String, String>(), attrs.getValue("e3"), "the failing write rolled back whole")
+        assertEquals(mapOf("attr" to "v4"), attrs.getValue("e4"))
+        assertEquals(emptyMap<String, String>(), attrs.getValue("e5"), "the later chunk never ran")
+        assertEquals(emptyMap<String, String>(), attrs.getValue("e6"), "the later chunk never ran")
+
+        // a healthy re-run: the landed siblings dedup (kept), the failed
+        // subject and the later chunk's entities set (written)
+        val (freshEltm, freshTransfer) = service()
+        val summary = freshTransfer.importEltm(payload, overwriteAttr = false)
+        assertEquals(0, summary.entitiesCreated)
+        assertEquals(6, summary.entitiesMatched)
+        assertEquals(3, summary.attributesWritten, "entities 3, 5 and 6")
+        assertEquals(3, summary.attributesKept, "entities 1, 2 and 4")
+        assertEquals(
+            (1..6).associate { "e$it" to mapOf("attr" to attrValue(it)) },
+            freshEltm.listEntities(100, 0).associate { it.entity.canonicalName to it.attributes },
+            "every attribute landed on the re-run",
+        )
+    }
+
+    @Test
+    fun `importEltm rethrows the first failure in chunk order when one chunk holds several`() = runBlocking {
+        // two note subjects in ONE chunk (IMPORT_NOTE_BATCH_SIZE = 4), both
+        // failing: the chunk joins completely, and the FIRST failure in
+        // chunk order surfaces — never a timing-dependent sibling's
+        val hand = FakeHand(embedScript = { request ->
+            when {
+                request.input.any { "alice's note" in it } ->
+                    throw EmbeddingException("invalid_request", "first failure")
+                request.input.any { "bob's note" in it } ->
+                    throw EmbeddingException("invalid_request", "second failure")
+                else -> FakeHand().embed(request)
+            }
+        })
+        val (_, transfer) = service(hand)
+        val payload = EltmExportPayload(
+            entities = mapOf(
+                "a" to entity("alice", "person",
+                    notes = listOf(EltmExportNote(day.toString(), "alice's note"))),
+                "b" to entity("bob", "person",
+                    notes = listOf(EltmExportNote(day.toString(), "bob's note"))),
+            ),
+            relationships = emptyList(),
+        )
+        val e = assertFailsWith<EmbeddingException> {
+            transfer.importEltm(payload, overwriteAttr = false)
+        }
+        assertEquals("first failure", e.message,
+            "the first failure in chunk order surfaces after the join")
+        // the join ran both subjects to completion: the entity bulk landed,
+        // neither note did (both embeds failed before their transactions)
+        assertEquals(
+            listOf("alice", "bob"),
+            TestDb.allEltmEntities().map { it.canonicalName }.sorted(),
+        )
+        assertEquals(0, TestDb.allEltmNotes().size, "no note landed")
     }
 
     // ------------------------------------------------------------------
