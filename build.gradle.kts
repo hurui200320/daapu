@@ -86,6 +86,15 @@ application {
     applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
+// the generic script runner: `./gradlew run -PmainClass=<fqcn> --args="..."`
+// runs any main() from the main source set instead of the server entrypoint —
+// the runner for the dev-time utility scripts (see script/README.md). Only the
+// `run` task is affected: installDist (and the Docker entrypoint) keeps the
+// server main class above.
+tasks.named<JavaExec>("run") {
+    mainClass.set(providers.gradleProperty("mainClass").orElse(application.mainClass))
+}
+
 tasks.test {
     useJUnitPlatform()
     // docker-java (bundled by testcontainers) falls back to API 1.32, which

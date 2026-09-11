@@ -384,6 +384,13 @@ source change; everything must exit clean.
 Note: the schema is a fresh migration (`V1__init.sql`); if you had an older
 database, drop the volume (`docker compose down -v`) before starting again.
 
+### Utility scripts
+
+One-off dev tools (e.g. the SillyTavern chat transformer) are not part of
+the server; they live under
+`src/main/kotlin/info/skyblond/daapu/script/` and run through a generic
+Gradle runner — see that package's `README.md` for usage.
+
 ### Divergences from the koog/langchain4j implementations
 
 The hand-pi migration changed a few observable behaviors on purpose (the old

@@ -131,6 +131,10 @@ src/main/kotlin/info/skyblond/daapu/
                              event mapping), Dtos.kt, endpoint/ (Chats/
                              Models/Personas/Eltm/Hand/Maintenance routes,
                              FailureChain.kt, Params.kt)
+  script/                    dev-time utility scripts, NOT part of the server
+                             (run via the Gradle runner, see build.gradle.kts
+                             and script/README.md); e.g. digest/transform/
+                             SillyTavernTransformer.kt
 src/main/resources/
   db/migration/              Flyway schema: V1__init.sql, V2__personas.sql,
                              V3__pending_extractions.sql
