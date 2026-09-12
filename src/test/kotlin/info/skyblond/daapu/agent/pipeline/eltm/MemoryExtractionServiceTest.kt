@@ -25,7 +25,7 @@ import kotlin.test.*
 
 /**
  * Pins [MemoryExtractionService]'s two-stage pipeline: the extractor
- * one-shot (raw dropped history, anchored user messages, no tools) and the
+ * one-shot ([MemoryExtractor]: raw dropped history, anchored user messages, no tools) and the
  * ELTM writer tool loop that records the extracted facts into the diary
  * directly — the sentinel skip, the fail-fast capability check, and the
  * failure semantics that must fail the run instead of silently losing
@@ -180,15 +180,15 @@ class MemoryExtractionServiceTest : DbTestBase() {
         // the tolerant sentinel match (see MemoryExtractionService
         // .isNothingToRemember): a near-miss must not reach the writer as a
         // fact batch
-        assertTrue(MemoryExtractionService.isNothingToRemember("Nothing worth remember."))
-        assertTrue(MemoryExtractionService.isNothingToRemember("nothing worth remember"))
-        assertTrue(MemoryExtractionService.isNothingToRemember("  NOTHING  WORTH REMEMBER.  "))
-        assertTrue(MemoryExtractionService.isNothingToRemember("Nothing worth remember!"))
+        assertTrue(MemoryExtractor.isNothingToRemember("Nothing worth remember."))
+        assertTrue(MemoryExtractor.isNothingToRemember("nothing worth remember"))
+        assertTrue(MemoryExtractor.isNothingToRemember("  NOTHING  WORTH REMEMBER.  "))
+        assertTrue(MemoryExtractor.isNothingToRemember("Nothing worth remember!"))
         // a paraphrase is not the sentinel: the writer's skip-sentinel rule
         // is the backstop for those
-        assertFalse(MemoryExtractionService.isNothingToRemember("Nothing worth remembering."))
-        assertFalse(MemoryExtractionService.isNothingToRemember("User likes coffee"))
-        assertFalse(MemoryExtractionService.isNothingToRemember("The note says \"Nothing worth remember.\""))
+        assertFalse(MemoryExtractor.isNothingToRemember("Nothing worth remembering."))
+        assertFalse(MemoryExtractor.isNothingToRemember("User likes coffee"))
+        assertFalse(MemoryExtractor.isNothingToRemember("The note says \"Nothing worth remember.\""))
     }
 
     @Test
@@ -239,7 +239,7 @@ Rules:
 - Extract the content of documents or code the user shared, not "the user shared a document" (meta extraction)
 - When nothing is worth remembering, output sentence "Nothing worth remember."
 """.trimIndent().trim(),
-            MemoryExtractionService.renderExtractorSystemPrompt(ExtractionInput.CONVERSATION),
+            MemoryExtractor.renderExtractorSystemPrompt(ExtractionInput.CONVERSATION),
         )
     }
 
@@ -280,7 +280,7 @@ Rules:
 
     @Test
     fun `the digest extractor prompt describes the provided input without conversation-only rules`() {
-        val prompt = MemoryExtractionService.renderExtractorSystemPrompt(ExtractionInput.USER_DIGEST)
+        val prompt = MemoryExtractor.renderExtractorSystemPrompt(ExtractionInput.USER_DIGEST)
         // the fake-hand dispatch prefix (see the pipeline tests) must hold
         assertTrue(
             prompt.startsWith("You're extracting memories from a submission the user provided"),
@@ -305,7 +305,7 @@ Rules:
         assertTrue(
             prompt.contains(
                 "When nothing is worth remembering, output sentence " +
-                        "\"${MemoryExtractionService.NOTHING_TO_REMEMBER_TEXT}\""
+                        "\"${MemoryExtractor.NOTHING_TO_REMEMBER_TEXT}\""
             ),
             prompt,
         )
@@ -388,7 +388,7 @@ Rules:
         val extractor = service(hand)
         // a blank text (the route 400s first; the service guards
         // defensively) and a pasted sentinel — exact or near-miss, the
-        // tolerant match (see MemoryExtractionService.isNothingToRemember)
+        // tolerant match (see MemoryExtractor.isNothingToRemember)
         // — are all silent no-ops without any LLM call
         extractor.digestUserInput(listOf(textPart("   ")), LocalDate.parse("2026-01-01"))
         extractor.digestUserInput(listOf(textPart("Nothing worth remember.")), LocalDate.parse("2026-01-01"))

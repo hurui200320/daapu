@@ -84,7 +84,9 @@ src/main/kotlin/info/skyblond/daapu/
     pipeline/                one-shot helpers (OneShotRuns.kt,
                              TitleGenerator.kt) + sub-pipelines: compaction/,
                              eltm/ (MemoryExtractionService.kt +
-                             EltmWriterService.kt), investigate/, rewrite/
+                             EltmWriterService.kt + MemoryExtractor.kt —
+                             the extractor stage alone, reused by the
+                             script/ replay), investigate/, rewrite/
     context/                 ContextInjection.kt + RelatedNotes.kt
                              (XSD-guarded harness XML)
     tool/                    ToolProvider.kt SPI (+ EmptyToolProvider);
@@ -134,7 +136,9 @@ src/main/kotlin/info/skyblond/daapu/
   script/                    dev-time utility scripts, NOT part of the server
                              (run via the Gradle runner, see build.gradle.kts
                              and script/README.md); e.g. digest/transform/
-                             SillyTavernTransformer.kt
+                             SillyTavernTransformer.kt, digest/DigestLLMChat.kt
+                             (replays a foreign chat through compaction +
+                             extraction, facts to a review file)
 src/main/resources/
   db/migration/              Flyway schema: V1__init.sql, V2__personas.sql,
                              V3__pending_extractions.sql

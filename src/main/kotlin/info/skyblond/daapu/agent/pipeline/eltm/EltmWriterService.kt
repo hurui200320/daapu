@@ -97,7 +97,7 @@ The ELTM has four kinds of records:
 
 Rules:
 - Record only information explicitly present in the input. Never invent details.
-- If the input is only the skip sentinel "${MemoryExtractionService.NOTHING_TO_REMEMBER_TEXT}" (any casing or trivial rewording), there is nothing to record: reply with a short confirmation and make no tool calls.
+- If the input is only the skip sentinel "${MemoryExtractor.NOTHING_TO_REMEMBER_TEXT}" (any casing or trivial rewording), there is nothing to record: reply with a short confirmation and make no tool calls.
 - "The user" maps to the canonical entity with name "user" (category "person").
 - When new entity should be created but without a defined name, include words like "unknown", "unspecified" in the name with some description. E.g. "unknown chinese company", or "unspecified female friend", etc.
 - When two DIFFERENT things share the same name and category (e.g. two colleagues both named "John"), disambiguate the NAME with a short parenthetical context taken from the input: "John (Apple Inc)" vs "John (IBM)". Keep a name bare when only one entity of that name exists. When one input introduces several same-name entities, qualify each of them; when the store already has a same-name entity that is a DIFFERENT thing, the NEW entity takes the qualified name (leave the existing one unchanged). Never invent the qualifier, it must come from the input.
