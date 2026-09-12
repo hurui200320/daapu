@@ -282,3 +282,33 @@ export interface ReembedStatus {
   /** The failed job's reason (null otherwise). */
   error: string | null
 }
+
+/**
+ * The ELTM replay job's status: the response of `GET /api/eltm/replay`
+ * and `POST /api/eltm/replay` (authority:
+ * `memory/eltm/EltmReplayService.kt`). The job walks an uploaded foreign
+ * chat window by window and only ENQUEUES the dropped regions — the
+ * extraction drains asynchronously through the worker, so `finished`
+ * means every region is queued, not that the memories are recorded.
+ * `running`/`finished` carry the walk's progress counters; `failed`
+ * carries the at-failure counters (how much already went into the queue)
+ * and the walk's failure reason (the regions already enqueued stay
+ * queued).
+ */
+export interface EltmReplayStatus {
+  state: 'idle' | 'running' | 'finished' | 'failed'
+  /** The finished job's uploaded message count (0 otherwise). */
+  messagesTotal: number
+  /**
+   * Full windows summarized so far (running), in total (finished), or at
+   * failure (failed).
+   */
+  windowsCompacted: number
+  /**
+   * Extraction jobs enqueued so far (running), in total (finished), or at
+   * failure (failed).
+   */
+  jobsQueued: number
+  /** The failed job's reason (null otherwise). */
+  error: string | null
+}

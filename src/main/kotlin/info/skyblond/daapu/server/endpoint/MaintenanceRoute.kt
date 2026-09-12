@@ -40,18 +40,21 @@ class ReembedConflictException(message: String) : RuntimeException(message)
  *   writes;
  * - `DELETE /api/chats/{id}` — deletion enqueues the history for
  *   extraction;
- * - `POST /api/eltm/digest` and `POST /api/eltm/import` — direct ELTM
- *   writes.
+ * - `POST /api/eltm/digest`, `POST /api/eltm/import` and
+ *   `POST /api/eltm/replay` — direct ELTM writes (the replay enqueues
+ *   extraction jobs).
  *
  * Everything else stays open (chat create/rename/title/truncate/fork/
- * import/export, all ELTM reads, personas, models). The background
- * extraction worker pauses too — no claim while the flag is on, so
- * already-enqueued jobs wait for the mode to turn off
- * (`memory/eltm/ExtractionQueueWorker.kt`). Accepted limits, deliberate:
- * an extraction already in flight when the flag flips finishes normally,
- * and `POST /api/hand/tool` is never blocked — that would kill in-flight
- * chat runs mid-stream with a fatal tool error. The check is
- * check-then-act, not a lock: a run that passed the guard just before
+ * import/export, all ELTM reads, the replay status read, personas,
+ * models). The background extraction worker pauses too — no claim while
+ * the flag is on, so already-enqueued jobs wait for the mode to be turned
+ * off (`memory/eltm/ExtractionQueueWorker.kt`). Accepted limits,
+ * deliberate: an extraction already in flight when the flag flips
+ * finishes normally (the same stance covers a replay walk: it keeps
+ * enqueueing while the worker pauses, and its jobs drain once the mode is
+ * turned off), and `POST /api/hand/tool` is never blocked — that would
+ * kill in-flight chat runs mid-stream with a fatal tool error. The check
+ * is check-then-act, not a lock: a run that passed the guard just before
  * the flag flips still proceeds.
  */
 suspend fun requireEltmNotInMaintenance() {

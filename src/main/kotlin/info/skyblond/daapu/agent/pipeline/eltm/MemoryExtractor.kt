@@ -19,9 +19,8 @@ import java.time.ZoneId
  * call (no tools) with the raw dropped history or the digest input plus
  * the extraction system prompt ([renderExtractorSystemPrompt]), returning
  * the free-text list of candidate facts (or the [NOTHING_TO_REMEMBER_TEXT]
- * sentinel). Split out of the service so consumers that only need the
- * extraction (the `script/digest/DigestLLMChat.kt` replay) can run it
- * WITHOUT the ELTM writer half and its database.
+ * sentinel). Split out of the service so the extraction stage stays
+ * separately testable without the ELTM writer half and its database.
  *
  * One instance is stateless and safe to share across concurrent calls.
  *
@@ -50,8 +49,7 @@ class MemoryExtractor(
      * and return the free-text fact list (or the [NOTHING_TO_REMEMBER_TEXT]
      * sentinel when nothing is worth remembering) WITHOUT writing anything
      * — [MemoryExtractionService.processDiscardedMessages] decides whether
-     * to write; `script/digest/DigestLLMChat.kt` replays a foreign chat
-     * through this in batches.
+     * to write.
      *
      * Throws per the class KDoc (a capability mismatch is a configuration
      * error and fails fast; a failed extraction throws

@@ -21,8 +21,9 @@
   import ImportEltmDialog from './ImportEltmDialog.svelte'
   import Button from './ui/button.svelte'
   import DigestForm from './DigestForm.svelte'
+  import ReplayForm from './ReplayForm.svelte'
 
-  type Tab = 'entities' | 'relationships' | 'digest'
+  type Tab = 'entities' | 'relationships' | 'digest' | 'replay'
 
   interface EntityDetails {
     relationships: RelationshipViewDto[]
@@ -43,6 +44,7 @@
     ['entities', 'Entities'],
     ['relationships', 'Relationships'],
     ['digest', 'Digest'],
+    ['replay', 'Replay'],
   ]
 
   const entitiesTab = new PagedTab<EntityViewDto, EntityDetails>(
@@ -463,13 +465,17 @@
       {@render loadMoreButton(relationshipsTab, () => void loadMore(relationshipsTab))}
     {/if}
 
-    <!-- the Digest tab stays MOUNTED even when hidden (display:none): the
-         digest draft must survive switching tabs — and chats (this view
-         itself stays mounted, CSS-hidden, on other routes) — so the form
-         can never be {#if}-mounted (see DigestForm.svelte). While visible,
-         the wrapper only carries the tab column's gap spacing. -->
+    <!-- the Digest and Replay tabs stay MOUNTED even when hidden
+         (display:none): the digest draft and the replay's picked file must
+         survive switching tabs — and chats (this view itself stays
+         mounted, CSS-hidden, on other routes) — so the forms can never be
+         {#if}-mounted (see DigestForm.svelte). While visible, the wrapper
+         only carries the tab column's gap spacing. -->
     <div class={tab === 'digest' ? 'flex flex-col gap-4' : 'hidden'}>
       <DigestForm onsubmitted={resync} />
+    </div>
+    <div class={tab === 'replay' ? 'flex flex-col gap-4' : 'hidden'}>
+      <ReplayForm active={tab === 'replay'} onsubmitted={resync} />
     </div>
   </div>
 </div>

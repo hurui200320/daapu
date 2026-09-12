@@ -8,6 +8,7 @@ import info.skyblond.daapu.memory.eltm.model.EntityView
 import info.skyblond.daapu.memory.eltm.model.RelationshipView
 import info.skyblond.daapu.server.EltmEntityDto.Companion.toDto
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 
 /**
@@ -105,6 +106,37 @@ data class ModelInfo(
 data class EltmDigestRequest(
     val parts: List<ChatMessagePart> = emptyList(),
     val date: String? = null,
+)
+
+/**
+ * Response body of `GET /api/eltm/replay` and the 202 of
+ * `POST /api/eltm/replay`: the in-server replay job's phase ([state]:
+ * "idle" | "running" | "finished" | "failed"). [windowsCompacted] and
+ * [jobsQueued] carry the running/finished job's progress and a failed
+ * walk's AT-FAILURE values (full windows summarized; extraction jobs
+ * enqueued — how much already went into the queue when it died; 0
+ * otherwise), [messagesTotal] the finished job's uploaded message count,
+ * [error] the failed job's reason (null otherwise). The job runs in the
+ * background and only tracks the WALK — the queued extraction jobs drain
+ * asynchronously through the worker, and their progress goes to the
+ * server log, not this DTO (authority: `memory/eltm/EltmReplayService.kt`).
+ *
+ * Every field is annotated [EncodeDefault] because the ContentNegotiation
+ * Json serializes with `encodeDefaults = false` (the ContentNegotiation
+ * Json in `server/WebServer.kt`): the
+ * counters' `0` defaults would otherwise be omitted from the wire exactly
+ * when they mean "no progress yet" — the fresh-start `{"state": "running"}`
+ * snapshot and the zero-compaction finished walk — and the web UI would
+ * render "undefined" (the frontend mirrors this DTO as required fields,
+ * see `frontend/src/lib/types.ts` `EltmReplayStatus`).
+ */
+@Serializable
+data class EltmReplayStatusResponse(
+    val state: String,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val messagesTotal: Int = 0,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val windowsCompacted: Int = 0,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val jobsQueued: Int = 0,
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS) val error: String? = null,
 )
 
 @Serializable

@@ -85,8 +85,7 @@ src/main/kotlin/info/skyblond/daapu/
                              TitleGenerator.kt) + sub-pipelines: compaction/,
                              eltm/ (MemoryExtractionService.kt +
                              EltmWriterService.kt + MemoryExtractor.kt —
-                             the extractor stage alone, reused by the
-                             script/ replay), investigate/, rewrite/
+                             the extractor stage alone), investigate/, rewrite/
     context/                 ContextInjection.kt + RelatedNotes.kt
                              (XSD-guarded harness XML)
     tool/                    ToolProvider.kt SPI (+ EmptyToolProvider);
@@ -117,7 +116,11 @@ src/main/kotlin/info/skyblond/daapu/
                              the whole-store export / merge import), the
                              background extraction queue
                              (ExtractionQueue.kt + ExtractionQueueWorker.kt),
-                             the in-server re-embed job
+                             the in-server replay job
+                             (EltmReplayService.kt — the webui's replay tab,
+                             walks an uploaded foreign chat through the
+                             compaction windows into the queue, see its
+                             KDoc), the in-server re-embed job
                              (EmbeddingRefreshService.kt — maintenance-tab
                              button, see its KDoc), the shared embed
                              batching (EltmEmbeddingHelper.kt)
@@ -136,9 +139,7 @@ src/main/kotlin/info/skyblond/daapu/
   script/                    dev-time utility scripts, NOT part of the server
                              (run via the Gradle runner, see build.gradle.kts
                              and script/README.md); e.g. digest/transform/
-                             SillyTavernTransformer.kt, digest/DigestLLMChat.kt
-                             (replays a foreign chat through compaction +
-                             extraction, facts to a review file)
+                             SillyTavernTransformer.kt
 src/main/resources/
   db/migration/              Flyway schema: V1__init.sql, V2__personas.sql,
                              V3__pending_extractions.sql
@@ -249,8 +250,9 @@ KDoc of the named files.
 - **Compaction & memory extraction** (`agent/pipeline/compaction/`,
   `agent/pipeline/eltm/MemoryExtractionService.kt`): proactive
   token-fraction trigger + reactive `context_exhausted` compaction, wired
-  in `PersistChatService.kt`. EVERY path that drops history (chat deletion
-  AND compaction) feeds the background extraction queue
+  in `PersistChatService.kt`. EVERY path that drops history (chat deletion,
+  compaction, AND the foreign-chat replay `memory/eltm/EltmReplayService.kt`)
+  feeds the background extraction queue
   (`memory/eltm/ExtractionQueue.kt` + `ExtractionQueueWorker.kt`,
   SQS-style visibility lease) — extraction never runs on the request path,
   and a failed extraction never fails a chat run. Extracted facts go
@@ -280,10 +282,12 @@ KDoc of the named files.
   `src/lib/ui-store.svelte.ts`, `src/lib/toast-store.svelte.ts`,
   `src/lib/persona-store.svelte.ts`); the run loop
   (`src/lib/stream-session.ts`); the wire client (`src/lib/api.ts`);
-  ELTM browse + digest
+  ELTM browse + digest + replay
   (`src/lib/components/EltmView.svelte` + its always-mounted
   `src/lib/components/DigestForm.svelte` — the digest draft survives
-  tab/chat switches because the form is never `{#if}`-mounted,
+  tab/chat switches because the form is never `{#if}`-mounted — and
+  `src/lib/components/ReplayForm.svelte` + `src/lib/replay-transfer.ts`
+  (the uploaded-chat parse and the knob validation),
   `src/lib/paged-tab.svelte.ts`, `src/lib/paging.ts`); personas
   (`src/lib/components/PersonaView.svelte`,
   `src/lib/components/PersonaDropdown.svelte`); maintenance

@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   EltmExportPayload,
   EltmImportSummary,
+  EltmReplayStatus,
   EntityViewDto,
   EltmNoteDto,
   MaintenanceStatus,
@@ -331,6 +332,41 @@ export type EltmDigestPart = TextPart | ChatAttachmentPart
  */
 export async function digestEltm(parts: EltmDigestPart[], date?: string): Promise<void> {
   await request('/api/eltm/digest', jsonInit('POST', { parts, date }))
+}
+
+// ---- ELTM replay (the foreign-chat memory walk; see the `#/eltm` Replay tab) ----
+
+/**
+ * Start the background replay of an uploaded foreign chat (`POST
+ * /api/eltm/replay`): the walk compacts the chat window by window with the
+ * production compactor and enqueues every dropped region into the
+ * extraction queue — the worker turns the regions into memories
+ * asynchronously, so the 202 means the walk started, not that the memories
+ * are recorded (see EltmReplayStatus). [messages] is the neutral-format
+ * chat array (what `GET /api/chats/{id}/chat` serves — e.g. the
+ * SillyTavern transformer's `.messages.json` output); the window knobs
+ * ride the query params (the server defaults 8/3, see
+ * `memory/eltm/EltmReplayService.kt`). 400 for a body failing the
+ * stored-chat invariants, an empty chat, bad knobs or a pipeline-model
+ * capability mismatch; 503 during maintenance mode; 409 while a walk
+ * already runs.
+ */
+export async function startEltmReplay(
+  messages: ChatMessage[],
+  compactionRounds?: number,
+  contextRounds?: number,
+): Promise<EltmReplayStatus> {
+  const params = new URLSearchParams()
+  if (compactionRounds !== undefined) params.set('compactionRounds', String(compactionRounds))
+  if (contextRounds !== undefined) params.set('contextRounds', String(contextRounds))
+  const query = params.toString()
+  const res = await request(`/api/eltm/replay${query ? `?${query}` : ''}`, jsonInit('POST', messages))
+  return res.json()
+}
+
+/** The replay job's status (never blocked by maintenance mode). */
+export async function getEltmReplayStatus(): Promise<EltmReplayStatus> {
+  return getJson('/api/eltm/replay')
 }
 
 // ---- maintenance mode (the `#/maintenance` tab) ----

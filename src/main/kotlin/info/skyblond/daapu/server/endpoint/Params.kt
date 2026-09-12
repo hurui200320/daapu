@@ -9,6 +9,12 @@ fun ApplicationCall.longParam(name: String): Long =
     parameters[name]?.toLongOrNull()
         ?: throw BadRequestException("$name must be a number")
 
+/** An optional integer query param: [default] when absent; anything else is a 400. */
+fun ApplicationCall.intQueryParam(name: String, default: Int): Int {
+    val raw = request.queryParameters[name] ?: return default
+    return raw.toIntOrNull() ?: throw BadRequestException("$name must be a number")
+}
+
 fun ApplicationCall.pageLimitParam(default: Int, max: Int): Int {
     val raw = request.queryParameters["limit"] ?: return default
     val value = raw.toIntOrNull() ?: throw BadRequestException("limit must be a number")

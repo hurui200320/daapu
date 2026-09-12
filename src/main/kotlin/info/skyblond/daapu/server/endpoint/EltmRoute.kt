@@ -2,16 +2,20 @@ package info.skyblond.daapu.server.endpoint
 
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
+import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatValidationException
 import info.skyblond.daapu.agent.chat.imageMimeTypeRegex
 import info.skyblond.daapu.agent.pipeline.eltm.MemoryExtractionService
 import info.skyblond.daapu.hand.EmbeddingException
 import info.skyblond.daapu.memory.eltm.EltmExportPayload
+import info.skyblond.daapu.memory.eltm.EltmReplayService
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
+import info.skyblond.daapu.memory.eltm.ReplayStatus
 import info.skyblond.daapu.server.EltmDigestRequest
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
+import info.skyblond.daapu.server.EltmReplayStatusResponse
 import info.skyblond.daapu.server.EntityViewDto.Companion.toDto
 import info.skyblond.daapu.server.RelationshipViewDto.Companion.toDto
 import io.ktor.http.*
@@ -34,6 +38,12 @@ private const val DEFAULT_ELTM_PAGE_LIMIT = 100
  * unbounded `limit` would still be an unbounded work-per-request surface.
  */
 private const val MAX_ELTM_PAGE_LIMIT = 500
+
+/** Default `compactionRounds` of `POST /api/eltm/replay` (the window knobs). */
+private const val DEFAULT_REPLAY_COMPACTION_ROUNDS = 8
+
+/** Default `contextRounds` of `POST /api/eltm/replay` (the window knobs). */
+private const val DEFAULT_REPLAY_CONTEXT_ROUNDS = 3
 
 /**
  * A terminal failure of the ELTM digest behind `POST /api/eltm/digest`:
@@ -64,18 +74,29 @@ class EltmDigestException(message: String, cause: Throwable) : RuntimeException(
 class EltmImportException(message: String, cause: Throwable) : RuntimeException(message, cause)
 
 /**
+ * A replay start that cannot proceed because a walk is already active:
+ * mapped to 409 with this message (WebServer's StatusPages). An expected
+ * admin state, not an error — never logged.
+ */
+class EltmReplayConflictException(message: String) : RuntimeException(message)
+
+/**
  * The `/api/eltm` routes: the browse-only reads over [EltmService] plus the
  * write endpoints — `POST /digest`, feeding caller-supplied text/image
  * parts through [memoryExtractionService] (both the extraction one-shot
  * and the writer run inside `MemoryExtractionService.digestUserInput`;
  * the same extractor/writer pair the discard pipeline uses — the ELTM is
- * otherwise written only by that pipeline), and the transfer pair
- * (`GET /export` / `POST /import`, see [eltmTransferService]).
+ * otherwise written only by that pipeline), the replay pair
+ * (`GET/POST /replay`, see [replayService] — the replay's walk semantics
+ * and the queue-drain write path live in `memory/eltm/EltmReplayService.kt`),
+ * and the transfer pair (`GET /export` / `POST /import`, see
+ * [eltmTransferService]).
  */
 fun Route.registerEltmEndpoints(
     eltmService: EltmService,
     memoryExtractionService: MemoryExtractionService,
     eltmTransferService: EltmTransferService,
+    replayService: EltmReplayService,
 ) {
     route("/eltm") {
         get("/entities") {
@@ -159,6 +180,56 @@ fun Route.registerEltmEndpoints(
                 eltmService.getRelationshipNotes(id, from, to, limit, offset)
                     .map { it.toDto() }
             )
+        }
+        // the replay pair: walk an uploaded foreign chat through the
+        // production compaction stage window by window, enqueueing every
+        // dropped region into the background extraction queue (the walk
+        // semantics and the async-drain write path: EltmReplayService).
+        // The chat uploads as the neutral format's JSON array VERBATIM —
+        // the body is what `GET /api/chats/{id}/chat` serves, decoded with
+        // the stored-chat invariants (ChatCodec.decodeChat; a violation is
+        // a 400), and the window knobs ride the query params like the
+        // import's overwriteAttr. POST validates synchronously (a 400 for
+        // bad knobs/empty chat/a capability mismatch, before any LLM
+        // spend) then answers 202 with the running status — the walk and
+        // the memory work run in the background, the status endpoint
+        // tracks the walk (NOT the drain: "finished" means every region
+        // is queued). 409 while a walk is already active. No chat lock:
+        // nothing here touches the chats table — the foreign chat never
+        // becomes one. Accepted PoC limits, the same stance as the digest
+        // and import routes: no size cap on the body and no replay
+        // concurrency beyond the single-flight 409.
+        route("/replay") {
+            get {
+                call.respond(replayService.status().toDto())
+            }
+            post {
+                requireEltmNotInMaintenance()
+                val compactionRounds = call.intQueryParam("compactionRounds", DEFAULT_REPLAY_COMPACTION_ROUNDS)
+                val contextRounds = call.intQueryParam("contextRounds", DEFAULT_REPLAY_CONTEXT_ROUNDS)
+                // a body that fails the stored-chat invariants (not JSON,
+                // not a chat — decodeChat wraps every failure in an
+                // IllegalStateException) is a client error, not a 500
+                val chat = try {
+                    ChatCodec.decodeChat("eltm-replay", call.receiveText())
+                } catch (e: IllegalStateException) {
+                    throw BadRequestException(e.message ?: "Invalid replay chat payload")
+                }
+                // start's synchronous validations (the knob bounds, the
+                // non-empty chat, both pipeline models' capability check
+                // over the whole chat) are client errors before any LLM
+                // spend — a mid-walk failure is the status endpoint's
+                // Failed phase, never a response here
+                val started = try {
+                    replayService.start(chat, compactionRounds, contextRounds)
+                } catch (e: IllegalArgumentException) {
+                    throw BadRequestException(e.message ?: "Invalid replay request")
+                }
+                if (!started) {
+                    throw EltmReplayConflictException("an ELTM replay is already running")
+                }
+                call.respond(HttpStatusCode.Accepted, replayService.status().toDto())
+            }
         }
         // export the whole ELTM as the transfer payload (see
         // EltmTransferService.exportEltm): an attachment named `eltm.json`,
@@ -305,4 +376,33 @@ fun Route.registerEltmEndpoints(
             call.respond(HttpStatusCode.Created)
         }
     }
+}
+
+/**
+ * Map the replay status snapshot to its wire shape (see
+ * `EltmReplayStatusResponse`): the progress counters carry the running
+ * and finished phases' values and a failed walk's at-failure values (0
+ * otherwise), [ReplayStatus.Failed]'s reason rides
+ * [EltmReplayStatusResponse.error]. The DTO's [EncodeDefault] annotations
+ * keep the zero counters on the wire.
+ */
+private fun ReplayStatus.toDto(): EltmReplayStatusResponse = when (this) {
+    is ReplayStatus.Idle -> EltmReplayStatusResponse(state = "idle")
+    is ReplayStatus.Running -> EltmReplayStatusResponse(
+        state = "running",
+        windowsCompacted = windowsCompacted,
+        jobsQueued = jobsQueued,
+    )
+    is ReplayStatus.Finished -> EltmReplayStatusResponse(
+        state = "finished",
+        messagesTotal = messagesTotal,
+        windowsCompacted = windowsCompacted,
+        jobsQueued = jobsQueued,
+    )
+    is ReplayStatus.Failed -> EltmReplayStatusResponse(
+        state = "failed",
+        windowsCompacted = windowsCompacted,
+        jobsQueued = jobsQueued,
+        error = error,
+    )
 }

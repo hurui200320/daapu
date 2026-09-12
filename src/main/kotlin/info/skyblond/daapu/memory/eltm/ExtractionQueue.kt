@@ -17,12 +17,14 @@ data class ClaimedJob(
  * `V3__pending_extractions.sql`): the Postgres-as-queue seam between the
  * paths that drop history worth remembering — the chat-deletion path
  * (`agent/chat/ChatService.kt`'s `deleteChat`, which enqueues a history
- * snapshot and deletes the chats row on the request path) and the
- * compaction path (`agent/persist/PersistChatService.kt`'s
- * `compactAndEnqueue`, which enqueues the dropped messages before the
- * compacted history is stored) — and the extraction worker
- * (`ExtractionQueueWorker.kt`, which drains the queue into the ELTM off the
- * request path — slow endpoints stall neither a delete nor a chat run).
+ * snapshot and deletes the chats row on the request path), the compaction
+ * path (`agent/persist/PersistChatService.kt`'s `compactAndEnqueue`, which
+ * enqueues the dropped messages before the compacted history is stored),
+ * and the replay job (`EltmReplayService.kt`, which enqueues every region
+ * of an uploaded foreign chat its windowed walk drops) — and the extraction
+ * worker (`ExtractionQueueWorker.kt`, which drains the queue into the ELTM
+ * off the request path — slow endpoints stall neither a delete, a chat run
+ * nor a replay start).
  *
  * VISIBILITY-TIMEOUT PATTERN (the migration's header comment holds the
  * authoritative mechanism description): there is no separate lease or
@@ -53,9 +55,9 @@ data class ClaimedJob(
 interface ExtractionQueue {
     /**
      * Insert a job carrying the history snapshot (a deleted chat's full
-     * history or a compaction's dropped messages); returns its id. Callers
-     * pass [ChatMessage]s — how the snapshot is stored is the
-     * implementation's detail (see
+     * history, a compaction's dropped messages, or a replay window's
+     * dropped region); returns its id. Callers pass [ChatMessage]s — how
+     * the snapshot is stored is the implementation's detail (see
      * [info.skyblond.daapu.memory.eltm.postgres.PostgresExtractionQueue]).
      */
     suspend fun enqueue(messages: List<ChatMessage>): Long

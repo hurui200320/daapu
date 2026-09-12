@@ -14,6 +14,7 @@ import info.skyblond.daapu.hand.HandCallbackService
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
+import info.skyblond.daapu.memory.eltm.EltmReplayService
 import info.skyblond.daapu.memory.eltm.EmbeddingRefreshService
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
 import info.skyblond.daapu.server.endpoint.*
@@ -107,6 +108,7 @@ internal fun Application.module(koin: Koin) {
     val eltmService = koin.get<EltmService>()
     val memoryExtractionService = koin.get<MemoryExtractionService>()
     val eltmTransferService = koin.get<EltmTransferService>()
+    val eltmReplayService = koin.get<EltmReplayService>()
     val handCallback = koin.get<HandCallbackService>()
     val personaService = koin.get<PersonaService>()
     val modelCatalog = koin.get<ModelCatalog>()
@@ -158,6 +160,15 @@ internal fun Application.module(koin: Koin) {
             call.respond(
                 HttpStatusCode.Conflict,
                 ErrorResponse(cause.message ?: "Cannot start the re-embed job")
+            )
+        }
+        // a replay start that cannot proceed (a walk already active —
+        // endpoint/EltmRoute.kt): the same expected-state 409 as the
+        // re-embed's, never logged
+        exception<EltmReplayConflictException> { call, cause ->
+            call.respond(
+                HttpStatusCode.Conflict,
+                ErrorResponse(cause.message ?: "Cannot start the ELTM replay")
             )
         }
         exception<ChatValidationException> { call, cause ->
@@ -232,7 +243,7 @@ internal fun Application.module(koin: Koin) {
             registerModelsEndpoints(modelCatalog)
             registerHandEndpoints(handCallback)
             registerChatsEndpoints(service)
-            registerEltmEndpoints(eltmService, memoryExtractionService, eltmTransferService)
+            registerEltmEndpoints(eltmService, memoryExtractionService, eltmTransferService, eltmReplayService)
             registerPersonasEndpoints(personaService)
             registerMaintenanceEndpoints(embeddingRefreshService)
         }

@@ -36,6 +36,7 @@ import info.skyblond.daapu.hand.HttpHandClient
 import info.skyblond.daapu.mcp.McpToolProvider
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
+import info.skyblond.daapu.memory.eltm.EltmReplayService
 import info.skyblond.daapu.memory.eltm.EmbeddingRefreshService
 import info.skyblond.daapu.memory.eltm.ExtractionQueue
 import info.skyblond.daapu.memory.eltm.ExtractionQueueWorker
@@ -332,6 +333,24 @@ fun appModule(config: AppConfig): Module = module {
             workers = config.memory.eltm.queueWorkers,
         )
     } withOptions { onClose { it?.stop() } }
+
+    // the in-server ELTM replay job (`memory/eltm/EltmReplayService.kt`,
+    // started by `POST /api/eltm/replay`): walks an uploaded foreign chat
+    // through the production compaction stage and enqueues every dropped
+    // region into the extraction queue above — a THIRD enqueue producer
+    // beside the delete and compaction paths. Not reachable from the
+    // ChatService graph root: `server/WebServer.kt` resolves it for the
+    // ELTM routes, so the lookup's fail-fast still fires at boot. close()
+    // (the onClose callback, fired by the shutdown hook) cancels a running
+    // walk — abandoned on purpose, its enqueued jobs drain next boot.
+    single<EltmReplayService> {
+        EltmReplayService(
+            compactModel = requiredLlm("memory.compactModel", config.memory.compactModel),
+            extractModel = requiredLlm("memory.eltm.extractionModel", config.memory.eltm.extractionModel),
+            compactionService = get(),
+            queue = get(),
+        )
+    } withOptions { onClose { it?.close() } }
 
     single<QueryRewriteService> {
         QueryRewriteService(
