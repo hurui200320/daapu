@@ -47,21 +47,18 @@ truncated or plugin-appended lines — are skipped, each with a `[warn]` on
 stderr carrying the full line: review the warnings, since skipped content
 is absent from the output.
 
-One run writes BOTH files:
+One run writes a single file:
 
-- `<outputBase>.messages.json` — the raw neutral chat format
-  (`ChatCodec.encodeChat`), byte-identical to what `GET /api/chats/{id}/chat`
-  serves; for processing by code.
-- `<outputBase>.export.json` — the `{title, messages}` payload the webui's
-  import accepts (the same shape as `GET /api/chats/{id}/export`); import
-  it via the web UI to continue the chat.
+- `<outputBase>.json` — the `{title, messages}` payload the system speaks:
+  the same shape as `GET /api/chats/{id}/export`. Import it via the web UI
+  to continue the chat, or upload it to the ELTM Replay tab.
 
 The transform's exact semantics (prologue wrapping, timestamps, the
 fail-fast checks) live in `transformSillyTavernChat`'s KDoc.
 
-The `<outputBase>.messages.json` file also feeds the web UI's ELTM Replay
-tab (`POST /api/eltm/replay`, authority `memory/eltm/EltmReplayService.kt`)
+The `<outputBase>.json` file also feeds the web UI's ELTM Replay tab
+(`POST /api/eltm/replay`, authority `memory/eltm/EltmReplayService.kt`)
 when you want the chat's memories recorded instead of continuing the chat:
-upload it there and the server walks it through the production compaction
-windows, enqueueing every dropped region for the background memory
-extraction.
+upload it there and the server walks the messages through the production
+compaction windows, enqueueing every dropped region for the background
+memory extraction (the replay ignores the payload's title).

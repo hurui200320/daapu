@@ -115,7 +115,7 @@ private data class SillyTavernMessage(
  *
  * CLI contract: `<st-export.jsonl> <imagesDir> <outputBase> [title]`, where
  * `title` defaults to the export file's name and must be non-blank. One run
- * writes BOTH outputs (see `script/README.md` for their semantics).
+ * writes the single output file (see `script/README.md` for its semantics).
  */
 fun main(args: Array<String>) {
     if (args.size !in 3..4) {
@@ -132,17 +132,14 @@ fun main(args: Array<String>) {
     val chat = transformSillyTavernChat(chatJsonLineFile, imageFolder)
     val encodedChat = ChatCodec.encodeChat(chat)
 
-    // the raw neutral format, byte-identical to what GET /api/chats/{id}/chat
-    // serves — for processing by code
-    File("$outputBase.messages.json").writeText(encodedChat)
-
-    // the `{title, messages}` payload the webui's import accepts, mirroring
-    // GET /api/chats/{id}/export (see server/endpoint/ChatsRoute.kt)
+    // the `{title, messages}` payload the system speaks — the chat import
+    // and the ELTM replay (mirroring GET /api/chats/{id}/export, see
+    // server/endpoint/ChatsRoute.kt)
     val exportJsonObj = buildJsonObject {
         put("title", title)
         put("messages", Json.parseToJsonElement(encodedChat))
     }
-    File("$outputBase.export.json").writeText(json.encodeToString(JsonObject.serializer(), exportJsonObj))
+    File("$outputBase.json").writeText(json.encodeToString(JsonObject.serializer(), exportJsonObj))
 }
 
 /**

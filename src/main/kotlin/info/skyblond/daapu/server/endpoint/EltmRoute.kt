@@ -13,6 +13,7 @@ import info.skyblond.daapu.memory.eltm.EltmReplayService
 import info.skyblond.daapu.memory.eltm.EltmService
 import info.skyblond.daapu.memory.eltm.EltmTransferService
 import info.skyblond.daapu.memory.eltm.ReplayStatus
+import info.skyblond.daapu.server.ChatExportPayload
 import info.skyblond.daapu.server.EltmDigestRequest
 import info.skyblond.daapu.server.EltmNoteDto.Companion.toDto
 import info.skyblond.daapu.server.EltmReplayStatusResponse
@@ -185,14 +186,20 @@ fun Route.registerEltmEndpoints(
         // production compaction stage window by window, enqueueing every
         // dropped region into the background extraction queue (the walk
         // semantics and the async-drain write path: EltmReplayService).
-        // The chat uploads as the neutral format's JSON array VERBATIM —
-        // the body is what `GET /api/chats/{id}/chat` serves, decoded with
-        // the stored-chat invariants (ChatCodec.decodeChat; a violation is
-        // a 400), and the window knobs ride the query params like the
-        // import's overwriteAttr. POST validates synchronously (a 400 for
-        // bad knobs/empty chat/a userless chat/straddling tool pairs/a
-        // capability mismatch, before any LLM spend) then answers 202 with
-        // the running status — the walk and
+        // The chat uploads as the exported `{title, messages}` payload —
+        // the ONE shape the system speaks (GET /api/chats/{id}/export, the
+        // chat import): the decode requires the title field present and
+        // accepts any string value (the replay never uses it), and a body
+        // failing the decode (not JSON, not that shape, a message-init
+        // violation) is ktor ContentNegotiation's BadRequestException — the
+        // WebServer's 400 handler (a wrong Content-Type is ktor's own
+        // 415, see WebServer); here only the stored-chat invariants need
+        // explicit mapping (ChatCodec.validateChat; a violation is a 400
+        // with the codec's reason). The window knobs ride the query params
+        // like the import's overwriteAttr. POST validates synchronously
+        // (a 400 for bad knobs/empty chat/a userless chat/straddling tool
+        // pairs/a capability mismatch, before any LLM spend) then answers
+        // 202 with the running status — the walk and
         // the memory work run in the background, the status endpoint
         // tracks the walk (NOT the drain: "finished" means every region
         // is queued). 409 while a walk is already active. No chat lock:
@@ -208,12 +215,14 @@ fun Route.registerEltmEndpoints(
                 requireEltmNotInMaintenance()
                 val compactionRounds = call.intQueryParam("compactionRounds", DEFAULT_REPLAY_COMPACTION_ROUNDS)
                 val contextRounds = call.intQueryParam("contextRounds", DEFAULT_REPLAY_CONTEXT_ROUNDS)
-                // a body that fails the stored-chat invariants (not JSON,
-                // not a chat — decodeChat wraps every failure in an
-                // IllegalStateException) is a client error, not a 500
-                val chat = try {
-                    ChatCodec.decodeChat("eltm-replay", call.receiveText())
-                } catch (e: IllegalStateException) {
+                // a decode-valid payload can still violate the stored-chat
+                // invariants — map the codec's IAE onto a 400 carrying the
+                // precise reason (the decode's own failures are the ktor
+                // ContentNegotiation 400s, see the comment above)
+                val payload = call.receive<ChatExportPayload>()
+                try {
+                    ChatCodec.validateChat(payload.messages)
+                } catch (e: IllegalArgumentException) {
                     throw BadRequestException(e.message ?: "Invalid replay chat payload")
                 }
                 // start's synchronous validations (the knob bounds, the
@@ -223,7 +232,7 @@ fun Route.registerEltmEndpoints(
                 // spend — a mid-walk failure is the status endpoint's
                 // Failed phase, never a response here
                 val started = try {
-                    replayService.start(chat, compactionRounds, contextRounds)
+                    replayService.start(payload.messages, compactionRounds, contextRounds)
                 } catch (e: IllegalArgumentException) {
                     throw BadRequestException(e.message ?: "Invalid replay request")
                 }

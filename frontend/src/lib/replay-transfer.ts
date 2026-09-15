@@ -1,4 +1,5 @@
-import type { ChatMessage } from './types'
+import { parseChatExportFile } from './chat-transfer'
+import type { ChatExport, ChatMessage } from './types'
 
 function isMessageLike(value: unknown): value is ChatMessage {
   return (
@@ -10,27 +11,24 @@ function isMessageLike(value: unknown): value is ChatMessage {
 }
 
 /**
- * Parse a neutral-format chat messages file (the `.messages.json` shape
- * `GET /api/chats/{id}/chat` serves, e.g. the SillyTavern transformer's
- * output) into the replay's upload payload with a minimal shape check (a
- * non-empty array of message objects with `role` and `parts`): the server
- * owns the deep stored-chat validation (see `api.ts`
- * `startEltmReplay`), this only rejects obviously-wrong files before a
- * request is spent, with the file name in every error message.
+ * Parse an exported-format chat file (the `{title, messages}` shape
+ * `GET /api/chats/{id}/export` serves — the chat import's shape too) into
+ * the replay's upload payload: the payload shape check is the chat import's
+ * own parser (`parseChatExportFile` — one format, one parser, same error
+ * messages), and this adds the replay-only extras (a non-empty array of
+ * message objects with `role` and `parts`). The server owns the deep
+ * stored-chat validation (see `api.ts` `startEltmReplay`), so the extras
+ * only reject obviously-wrong files before a request is spent, with the
+ * file name in every error message.
  */
-export async function parseChatMessagesFile(file: File): Promise<ChatMessage[]> {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(await file.text())
-  } catch {
-    throw new Error(`"${file.name}" is not valid JSON`)
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(isMessageLike)) {
+export async function parseReplayChatFile(file: File): Promise<ChatExport> {
+  const payload = await parseChatExportFile(file)
+  if (!payload.messages.length || !payload.messages.every(isMessageLike)) {
     throw new Error(
-      `"${file.name}" is not a chat messages file (expected a non-empty array of {"role", "parts"} messages)`,
+      `"${file.name}" does not carry replayable messages (expected a non-empty array of {"role", "parts"} messages)`,
     )
   }
-  return parsed
+  return payload
 }
 
 /** The replay's window knobs (server authority: `EltmReplayService.kt`). */

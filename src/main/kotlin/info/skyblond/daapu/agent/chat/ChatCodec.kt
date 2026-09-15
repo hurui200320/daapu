@@ -65,7 +65,9 @@ object ChatCodec {
      * Validate a chat: the invariants that keep a stored chat re-sendable to
      * providers (see the class KDoc). Internal so history-mutating operations
      * (e.g. truncation in [info.skyblond.daapu.agent.chat.ChatService]) can
-     * check their result before storing.
+     * check their result before storing, and the ELTM replay route can check
+     * an uploaded export payload's messages after the ContentNegotiation
+     * decode (`server/endpoint/EltmRoute.kt`).
      */
     internal fun validateChat(chat: List<ChatMessage>) {
         validateMessageAnchors(chat)

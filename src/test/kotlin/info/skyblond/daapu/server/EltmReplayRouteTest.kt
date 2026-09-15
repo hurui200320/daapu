@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -34,7 +35,8 @@ import kotlin.test.assertTrue
 /**
  * Pins the ELTM replay's HTTP surface (`server/endpoint/EltmRoute.kt`'s
  * `/replay` pair): the idle status read, the synchronous 400s (a body that
- * fails the stored-chat invariants, an empty chat, a chat without user
+ * fails the `{title, messages}` decode — not JSON, a missing or non-string
+ * title — or the stored-chat invariants, an empty chat, a chat without user
  * messages, a chat whose tool_call/tool_result pairs straddle user rounds,
  * bad knobs — all before any LLM spend), the 503 maintenance block (fired
  * before any body
@@ -62,9 +64,20 @@ class EltmReplayRouteTest : DbTestBase() {
         ),
     )
 
-    /** The upload body of a valid [rounds]-round chat. */
-    private fun chatBody(rounds: Int): String =
-        ChatCodec.encodeChat((1..rounds).flatMap { round(it) })
+    /**
+     * Wrap an encoded neutral messages array into the exported
+     * `{title, messages}` payload the route decodes — built through the
+     * JSON builder so any title value (quotes included) escapes correctly.
+     */
+    private fun exportBody(encodedMessages: String, title: String = "foreign chat"): String =
+        buildJsonObject {
+            put("title", title)
+            put("messages", Json.parseToJsonElement(encodedMessages))
+        }.toString()
+
+    /** The upload body of a valid [rounds]-round chat (the exported payload). */
+    private fun chatBody(rounds: Int, title: String = "foreign chat"): String =
+        exportBody(ChatCodec.encodeChat((1..rounds).flatMap { round(it) }), title)
 
     /** Enable the flag directly in the DB (the route under test must not be needed to set up). */
     private fun enableMaintenance(enabled: Boolean = true) {
@@ -102,21 +115,55 @@ class EltmReplayRouteTest : DbTestBase() {
     }
 
     @Test
-    fun `a body failing the stored-chat invariants is a 400 before any LLM call`() {
+    fun `a body failing the decode or the stored-chat invariants is a 400 before any LLM call`() {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
             // not JSON at all
             assertEquals(HttpStatusCode.BadRequest, client.postReplay("not json").status)
+            // not the {title, messages} shape: a bare messages array (the
+            // OLD replay payload) is no longer accepted
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.postReplay(ChatCodec.encodeChat((1..2).flatMap { round(it) })).status,
+            )
+            // the payload without the title field
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.postReplay(
+                    """{"messages": ${ChatCodec.encodeChat((1..2).flatMap { round(it) })}}"""
+                ).status,
+            )
+            // the title must be a string: a non-string one fails the decode
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.postReplay(
+                    """{"title": 7, "messages": ${ChatCodec.encodeChat((1..2).flatMap { round(it) })}}"""
+                ).status,
+            )
             // decodes, but violates the trailing-assistant-stop invariant
             // (ends on a user message)
             val midTurn = ChatCodec.encodeChat((1..3).flatMap { round(it) }.dropLast(1))
-            assertEquals(HttpStatusCode.BadRequest, client.postReplay(midTurn).status)
-            // an empty array decodes but cannot be replayed
-            assertEquals(HttpStatusCode.BadRequest, client.postReplay("[]").status)
+            assertEquals(HttpStatusCode.BadRequest, client.postReplay(exportBody(midTurn)).status)
+            // an empty messages array decodes but cannot be replayed
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.postReplay(exportBody("[]")).status,
+            )
         }
         assertTrue(hand.requests.isEmpty(), "a refused start must not call the LLM")
         assertTrue(runBlocking { TestDb.allExtractionJobs().isEmpty() }, "nothing was enqueued")
+    }
+
+    @Test
+    fun `a blank title is accepted — the replay never uses it`() {
+        val hand = FakeHand(runScript = { error("the LLM must not be called") })
+        testApplication {
+            application { module(testKoinApp(hand = hand).koin) }
+            assertEquals(HttpStatusCode.Accepted, client.postReplay(chatBody(3, title = "")).status)
+            client.awaitReplayDone()
+            assertEquals("finished", client.replayStatus()["state"]!!.jsonPrimitive.content)
+        }
     }
 
     @Test
@@ -126,13 +173,15 @@ class EltmReplayRouteTest : DbTestBase() {
         val hand = FakeHand(runScript = { error("the LLM must not be called") })
         testApplication {
             application { module(testKoinApp(hand = hand).koin) }
-            val body = ChatCodec.encodeChat(
-                listOf(
-                    ChatMessage(
-                        role = ChatMessageRole.Assistant,
-                        parts = listOf(ChatMessagePart.Text("prologue")),
-                        meta = ChatMessageMeta(0, 0, 0, null),
-                        finishReason = "stop",
+            val body = exportBody(
+                ChatCodec.encodeChat(
+                    listOf(
+                        ChatMessage(
+                            role = ChatMessageRole.Assistant,
+                            parts = listOf(ChatMessagePart.Text("prologue")),
+                            meta = ChatMessageMeta(0, 0, 0, null),
+                            finishReason = "stop",
+                        )
                     )
                 )
             )
@@ -328,9 +377,11 @@ class EltmReplayRouteTest : DbTestBase() {
                 ),
                 round(2)[1],
             )
-            val body = ChatCodec.encodeChat(chat)
+            val body = exportBody(ChatCodec.encodeChat(chat))
             // decode-valid: the 400 below is start's refusal, not the codec's
-            assertEquals(chat, ChatCodec.decodeChat("probe", body))
+            // — probe the actual posted body's messages, not a re-encoded copy
+            val messagesJson = Json.parseToJsonElement(body).jsonObject["messages"]!!.toString()
+            assertEquals(chat, ChatCodec.decodeChat("probe", messagesJson))
             assertEquals(HttpStatusCode.BadRequest, client.postReplay(body).status)
         }
         assertTrue(hand.requests.isEmpty(), "a refused start must not call the LLM")

@@ -67,9 +67,11 @@ sealed interface ReplayStatus {
 /**
  * Replay a foreign chat through this system's memory pipeline:
  * `POST /api/eltm/replay` (the web UI's ELTM replay tab) uploads a chat in
- * the neutral [ChatMessage] format (what `GET /api/chats/{id}/chat` serves,
- * e.g. the SillyTavern transformer's `.messages.json` output), and this
- * service walks it window by window with the PRODUCTION compaction stage
+ * the exported `{title, messages}` payload (the ONE shape the system
+ * speaks: `GET /api/chats/{id}/export`, the chat import, and the
+ * SillyTavern transformer's single output — the route ignores the title),
+ * and this service walks it window by window with the PRODUCTION
+ * compaction stage
  * ([ChatCompactionService.compactChat] with `excludeLastNRound =
  * contextRounds`), enqueueing every dropped region (the running summary
  * included — exactly the region the production compaction path queues, see

@@ -30,9 +30,9 @@ import kotlin.test.assertIs
  * stored-chat validation accepts (what the webui import enforces), and the
  * malformed-export cases must fail fast with the script's own messages.
  * Skipped lines (not JSON, or no send_date/mes) must warn on stderr with
- * their full content, so dropped material stays visible. [main]'s outputs
- * (the raw neutral format and the webui import payload) and its argument
- * validation are pinned too.
+ * their full content, so dropped material stays visible. [main]'s single
+ * output (the `{title, messages}` payload the system speaks — chat import
+ * and ELTM replay) and its argument validation are pinned too.
  */
 class SillyTavernTransformerTest {
 
@@ -277,27 +277,22 @@ class SillyTavernTransformerTest {
     }
 
     @Test
-    fun `main writes both outputs with the default title`() {
+    fun `main writes the single export payload with the default title`() {
         writeJsonl(prologueLine, userLine, assistantLine)
         val outputBase = tempDir.resolve("out").toString()
         main(arrayOf(jsonlFile.toString(), imagesDir.toString(), outputBase))
         val expected = transform()
 
-        // the raw neutral format: decode-stable through the stored-chat codec
-        assertEquals(
-            expected,
-            ChatCodec.decodeChat("test", tempDir.resolve("out.messages.json").toFile().readText())
-        )
-
-        // the webui import payload {title, messages}: the title defaults
-        // to the export file's name
+        // the {title, messages} payload the system speaks (the chat import
+        // and the ELTM replay): the title defaults to the export file's
+        // name, and the messages stay decode-stable through the codec
         val export = Json.parseToJsonElement(
-            tempDir.resolve("out.export.json").toFile().readText()
+            tempDir.resolve("out.json").toFile().readText()
         ).jsonObject
         assertEquals("export", export.getValue("title").jsonPrimitive.content)
         assertEquals(
-            Json.parseToJsonElement(ChatCodec.encodeChat(expected)),
-            export.getValue("messages"),
+            expected,
+            ChatCodec.decodeChat("test", export.getValue("messages").toString())
         )
     }
 
@@ -313,7 +308,7 @@ class SillyTavernTransformerTest {
             )
         )
         val export = Json.parseToJsonElement(
-            tempDir.resolve("out2.export.json").toFile().readText()
+            tempDir.resolve("out2.json").toFile().readText()
         ).jsonObject
         assertEquals("My chat", export.getValue("title").jsonPrimitive.content)
     }

@@ -1,36 +1,61 @@
 import { describe, expect, it } from 'vitest'
-import { parseChatMessagesFile, parseReplayKnobs } from './replay-transfer'
+import { parseReplayChatFile, parseReplayKnobs } from './replay-transfer'
 
-describe('parseChatMessagesFile', () => {
-  it('parses a neutral-format messages file', async () => {
+describe('parseReplayChatFile', () => {
+  it('parses an exported-format chat file', async () => {
     const messages = [
       { role: 'user', parts: [{ type: 'text', text: 'hi' }], createdAt: '2026-01-01T00:00:00Z' },
       { role: 'assistant', parts: [{ type: 'text', text: 'hello' }], finishReason: 'stop' },
     ]
-    const file = new File([JSON.stringify(messages)], 'chat.messages.json')
-    expect(await parseChatMessagesFile(file)).toEqual(messages)
+    const file = new File([JSON.stringify({ title: 'My chat', messages })], 'chat.json')
+    expect(await parseReplayChatFile(file)).toEqual({ title: 'My chat', messages })
+  })
+
+  it('accepts any title value — the replay never uses it', async () => {
+    const messages = [
+      { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', parts: [{ type: 'text', text: 'hello' }], finishReason: 'stop' },
+    ]
+    const file = new File([JSON.stringify({ title: '', messages })], 'chat.json')
+    expect(await parseReplayChatFile(file)).toEqual({ title: '', messages })
   })
 
   it('rejects a non-JSON file with the file name in the error', async () => {
     const file = new File(['not json {'], 'broken.json')
-    await expect(parseChatMessagesFile(file)).rejects.toThrow('"broken.json" is not valid JSON')
+    await expect(parseReplayChatFile(file)).rejects.toThrow('"broken.json" is not valid JSON')
   })
 
-  it('rejects a non-array or empty file', async () => {
-    const object = new File([JSON.stringify({ title: 'T', messages: [] })], 'export.json')
-    await expect(parseChatMessagesFile(object)).rejects.toThrow('not a chat messages file')
-    const empty = new File(['[]'], 'empty.json')
-    await expect(parseChatMessagesFile(empty)).rejects.toThrow('not a chat messages file')
+  it('rejects a file without the {title, messages} payload shape', async () => {
+    // a raw messages array is no longer an accepted shape
+    const array = new File([JSON.stringify([{ role: 'user', parts: [] }])], 'array.json')
+    await expect(parseReplayChatFile(array)).rejects.toThrow('not an exported chat file')
+    // missing title
+    const noTitle = new File([JSON.stringify({ messages: [] })], 'no-title.json')
+    await expect(parseReplayChatFile(noTitle)).rejects.toThrow('not an exported chat file')
+    // title of the wrong type
+    const numberTitle = new File([JSON.stringify({ title: 7, messages: [] })], 'num.json')
+    await expect(parseReplayChatFile(numberTitle)).rejects.toThrow('not an exported chat file')
     // JSON.parse accepts primitives: those are not payloads either
     const primitive = new File(['"just a string"'], 'wrong.json')
-    await expect(parseChatMessagesFile(primitive)).rejects.toThrow('not a chat messages file')
+    await expect(parseReplayChatFile(primitive)).rejects.toThrow('not an exported chat file')
   })
 
-  it('rejects entries without the role/parts shape', async () => {
-    const wrongEntry = new File([JSON.stringify([{ role: 'user', parts: [] }, { foo: 1 }])], 'wrong2.json')
-    await expect(parseChatMessagesFile(wrongEntry)).rejects.toThrow('not a chat messages file')
-    const partsString = new File([JSON.stringify([{ role: 'user', parts: 'x' }])], 'wrong3.json')
-    await expect(parseChatMessagesFile(partsString)).rejects.toThrow('not a chat messages file')
+  it('rejects an empty messages array', async () => {
+    const empty = new File([JSON.stringify({ title: 'T', messages: [] })], 'empty.json')
+    await expect(parseReplayChatFile(empty)).rejects.toThrow('does not carry replayable messages')
+  })
+
+  it('rejects messages without the role/parts shape', async () => {
+    const wrongEntry = new File(
+      [JSON.stringify({ title: 'T', messages: [{ role: 'user', parts: [] }, { foo: 1 }] })],
+      'wrong2.json',
+    )
+    await expect(parseReplayChatFile(wrongEntry)).rejects.toThrow('does not carry replayable messages')
+    const partsString = new File(
+      [JSON.stringify({ title: 'T', messages: [{ role: 'user', parts: 'x' }] })],
+      'wrong3.json',
+    )
+    await expect(parseReplayChatFile(partsString)).rejects.toThrow('does not carry replayable messages')
   })
 })
 

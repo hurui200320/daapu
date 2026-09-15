@@ -1,8 +1,8 @@
 <script lang="ts">
   import { Info, Loader2, FileUp } from '@lucide/svelte'
   import { getEltmReplayStatus, startEltmReplay } from '../api'
-  import type { ChatMessage, EltmReplayStatus } from '../types'
-  import { parseChatMessagesFile, parseReplayKnobs, type ReplayKnobs } from '../replay-transfer'
+  import type { ChatExport, EltmReplayStatus } from '../types'
+  import { parseReplayChatFile, parseReplayKnobs, type ReplayKnobs } from '../replay-transfer'
   import { onIntervalAndFocus } from '../resync'
   import { toastStore } from '../toast-store.svelte'
   import { errMsg } from '../utils'
@@ -29,9 +29,9 @@
   // ---- The picked file and the window knobs ----
 
   let fileInput = $state<HTMLInputElement | null>(null)
-  // the parsed messages waiting on the Start button, plus the name for
-  // the summary line
-  let picked = $state<{ name: string; messages: ChatMessage[] } | null>(null)
+  // the parsed export payload waiting on the Start button, plus the file
+  // name for the summary line
+  let picked = $state<{ name: string; payload: ChatExport } | null>(null)
   let compactionRounds = $state('8')
   let contextRounds = $state('3')
   let starting = $state(false)
@@ -46,9 +46,9 @@
     // reset so picking the same file again still fires the change event
     input.value = ''
     if (!file) return
-    parseChatMessagesFile(file)
-      .then((messages) => {
-        picked = { name: file.name, messages }
+    parseReplayChatFile(file)
+      .then((payload) => {
+        picked = { name: file.name, payload }
         error = null
       })
       .catch((e) => {
@@ -102,14 +102,14 @@
     try {
       // 202 + the walk's status: the memory work itself drains in the
       // background worker — "finished" below means every region queued
-      const next = await startEltmReplay(picked.messages, knobValues.compactionRounds, knobValues.contextRounds)
+      const next = await startEltmReplay(picked.payload, knobValues.compactionRounds, knobValues.contextRounds)
       status = next
       // an instantaneous walk can already answer finished — key the toast
       // off the returned status, not the request's outcome
       toastStore.push(
         next.state === 'finished'
           ? `Replay finished: ${next.messagesTotal} messages walked, ${next.jobsQueued} region(s) queued for extraction`
-          : `Replay started: ${picked.messages.length} messages walking through the compaction windows`,
+          : `Replay started: ${picked.payload.messages.length} messages walking through the compaction windows`,
       )
     } catch (e) {
       error = errMsg(e)
@@ -132,11 +132,11 @@
     <Info class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
     <div class="min-w-0 text-sm text-muted-foreground">
       <p>
-        Replay walks an uploaded foreign chat (the neutral `.messages.json` format, byte-identical to what
-        <code>GET /api/chats/&#123;id&#125;/chat</code> serves — e.g. the SillyTavern transformer's output) through the production
-        compaction stage window by window, and every dropped region — running summary included — goes into the background
-        memory-extraction queue: the extractor and the ELTM writer agent turn each region into memories, exactly like a compaction
-        or a deleted chat.
+        Replay walks an uploaded foreign chat (the exported `&#123;title, messages&#125;` format — what
+        <code>GET /api/chats/&#123;id&#125;/export</code> serves and the chat import accepts — e.g. the SillyTavern transformer's
+        output; the title is ignored) through the production compaction stage window by window, and every dropped region —
+        running summary included — goes into the background memory-extraction queue: the extractor and the ELTM writer agent
+        turn each region into memories, exactly like a compaction or a deleted chat.
       </p>
       <ul class="mt-2 list-disc space-y-1 pl-5">
         <li>
@@ -173,7 +173,7 @@
       />
       {#if picked}
         <span class="min-w-0 truncate text-xs text-muted-foreground">
-          {picked.name} — {picked.messages.length} messages
+          {picked.name} — {picked.payload.messages.length} messages
         </span>
       {:else}
         <span class="text-xs text-muted-foreground">no file picked yet</span>

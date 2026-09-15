@@ -342,18 +342,21 @@ export async function digestEltm(parts: EltmDigestPart[], date?: string): Promis
  * production compactor and enqueues every dropped region into the
  * extraction queue — the worker turns the regions into memories
  * asynchronously, so the 202 means the walk started, not that the memories
- * are recorded (see EltmReplayStatus). [messages] is the neutral-format
- * chat array (what `GET /api/chats/{id}/chat` serves — e.g. the
- * SillyTavern transformer's `.messages.json` output); the window knobs
+ * are recorded (see EltmReplayStatus). [payload] is the exported
+ * `{title, messages}` payload — the ONE shape the system speaks (what
+ * `GET /api/chats/{id}/export` and `POST /api/chats/import` speak, and the
+ * SillyTavern transformer's single output); the replay ignores the title.
+ * The window knobs
  * ride the query params (the server defaults 8/3, see
  * `memory/eltm/EltmReplayService.kt`). 400 for a body failing the
- * stored-chat invariants, an empty chat, a chat without user messages, a
+ * `{title, messages}` decode (not JSON, a missing or non-string title) or
+ * the stored-chat invariants, an empty chat, a chat without user messages, a
  * chat whose tool_call/tool_result pairs straddle user rounds, bad knobs
  * or a pipeline-model capability mismatch; 503 during maintenance mode;
  * 409 while a walk already runs.
  */
 export async function startEltmReplay(
-  messages: ChatMessage[],
+  payload: ChatExport,
   compactionRounds?: number,
   contextRounds?: number,
 ): Promise<EltmReplayStatus> {
@@ -361,7 +364,7 @@ export async function startEltmReplay(
   if (compactionRounds !== undefined) params.set('compactionRounds', String(compactionRounds))
   if (contextRounds !== undefined) params.set('contextRounds', String(contextRounds))
   const query = params.toString()
-  const res = await request(`/api/eltm/replay${query ? `?${query}` : ''}`, jsonInit('POST', messages))
+  const res = await request(`/api/eltm/replay${query ? `?${query}` : ''}`, jsonInit('POST', payload))
   return res.json()
 }
 
