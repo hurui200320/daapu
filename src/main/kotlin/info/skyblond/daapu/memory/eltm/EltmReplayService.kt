@@ -1,5 +1,6 @@
 package info.skyblond.daapu.memory.eltm
 
+import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.chat.roundCount
@@ -93,13 +94,14 @@ sealed interface ReplayStatus {
  * verbatim), and the tail beyond the window is untouched.
  *
  * Lifecycle: single-flight — [start] refuses while a walk is active (the
- * route answers 409). [start] validates synchronously BEFORE launching (the
- * knob bounds, a non-empty chat, and the up-front capability check of both
- * pipeline models over the WHOLE chat — every message lands in some region,
- * so a whole-chat check covers every window; a mismatch is a configuration
- * error that fails fast instead of mid-walk). The walk runs on this
- * service's own scope (SupervisorJob + Dispatchers.IO, the
- * [EmbeddingRefreshService] pattern); [close] (the Koin onClose callback)
+ * route answers 409). [start] validates synchronously BEFORE launching
+ * (the knob bounds, a non-empty chat, the tool-pair round locality, and
+ * the up-front capability check of both pipeline models over the WHOLE
+ * chat — every message lands in some region, so a whole-chat check
+ * covers every window; a mismatch is a configuration error that fails
+ * fast instead of mid-walk). The walk runs on this service's own scope
+ * (SupervisorJob + Dispatchers.IO, the [EmbeddingRefreshService]
+ * pattern); [close] (the Koin onClose callback)
  * cancels it — a walk in flight at shutdown is abandoned on purpose, no
  * join that could stall the shutdown; its already-enqueued jobs drain at
  * the next boot.
@@ -142,9 +144,16 @@ class EltmReplayService(
     @Volatile
     private var current: ReplayStatus = ReplayStatus.Idle
 
-    // the walk's progress counters, written only by the walk's own
-    // coroutine and read racily by status() — a stale snapshot is benign
+    // the walk's progress counters: reset by start() on the caller's
+    // thread before it publishes the Running phase (the volatile writes
+    // order the resets before that publish, so a reader that sees
+    // Running never sees a stale counter), then written only by the
+    // walk's own coroutine and read racily by status() — the pair is not
+    // read atomically, which is benign (each counter only grows within a
+    // walk, so a racy snapshot can only lag, never lie)
+    @Volatile
     private var windowsCompacted = 0
+    @Volatile
     private var jobsQueued = 0
 
     /**
@@ -165,7 +174,10 @@ class EltmReplayService(
      * presence (the walk's whole arithmetic is round-based: a
      * decode-valid but userless chat — e.g. a single assistant message —
      * has nothing to walk and is refused here instead of enqueued whole),
-     * and the capability check of both pipeline models over the whole
+     * the tool-pair round locality ([ChatCodec.toolPairsSitWithinRounds] —
+     * deliberately stricter than the walk's cuts, see its KDoc for the
+     * why and the exact strictness), and the
+     * capability check of both pipeline models over the whole
      * chat (the route maps them to 400s; a [ReplayStatus.Failed] is
      * reserved for a mid-walk failure). The maintenance-mode gate is the
      * route's job.
@@ -177,6 +189,17 @@ class EltmReplayService(
         require(chat.isNotEmpty()) { "cannot replay an empty chat" }
         require(chat.roundCount() >= 1) {
             "cannot replay a chat without user messages: the walk's window arithmetic is round-based"
+        }
+        // a decode-valid chat can still carry tool pairs straddling user
+        // rounds (the pairing check is global, not per round) — the
+        // property, and its deliberate extra strictness:
+        // ChatCodec.toolPairsSitWithinRounds
+        require(ChatCodec.toolPairsSitWithinRounds(chat)) {
+            "cannot replay a chat whose tool_call/tool_result pairs straddle user rounds: " +
+                    "the walk cuts regions at round boundaries and a split pair can never " +
+                    "be extracted by the background queue (the check is deliberately " +
+                    "conservative: a pair straddling only the leading prologue's boundary — " +
+                    "a cut the walk never makes — is refused too)"
         }
         // fail fast on a content/capability mismatch BEFORE any LLM spend:
         // the compaction service re-checks per call, but this catches the
@@ -202,6 +225,15 @@ class EltmReplayService(
                             .also { windowsCompacted++ }
                     },
                     onDropped = { region ->
+                        // defense in depth: the queue's claim decodes every
+                        // job with the SNAPSHOT invariants — a region
+                        // violating them can only come from a malformed
+                        // chat (start refuses the known straddling-pair
+                        // shape up front; the production compaction cuts at
+                        // round boundaries) and would otherwise retry
+                        // forever without ever extracting. Fail the walk
+                        // with the visible reason instead
+                        ChatCodec.validateSnapshot(region)
                         queue.enqueue(region)
                         jobsQueued++
                     },
@@ -269,7 +301,13 @@ class EltmReplayService(
  * A chat without user messages has zero rounds: the loop never runs and
  * the whole chat enqueues as the residue — [EltmReplayService.start]
  * refuses that input instead (see its KDoc), so only a direct caller
- * reaches this.
+ * reaches this. A tool_call/tool_result pair straddling user rounds is
+ * refused by start too ([ChatCodec.toolPairsSitWithinRounds] — every
+ * region boundary is a round boundary, and the check is deliberately
+ * stricter than the cuts, see its KDoc), so only a direct caller
+ * reaches this; the production [onDropped] (the
+ * lambda [EltmReplayService.start] passes) re-validates every region
+ * against the snapshot invariants before it reaches the queue.
  * Failures of [compact]/[onDropped] propagate and abort the walk (the
  * regions already handed to [onDropped] stay with its receiver).
  *

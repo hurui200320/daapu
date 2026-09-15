@@ -211,9 +211,10 @@ KDoc of the named files.
 - **ELTM maintenance mode** (`server/endpoint/MaintenanceRoute.kt`): the
   `gsg_meta_number.eltm_maintenance` flag (helpers in `db/MetaNumber.kt`)
   freezes the ELTM's readers and writers while on — the route guard
-  (`requireEltmNotInMaintenance`, 503) covers the four entry points
-  (chat send, chat delete, ELTM digest, ELTM import; the blocked list and
-  the accepted limits live in its KDoc), and the extraction worker pauses
+  (`requireEltmNotInMaintenance`, 503) covers the five entry points
+  (chat send, chat delete, ELTM digest, ELTM import, ELTM replay; the
+  blocked list and the accepted limits live in its KDoc), and the
+  extraction worker pauses
   its drain (`ExtractionQueueWorker.kt`). Toggle via
   `GET/PUT /api/maintenance` (the frontend's `#/maintenance` tab). The
   same tab's re-embed button (`GET/POST /api/maintenance/reembed`) drives

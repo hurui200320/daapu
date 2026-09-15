@@ -5,6 +5,7 @@ import info.skyblond.daapu.agent.chat.ChatService
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
 import info.skyblond.daapu.agent.chat.ChatMessage
+import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
 import info.skyblond.daapu.agent.chat.ChatMessageRole
 import info.skyblond.daapu.agent.chat.PostgresChatStore
@@ -578,6 +579,51 @@ class WebServerTest : DbTestBase() {
             val response = client.post("/api/chats/import") {
                 contentType(ContentType.Application.Json)
                 setBody(body)
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertTrue(store.listChats(null).chats.isEmpty())
+        }
+    }
+
+    @Test
+    fun `import of a stored-chat-valid chat with straddling tool pairs is 400 and creates nothing`() {
+        // passes the stored-chat invariants (the pairing is 1:1 globally)
+        // but the pair straddles user rounds — the same file the ELTM
+        // replay refuses with 400: a later compaction would split the
+        // pair, so the import gate (ChatService.importChat) refuses it
+        // here too
+        val store = PostgresChatStore()
+        testApplication {
+            application { module(testKoinApp(testAppConfig(), chatStore = store).koin) }
+            val payload = ChatExportPayload(
+                title = "t",
+                messages = listOf(
+                    user("u1"),
+                    ChatMessage(
+                        ChatMessageRole.Assistant,
+                        listOf(
+                            ChatMessagePart.ToolCall(id = "call_1", tool = "flag", args = buildJsonObject { })
+                        ),
+                        meta = ChatMessageMeta(inputTokens = 1, outputTokens = 1, totalTokens = 2),
+                        finishReason = "tool_calls",
+                    ),
+                    user("u2"),
+                    ChatMessage(
+                        ChatMessageRole.ToolResult,
+                        listOf(
+                            ChatMessagePart.ToolResult(
+                                id = "call_1",
+                                tool = "flag",
+                                parts = listOf(ChatMessagePart.Text("ok")),
+                            )
+                        ),
+                    ),
+                    assistantMessage("a2"),
+                ),
+            )
+            val response = client.post("/api/chats/import") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(payload))
             }
             assertEquals(HttpStatusCode.BadRequest, response.status)
             assertTrue(store.listChats(null).chats.isEmpty())

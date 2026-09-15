@@ -347,9 +347,10 @@ export async function digestEltm(parts: EltmDigestPart[], date?: string): Promis
  * SillyTavern transformer's `.messages.json` output); the window knobs
  * ride the query params (the server defaults 8/3, see
  * `memory/eltm/EltmReplayService.kt`). 400 for a body failing the
- * stored-chat invariants, an empty chat, bad knobs or a pipeline-model
- * capability mismatch; 503 during maintenance mode; 409 while a walk
- * already runs.
+ * stored-chat invariants, an empty chat, a chat without user messages, a
+ * chat whose tool_call/tool_result pairs straddle user rounds, bad knobs
+ * or a pipeline-model capability mismatch; 503 during maintenance mode;
+ * 409 while a walk already runs.
  */
 export async function startEltmReplay(
   messages: ChatMessage[],

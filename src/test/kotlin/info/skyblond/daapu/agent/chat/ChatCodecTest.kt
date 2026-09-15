@@ -476,4 +476,140 @@ class ChatCodecTest {
             "Error should name the invariant and chat, got: ${e.message}",
         )
     }
+
+    // ------------------------------------------------------------------
+    // toolPairsSitWithinRounds: the replay walk's region-cut precondition
+    // (region boundaries are user-round boundaries; the check is
+    // deliberately conservative — see the function's KDoc)
+    // ------------------------------------------------------------------
+
+    /** A user text message — the round delimiter. */
+    private fun userRound(text: String) = ChatMessage(
+        role = ChatMessageRole.User,
+        createdAt = createdAt,
+        parts = listOf(ChatMessagePart.Text(text)),
+    )
+
+    /** An assistant message carrying one tool call. */
+    private fun toolCallAssistant(id: String) = ChatMessage(
+        role = ChatMessageRole.Assistant,
+        parts = listOf(
+            ChatMessagePart.ToolCall(
+                id = id,
+                tool = "flag",
+                args = buildJsonObject { },
+            )
+        ),
+        meta = ChatMessageMeta(inputTokens = 1, outputTokens = 1, totalTokens = 2),
+        finishReason = "tool_calls",
+    )
+
+    /** A tool_result message answering one tool call. */
+    private fun toolResultMessage(id: String) = ChatMessage(
+        role = ChatMessageRole.ToolResult,
+        parts = listOf(
+            ChatMessagePart.ToolResult(
+                id = id,
+                tool = "flag",
+                parts = listOf(ChatMessagePart.Text("ok")),
+            )
+        ),
+    )
+
+    /** An assistant stop message, the complete chat's closer. */
+    private fun assistantStop() = ChatMessage(
+        role = ChatMessageRole.Assistant,
+        parts = listOf(ChatMessagePart.Text("done")),
+        meta = ChatMessageMeta(inputTokens = 1, outputTokens = 1, totalTokens = 2),
+        finishReason = "stop",
+    )
+
+    @Test
+    fun `tool pairs inside one round sit within rounds`() {
+        assertTrue(
+            ChatCodec.toolPairsSitWithinRounds(
+                listOf(
+                    userRound("u1"), toolCallAssistant("c1"), toolResultMessage("c1"),
+                    userRound("u2"), toolCallAssistant("c2"), toolResultMessage("c2"),
+                    assistantStop(),
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `a pair straddling two user rounds does not sit within rounds`() {
+        assertFalse(
+            ChatCodec.toolPairsSitWithinRounds(
+                listOf(
+                    userRound("u1"), toolCallAssistant("c1"),
+                    userRound("u2"), toolResultMessage("c1"),
+                    assistantStop(),
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `a pair wholly inside the leading prologue sits within rounds`() {
+        // messages before the first user message form their own round, so
+        // a prologue-local pair is never split by a round-boundary cut
+        assertTrue(
+            ChatCodec.toolPairsSitWithinRounds(
+                listOf(
+                    toolCallAssistant("c1"), toolResultMessage("c1"),
+                    userRound("u1"), assistantStop(),
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `a pair straddling the prologue boundary does not sit within rounds`() {
+        // deliberately conservative: the walk never cuts the prologue
+        // boundary (the first dropped region always carries the whole
+        // prologue), so this shape would in fact stay whole — refused
+        // anyway, one simple rule (see toolPairsSitWithinRounds' KDoc)
+        assertFalse(
+            ChatCodec.toolPairsSitWithinRounds(
+                listOf(
+                    toolCallAssistant("c1"), userRound("u1"), toolResultMessage("c1"),
+                    assistantStop(),
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `a chat without tool parts sits within rounds`() {
+        assertTrue(
+            ChatCodec.toolPairsSitWithinRounds(listOf(userRound("u1"), assistantStop()))
+        )
+    }
+
+    @Test
+    fun `an orphan result counts as unpaired and fails`() {
+        // documented behavior: the check assumes validateToolPairs' global
+        // 1:1 pairing already holds — an orphan result reads as unpaired
+        assertFalse(
+            ChatCodec.toolPairsSitWithinRounds(
+                listOf(userRound("u1"), toolResultMessage("orphan"), assistantStop())
+            )
+        )
+    }
+
+    @Test
+    fun `an orphan call is invisible to the check and passes`() {
+        // the asymmetry's other side: only results are matched against
+        // their call's round — a call without a result has no pair to
+        // straddle. validateToolPairs rejects it globally on every route
+        // path, so only a direct caller sees this branch (the replay's
+        // onDropped re-validation catches it mid-walk — pinned in
+        // EltmReplayServiceTest)
+        assertTrue(
+            ChatCodec.toolPairsSitWithinRounds(
+                listOf(userRound("u1"), toolCallAssistant("orphan"), assistantStop())
+            )
+        )
+    }
 }

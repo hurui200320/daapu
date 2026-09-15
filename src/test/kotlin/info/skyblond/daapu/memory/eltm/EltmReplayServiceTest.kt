@@ -2,6 +2,7 @@ package info.skyblond.daapu.memory.eltm
 
 import info.skyblond.daapu.agent.chat.AttachmentContent
 import info.skyblond.daapu.agent.chat.AttachmentKind
+import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
@@ -23,6 +24,7 @@ import info.skyblond.daapu.testutil.testLlm
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
@@ -70,6 +72,32 @@ class EltmReplayServiceTest {
         parts = listOf(ChatMessagePart.Text("prologue")),
         meta = ChatMessageMeta(0, 0, 0, null),
         finishReason = "stop",
+    )
+
+    /** An assistant message carrying one tool call (the stored shape). */
+    private fun toolCallAssistant(id: String): ChatMessage = ChatMessage(
+        role = ChatMessageRole.Assistant,
+        parts = listOf(
+            ChatMessagePart.ToolCall(
+                id = id,
+                tool = "flag",
+                args = buildJsonObject { },
+            )
+        ),
+        meta = ChatMessageMeta(0, 0, 0, null),
+        finishReason = "tool_calls",
+    )
+
+    /** A tool_result message answering one tool call (the stored shape). */
+    private fun toolResultMessage(id: String): ChatMessage = ChatMessage(
+        role = ChatMessageRole.ToolResult,
+        parts = listOf(
+            ChatMessagePart.ToolResult(
+                id = id,
+                tool = "flag",
+                parts = listOf(ChatMessagePart.Text("ok")),
+            )
+        ),
     )
 
     /** A compaction summary message, the shape compactChat produces. */
@@ -495,5 +523,114 @@ class EltmReplayServiceTest {
         }
         assertTrue(queue.regions.isEmpty(), "nothing was enqueued")
         assertEquals(ReplayStatus.Idle, replay.status())
+    }
+
+    @Test
+    fun `start refuses a chat whose tool pairs straddle user rounds`() = runBlocking {
+        // decode-valid (the pairing is 1:1 globally, so validateChat
+        // accepts it) but the pair straddles rounds — the walk would
+        // split it across regions the queue can never decode
+        val chat = listOf(
+            round(1)[0],
+            toolCallAssistant("c1"),
+            round(2)[0],
+            toolResultMessage("c1"),
+            round(2)[1],
+        )
+        assertEquals(chat, ChatCodec.decodeChat("probe", ChatCodec.encodeChat(chat)))
+
+        val (replay, queue) = newService()
+        val e = assertFailsWith<IllegalArgumentException> {
+            replay.start(chat, compactionRounds = 8, contextRounds = 3)
+        }
+        assertTrue(e.message!!.contains("straddle"), e.message)
+        assertEquals(ReplayStatus.Idle, replay.status(), "a refused start leaves the phase at idle")
+        assertTrue(queue.regions.isEmpty(), "nothing was enqueued")
+    }
+
+    @Test
+    fun `a chat with round-local tool pairs replays and its regions pass the snapshot decode`() = runBlocking {
+        // the false-negative control for the straddling refusal and the
+        // onDropped re-validation: a chat whose pairs sit inside their own
+        // rounds (round 1's lands in the first dropped region, round 20's
+        // in the residue) walks normally, and every enqueued region
+        // decodes under the queue's own claim path
+        // (PostgresExtractionQueue.claim → decodeSnapshot)
+        val chat = listOf(
+            round(1)[0], toolCallAssistant("c1"), toolResultMessage("c1"), round(1)[1],
+        ) + (2..19).flatMap { round(it) } + listOf(
+            round(20)[0], toolCallAssistant("c2"), toolResultMessage("c2"), round(20)[1],
+        )
+        // the stored shape the route accepts (decode-valid)
+        assertEquals(chat, ChatCodec.decodeChat("probe", ChatCodec.encodeChat(chat)))
+
+        val (replay, queue) = newService()
+        assertTrue(replay.start(chat, compactionRounds = 8, contextRounds = 3))
+        awaitUntil { replay.status() !is ReplayStatus.Running }
+        val finished = assertIs<ReplayStatus.Finished>(replay.status())
+        assertEquals(2, finished.windowsCompacted, "cuts actually happened around the pairs")
+        assertEquals(3, finished.jobsQueued, "two dropped regions plus the residue")
+
+        // every region decodes under the queue's claim path — legitimate
+        // tool content never trips the onDropped re-validation
+        queue.regions.forEach { region ->
+            ChatCodec.decodeSnapshot("probe", ChatCodec.encodeChat(region))
+        }
+        // both round-local pairs were enqueued (decodeSnapshot's pairing
+        // check above pins each of them whole inside its region)
+        assertEquals(
+            setOf("c1", "c2"),
+            queue.regions
+                .flatMap { region -> region.flatMap { message -> message.parts } }
+                .filterIsInstance<ChatMessagePart.ToolCall>()
+                .map { it.id }
+                .toSet(),
+        )
+    }
+
+    @Test
+    fun `a region failing the snapshot invariants fails the walk instead of poisoning the queue`() = runBlocking {
+        // defense in depth: user messages without createdAt only reach a
+        // DIRECT start caller (the route's decodeChat rejects them), but
+        // the first dropped region would then fail the queue's snapshot
+        // decode forever — the onDropped re-validation fails the walk
+        // with the visible reason instead of enqueueing the poison
+        val (replay, queue) = newService()
+        val chat = (1..20).flatMap { round(it) }.map { message ->
+            if (message.role == ChatMessageRole.User) message.copy(createdAt = null) else message
+        }
+
+        assertTrue(replay.start(chat, compactionRounds = 8, contextRounds = 3))
+        awaitUntil { replay.status() !is ReplayStatus.Running }
+        val failed = assertIs<ReplayStatus.Failed>(replay.status())
+        assertTrue(failed.error.contains("createdAt"), failed.error)
+        // the first window was compacted but its region was refused —
+        // nothing reached the queue
+        assertEquals(1, failed.windowsCompacted)
+        assertEquals(0, failed.jobsQueued)
+        assertTrue(queue.regions.isEmpty(), "the poison region was never enqueued")
+    }
+
+    @Test
+    fun `a region carrying an orphan tool call fails the walk instead of poisoning the queue`() = runBlocking {
+        // the orphan-CALL side of the predicate's documented asymmetry
+        // (an orphan result is visible and fails start's check; an orphan
+        // call is invisible): a direct start caller's chat passes the
+        // round-locality check, and the orphan call lands in the first
+        // dropped region — the onDropped re-validation (the queue's own
+        // claim-path invariants) fails the walk with the visible reason
+        // instead of enqueueing the poison
+        val (replay, queue) = newService()
+        val chat = listOf(
+            round(1)[0], toolCallAssistant("orphan"), round(1)[1],
+        ) + (2..20).flatMap { round(it) }
+
+        assertTrue(replay.start(chat, compactionRounds = 8, contextRounds = 3))
+        awaitUntil { replay.status() !is ReplayStatus.Running }
+        val failed = assertIs<ReplayStatus.Failed>(replay.status())
+        assertTrue(failed.error.contains("no matching tool result"), failed.error)
+        assertEquals(1, failed.windowsCompacted)
+        assertEquals(0, failed.jobsQueued)
+        assertTrue(queue.regions.isEmpty(), "the poison region was never enqueued")
     }
 }

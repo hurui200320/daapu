@@ -291,9 +291,13 @@ class PersistChatService(
      * so the dropped messages stay in the stored chat — nothing is silently
      * lost (the queue's own retries cover the extraction itself; a failed
      * run before the store simply re-enqueues on the retry's compaction).
-     * Returns the compacted history (no injection). The compacted history
-     * reaches the client via the post-run resync; no dedicated event is
-     * emitted. Both the proactive trigger and the reactive
+     * Before the enqueue the dropped region is re-validated against the
+     * queue's claim-path invariants ([ChatCodec.validateSnapshot]) — the
+     * replay walk's onDropped precedent; a violation fails the run the
+     * same way (the code comment names the only input that can produce
+     * one). Returns the compacted history (no injection). The compacted
+     * history reaches the client via the post-run resync; no dedicated
+     * event is emitted. Both the proactive trigger and the reactive
      * `context_exhausted` recovery go through here — the two paths differ
      * only in their logging and what they re-inject after.
      */
@@ -303,6 +307,17 @@ class PersistChatService(
         model: LLM,
     ): List<ChatMessage> {
         val result = compactionService.compactChat(chat, model.compactionKeepRounds)
+        // defense in depth, the replay walk's onDropped precedent
+        // (memory/eltm/EltmReplayService.kt): the queue's claim decodes
+        // every job with the SNAPSHOT invariants — a violating drop
+        // region can only come from a stored row that predates the
+        // import's round-locality gate (the turn loop and the import both
+        // keep pairs round-local, see ChatCodec.toolPairsSitWithinRounds)
+        // and would otherwise retry forever without ever extracting.
+        // Failing here matches the enqueue-failure semantics above: the
+        // run dies before the store, the pair stays whole in the stored
+        // chat
+        ChatCodec.validateSnapshot(result.droppedMessages)
         val jobId = extractionQueue.enqueue(result.droppedMessages)
         logger.info {
             "Compaction of chat '$chatId' dropped ${result.droppedMessages.size} " +

@@ -1567,6 +1567,81 @@ class PersistChatServiceTest : DbTestBase() {
     }
 
     @Test
+    fun `a straddling stored pair fails the compaction visibly instead of poisoning the queue`() = runBlocking {
+        // defense in depth, the replay walk's onDropped precedent: a
+        // stored row imported BEFORE the import's round-locality gate
+        // carries a pair the compaction would split — the dropped half
+        // (an orphan call) would become a queue job that can never decode
+        // and retries forever. The enqueue-side snapshot validation fails
+        // the run BEFORE the store instead: the pair stays whole in the
+        // stored chat (still globally paired, so the chat keeps loading)
+        // and nothing reaches the queue. The call rides round 1's tail,
+        // the result round 2's head: keep-3 of 4 rounds cuts exactly
+        // between them.
+        val seed = listOf(
+            // round 1, ending on the pair's dropped half
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text(turnText("topic", 1))),
+                createdAt = Instant.parse("2026-08-17T09:00:00Z"),
+            ),
+            ChatMessage(
+                ChatMessageRole.Assistant,
+                listOf(
+                    ChatMessagePart.ToolCall(
+                        id = "call_1",
+                        tool = "flag",
+                        args = buildJsonObject { },
+                    )
+                ),
+                meta = ChatMessageMeta(inputTokens = 1, outputTokens = 1, totalTokens = 2),
+                finishReason = "tool_calls",
+            ),
+            // round 2, opening with the pair's kept half
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text(turnText("topic", 2))),
+                createdAt = Instant.parse("2026-08-17T10:00:00Z"),
+            ),
+            ChatMessage(
+                ChatMessageRole.ToolResult,
+                listOf(
+                    ChatMessagePart.ToolResult(
+                        id = "call_1",
+                        tool = "flag",
+                        parts = listOf(ChatMessagePart.Text("ok")),
+                    )
+                ),
+            ),
+            answer(turnText("answer", 2)),
+            // rounds 3 and 4; round 4's huge input fires the compaction
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text(turnText("topic", 3))),
+                createdAt = Instant.parse("2026-08-17T11:00:00Z"),
+            ),
+            answer(turnText("answer", 3)),
+            ChatMessage(
+                ChatMessageRole.User,
+                listOf(ChatMessagePart.Text(turnText("topic", 4))),
+                createdAt = Instant.parse("2026-08-17T12:00:00Z"),
+            ),
+            answer(turnText("answer", 4), 200_000),
+        )
+        val outcome = run(store = InMemoryChatStore(seed))
+
+        val e = assertIs<IllegalArgumentException>(outcome.error)
+        assertTrue(e.message!!.contains("no matching tool result"), e.message)
+        // the compaction itself succeeded (the summarizer ran) — the
+        // failure came from the enqueue-side validation after it, before
+        // the rewrite and the chat round
+        assertEquals(1, outcome.hand.requests.size, "compactor only")
+        assertTrue(outcome.hand.requests[0].systemPrompt!!.startsWith("You're summarizing"))
+        assertTrue(TestDb.allExtractionJobs().isEmpty(), "the poison region was never enqueued")
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+    }
+
+    @Test
     fun `a full-body reactive compaction re-appends the injection with the user input`() = runBlocking {
         // a fresh chat whose single user message (injection + input) is the
         // only user message: the compaction's keep count collapses to zero,

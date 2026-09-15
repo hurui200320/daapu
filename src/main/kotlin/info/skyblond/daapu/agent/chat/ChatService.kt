@@ -335,7 +335,11 @@ class ChatService(
      * The messages must satisfy the SAME completeness invariants as any
      * stored chat ([ChatCodec.validateChat]: a non-empty chat ends with a
      * naturally finished assistant message, user messages carry `createdAt`,
-     * tool calls/results stay paired). [ChatValidationException] (HTTP 400)
+     * tool calls/results stay paired) PLUS the round-local tool-pair rule
+     * ([ChatCodec.toolPairsSitWithinRounds] — the same refusal the ELTM
+     * replay makes: a stored straddling pair would be split by a later
+     * compaction, and both halves break — see its KDoc).
+     * [ChatValidationException] (HTTP 400)
      * carries the codec's reason: HERE the data is client-supplied, so a
      * [IllegalArgumentException] from the codec is a fixable client error —
      * NOT the defensive server-side breach that exception marks elsewhere in
@@ -355,6 +359,15 @@ class ChatService(
         if (trimmed.isEmpty()) throw ChatValidationException("Chat title is empty")
         try {
             ChatCodec.validateChat(messages)
+            // the same round-locality the ELTM replay refuses (the why:
+            // ChatCodec.toolPairsSitWithinRounds) — the import ingests the
+            // same file shape the replay does, and both are client-supplied
+            require(ChatCodec.toolPairsSitWithinRounds(messages)) {
+                "cannot import a chat whose tool_call/tool_result pairs straddle user rounds: " +
+                        "a later compaction cuts at round boundaries and would split the pair " +
+                        "(the dropped half becomes an extraction job that can never decode, " +
+                        "the kept half fails every later stored-chat load)"
+            }
         } catch (e: IllegalArgumentException) {
             throw ChatValidationException(e.message ?: "Invalid chat content")
         }

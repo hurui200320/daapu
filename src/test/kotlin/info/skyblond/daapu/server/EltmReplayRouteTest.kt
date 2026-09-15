@@ -21,6 +21,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
@@ -33,8 +34,10 @@ import kotlin.test.assertTrue
 /**
  * Pins the ELTM replay's HTTP surface (`server/endpoint/EltmRoute.kt`'s
  * `/replay` pair): the idle status read, the synchronous 400s (a body that
- * fails the stored-chat invariants, an empty chat, bad knobs — all before
- * any LLM spend), the 503 maintenance block (fired before any body
+ * fails the stored-chat invariants, an empty chat, a chat without user
+ * messages, a chat whose tool_call/tool_result pairs straddle user rounds,
+ * bad knobs — all before any LLM spend), the 503 maintenance block (fired
+ * before any body
  * parsing, while the status read stays open), the 202 start with the walk
  * running in the background over the REAL extraction queue, and the 409
  * single-flight refusal. The walk's own semantics are pinned by
@@ -292,5 +295,45 @@ class EltmReplayRouteTest : DbTestBase() {
             // the first window's region was already enqueued and stays queued
             assertEquals(1, TestDb.allExtractionJobs().size)
         }
+    }
+
+    @Test
+    fun `a decode-valid chat with straddling tool pairs is a 400 before any LLM call`() {
+        // passes ChatCodec.validateChat (the pairing is 1:1 globally) but
+        // the pair straddles user rounds — the walk would split it across
+        // regions the queue can never decode, so start refuses it
+        val hand = FakeHand(runScript = { error("the LLM must not be called") })
+        testApplication {
+            application { module(testKoinApp(hand = hand).koin) }
+            val chat = listOf(
+                round(1)[0],
+                ChatMessage(
+                    role = ChatMessageRole.Assistant,
+                    parts = listOf(
+                        ChatMessagePart.ToolCall(id = "c1", tool = "flag", args = buildJsonObject { })
+                    ),
+                    meta = ChatMessageMeta(0, 0, 0, null),
+                    finishReason = "tool_calls",
+                ),
+                round(2)[0],
+                ChatMessage(
+                    role = ChatMessageRole.ToolResult,
+                    parts = listOf(
+                        ChatMessagePart.ToolResult(
+                            id = "c1",
+                            tool = "flag",
+                            parts = listOf(ChatMessagePart.Text("ok")),
+                        )
+                    ),
+                ),
+                round(2)[1],
+            )
+            val body = ChatCodec.encodeChat(chat)
+            // decode-valid: the 400 below is start's refusal, not the codec's
+            assertEquals(chat, ChatCodec.decodeChat("probe", body))
+            assertEquals(HttpStatusCode.BadRequest, client.postReplay(body).status)
+        }
+        assertTrue(hand.requests.isEmpty(), "a refused start must not call the LLM")
+        assertTrue(runBlocking { TestDb.allExtractionJobs().isEmpty() }, "nothing was enqueued")
     }
 }

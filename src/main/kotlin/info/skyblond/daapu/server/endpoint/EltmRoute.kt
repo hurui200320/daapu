@@ -190,8 +190,9 @@ fun Route.registerEltmEndpoints(
         // the stored-chat invariants (ChatCodec.decodeChat; a violation is
         // a 400), and the window knobs ride the query params like the
         // import's overwriteAttr. POST validates synchronously (a 400 for
-        // bad knobs/empty chat/a capability mismatch, before any LLM
-        // spend) then answers 202 with the running status — the walk and
+        // bad knobs/empty chat/a userless chat/straddling tool pairs/a
+        // capability mismatch, before any LLM spend) then answers 202 with
+        // the running status — the walk and
         // the memory work run in the background, the status endpoint
         // tracks the walk (NOT the drain: "finished" means every region
         // is queued). 409 while a walk is already active. No chat lock:
@@ -216,8 +217,9 @@ fun Route.registerEltmEndpoints(
                     throw BadRequestException(e.message ?: "Invalid replay chat payload")
                 }
                 // start's synchronous validations (the knob bounds, the
-                // non-empty chat, both pipeline models' capability check
-                // over the whole chat) are client errors before any LLM
+                // non-empty chat, the userless refusal, the tool-pair round
+                // locality, both pipeline models' capability check over the
+                // whole chat) are client errors before any LLM
                 // spend — a mid-walk failure is the status endpoint's
                 // Failed phase, never a response here
                 val started = try {

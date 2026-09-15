@@ -1,5 +1,6 @@
 package info.skyblond.daapu.server
 
+import info.skyblond.daapu.agent.chat.ChatCodec
 import info.skyblond.daapu.agent.chat.ChatMessage
 import info.skyblond.daapu.agent.chat.ChatMessageMeta
 import info.skyblond.daapu.agent.chat.ChatMessagePart
@@ -62,6 +63,18 @@ class ChatServiceExportImportTest : DbTestBase() {
         ),
         meta = ChatMessageMeta(inputTokens = 1, outputTokens = 1, totalTokens = 2),
         finishReason = "tool_calls",
+    )
+
+    /** A tool_result message answering one tool call (for the pair check). */
+    private fun toolResult(callId: String) = ChatMessage(
+        ChatMessageRole.ToolResult,
+        listOf(
+            ChatMessagePart.ToolResult(
+                id = callId,
+                tool = "add_memory",
+                parts = listOf(ChatMessagePart.Text("x")),
+            )
+        ),
     )
 
     private fun service(
@@ -190,5 +203,40 @@ class ChatServiceExportImportTest : DbTestBase() {
         val split = listOf(user("u1"), toolCallsAssistant("call_1"), assistant("a1"))
         assertFailsWith<ChatValidationException> { srv.importChat("title", split) }
         assertTrue(store.listChats(null).chats.isEmpty())
+    }
+
+    @Test
+    fun `import rejects a tool pair straddling user rounds`() = runBlocking {
+        val store = PostgresChatStore()
+        val srv = service(store)
+
+        // stored-chat valid (the pairing is 1:1 globally, so validateChat
+        // passes — pinned here) but the pair straddles rounds: a later
+        // compaction would split it, so the import refuses it exactly
+        // like the ELTM replay does (ChatCodec.toolPairsSitWithinRounds)
+        val straddling = listOf(
+            user("u1"), toolCallsAssistant("call_1"),
+            user("u2"), toolResult("call_1"),
+            assistant("a2"),
+        )
+        ChatCodec.validateChat(straddling)
+        val e = assertFailsWith<ChatValidationException> { srv.importChat("title", straddling) }
+        assertTrue(e.message!!.contains("straddle"), e.message)
+        assertTrue(store.listChats(null).chats.isEmpty())
+    }
+
+    @Test
+    fun `import accepts a chat with round-local tool pairs`() = runBlocking {
+        val store = PostgresChatStore()
+        val srv = service(store)
+
+        // the accept-path control for the straddling refusal: pairs that
+        // sit inside their own user round import fine — the README's
+        // round-trip guarantee holds for tool-carrying chats
+        val roundLocal = listOf(
+            user("u1"), toolCallsAssistant("call_1"), toolResult("call_1"), assistant("a1"),
+        )
+        val imported = srv.importChat("title", roundLocal)
+        assertEquals(roundLocal, store.load(imported.id)!!.content.messages)
     }
 }

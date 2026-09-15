@@ -101,6 +101,58 @@ object ChatCodec {
     }
 
     /**
+     * True when every tool_call/tool_result pair sits inside ONE user round
+     * (a round is one user message through to the next, see [roundCount];
+     * messages before the first user message — e.g. a transformed chat's
+     * leading prologue — form their own round). Assumes the global 1:1
+     * pairing of [validateToolPairs] already holds: an orphan call is
+     * invisible to this check, an orphan result counts as unpaired and
+     * fails it.
+     *
+     * Why a pair must not straddle rounds: a compaction cut lands on a
+     * user-round boundary (the replay walk's regions and a stored chat's
+     * own compaction alike), and the extraction queue decodes every
+     * enqueued job with the SNAPSHOT invariants ([validateSnapshot]) — a
+     * straddling pair would be split across the dropped and kept parts:
+     * the dropped half becomes a queue job that can never decode,
+     * retrying forever without ever extracting, and the kept half fails
+     * every later stored-chat load. The replay refuses such a chat up
+     * front, and so does the chat import on client-supplied histories
+     * (`ChatService.importChat`); the turn loop emits each pair inside
+     * its own round, so stored chats hold the property without a
+     * load-time check — a row that predates the import gate is caught at
+     * its compaction's enqueue
+     * (`agent/persist/PersistChatService.compactAndEnqueue`).
+     *
+     * Deliberately conservative: the walk's actual cuts are a SUBSET of
+     * the round boundaries — never the prologue's (the first dropped
+     * region always carries the whole prologue plus at least
+     * `compactionRounds >= 2` full rounds), and only the boundaries where
+     * a window happens to drop (which depends on the knobs and the
+     * running summary) — so a round-straddling pair is not always a split
+     * one. The simple round-local rule is preferred over replaying the
+     * cut arithmetic: it refuses some replayable chats (e.g. a pair
+     * straddling only the prologue boundary) instead of needing a second,
+     * subtler boundary special case.
+     */
+    internal fun toolPairsSitWithinRounds(chat: List<ChatMessage>): Boolean {
+        val callRound = mutableMapOf<String, Int>()
+        val resultRound = mutableMapOf<String, Int>()
+        var round = 0
+        chat.forEach { message ->
+            if (message.role == ChatMessageRole.User) round++
+            message.parts.forEach { part ->
+                when (part) {
+                    is ChatMessagePart.ToolCall -> callRound[part.id] = round
+                    is ChatMessagePart.ToolResult -> resultRound[part.id] = round
+                    else -> {}
+                }
+            }
+        }
+        return resultRound.all { (id, resultInRound) -> callRound[id] == resultInRound }
+    }
+
+    /**
      * The per-message invariant shared by [validateChat] and
      * [validateSnapshot]: every user message must carry its send time — the
      * per-request `<meta>` time anchors are regenerated from it, so a
