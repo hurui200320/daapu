@@ -403,8 +403,12 @@ langchain4j):
   retried a clean stream without a `finish_reason`. 4xx responses and
   `content_filter` still fail the run.
 - **Gateway-side context rejections now compact.** A 400/413 prompt-too-long
-  response classifies as `context_exhausted` and triggers the reactive
-  compaction path (the old loop failed the run with the raw HTTP error).
+  response with a recognizable error body classifies as `context_exhausted`
+  and triggers the reactive compaction path (the old loop failed the run
+  with the raw HTTP error). Bodyless 400/413 rejections do not: pi-ai 0.86+
+  gates its bodyless-overflow pattern to the Cerebras provider and the
+  hand's fixed provider id never matches, so they surface as plain
+  `upstream` errors (see `hand-pi/src/classification.ts`).
 - **Richer assistant metadata.** Assistant messages now carry timestamps, and
   `inputTokens` is the full prompt size (`input + cacheRead + cacheWrite`).
 - **A hand connection loss is terminal.** The stateless hand cannot resume a

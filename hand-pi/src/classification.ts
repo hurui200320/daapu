@@ -5,10 +5,13 @@
  *
  * daapu's classification: a `length` finish means `context_exhausted` when
  * the prompt overflows the window minus the output budget,
- * `output_budget_exhausted` otherwise. A gateway-side rejection (HTTP
- * 400/413 error body) is the same "input overflows the window" signal as a
- * near-window length finish, so it classifies as `context_exhausted` via
- * pi-ai's `isContextOverflow`.
+ * `output_budget_exhausted` otherwise. A gateway-side rejection whose error
+ * text matches pi-ai's overflow patterns is the same "input overflows the
+ * window" signal as a near-window length finish, so it classifies as
+ * `context_exhausted` via pi-ai's `isContextOverflow`. Bodyless 400/413
+ * errors do NOT count: pi-ai 0.86+ gates that pattern to the Cerebras
+ * provider (the hand's fixed provider id never matches), so they surface
+ * as plain `upstream` errors.
  */
 
 import { isContextOverflow } from "@earendil-works/pi-ai";

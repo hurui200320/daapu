@@ -77,13 +77,13 @@ describe("classifyTerminal", () => {
     expect(result).toMatchObject({ ok: false, error: { type: "context_exhausted" } });
   });
 
-  it("classifies a bare 413 as context_exhausted", () => {
+  it("classifies a bare 413 as upstream (pi-ai 0.86+ gates bodyless overflow to Cerebras)", () => {
     const message = makePiMessage({
       stopReason: "error",
       errorMessage: "413 status code (no body)",
     });
     const result = classifyTerminal("error", message, 131000, 40000);
-    expect(result).toMatchObject({ ok: false, error: { type: "context_exhausted" } });
+    expect(result).toMatchObject({ ok: false, error: { type: "upstream" } });
   });
 
   it("classifies a generic upstream error as upstream", () => {

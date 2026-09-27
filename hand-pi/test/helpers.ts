@@ -396,8 +396,13 @@ export const SLOW: FakeScenario = [
 ];
 
 export const OVERFLOW_BODY = {
-  message: "This model's maximum context length is 131072 tokens. However, you requested 200000 tokens.",
-  type: "invalid_request_error",
+  // the `error` wrapper is what real OpenAI-compatible gateways send and
+  // what the openai SDK parses into the thrown error's message — a flat
+  // body would surface as a bodyless "400 status code (no body)" instead
+  error: {
+    message: "This model's maximum context length is 131072 tokens. However, you requested 200000 tokens.",
+    type: "invalid_request_error",
+  },
 };
 
 export const WEATHER_TOOLS = [

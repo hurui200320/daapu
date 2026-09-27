@@ -242,6 +242,37 @@ describe("POST /v1/run tool rounds", () => {
     });
   });
 
+  it("folds the system prompt and tool declarations into the upstream request", async () => {
+    // pins the normalizeContext seam (see src/piCall.ts): the fake upstream
+    // blindly scripts its responses, so a run whose prompt/tools vanished
+    // from the request would still pass every other tool test — this is the
+    // only place their presence on the wire is asserted
+    const upstream = await startFakeUpstream([STOP]);
+    const callback = await startFakeCallback();
+    callback.scriptedToolList({ tools: WEATHER_TOOLS });
+    await withCallback(upstream, callback, async (callbackUrl) => {
+      const { status, events } = await run(
+        port(),
+        runRequest(upstream.port, {
+          systemPrompt: "be nice",
+          toolListUrl: callback.toolsUrl,
+          toolCallbackUrl: callbackUrl,
+        }),
+      );
+      expect(status).toBe(200);
+      expect(eventNames(events).at(-1)).toBe("done");
+      const captured = upstream.captured() as {
+        messages: { role: string; content?: string }[];
+        tools?: { function: { name: string } }[];
+      };
+      // the leading system message carries the prompt (the default
+      // reasoning modelSpec maps it to the developer role)
+      expect(["system", "developer"]).toContain(captured.messages[0]?.role);
+      expect(captured.messages[0]?.content).toBe("be nice");
+      expect(captured.tools?.map((tool) => tool.function.name)).toEqual(["search", "fetch"]);
+    });
+  });
+
   it("a fatal callback in a parallel batch fails the run and drops every result", async () => {
     // one call fails fatally while its sibling succeeds: the whole round
     // fails with tool_transport and NO result is assembled into history or

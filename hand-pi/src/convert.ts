@@ -2,6 +2,7 @@ import type {
   AssistantMessage as PiAssistantMessage,
   Context as PiContext,
   ImageContent,
+  JsonObject,
   Message as PiMessage,
   TextContent,
   ThinkingContent,
@@ -127,7 +128,11 @@ function toPiAssistantMessage(
           type: "toolCall",
           id: part.id,
           name: part.tool,
-          arguments: part.args,
+          // pi-ai 0.86+ restricts arguments to JsonObject; the wire's
+          // Record<string, unknown> is JSON in practice because Kotlin
+          // validates tool args on encode (agent/chat/ChatMessage.kt) —
+          // the hand-side validation covers the request envelope only
+          arguments: part.args as JsonObject,
         });
         break;
       default:

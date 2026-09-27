@@ -1,7 +1,9 @@
 plugins {
-    kotlin("jvm") version "2.4.0"
-    kotlin("plugin.serialization") version "2.4.0"
-    id("io.insert-koin.compiler.plugin") version "1.1.0"
+    kotlin("jvm") version "2.4.20"
+    kotlin("plugin.serialization") version "2.4.20"
+    // 1.2.1 is the minimum supporting Kotlin 2.4.20 (2.4.20 removed
+    // compiler APIs older plugin versions crash on)
+    id("io.insert-koin.compiler.plugin") version "1.2.1"
     application
 }
 
@@ -12,21 +14,24 @@ repositories {
     mavenCentral()
 }
 
-val exposedVersion = "1.3.1"
-val flywayVersion = "13.1.0"
+val exposedVersion = "1.5.0"
+val flywayVersion = "13.8.0"
 // the official MCP Kotlin SDK, riding on ktor-client
 // like the hand client below
 val mcpSdkVersion = "0.15.0"
-// ktor must stay uniform across the classpath: the MCP SDK depends on
-// ktor-client-core 3.5.1, so the server artifacts follow the same version
-val ktorVersion = "3.5.1"
+// ktor must stay uniform across the classpath: the MCP SDK (0.15.0) still
+// depends on ktor artifacts at 3.5.1 (e.g. ktor-server-websockets). Gradle's
+// "highest wins" only engages for modules we request ourselves, so the
+// ktor-bom platform below pins EVERY ktor module — including transitive
+// ones we never name — to this single version
+val ktorVersion = "3.6.0"
 // dependency injection: the container + the compiler plugin DSL
 // (org.koin.plugin.module.dsl.*), see di/AppModule.kt
 val koinVersion = "4.2.2"
 
 dependencies {
-    implementation("ch.qos.logback:logback-classic:1.5.38")
-    implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
+    implementation("ch.qos.logback:logback-classic:1.6.4")
+    implementation("io.github.oshai:kotlin-logging-jvm:8.0.4")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
@@ -47,6 +52,9 @@ dependencies {
     // MCP tool servers (#8) through the official Kotlin SDK
     implementation("io.modelcontextprotocol:kotlin-sdk-client:$mcpSdkVersion")
 
+    // the ktor uniformity guard — the why lives in the ktorVersion
+    // comment above
+    implementation(platform("io.ktor:ktor-bom:$ktorVersion"))
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-status-pages-jvm:$ktorVersion")
@@ -70,7 +78,7 @@ dependencies {
     // the DB-backed tests start their own throwaway PostgreSQL (pgvector
     // included) — see testutil/TestDb.kt; the singleton container lives for
     // the whole test JVM and Ryuk reaps it on exit
-    testImplementation("org.testcontainers:postgresql:1.21.3")
+    testImplementation("org.testcontainers:postgresql:1.21.4")
 }
 
 kotlin {

@@ -1,5 +1,6 @@
 import { stream } from "@earendil-works/pi-ai/api/openai-completions";
 import type { OpenAICompletionsOptions } from "@earendil-works/pi-ai/api/openai-completions";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage as PiAssistantMessage,
   AssistantMessageEventStream,
@@ -58,6 +59,11 @@ export type TerminalOutcome =
  * everything — including upstream failures — as stream events, never as
  * exceptions to the caller. Empty tool lists are omitted (some gateways
  * reject `tools: []`).
+ *
+ * pi-ai 0.86+ api-level stream functions take a normalized TranscriptContext
+ * and no longer fold a raw `Context` themselves: `normalizeContext()` here
+ * folds the systemPrompt and tools into the leading system message — without
+ * it both would silently vanish from the LLM request.
  */
 export function openStream(
   model: PiModel<"openai-completions">,
@@ -68,7 +74,7 @@ export function openStream(
   const piTools = tools !== undefined && tools.length > 0 ? toPiTools(tools) : undefined;
   return stream(
     model,
-    { systemPrompt: context.systemPrompt, messages: context.messages, tools: piTools },
+    normalizeContext({ systemPrompt: context.systemPrompt, messages: context.messages, tools: piTools }),
     {
       apiKey: options.apiKey,
       maxTokens: options.maxTokens,
