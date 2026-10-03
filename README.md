@@ -489,8 +489,8 @@ For Coding agents.
 
 ### pi-ai
 
-+ Repo https://github.com/earendil-works/pi-ai (pinned `0.84.1` in `hand-pi/`)
-  + Docs https://pi-ai.dev
++ Repo https://github.com/earendil-works/pi (pinned `1.0.1` in `hand-pi/`, package `packages/ai`)
+  + Docs https://github.com/earendil-works/pi/tree/main/packages/ai
 
 ### MCP Kotlin SDK
 
