@@ -54,8 +54,9 @@ import kotlin.test.*
  * the callback and the history, capability enforcement BEFORE any hand
  * request, the per-turn query rewrite one-shot, and the reactive compaction
  * path (hand `context_exhausted` →
- * compact → queue the extraction → refresh injection → fresh run, with no
- * attempt cap).
+ * compact with an escalating keep → queue the extraction → refresh
+ * injection → fresh run; a further exhaustion after a keep-0 compaction
+ * fails the run with an actionable error).
  */
 class PersistChatServiceTest : DbTestBase() {
 
@@ -1451,6 +1452,166 @@ class PersistChatServiceTest : DbTestBase() {
             5,
             outcome.hand.requests.size,
             "rewrite -> exhausted -> compact -> exhausted -> compact (fails)"
+        )
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+    }
+
+    /**
+     * The message count of a compactor request's PRESERVED region: the
+     * messages between the "for context" marker and the "Summarize..."
+     * instruction (the escalation tests' no-progress probe).
+     */
+    private fun preservedRegionMessageCount(request: HandRunRequest): Int {
+        val texts = request.messages.map { it.parts.textContent() }
+        val marker = texts.indexOfFirst { it.contains("Above are the messages to summarize") }
+        val instruction = texts.indexOfFirst { it.contains("Summarize this chat according to system prompt") }
+        assertTrue(marker >= 0, "the compactor input must carry the context marker")
+        assertTrue(instruction > marker, "the summarize instruction must follow the marker")
+        return instruction - marker - 1
+    }
+
+    @Test
+    fun `consecutive exhaustions preserve one round fewer each recovery`() {
+        // M3 regression: with a FIXED keep count every recovery preserves
+        // the same tail and re-summarizes only the previous summary, so an
+        // oversized preserved tail (with the fresh input) can loop recovery
+        // forever. Each consecutive recovery must keep ONE ROUND FEWER than
+        // the last one kept, so the retried prompts strictly shrink until
+        // one fits.
+        val compactorRequests = mutableListOf<HandRunRequest>()
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            chatScript = { request ->
+                if (request.messages.size <= 2) {
+                    stopEvents()
+                } else {
+                    listOf(HandEvent.RunError("context_exhausted", "input too big"))
+                }
+            },
+            compactionScript = { request ->
+                compactorRequests += request
+                textRunFlow("compacted summary")
+            },
+        )
+        assertNull(outcome.error)
+
+        // rewrite -> (exhausted run -> compaction) x3 -> fitting fresh run:
+        // the chat starts at 9 messages and the script accepts only the
+        // irreducible [summary, input] pair
+        assertEquals(
+            8,
+            outcome.hand.requests.size,
+            "rewrite -> (chat run -> compactor) x3 -> fresh run",
+        )
+        // the preserved region shrinks by exactly one round (two messages)
+        // per recovery: keep 3 -> 2 -> 1 — never the same region twice
+        assertEquals(
+            listOf(5, 3, 1),
+            compactorRequests.map { preservedRegionMessageCount(it) },
+            "each consecutive recovery preserves one round fewer",
+        )
+
+        // the fitting prompt was the minimum: [summary, run input]
+        val lastRun = outcome.hand.requests.last()
+        assertEquals(2, lastRun.messages.size)
+        assertTrue(
+            (lastRun.messages[0].parts[1] as ChatMessagePart.Text).text
+                .startsWith("CONTEXT COMPACTION: "),
+            "the summary leads the fitting prompt",
+        )
+
+        // every recovery queued its genuinely dropped region for the
+        // background extraction
+        assertEquals(
+            3,
+            runBlocking { TestDb.allExtractionJobs().size },
+            "one extraction job per escalating recovery",
+        )
+
+        // the stored history: summary + the input + the final answer
+        val stored = assertNotNull(outcome.store.stored)
+        assertEquals(
+            listOf(ChatMessageRole.User, ChatMessageRole.User, ChatMessageRole.Assistant),
+            stored.map { it.role },
+            "the escalation converged to [summary, input] before the run fit",
+        )
+        assertTrue(
+            (stored[0].parts.single() as ChatMessagePart.Text).text
+                .startsWith("CONTEXT COMPACTION: ")
+        )
+    }
+
+    @Test
+    fun `exhaustion after a keep-zero compaction fails the run with an actionable error`() {
+        // the full escalation ladder (keep 3 -> 2 -> 1 -> 0 off a
+        // four-turn seed) still cannot make the prompt fit: the keep-0
+        // compaction collapsed the whole chat into one summary message,
+        // so the NEXT exhaustion terminates the run instead of
+        // re-summarizing the same summary forever
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            chatScript = { listOf(HandEvent.RunError("context_exhausted", "still too big")) },
+        )
+        val e = assertIs<HandRunException>(outcome.error)
+        assertEquals("context_exhausted", e.type)
+        assertTrue(
+            e.message!!.contains("no further compaction can help"),
+            "the error must explain why recovery ended: ${e.message}",
+        )
+        assertTrue(
+            e.message!!.contains("Shorten") && e.message!!.contains("larger context window"),
+            "the error must offer remedies: ${e.message}",
+        )
+        assertTrue(
+            e.message!!.contains("still too big"),
+            "the hand's last error travels to the client: ${e.message}",
+        )
+
+        // bounded budget: keep 3 -> 2 -> 1 -> 0 compactions, then the
+        // floored run and the terminal error
+        assertEquals(
+            10,
+            outcome.hand.requests.size,
+            "rewrite -> (chat run -> compactor) x4 -> floored run -> error",
+        )
+        assertEquals(
+            4,
+            outcome.hand.requests.count {
+                it.systemPrompt?.startsWith("You're summarizing") == true
+            },
+            "the escalation ladder ran exactly keep 3 -> 2 -> 1 -> 0",
+        )
+        // the floored prompt was the irreducible minimum: summary + the
+        // re-appended run input
+        assertEquals(2, outcome.hand.requests.last().messages.size)
+        assertEquals(0, outcome.store.storeCount, "a failed run must never store")
+    }
+
+    @Test
+    fun `an input that cannot fit a fresh chat reaches the floor in one compaction`() {
+        // nothing to preserve on a brand-new chat, so the FIRST recovery
+        // already collapses everything into the summary; a further
+        // exhaustion means the input itself (plus its injection) cannot
+        // fit the window — the run fails fast instead of compacting the
+        // summary twice
+        val outcome = run(
+            chatScript = { listOf(HandEvent.RunError("context_exhausted", "input too big")) },
+        )
+        val e = assertIs<HandRunException>(outcome.error)
+        assertEquals("context_exhausted", e.type)
+
+        // rewrite -> exhausted run -> collapse-to-summary compaction ->
+        // exhausted run -> terminal error
+        assertEquals(
+            4,
+            outcome.hand.requests.size,
+            "rewrite -> exhausted -> collapse compaction -> exhausted -> error",
+        )
+        // the single compaction folded the run input into the summary —
+        // there was nothing else to drop
+        assertTrue(
+            injectionOf(outcome.hand.requests[2]).contains("hello"),
+            "the run input feeds the one collapse compaction",
         )
         assertEquals(0, outcome.store.storeCount, "a failed run must never store")
     }

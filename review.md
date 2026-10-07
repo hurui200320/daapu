@@ -46,7 +46,7 @@ Context exhaustion commonly occurs on the request following a large tool result.
 
 **Fix:** Preserve completed, paired tool rounds. Discard only the failed round's partial assistant message, then compact the resulting accepted history. Add a regression test proving a successful side-effecting tool is represented in the recovered prompt and is not automatically repeated.
 
-### M3 — Repeated context exhaustion can compact the same prompt forever
+### ~~M3 — Repeated context exhaustion can compact the same prompt forever~~ (fixed)
 
 **Location:** `src/main/kotlin/info/skyblond/daapu/agent/pipeline/compaction/ChatCompactionService.kt:147–151`
 **Related:** `src/main/kotlin/info/skyblond/daapu/agent/persist/PersistChatService.kt:196–255`

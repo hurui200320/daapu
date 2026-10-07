@@ -34,6 +34,8 @@ class ChatCompactionService(
      * The [excludeLastNRound] is an indicator, the whole chat history will be
      * feed to the compactor LLM, but will tell it the last N round is for context/reference-only,
      * after the compaction, the last N round of messages should be preserved as-is.
+     * A value of 0 preserves NOTHING: the whole chat (the current run's
+     * messages included — see [splitMessage]) collapses into the summary.
      *
      * One round means one user message to an assistant message with stop reason: stop.
      * So one round of messages will contain 1 user message, 1 or more assistant messages,
@@ -116,6 +118,7 @@ class ChatCompactionService(
         return ChatCompactionResult(
             droppedMessages = chatToCompact,
             newChat = listOf(summaryMessage) + chatToPreserve,
+            keptRounds = chatToPreserve.roundCount(),
         )
     }
 
@@ -131,7 +134,9 @@ class ChatCompactionService(
      * [lastNRound] — down to zero, which drops the entire body — so a chat
      * that overflows its context is always compactable, even a single
      * overflowing round. (Compacting "everything" is the best that can be
-     * done when the keep count cannot be honored.)
+     * done when the keep count cannot be honored.) Reaching zero via an
+     * explicit [lastNRound] of 0 — the escalation floor of the reactive
+     * recovery in `PersistChatService` — produces the exact same shape.
      *
      * Throws [IllegalArgumentException] when the chat has no user messages
      * at all: there is literally nothing to summarize.
@@ -140,7 +145,9 @@ class ChatCompactionService(
         chat: List<ChatMessage>,
         lastNRound: Int,
     ): Pair<List<ChatMessage>, List<ChatMessage>> {
-        require(lastNRound >= 1)
+        // a request of 0 is valid ("preserve nothing" — see [compactChat]);
+        // the clamp below then keeps none, so the chat's whole body drops
+        require(lastNRound >= 0)
         require(chat.roundCount() >= 1) {
             "Nothing to compact: the chat has no user messages"
         }

@@ -6,6 +6,7 @@ import info.skyblond.daapu.agent.context.InjectionSpec
 import info.skyblond.daapu.agent.context.RelatedNoteView
 import info.skyblond.daapu.agent.context.resolveRelatedNotes
 import info.skyblond.daapu.agent.model.LLM
+import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionResult
 import info.skyblond.daapu.agent.pipeline.compaction.ChatCompactionService
 import info.skyblond.daapu.agent.pipeline.currentPromptTokens
 import info.skyblond.daapu.agent.pipeline.rewrite.QueryRewriteService
@@ -40,8 +41,16 @@ import java.time.ZonedDateTime
  * COMPLETED rounds (see [dropFailedRoundPartial] for what is kept and
  * why), compacts, queues the dropped messages' memory extraction into
  * the background extraction queue, refreshes the injection in place, and
- * starts a fresh hand run — with no attempt cap, exactly like the old
- * in-process loop (a second exhaustion compacts again).
+ * starts a fresh hand run. Consecutive recoveries ESCALATE instead of
+ * repeating one compaction forever (which is what a fixed keep count
+ * does: every recovery re-preserves the same tail and re-summarizes only
+ * the previous summary): each asks for one round FEWER than the last one
+ * actually kept (the compaction reports the count back via
+ * `ChatCompactionResult.keptRounds`), and an exhaustion after a
+ * compaction that kept NOTHING fails the run with an actionable
+ * error — the kept history is already one summary message, so another
+ * compaction would only re-summarize it. The mechanics live in the
+ * recovery branch of [runChat].
  *
  * The harness context ([ContextInjection.injectContext]) is applied to the
  * in-loop chat once before the round — `<meta>` time anchors on the
@@ -130,7 +139,7 @@ class PersistChatService(
             currentPromptTokens(chat) > model.contextLength * model.compactionTriggerFraction
         ) {
             logger.info { "Compacting chat $chatId" }
-            chat = compactAndEnqueue(chatId, chat, model)
+            chat = compactAndEnqueue(chatId, chat, model.compactionKeepRounds).newChat
             logger.info { "Finished compacting chat $chatId" }
         }
 
@@ -193,6 +202,18 @@ class PersistChatService(
 
         chat = contextInjection.injectContext(chat, buildInjectionSpec())
 
+        // Consecutive-recovery escalation state (the why: the class KDoc).
+        // [recoveryKeepRounds] is the preserved-round count the previous
+        // reactive compaction actually KEPT (null before the first one,
+        // which uses the model's configured count), so every consecutive
+        // recovery asks for one round fewer — linear, not halved, to shed
+        // as little history as possible while still making progress.
+        // [exhaustedAtFloor] flags a compaction that kept NOTHING the last
+        // time: the whole chat (this run's input included) collapsed into
+        // one summary message, and nothing is left to shrink.
+        var recoveryKeepRounds: Int? = null
+        var exhaustedAtFloor = false
+
         while (true) {
             // the prompt is complete (history + the out-of-band system prompt +
             // new input + any tool results from earlier rounds of this run):
@@ -215,14 +236,52 @@ class PersistChatService(
                 is HandTerminal.Done -> break
                 is HandTerminal.RunError -> {
                     if (terminal.type == "context_exhausted") {
+                        // the terminal floor: the previous recovery already
+                        // collapsed the WHOLE history into a single summary
+                        // message, and the retried run STILL reported
+                        // exhaustion. Another compaction would re-summarize
+                        // that same summary (folding what the failed attempt
+                        // itself produced is no guaranteed shrink — the next
+                        // attempt can produce just as much) and retry an
+                        // almost-identical prompt forever, so fail with an
+                        // actionable error instead — thrown before the store,
+                        // the stored chat keeps its last good state
+                        if (exhaustedAtFloor) {
+                            throw HandRunException(
+                                type = "context_exhausted",
+                                message = "Context is still exhausted after the whole history of " +
+                                        "chat '$chatId' was compacted into a single summary " +
+                                        "against the model's ${model.contextLength}-token window. " +
+                                        "The kept history — that summary, the input that started " +
+                                        "this run, and the injected context — is the minimum the " +
+                                        "chat loop can offer, and another compaction would only " +
+                                        "re-summarize the same summary, so no further compaction " +
+                                        "can help (last hand error: ${terminal.message}). " +
+                                        "Shorten the input or its attachments, reduce the injected " +
+                                        "memories (memory.eltm.relatedEntitiesLimit / " +
+                                        "relatedNotesLimit, or a persona without the gsg " +
+                                        "namespace), or switch to a model with a larger context " +
+                                        "window."
+                            )
+                        }
                         // the recovery input keeps the attempt's completed
                         // rounds (their tool calls already executed); only the
                         // failed round's partial assistant message goes —
                         // see [dropFailedRoundPartial]
                         chat = dropFailedRoundPartial(chat)
-                        logger.info { "Hand reports context exhaustion, compacting chat $chatId" }
+                        val keepRounds = recoveryKeepRounds?.dec() ?: model.compactionKeepRounds
+                        logger.info {
+                            "Hand reports context exhaustion, compacting chat $chatId " +
+                                    "(keeping at most $keepRounds round(s))"
+                        }
                         // the compacted chat history does not contain injection
-                        chat = compactAndEnqueue(chatId, chat, model)
+                        val compaction = compactAndEnqueue(chatId, chat, keepRounds)
+                        chat = compaction.newChat
+                        // the actual kept-round count the NEXT recovery
+                        // escalates from — splitMessage may have clamped the
+                        // request on a small chat
+                        recoveryKeepRounds = compaction.keptRounds
+                        exhaustedAtFloor = recoveryKeepRounds == 0
                         // The compaction replaces the whole chat with the
                         // summary when the keep count collapses to zero, so the
                         // run's own user message may be gone. The latest user
@@ -299,18 +358,27 @@ class PersistChatService(
      * queue's claim-path invariants ([ChatCodec.validateSnapshot]) — the
      * replay walk's onDropped precedent; a violation fails the run the
      * same way (the code comment names the only input that can produce
-     * one). Returns the compacted history (no injection). The compacted
-     * history reaches the client via the post-run resync; no dedicated
-     * event is emitted. Both the proactive trigger and the reactive
-     * `context_exhausted` recovery go through here — the two paths differ
-     * only in their logging and what they re-inject after.
+     * one). Returns the compaction's result (see [ChatCompactionResult]):
+     * `newChat` carries no injection and reaches the client via the
+     * post-run resync, no dedicated event is emitted, and the reactive
+     * recovery escalates off `keptRounds`. Both the proactive trigger and
+     * the reactive `context_exhausted` recovery go through here — the two
+     * paths differ only in their keep budget (see [keepRounds]) and in
+     * what they re-inject after.
      */
     private suspend fun compactAndEnqueue(
         chatId: String,
         chat: List<ChatMessage>,
-        model: LLM,
-    ): List<ChatMessage> {
-        val result = compactionService.compactChat(chat, model.compactionKeepRounds)
+        /**
+         * The preserved-round budget handed to the compaction
+         * ([ChatCompactionService.compactChat]'s `excludeLastNRound`):
+         * the proactive trigger passes the model's configured
+         * `compactionKeepRounds`; the reactive recovery passes its
+         * escalating count (see the recovery branch in [runChat]).
+         */
+        keepRounds: Int,
+    ): ChatCompactionResult {
+        val result = compactionService.compactChat(chat, keepRounds)
         // defense in depth, the replay walk's onDropped precedent
         // (memory/eltm/EltmReplayService.kt): the queue's claim decodes
         // every job with the SNAPSHOT invariants — a violating drop
@@ -327,7 +395,7 @@ class PersistChatService(
             "Compaction of chat '$chatId' dropped ${result.droppedMessages.size} " +
                     "message(s), queued for background memory extraction as job $jobId"
         }
-        return result.newChat
+        return result
     }
 
     /**

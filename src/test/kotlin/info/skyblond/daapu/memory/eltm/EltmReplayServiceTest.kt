@@ -128,6 +128,7 @@ class EltmReplayServiceTest {
         return ChatCompactionResult(
             droppedMessages = feed.dropLast(kept.size),
             newChat = listOf(summary) + kept,
+            keptRounds = kept.roundCount(),
         )
     }
 
@@ -288,9 +289,11 @@ class EltmReplayServiceTest {
             compactionRounds = 8,
             contextRounds = 3,
             compact = { feed ->
+                val compacted = fakeCompactResult(feed, 3, summary("S"))
                 ChatCompactionResult(
                     droppedMessages = emptyList(),
-                    newChat = fakeCompactResult(feed, 3, summary("S")).newChat,
+                    newChat = compacted.newChat,
+                    keptRounds = compacted.keptRounds,
                 )
             },
             onDropped = { regions += it },

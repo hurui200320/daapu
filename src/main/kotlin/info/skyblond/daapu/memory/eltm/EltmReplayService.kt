@@ -350,7 +350,8 @@ internal suspend fun replayChat(
  */
 internal fun validateReplayKnobs(compactionRounds: Int, contextRounds: Int) {
     require(contextRounds >= 1) {
-        "contextRounds must be >= 1: the compactor always keeps at least one reference round"
+        "contextRounds must be >= 1: every window must preserve at least one verbatim " +
+                "reference round of context for the next one"
     }
     require(compactionRounds >= 2) {
         "compactionRounds must be >= 2: every compaction drops compactionRounds rounds " +

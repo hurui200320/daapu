@@ -158,6 +158,19 @@ class ChatCompactionServiceTest {
         )
     }
 
+    @Test
+    fun `split accepts an explicit keep of zero and drops the whole chat`() {
+        // the reactive recovery escalates its keep down to 0 (the recovery
+        // loop in PersistChatService): the request must produce the same
+        // shape the small-chat clamp already produces — preserve nothing
+        val compactor = compactor()
+        val (toCompact, toPreserve) = assertNotNull(
+            compactor.splitMessage(turns(3), lastNRound = 0)
+        )
+        assertEquals(turns(3), toCompact, "the whole chat is the drop region")
+        assertTrue(toPreserve.isEmpty(), "nothing is preserved on an explicit keep of zero")
+    }
+
     // ------------------------------------------------------------------
     // compactChat
     // ------------------------------------------------------------------
@@ -196,6 +209,8 @@ class ChatCompactionServiceTest {
                 "u1 "
             )
         )
+        // the actual kept count (the escalation's read-back) honors the budget
+        assertEquals(3, result.keptRounds, "the requested keep was honored in full")
         // the summarizer input contained the drop region, the marker, the preserved tail, and the instruction
         val request = ChatCodec.encodeChat(hand.requests.single().messages)
         assertTrue(request.contains("u1 "), "the drop region is part of the summarizer input")
@@ -276,6 +291,31 @@ class ChatCompactionServiceTest {
     }
 
     @Test
+    fun `compactChat with a zero keep summarizes the whole chat`() = runBlocking {
+        // the escalation floor of the reactive recovery: keep 0 preserves
+        // NOTHING, the whole chat (the current run's message included)
+        // collapses into the single summary message
+        val hand = FakeHand(
+            runScript = { textRunFlow("everything summarized") },
+        )
+        val result = assertNotNull(
+            compactor(hand).compactChat(longTurns(3), excludeLastNRound = 0)
+        )
+        val newChat = result.newChat
+        assertEquals(listOf(ChatMessageRole.User), newChat.map { it.role })
+        val summaryText = (newChat.single().parts.single() as ChatMessagePart.Text).text
+        assertTrue(summaryText.startsWith("CONTEXT COMPACTION: "))
+        assertTrue(summaryText.endsWith("everything summarized"))
+        assertEquals(longTurns(3), result.droppedMessages, "the whole chat is dropped in full")
+        assertEquals(0, result.keptRounds, "an explicit keep of zero preserves nothing")
+        // the summarizer saw every message — nothing was preserved as
+        // context-only
+        val sentText = ChatCodec.encodeChat(hand.requests.single().messages)
+        assertTrue(sentText.contains("u1 "), "the first round feeds the summarizer")
+        assertTrue(sentText.contains("u3 "), "the last round feeds the summarizer")
+    }
+
+    @Test
     fun `compactChat compacts the whole chat when there is only one round`() = runBlocking {
         // a single overflowing round must still be compacted: the keep count
         // collapses to zero and the entire body is replaced by the summary
@@ -295,6 +335,9 @@ class ChatCompactionServiceTest {
             result.droppedMessages,
             "the single round is dropped in full",
         )
+        // the kept count reports the CLAMP (0 of the requested 3), not the
+        // request — the escalation's read-back must reflect the actual shape
+        assertEquals(0, result.keptRounds, "the clamp, not the request, is reported")
     }
 
     @Test

@@ -207,9 +207,14 @@ History compaction and memory extraction (see `AGENTS.md` and
   the prompt size (the last assistant message's provider-reported input-token
   snapshot) and compacts the history when it exceeds `compactionTriggerFraction`
   of the model's context window (0 disables the proactive path). A round that
-  still exhausts the context compacts reactively and retries (every exhaustion
-  triggers a compaction; a compaction that fails, returns a non-clean summary,
-  or cannot enqueue the dropped messages fails the run). `compactionKeepRounds`
+  still exhausts the context compacts reactively and retries (each
+  consecutive recovery keeps one round fewer than the last one kept, so the
+  retried prompts strictly shrink; an exhaustion after a compaction that kept
+  nothing — the whole history collapsed into the summary message — fails the
+  run with an actionable error instead of re-summarizing the same summary
+  forever, see `agent/persist/PersistChatService.kt`; a compaction that
+  fails, returns a non-clean summary, or cannot enqueue the dropped messages
+  fails the run too). `compactionKeepRounds`
   complete rounds are kept verbatim at
   the tail of a compacted chat; everything older is replaced by one
   `CONTEXT COMPACTION: `-marked summary user message. When the chat has
