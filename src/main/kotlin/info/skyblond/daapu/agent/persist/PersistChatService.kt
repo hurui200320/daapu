@@ -36,12 +36,12 @@ import java.time.ZonedDateTime
  *
  * Reactive compaction: the hand reports `context_exhausted` when the
  * prompt overflows the window (a `length` finish near the window or a
- * gateway-side 400/413 rejection). The loop then discards the failed
- * attempt's messages, compacts, queues the dropped messages' memory
- * extraction into the background extraction queue, refreshes the injection
- * in place, and starts a fresh hand run —
- * with no attempt cap, exactly like the old in-process loop (a second
- * exhaustion compacts again).
+ * gateway-side 400/413 rejection). The loop then keeps the attempt's
+ * COMPLETED rounds (see [dropFailedRoundPartial] for what is kept and
+ * why), compacts, queues the dropped messages' memory extraction into
+ * the background extraction queue, refreshes the injection in place, and
+ * starts a fresh hand run — with no attempt cap, exactly like the old
+ * in-process loop (a second exhaustion compacts again).
  *
  * The harness context ([ContextInjection.injectContext]) is applied to the
  * in-loop chat once before the round — `<meta>` time anchors on the
@@ -203,7 +203,6 @@ class PersistChatService(
             // results — the callback route answers `fatal` for tool-result
             // attachments, and this check covers everything else.
             model.checkPromptContentCapabilities(chat)
-            val attemptStartSize = chat.size
             val (newChat, terminal) = runHandRun(
                 model = model,
                 chat = chat,
@@ -215,10 +214,12 @@ class PersistChatService(
             when (terminal) {
                 is HandTerminal.Done -> break
                 is HandTerminal.RunError -> {
-                    // the failed attempt's messages must not leak into the
-                    // compaction or the stored history
-                    chat = chat.take(attemptStartSize)
                     if (terminal.type == "context_exhausted") {
+                        // the recovery input keeps the attempt's completed
+                        // rounds (their tool calls already executed); only the
+                        // failed round's partial assistant message goes —
+                        // see [dropFailedRoundPartial]
+                        chat = dropFailedRoundPartial(chat)
                         logger.info { "Hand reports context exhaustion, compacting chat $chatId" }
                         // the compacted chat history does not contain injection
                         chat = compactAndEnqueue(chatId, chat, model)
@@ -254,6 +255,9 @@ class PersistChatService(
                         // fall through: the next loop iteration starts a fresh
                         // hand run with the compacted prompt
                     } else {
+                        // an unrecoverable failure: failRun ALWAYS throws
+                        // before any store, so nothing of this attempt can
+                        // leak — the stored chat stays at its last good state
                         failRun(terminal.type, terminal.message)
                     }
                 }
@@ -384,6 +388,31 @@ class PersistChatService(
         return newChat to (terminal
             ?: throw HandUpstreamException("hand run ended without a terminal event"))
     }
+
+    /**
+     * The recovery input of a `context_exhausted` attempt: the messages the
+     * failed run appended, minus the failed round's OWN partial assistant
+     * message. The completed rounds are KEPT — their tool calls already
+     * executed brain-side (bash, write-capable MCP tools), so the compacted
+     * retry must carry the calls and their results instead of re-issuing
+     * them blind (duplicate side effects).
+     *
+     * Dropping at most ONE trailing assistant message is enough. The tail
+     * this path can see is shaped in `hand-pi/src/run.ts` — the round
+     * loop's `assistant_message` emits (a completed round, or the
+     * `length`-finish partial) and `executeToolCalls`'s trailing
+     * `tool_result` emits:
+     * - a completed round's assistant message is always answered by its
+     *   FULL result batch (results are pushed only after every callback
+     *   settled, and exhaustion arises mid-stream, never mid-execution),
+     *   so a partial batch can never be the tail;
+     * - a `stop` assistant message ends the run with `done`, not an error,
+     *   so on the exhaustion path the tail is either a `tool_result`
+     *   (nothing to drop) or exactly that one `length` partial — whose
+     *   tool_call parts, if any, were never executed.
+     */
+    private fun dropFailedRoundPartial(chat: List<ChatMessage>): List<ChatMessage> =
+        if (chat.lastOrNull()?.role == ChatMessageRole.Assistant) chat.dropLast(1) else chat
 
     /**
      * Maps a hand run error type onto the run failure — always throws.

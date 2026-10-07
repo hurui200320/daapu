@@ -1456,6 +1456,233 @@ class PersistChatServiceTest : DbTestBase() {
     }
 
     @Test
+    fun `a reactive compaction keeps the exhausted attempt's completed tool rounds`() = runBlocking {
+        // M2 regression: the attempt completes a side-effecting tool round
+        // (the call executed brain-side, the result came back), and the
+        // NEXT LLM request overflows the window. The recovery must feed the
+        // completed pair into the compaction and keep it in the retried
+        // prompt — otherwise the model sees no trace of the executed work
+        // and re-issues the call (duplicate side effects).
+        val call = ChatMessagePart.ToolCall(
+            id = "call_1",
+            tool = "flag",
+            args = JsonObject(emptyMap())
+        )
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            chatScript = { request ->
+                if (request.messages.any {
+                        it.parts.any { part ->
+                            part is ChatMessagePart.Text && part.text.startsWith(
+                                "CONTEXT COMPACTION"
+                            )
+                        }
+                    }) {
+                    stopEvents()
+                } else {
+                    listOf(
+                        HandEvent.AssistantMessage(
+                            assistantMessage(
+                                parts = listOf(call),
+                                finishReason = "tool_calls"
+                            )
+                        ),
+                        HandEvent.ToolCall(call.id, call.tool, call.args),
+                        HandEvent.ToolResult(
+                            id = call.id,
+                            name = call.tool,
+                            parts = listOf(ChatMessagePart.Text("done: file written")),
+                            isError = false,
+                        ),
+                        // the round after the big tool result overflows
+                        HandEvent.RunError(
+                            "context_exhausted",
+                            "input 100000 tokens exceeds context window"
+                        ),
+                    )
+                }
+            },
+        )
+        assertNull(outcome.error)
+
+        // rewrite -> exhausted attempt -> compactor -> fresh run
+        assertEquals(4, outcome.hand.requests.size)
+
+        // the accepted history entered the compaction input...
+        val compactorInput = injectionOf(outcome.hand.requests[2])
+        assertTrue(
+            compactorInput.contains("call_1"),
+            "the compactor must see the completed call: $compactorInput"
+        )
+        assertTrue(compactorInput.contains("done: file written"))
+
+        // ...and the compaction preserved the pair verbatim (keep-3 covers
+        // the run's round): the retried prompt still carries the call
+        // paired with its result, so the model does not re-issue it
+        val retried = outcome.hand.requests[3]
+        assertEquals(
+            listOf(call),
+            retried.messages
+                .filter { it.role == ChatMessageRole.Assistant }
+                .flatMap { it.parts }
+                .filterIsInstance<ChatMessagePart.ToolCall>(),
+            "the retried prompt must carry the executed call"
+        )
+        val retriedResult = retried.messages
+            .filter { it.role == ChatMessageRole.ToolResult }
+            .flatMap { it.parts }
+            .filterIsInstance<ChatMessagePart.ToolResult>()
+            .single()
+        assertEquals("call_1", retriedResult.id)
+        assertEquals(listOf(ChatMessagePart.Text("done: file written")), retriedResult.parts)
+
+        // exactly one tool call streamed in total: the retried round
+        // answered directly, the executed tool was not automatically
+        // repeated
+        assertEquals(listOf("flag" to JsonObject(emptyMap())), outcome.callback.toolCalls)
+
+        // the store keeps the pair too
+        val stored = assertNotNull(outcome.store.stored)
+        assertEquals(
+            listOf(
+                ChatMessageRole.User,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant, ChatMessageRole.ToolResult,
+                ChatMessageRole.Assistant,
+            ),
+            stored.map { it.role },
+            "summary + kept rounds + the preserved pair + the final answer",
+        )
+
+        // the completed pair stays in the LIVE history: the queued
+        // extraction carries only the genuinely dropped older rounds
+        val claimed = assertNotNull(testExtractionQueue.claim())
+        assertEquals(
+            listOf(
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+            ),
+            claimed.messages.map { it.role },
+        )
+    }
+
+    @Test
+    fun `the exhausted attempt's partial round is dropped from the recovery input`() {
+        // the failed round's own message is the hand's `length`-truncated
+        // partial (emitted for the frontend's display, see the run loop in
+        // hand-pi/src/run.ts): it may carry truncated text and tool calls
+        // that NEVER executed. It must be discarded before the compaction
+        // — never summarized, queued for extraction, or stored — while the
+        // rounds that completed before it stay.
+        val call = ChatMessagePart.ToolCall(
+            id = "call_1",
+            tool = "flag",
+            args = JsonObject(emptyMap())
+        )
+        val outcome = run(
+            store = InMemoryChatStore(crowdedSeed(lastInputTokens = 10)),
+            chatScript = { request ->
+                if (request.messages.any {
+                        it.parts.any { part ->
+                            part is ChatMessagePart.Text && part.text.startsWith(
+                                "CONTEXT COMPACTION"
+                            )
+                        }
+                    }) {
+                    stopEvents()
+                } else {
+                    listOf(
+                        // a completed round: call executed, result returned
+                        HandEvent.AssistantMessage(
+                            assistantMessage(
+                                parts = listOf(call),
+                                finishReason = "tool_calls"
+                            )
+                        ),
+                        HandEvent.ToolCall(call.id, call.tool, call.args),
+                        HandEvent.ToolResult(
+                            id = call.id,
+                            name = call.tool,
+                            parts = listOf(ChatMessagePart.Text("done: file written")),
+                            isError = false,
+                        ),
+                        // the failed round's partial: truncated text plus
+                        // a call that never ran
+                        HandEvent.AssistantMessage(
+                            assistantMessage(
+                                parts = listOf(
+                                    ChatMessagePart.Text("cut mid-sentence"),
+                                    ChatMessagePart.ToolCall(
+                                        id = "call_zombie",
+                                        tool = "flag",
+                                        args = JsonObject(emptyMap())
+                                    ),
+                                ),
+                                finishReason = "length",
+                            )
+                        ),
+                        HandEvent.RunError(
+                            "context_exhausted",
+                            "length finish near the context window"
+                        ),
+                    )
+                }
+            },
+        )
+        assertNull(outcome.error)
+
+        // rewrite -> exhausted attempt -> compactor -> fresh run
+        assertEquals(4, outcome.hand.requests.size)
+        val compactorInput = injectionOf(outcome.hand.requests[2])
+        assertTrue(compactorInput.contains("call_1"), "the completed round feeds the compaction")
+        assertFalse(
+            compactorInput.contains("call_zombie"),
+            "an unexecuted call must never feed the compaction: $compactorInput"
+        )
+        assertFalse(
+            compactorInput.contains("cut mid-sentence"),
+            "truncated partial text must never feed the compaction"
+        )
+
+        val retried = injectionOf(outcome.hand.requests[3])
+        assertTrue(retried.contains("call_1"), "the completed pair survives in the retried prompt")
+        assertFalse(retried.contains("call_zombie"), "no unexecuted call in the retried prompt")
+        assertFalse(retried.contains("cut mid-sentence"), "no truncated text in the retried prompt")
+
+        val stored = assertNotNull(outcome.store.stored)
+        val storedJson = ChatCodec.encodeChat(stored)
+        assertFalse(storedJson.contains("call_zombie"), "the partial must not be stored")
+        assertFalse(storedJson.contains("cut mid-sentence"), "the partial must not be stored")
+        // the pair is still there and the history ends on the final answer
+        assertEquals(
+            ChatMessageRole.ToolResult,
+            stored[stored.size - 2].role,
+            "the stored tail is the completed pair's result before the final answer",
+        )
+
+        // the partial never feeds the background extraction either: the
+        // queued snapshot is the genuinely dropped older region only
+        val claimed = assertNotNull(runBlocking { testExtractionQueue.claim() })
+        assertEquals(
+            listOf(
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+                ChatMessageRole.User, ChatMessageRole.Assistant,
+            ),
+            claimed.messages.map { it.role },
+        )
+        val claimedJson = ChatCodec.encodeChat(claimed.messages)
+        assertFalse(
+            claimedJson.contains("call_zombie"),
+            "an unexecuted call must never feed the extraction queue",
+        )
+        assertFalse(
+            claimedJson.contains("cut mid-sentence"),
+            "truncated partial text must never feed the extraction queue",
+        )
+    }
+
+    @Test
     fun `pre-round compaction queues the dropped messages for background extraction`() = runBlocking {
         val model = catalogModel("bifrost/cerebras/gemma-4-31b", compactionKeepRounds = 3)
         val hand = FakeHand(

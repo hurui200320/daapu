@@ -34,7 +34,7 @@ A concurrent writer can insert and commit a note on the duplicate between those 
 
 **Fix:** Lock affected relationship rows before reading/folding them, using deterministic lock ordering. Acquire a lock that conflicts with the FK key-share lock taken by note inserts — such as `FOR UPDATE` — and re-read the locked state before planning the fold. Cover both ordinary collisions and self-loop folds with concurrent-note regression tests.
 
-### M2 — Reactive compaction forgets tools that already executed successfully
+### ~~M2 — Reactive compaction forgets tools that already executed successfully~~ (fixed)
 
 **Location:** `src/main/kotlin/info/skyblond/daapu/agent/persist/PersistChatService.kt:206–224`
 
