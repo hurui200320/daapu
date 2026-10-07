@@ -8,10 +8,25 @@
  * is never retried (a retry could duplicate a side-effecting tool) and
  * applies no deadline of its own — the brain enforces each tool's execution
  * budget and always answers. A client disconnect surfaces as `abort`.
+ *
+ * The "no deadline" is LOAD-BEARING and explicit: undici's global fetch caps
+ * every request at a default 300s response-header timeout, which a long
+ * tool callback legitimately outlives — `gsg__investigate` executes a
+ * whole sub-agent inside ONE callback with a zero brain-side budget (see
+ * the brain's `GsgToolProvider.kt`), and an investigation can run ~10
+ * minutes. The default timeout fired at exactly 300s and killed such runs
+ * as `tool_transport: fetch failed` with no brain-side trace. Both calls
+ * below ride [brainAgent], whose zero timeouts disable the cap; the abort
+ * signal (client disconnect) stays the only canceler.
  */
 
+import { Agent, fetch, type Response } from "undici";
 import type { ContentPart, ToolSpec } from "./types.js";
 import { isRecord, validateTools } from "./validate.js";
+
+// the brain-bound dispatcher with its deadlines disabled (the why: the
+// module KDoc); shared by both calls — one origin, no request-level config
+const brainAgent = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 export type ToolsOutcome =
   { kind: "ok"; tools: ToolSpec[] | undefined } | { kind: "failure"; message: string } | { kind: "abort" };
@@ -54,6 +69,7 @@ export async function fetchTools(
       method: "GET",
       headers: { "x-daapu-token": token },
       signal,
+      dispatcher: brainAgent,
     });
   } catch (error) {
     if (signal.aborted) {
@@ -102,6 +118,7 @@ export async function postToolCallback(
       // client disconnect is the only abort; a brain crash drops the
       // connection and fails the fetch below
       signal,
+      dispatcher: brainAgent,
     });
   } catch (error) {
     if (signal.aborted) {
