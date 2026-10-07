@@ -1,12 +1,18 @@
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFakeUpstream, type FakeScenario } from "./fake-upstream.js";
+import { captureConsoleError } from "./helpers.js";
 import { startServer } from "../src/main.js";
 
 const TOKEN = "test-token";
 
 let server: Server;
 let port = 0;
+
+// the hand's failure-path logging is silenced (and captured) file-wide —
+// see [captureConsoleError]; the observability-contract tests below
+// assert on the captured lines
+const consoleError = captureConsoleError();
 
 beforeAll(async () => {
   server = await startServer(0, TOKEN);
@@ -107,6 +113,11 @@ describe("POST /v1/embed", () => {
         expect(payload).toMatchObject({ ok: false, error: { type: "invalid_request" } });
       }
       expect(upstream.connectionCount()).toBe(0);
+      // observability contract: every rejected envelope logs one
+      // `embed rejected` line carrying the reason (see handleEmbed)
+      const rejectedLines = consoleError.lines().filter((line) => line.includes("embed rejected"));
+      expect(rejectedLines).toHaveLength(cases.length);
+      expect(rejectedLines).toContain("[hand] embed rejected error=invalid_request: input must be a non-empty array");
     } finally {
       await upstream.close();
     }
@@ -130,6 +141,8 @@ describe("POST /v1/embed", () => {
         dimensions: 1536,
       });
       expect(upstream.capturedHeaders()[0]?.authorization).toBe("Bearer test-key");
+      // a successful embed must not print any failure line
+      expect(consoleError.lines()).toEqual([]);
     } finally {
       await upstream.close();
     }
@@ -496,6 +509,13 @@ describe("POST /v1/embed", () => {
         error: { type: "upstream", message: expect.stringContaining("maxRetries (2) exhausted") },
       });
       expect(upstream.connectionCount()).toBe(2);
+      // observability contract: the exhausted-retry failure logs one
+      // `embed end ... error=...` line with the full failure detail
+      const failureLines = consoleError.lines().filter((line) => line.includes("embed end"));
+      expect(failureLines).toEqual([
+        "[hand] embed end model=zenmux sub/google/gemini-embedding-2 " +
+          'error=upstream: maxRetries (2) exhausted: embedding gateway failed (HTTP 503): {"error":{"message":"down"}}',
+      ]);
     } finally {
       await upstream.close();
     }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { startFakeCallback } from "./fake-callback.js";
 import { startFakeUpstream } from "./fake-upstream.js";
 import {
+  captureConsoleError,
   IMAGE_TOOL,
   MIDSTREAM_ERROR,
   NORMAL,
@@ -23,6 +24,10 @@ import {
 } from "./helpers.js";
 
 const { port } = withTestServer();
+// the hand's failure-path logging is silenced (and captured) file-wide —
+// see [captureConsoleError]; the observability-contract tests below assert
+// on the captured lines
+const consoleError = captureConsoleError();
 
 describe("POST /v1/run tool rounds", () => {
   it("runs a tool round trip with split args and a synthesized id for the id-less call", async () => {
@@ -218,6 +223,13 @@ describe("POST /v1/run tool rounds", () => {
       });
       // the failure ended the run: one LLM round, no retry
       expect(upstream.connectionCount()).toBe(1);
+      // observability contract: the SSE error, the `run failed` mirror,
+      // and the run end outcome all read the SAME error — `internal`, not
+      // the tool_transport tag the loop used to stamp instead
+      const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+      expect(failureLines).toEqual([
+        "[hand] run failed runId=run-test error=internal: tool calls received but no toolCallbackUrl",
+      ]);
     } finally {
       await upstream.close();
     }
@@ -240,6 +252,8 @@ describe("POST /v1/run tool rounds", () => {
       const body = upstream.capturedAll()[0] as { tools?: unknown };
       expect(body.tools).toBeUndefined();
     });
+    // a successful run must not print any failure line
+    expect(consoleError.lines()).toEqual([]);
   });
 
   it("folds the system prompt and tool declarations into the upstream request", async () => {
@@ -368,24 +382,36 @@ describe("POST /v1/run tool rounds", () => {
       expect(events[1]?.data).toMatchObject({ type: "round_limit" });
       expect(callback.requests()).toHaveLength(0);
     });
+    // observability contract: exactly one `run failed` line, carrying the
+    // same round_limit detail as the SSE error event
+    const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+    expect(failureLines).toEqual([
+      "[hand] run failed runId=run-test error=round_limit: maxRounds (1) reached at round 1",
+    ]);
   });
 
-  it("fails the run with tool_transport on a fatal callback response", async () => {
+  it("fails the run with tool_transport on a fatal callback response and logs the terminal error", async () => {
+    // observability contract: a run ending in an error also prints exactly
+    // one `run failed runId=... error=<type>: <message>` line to the console —
+    // the detail behind the `run end` line's outcome tag (see `executeRun`)
     const upstream = await startFakeUpstream([TOOL_CALL_ONE, STOP]);
     const callback = await startFakeCallback();
     callback.scriptedToolList({ tools: IMAGE_TOOL });
     callback.scripted({ fatal: { message: "tool exploded" } });
     await withCallback(upstream, callback, async (callbackUrl) => {
-      const { events } = await run(
+      const { status, events } = await run(
         port(),
         runRequest(upstream.port, {
           toolListUrl: callback.toolsUrl,
           toolCallbackUrl: callbackUrl,
         }),
       );
+      expect(status).toBe(200);
       expect(eventNames(events)).toEqual(["assistant_message", "tool_call", "error"]);
       expect(events[2]?.data).toEqual({ type: "tool_transport", message: "tool exploded" });
     });
+    const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+    expect(failureLines).toEqual(["[hand] run failed runId=run-test error=tool_transport: tool exploded"]);
   });
 
   it("fails the run with tool_transport on a non-200 callback response", async () => {
@@ -637,6 +663,12 @@ describe("POST /v1/run tool rounds", () => {
       });
       expect(upstream.connectionCount()).toBe(0);
     });
+    // observability contract: the per-round tool-list failure mirrors the
+    // same tool_transport error it emitted on the wire
+    const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+    expect(failureLines).toEqual([
+      "[hand] run failed runId=run-test error=tool_transport: tool listing returned HTTP 500",
+    ]);
   });
 
   it("fails the run with tool_transport on a malformed tool list", async () => {

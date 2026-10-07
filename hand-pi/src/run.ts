@@ -20,12 +20,31 @@ import { buildModel, openStream, type TerminalOutcome } from "./piCall.js";
 import { fetchTools, postToolCallback, type CallbackResult } from "./toolTransport.js";
 import { writeSseComment, writeSseEvent, writeSseHead, type SseEventName } from "./sse.js";
 import { fullInputTokens } from "./usage.js";
-import { HandFailure, type ChatMessage, type ChatMessagePart, type RunRequest, type ToolSpec } from "./types.js";
+import {
+  HandFailure,
+  type ChatMessage,
+  type ChatMessagePart,
+  type HandError,
+  type RunRequest,
+  type ToolSpec,
+} from "./types.js";
 
-type Emit = (event: SseEventName, payload: unknown) => boolean;
+/**
+ * The loop's outbound SSE emitter. The fallback overload excludes "error",
+ * so the first signature is the only one accepting the event: the payload
+ * the choke point records verbatim (see [terminalError]) is type-checked
+ * as [HandError] at every call site.
+ */
+interface Emit {
+  (event: "error", payload: HandError): boolean;
+  (event: Exclude<SseEventName, "error">, payload: unknown): boolean;
+}
 
 /**
  * `/v1/run` entry point — the round loop described in the module header.
+ *
+ * The loop's terminal `error` event is mirrored to the console
+ * (see [terminalError]); the SSE event to the brain remains the wire contract.
  */
 export async function executeRun(
   res: ServerResponse,
@@ -44,7 +63,17 @@ export async function executeRun(
   const effectiveMaxTokens = request.maxTokens;
 
   let brainGone = false;
+  // the terminal error the loop decided on (if any), recorded at the single
+  // `emit("error", ...)` choke point: mirrored to the console in the finally
+  // block so a failed run is debuggable from the hand's log alone (the SSE
+  // event to the brain stays the wire contract)
+  let terminalError: HandError | undefined;
   const emit: Emit = (event, payload) => {
+    // recorded even when the write to the brain fails: the console line is
+    // the one error surface left when the brain is gone
+    if (event === "error") {
+      terminalError = payload as HandError;
+    }
     if (brainGone) {
       return false;
     }
@@ -184,8 +213,12 @@ export async function executeRun(
             outcome = "aborted";
             return;
           }
-          if (callbackOutcome === "transport_failure") {
-            outcome = "error:tool_transport";
+          if (callbackOutcome !== "done") {
+            // emitting and stamping from the SAME error object keeps the
+            // SSE event, the `run failed` mirror, and the run end outcome
+            // tag in agreement (the executor no longer pre-emits)
+            emit("error", callbackOutcome.failed);
+            outcome = `error:${callbackOutcome.failed.type}`;
             return;
           }
           continue rounds;
@@ -201,11 +234,15 @@ export async function executeRun(
       outcome = `error:${error.handError.type}`;
     } else {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[hand] internal error during run ${request.runId}: ${message}`);
       emit("error", { type: "internal", message });
       outcome = "error:internal";
     }
   } finally {
+    // the detail mirror for [terminalError]; the `run end` line below keeps
+    // only the outcome tag
+    if (outcome.startsWith("error:") && terminalError !== undefined) {
+      console.error(`[hand] run failed runId=${request.runId} error=${terminalError.type}: ${terminalError.message}`);
+    }
     console.log(
       `[hand] run end runId=${request.runId} model=${request.model.modelId} rounds=${round} ` +
         `outcome=${outcome} in=${totalInputTokens} out=${totalOutputTokens}`,
@@ -327,7 +364,11 @@ function hasText(message: PiAssistantMessage): boolean {
   return message.content.some((block) => block.type === "text" && block.text.trim().length > 0);
 }
 
-type ToolCallsOutcome = "done" | "abort" | "transport_failure";
+/**
+ * `done`: every result assembled into history; `abort`: the brain went
+ * down mid-round; otherwise the terminal error the caller must emit.
+ */
+type ToolCallsOutcome = "done" | "abort" | { failed: HandError };
 
 /** A round's tool-call part (the object `parts` filters down to). */
 type ToolCallPart = Extract<ChatMessagePart, { type: "tool_call" }>;
@@ -358,6 +399,10 @@ type CallbackOk = Extract<CallbackResult, { kind: "ok" }>;
  * `tool_transport` and discards every result — including the successes — so
  * a tool that answered fine still ran even though the round is thrown away.
  * (The serial loop stopped at the first failure, so later tools never ran.)
+ *
+ * On failure the executor returns the terminal error; the loop emits it and
+ * stamps the outcome from the same `HandError`, so the SSE event and the
+ * `run failed`/`run end` console lines cannot disagree.
  */
 async function executeToolCalls(
   assistantMessage: ChatMessage,
@@ -369,8 +414,7 @@ async function executeToolCalls(
 ): Promise<ToolCallsOutcome> {
   const callbackUrl = request.toolCallbackUrl;
   if (callbackUrl === undefined) {
-    emit("error", { type: "internal", message: "tool calls received but no toolCallbackUrl" });
-    return "transport_failure";
+    return { failed: { type: "internal", message: "tool calls received but no toolCallbackUrl" } };
   }
   const isToolCall = (part: ChatMessagePart): part is ToolCallPart => part.type === "tool_call";
   const parts = assistantMessage.parts.filter(isToolCall);
@@ -401,15 +445,13 @@ async function executeToolCalls(
   for (const [index, part] of parts.entries()) {
     const result = outcomes[index];
     if (result === undefined) {
-      emit("error", { type: "internal", message: "tool callback outcome missing" });
-      return "transport_failure";
+      return { failed: { type: "internal", message: "tool callback outcome missing" } };
     }
     if (result.kind === "abort") {
       return "abort";
     }
     if (result.kind === "transport_failure") {
-      emit("error", { type: "tool_transport", message: result.message });
-      return "transport_failure";
+      return { failed: { type: "tool_transport", message: result.message } };
     }
     results.push({ part, result });
   }

@@ -6,7 +6,7 @@
  */
 
 import type { Server } from "node:http";
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 import type { FakeCallback } from "./fake-callback.js";
 import { startFakeUpstream, type FakeScenario } from "./fake-upstream.js";
 import { startServer } from "../src/main.js";
@@ -45,6 +45,28 @@ export function withTestServer(): { port: () => number } {
   });
   afterAll(() => teardownServer(server));
   return { port: () => port };
+}
+
+/**
+ * Captures `console.error` for every test in the calling file: the hand's
+ * failure-path logging (the console mirrors listed in `src/main.ts`'s
+ * header) would otherwise print one line per error-path test into the
+ * vitest output. Lines are reset per test; tests that assert
+ * the observability contract read [lines], the rest ignore it.
+ */
+export function captureConsoleError(): { lines: () => string[] } {
+  let lines: string[] = [];
+  let spy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    lines = [];
+    spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    });
+  });
+  afterEach(() => spy.mockRestore());
+  // copy on read: callers can neither mutate the capture nor hold it
+  // stale across the per-test reset
+  return { lines: () => [...lines] };
 }
 
 export function parseSse(text: string): RunEvent[] {
@@ -357,6 +379,17 @@ export const TRUNCATED: FakeScenario = [
 
 export const EMPTY_STOP: FakeScenario = [
   { chunk: { id: "c1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] } },
+  { end: true },
+];
+
+/**
+ * A stop WITH text but WITHOUT usage: assembly throws (daapu requires usage
+ * on every accepted message) and the run fails through the loop's catch —
+ * see the catch branches in `executeRun` (src/run.ts).
+ */
+export const STOP_TEXT_NO_USAGE: FakeScenario = [
+  { chunk: { id: "c1", choices: [{ index: 0, delta: { content: "answer" } }] } },
+  { chunk: { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] } },
   { end: true },
 ];
 

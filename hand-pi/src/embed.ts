@@ -43,11 +43,15 @@ export async function handleEmbed(res: ServerResponse, body: string, signal: Abo
       return;
     }
     if (outcome.kind === "failure") {
+      // mirror before the response write (the contract: see
+      // [respondFailure] in src/http.ts)
+      console.error(
+        `[hand] embed end model=${request.model.modelId} error=${outcome.error.handError.type}: ${outcome.error.handError.message}`,
+      );
       respondJson(res, embedStatusForErrorType(outcome.error.handError.type), {
         ok: false,
         error: outcome.error.handError,
       });
-      console.log(`[hand] embed end model=${request.model.modelId} error=${outcome.error.handError.type}`);
       return;
     }
     respondJson(res, 200, outcome.result);
@@ -56,6 +60,10 @@ export async function handleEmbed(res: ServerResponse, body: string, signal: Abo
     );
   } catch (error) {
     if (error instanceof HandFailure) {
+      // validation failures never reach [embed start] (the request is not yet
+      // parsed, hence no model id) but must not be console-silent (the
+      // contract: see [respondFailure] in src/http.ts)
+      console.error(`[hand] embed rejected error=${error.handError.type}: ${error.handError.message}`);
       respondJson(res, embedStatusForErrorType(error.handError.type), {
         ok: false,
         error: error.handError,

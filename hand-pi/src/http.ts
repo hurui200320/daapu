@@ -28,6 +28,14 @@ export function respondFailure(res: ServerResponse, error: unknown): void {
     return;
   }
   if (error instanceof HandFailure) {
+    // validation-family rejections for BOTH routes funnel here — run
+    // envelope validation (routes.ts) and the shared body cap (readBody);
+    // embed's own validateEmbedRequest failure logs in embed.ts's catch.
+    // The console-mirror contract (mirrored in src/embed.ts and via
+    // [terminalError] in src/run.ts): the brain gets the error body, the
+    // log gets the reason; the mirror precedes the response write so a
+    // failed write cannot lose the log line.
+    console.error(`[hand] request rejected error=${error.handError.type}: ${error.handError.message}`);
     respondJson(res, statusForErrorType(error.handError.type), { ok: false, error: error.handError });
     return;
   }

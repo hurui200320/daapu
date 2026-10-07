@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { startFakeUpstream } from "./fake-upstream.js";
 import {
+  captureConsoleError,
   EMPTY_STOP,
   LENGTH_FAR,
   LENGTH_NEAR,
@@ -9,6 +10,7 @@ import {
   NORMAL,
   OVERFLOW_BODY,
   SLOW,
+  STOP_TEXT_NO_USAGE,
   TOKEN,
   TRUNCATED,
   eventNames,
@@ -19,6 +21,10 @@ import {
 } from "./helpers.js";
 
 const { port } = withTestServer();
+// the hand's failure-path logging is silenced (and captured) file-wide —
+// see [captureConsoleError]; the observability-contract tests below assert
+// on the captured lines
+const consoleError = captureConsoleError();
 
 describe("POST /v1/run streaming", () => {
   it("relays deltas, reasoning, and the assembled message in order", async () => {
@@ -104,6 +110,12 @@ describe("POST /v1/run streaming", () => {
         message: "maxRetries (1) exhausted: upstream exploded mid-stream",
       });
       expect(upstream.connectionCount()).toBe(1);
+      // observability contract: the retry-exhaustion failure mirrors the
+      // same upstream error it emitted on the wire
+      const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+      expect(failureLines).toEqual([
+        "[hand] run failed runId=run-test error=upstream: maxRetries (1) exhausted: upstream exploded mid-stream",
+      ]);
     } finally {
       await upstream.close();
     }
@@ -116,6 +128,12 @@ describe("POST /v1/run streaming", () => {
       expect(eventNames(events)).toEqual(["error"]);
       expect(events[0]?.data).toMatchObject({ type: "empty_response" });
       expect(upstream.connectionCount()).toBe(1);
+      // observability contract: the empty-response failure mirrors the
+      // same error it emitted on the wire
+      const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+      expect(failureLines).toEqual([
+        "[hand] run failed runId=run-test error=empty_response: assistant finished with neither text nor tool calls",
+      ]);
     } finally {
       await upstream.close();
     }
@@ -132,6 +150,12 @@ describe("POST /v1/run streaming", () => {
       expect(message.finishReason).toBe("length");
       expect(message.parts).toEqual([{ type: "text", text: "partial answer" }]);
       expect(events[2]?.data).toMatchObject({ type: "context_exhausted" });
+      // observability contract: the classified length failure mirrors the
+      // same context_exhausted detail it emitted on the wire
+      const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+      expect(failureLines).toEqual([
+        "[hand] run failed runId=run-test error=context_exhausted: input 100000 tokens exceeds context window 131000 minus output budget 40000",
+      ]);
     } finally {
       await upstream.close();
     }
@@ -159,6 +183,32 @@ describe("POST /v1/run streaming", () => {
     }
   });
 
+  it("fails with internal when a stop finish reports no usage", async () => {
+    // usage-less stop WITH text: assembly throws HandFailure -> the loop's
+    // catch mirrors the same error it emits on the wire (see [terminalError])
+    const upstream = await startFakeUpstream([STOP_TEXT_NO_USAGE]);
+    try {
+      const { status, events } = await run(port(), runRequest(upstream.port));
+      expect(status).toBe(200);
+      expect(eventNames(events)).toEqual(["text_delta", "error"]);
+      expect(events[1]?.data).toEqual({
+        type: "internal",
+        message:
+          "provider did not report token usage; daapu requires usage on every response " +
+          "(the gateway must honor stream_options.include_usage)",
+      });
+      // observability contract: the catch-path failure mirrors the same
+      // internal error it emitted on the wire
+      const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+      expect(failureLines).toEqual([
+        "[hand] run failed runId=run-test error=internal: provider did not report token usage; daapu requires usage on every response " +
+          "(the gateway must honor stream_options.include_usage)",
+      ]);
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it("classifies a gateway-side overflow rejection as context_exhausted", async () => {
     const upstream = await startFakeUpstream({ status: 400, body: OVERFLOW_BODY });
     try {
@@ -166,6 +216,14 @@ describe("POST /v1/run streaming", () => {
       expect(eventNames(events)).toEqual(["error"]);
       expect(events[0]?.data).toMatchObject({ type: "context_exhausted" });
       expect(upstream.connectionCount()).toBe(1);
+      // observability contract: one `run failed` line with the hand-owned
+      // prefix; the message tail is pi-ai's composed error text, so only the
+      // prefix is pinned (the SSE assertion above pins only the type for the
+      // same reason)
+      const failureLines = consoleError.lines().filter((line) => line.includes("run failed"));
+      expect(failureLines).toEqual([
+        expect.stringContaining("[hand] run failed runId=run-test error=context_exhausted: "),
+      ]);
     } finally {
       await upstream.close();
     }

@@ -1,7 +1,10 @@
 /**
  * hand-pi entrypoint: environment, the plain `node:http` server, token check,
  * and request dispatch. The hand is stateless and opinionless — no catalog,
- * no config file, no content logging.
+ * no config file, no content logging beyond failure diagnostics: error
+ * messages may quote upstream response text and are mirrored to the
+ * console (see [terminalError] in src/run.ts, the reject/end mirrors in
+ * src/embed.ts and src/http.ts, and the auth/route rejections below).
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -46,10 +49,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
     return;
   }
   if (req.headers["x-daapu-token"] !== token) {
-    respondJson(res, 401, {
-      ok: false,
-      error: { type: "auth", message: "invalid or missing x-daapu-token" },
-    });
+    // mirrored like every rejection (the contract: see [respondFailure] in
+    // src/http.ts); the message is static, so no attacker-controlled text
+    // reaches the log
+    const error = { type: "auth", message: "invalid or missing x-daapu-token" };
+    console.error(`[hand] request rejected error=${error.type}: ${error.message}`);
+    respondJson(res, 401, { ok: false, error });
     return;
   }
   if (req.method === "POST" && url.pathname === "/v1/run") {
@@ -62,10 +67,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, token: s
     await handleEmbed(res, body, requestAbortSignal(res));
     return;
   }
-  respondJson(res, 404, {
-    ok: false,
-    error: { type: "invalid_request", message: `no route for ${req.method ?? "?"} ${url.pathname}` },
-  });
+  // mirrored like the token rejection above; the path is request-controlled
+  // but stays one bounded line (localhost/compose surface, like an access log)
+  const error = { type: "invalid_request", message: `no route for ${req.method ?? "?"} ${url.pathname}` };
+  console.error(`[hand] request rejected error=${error.type}: ${error.message}`);
+  respondJson(res, 404, { ok: false, error });
 }
 
 // pathToFileURL (not string interpolation) so executable paths with spaces
