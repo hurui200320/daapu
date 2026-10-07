@@ -19,10 +19,14 @@ import info.skyblond.daapu.testutil.testAxisVector
 import info.skyblond.daapu.testutil.testEmbeddingModel
 import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import java.sql.Date
+import java.sql.DriverManager
 import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -1098,6 +1102,164 @@ class PostgresEltmServiceTest : DbTestBase() {
             fail("a missing loser must fail")
         } catch (expected: IllegalArgumentException) {
             assertTrue(expected.message!!.contains("does not exist"))
+        }
+    }
+
+    @Test
+    fun `mergeEntities collision fold keeps a note a concurrent writer commits mid-fold`() = runBlocking {
+        val service = service()
+        val winner = service.createEntity("apple", "company").entity
+        val loser = service.createEntity("apple inc", "company").entity
+        val third = service.createEntity("tim cook", "person").entity
+
+        // the collision branch: the loser's edge re-points onto the
+        // survivor's triple, so the duplicate must fold into the survivor
+        val survivor = service.createRelationship(winner.id, third.id, "employs").relationship
+        val duplicate = service.createRelationship(loser.id, third.id, "employs").relationship
+        service.attachNoteToRelationship(duplicate.id, day, "old note")
+
+        commitRacingNoteMidFold(duplicate.id) {
+            service.mergeEntities(winner.id, loser.id)
+        }
+
+        assertFalse(service.entityExists(loser.id), "the loser entity folded away")
+        assertFalse(service.relationshipExists(duplicate.id), "the duplicate folded into the survivor")
+        assertEquals(
+            setOf("old note", "racing note"),
+            service.getRelationshipNotes(survivor.id, null, null, 10, 0).map { it.note }.toSet(),
+            "a note committed on the duplicate mid-fold must arrive on the survivor, " +
+                    "never be cascade-deleted",
+        )
+    }
+
+    @Test
+    fun `mergeEntities self-loop fold keeps a note a concurrent writer commits mid-fold`() = runBlocking {
+        val service = service()
+        val winner = service.createEntity("apple", "company").entity
+        val loser = service.createEntity("apple inc", "company").entity
+
+        // the self-loop-with-twin branch: re-pointing the duplicate's
+        // loser endpoint makes it a winner—winner self-loop, and the twin
+        // row already holds that triple — the duplicate must fold into
+        // the twin (move the notes, delete the duplicate)
+        val twin = service.createRelationship(winner.id, winner.id, "knows").relationship
+        val duplicate = service.createRelationship(winner.id, loser.id, "knows").relationship
+        service.attachNoteToRelationship(duplicate.id, day, "old note")
+
+        commitRacingNoteMidFold(duplicate.id) {
+            service.mergeEntities(winner.id, loser.id)
+        }
+
+        assertFalse(service.relationshipExists(duplicate.id), "the duplicate folded into the twin")
+        // re-read the row over the service: `twin` above is the
+        // pre-merge snapshot, so asserting on it would never catch a
+        // fold that wrongly invalidated the twin
+        val twinAfter = service.getRelationships(winner.id, includeInvalid = true)
+            .single { it.relationship.id == twin.id }
+        assertTrue(twinAfter.relationship.valid, "the twin holds the edge after the fold")
+        assertEquals(
+            setOf("old note", "racing note"),
+            service.getRelationshipNotes(twin.id, null, null, 10, 0).map { it.note }.toSet(),
+            "a note committed on the duplicate mid-fold must arrive on the twin, " +
+                    "never be cascade-deleted",
+        )
+    }
+
+    /**
+     * Reproduce the M1 interleaving deterministically: a racing
+     * connection inserts a "racing note" on [relationshipId] WITHOUT
+     * committing (its FK check pins FOR KEY SHARE on the relationship
+     * row), then [merge] is launched. The KEY SHARE stops the merge
+     * somewhere inside the fold — the locked fold on its fold-set
+     * SELECT FOR UPDATE, an unlocked fold later on the duplicate's
+     * DELETE — so it is observed lock-waiting in pg_stat_activity
+     * BEFORE the racing note commits, and the commit lands while the
+     * merge is inside the fold: exactly the window where an unlocked
+     * fold cascade-deletes the note and a locked fold moves it to the
+     * survivor (see the lock comment in
+     * EltmMergeQueries.executeEntityMerge). The poll proves only WHEN
+     * the commit lands — any lock-wait on an eltm_relationships
+     * statement qualifies — never WHERE the fold blocked; whether the
+     * fold-set lock itself fired is pinned by the surviving-note
+     * assertions at the call sites, not by observedBlocked. Every
+     * wait is bounded — a broken interleaving fails the test, never
+     * hangs it.
+     */
+    private suspend fun commitRacingNoteMidFold(
+        relationshipId: Long,
+        merge: suspend () -> Unit,
+    ) {
+        // plain JDBC connections outside the pool: the racing
+        // transaction must stay open across the poll below, which no
+        // pooled withTransaction allows
+        val racing = DriverManager.getConnection(TestDb.url, TestDb.user, TestDb.password)
+        // the poll rides its OWN autocommit connection, never the
+        // racing one: pg_stat_activity reads inside one transaction are
+        // answered from the stats snapshot pinned at that transaction's
+        // FIRST read (stats_fetch_consistency = 'snapshot', the PG15+
+        // default), so polling from the racing transaction would replay
+        // the stale pre-block snapshot forever and never observe the
+        // merge. An autocommit statement takes a fresh snapshot every
+        // time.
+        val poller = DriverManager.getConnection(TestDb.url, TestDb.user, TestDb.password)
+        try {
+            racing.autoCommit = false
+            poller.autoCommit = true
+            racing.prepareStatement(
+                "INSERT INTO eltm_notes (relationship_id, event_date, note) VALUES (?, ?, ?)"
+            ).use { statement ->
+                statement.setLong(1, relationshipId)
+                statement.setDate(2, Date.valueOf(day))
+                statement.setString(3, "racing note")
+                assertEquals(
+                    1,
+                    statement.executeUpdate(),
+                    "the racing insert must land uncommitted, pinning the FK row lock",
+                )
+            }
+            coroutineScope {
+                val mergeJob = async { merge() }
+                var observedBlocked = false
+                val deadline = System.currentTimeMillis() + 30_000
+                while (System.currentTimeMillis() < deadline && !mergeJob.isCompleted) {
+                    // the merge backend must show up lock-waiting on an
+                    // eltm_relationships statement — any lock-wait on
+                    // the table proves the commit window is open (the
+                    // WHERE is left to the call sites' note assertions).
+                    // The poll never matches itself: a backend that is
+                    // running a query rather than lock-waiting has no
+                    // wait_event_type.
+                    val lockWaiters = poller.createStatement().use { statement ->
+                        statement.executeQuery(
+                            "SELECT count(*) FROM pg_stat_activity " +
+                                    "WHERE wait_event_type = 'Lock' " +
+                                    "AND datname = current_database() " +
+                                    "AND query ILIKE '%eltm_relationships%'"
+                        ).use { rows ->
+                            rows.next()
+                            rows.getLong(1)
+                        }
+                    }
+                    if (lockWaiters > 0) {
+                        observedBlocked = true
+                        break
+                    }
+                    delay(50)
+                }
+                // commit BEFORE any await or assertion, on every path: the
+                // row lock must be released so the awaited merge can never
+                // hang on it
+                racing.commit()
+                withTimeout(30_000) { mergeJob.await() }
+                assertTrue(
+                    observedBlocked,
+                    "the merge was never observed lock-waiting on eltm_relationships — " +
+                            "the mid-fold interleaving could not be established",
+                )
+            }
+        } finally {
+            poller.close()
+            racing.close()
         }
     }
 

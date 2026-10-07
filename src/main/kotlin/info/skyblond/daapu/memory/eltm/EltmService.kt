@@ -373,9 +373,12 @@ interface EltmService {
      * reads, the fold's hand embed call and the writes — runs in that ONE
      * transaction with both entity rows locked `FOR UPDATE` at the start
      * (the connection is held across the embed), so the fold can never
-     * race a concurrent attribute write. The row locks are taken in
-     * ascending id order, so opposite-direction concurrent merges can
-     * never deadlock.
+     * race a concurrent attribute write. The fold locks the loser's
+     * relationship rows `FOR UPDATE` (ascending id) before moving any
+     * note, so a note a concurrent writer commits on a folded row is
+     * never silently lost to the duplicate delete's cascade. All row
+     * locks are taken in ascending id order, so opposite-direction
+     * concurrent merges can never deadlock.
      */
     suspend fun mergeEntities(winnerId: Long, loserId: Long)
 

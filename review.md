@@ -22,7 +22,7 @@ None.
 
 ## Major Issues
 
-### M1 — Entity merges can permanently delete concurrently committed diary notes
+### ~~M1 — Entity merges can permanently delete concurrently committed diary notes~~ (fixed)
 
 **Location:** `src/main/kotlin/info/skyblond/daapu/memory/eltm/postgres/EltmMergeQueries.kt:81–98`
 

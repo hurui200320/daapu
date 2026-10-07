@@ -525,6 +525,10 @@ class PostgresEltmService(
         // first), so two opposite-direction concurrent merges (A→B and B→A)
         // acquire the locks in the same order and can never deadlock — the
         // second blocks on the first and then proceeds on the merged state.
+        // The fold additionally locks the loser's relationship rows FOR
+        // UPDATE inside executeEntityMerge — the entity locks alone do not
+        // close the note-insert race on the rows the fold deletes (the
+        // mechanism lives with the lock, in EltmMergeQueries.kt).
         val firstId = minOf(winnerId, loserId)
         val secondId = maxOf(winnerId, loserId)
         val firstRow = findEntityRowByIdForUpdate(firstId)

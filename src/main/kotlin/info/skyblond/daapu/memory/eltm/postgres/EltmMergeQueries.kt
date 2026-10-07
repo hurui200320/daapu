@@ -3,6 +3,7 @@ package info.skyblond.daapu.memory.eltm.postgres
 import info.skyblond.daapu.db.*
 import info.skyblond.daapu.memory.eltm.AttributeFoldPlan
 import org.jetbrains.exposed.v1.core.*
+import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.jdbc.*
 
 /**
@@ -10,8 +11,9 @@ import org.jetbrains.exposed.v1.jdbc.*
  * over the `eltm_entities` / `eltm_entity_attributes` / `eltm_relationships`
  * / `eltm_notes` tables (`V1__init.sql`). The merge's writes span all four
  * tables, so unlike the per-table query files this one owns ONE operation,
- * not one table: the read/lock/plan/embed decisions stay in the service —
- * this file executes the fold-and-delete writes. Every function here is
+ * not one table: the read/plan/embed decisions stay in the service —
+ * this file takes the fold-set row locks and executes the
+ * fold-and-delete writes. Every function here is
  * only ever called inside `withTransaction` — by the service or by the
  * other query files in this package.
  */
@@ -19,7 +21,10 @@ import org.jetbrains.exposed.v1.jdbc.*
 /**
  * Execute the writes of an entity merge for an already-locked,
  * already-planned pair ([PostgresEltmService.mergeEntities] holds both
- * rows FOR UPDATE and planned the attribute fold): re-point the loser's
+ * rows FOR UPDATE and planned the attribute fold; this function locks
+ * the loser's relationship rows FOR UPDATE as its first step — see the
+ * lock comment below for why the entity locks alone do not close the
+ * fold's race): re-point the loser's
  * relationships per the fold decision tree, re-point its diary notes to
  * the winner, fold its attributes per [foldPlan] (the colliding rows are
  * dropped: re-pointing them would overwrite the winner's value on the
@@ -35,9 +40,46 @@ internal fun executeEntityMerge(
     foldPlan: AttributeFoldPlan,
     winnerEmbedding: List<Float>?,
 ) {
+    // Lock the whole fold set FOR UPDATE before touching any note — the
+    // caller's two entity row locks do NOT close the fold's delete race:
+    // a note insert on a relationship row takes a FOR KEY SHARE lock via
+    // its FK check, which conflicts with a FOR UPDATE-level lock only.
+    // Unlocked, a racing note insert on a duplicate commits between the
+    // duplicate's note move and its delete, and the delete's ON DELETE
+    // CASCADE destroys that committed note — silent data loss. Locked,
+    // the racing insert either commits FIRST (its note is then visible
+    // to the note move and rides to the survivor) or blocks until the
+    // merge commits and then fails its FK re-check against the deleted
+    // row — a loud IllegalArgumentException on the writer's path
+    // (attachNotesToRelationship maps the FK violation), never a
+    // silently lost note.
+    //
+    // The ascending id order is the deterministic lock order of this
+    // one acquisition: two merges on DISJOINT entity pairs can still
+    // share an edge between their fold sets (an edge spanning both
+    // losers), and locking both sets in one global order keeps that
+    // pair deadlock-free — merges sharing an entity already serialize
+    // on its FOR UPDATE lock, and every writer ends its transaction at
+    // the write counter, so the global order entity rows →
+    // relationship rows → counter holds everywhere. The residual: the
+    // loop's own writes can still wait on rows OUTSIDE the fold set — a
+    // notes move or validity flip targets the survivor row, and a
+    // re-point's FK trigger takes FOR KEY SHARE on its new endpoints —
+    // so two merges on four distinct entities can still form a cycle
+    // there. That residual is not a corruption risk: Postgres detects
+    // the deadlock, aborts one transaction loudly, and the
+    // withTransaction retry (db/Database.kt) re-runs the whole merge
+    // on committed state. READ COMMITTED re-checks a row after its
+    // lock wait, so each row read here is the latest committed version
+    // and a row another merge fold-deleted meanwhile simply drops out
+    // of the set. The stable order also pins the loop's iteration
+    // order below.
     val loserRels = EltmRelationships.selectAll().where {
         (EltmRelationships.srcId eq loserId) or (EltmRelationships.dstId eq loserId)
-    }.toList()
+    }
+        .orderBy(EltmRelationships.id to SortOrder.ASC)
+        .forUpdate(ForUpdateOption.ForUpdate)
+        .toList()
     // The relationship-fold decision tree below (self-loop → invalidate,
     // triple collision → fold duplicate away, else re-point) has NO
     // shared pure planner — unlike the attribute fold (planned by
@@ -106,6 +148,12 @@ internal fun executeEntityMerge(
         }
     }
 
+    // the entity-note re-point needs no lock of its own: the loser
+    // entity row's FOR UPDATE (held by the caller) already blocks a
+    // racing entity-note insert's FK key-share until the merge commits —
+    // and the merge re-points every note visible at that point, so the
+    // insert either rides along or fails the FK re-check loud, same
+    // contract as the relationship fold above
     EltmNotes.update({ EltmNotes.entityId eq loserId }) {
         it[EltmNotes.entityId] = winnerId
     }
