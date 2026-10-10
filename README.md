@@ -340,7 +340,10 @@ optional `headers`; `stdio` needs `command` + optional `environment`) and
 in seconds, 0 = no timeout — REQUIRED per server, enforced by the brain on
 the tool callback with `withTimeout`; the hand applies no deadline of its own
 and waits until the brain answers or the connection drops). It may also set
-`initializationTimeoutSeconds`, plus
+`initializationTimeoutSeconds` (the initialize-handshake budget in seconds;
+omitted = NO timeout — always set it for stdio servers: one that never
+answers the handshake otherwise blocks its connection, and eager startup,
+indefinitely), plus
 `reconnectAttempts` (total connect attempts including the first, default 3)
 and `reconnectDelayMs` (delay between attempts, default 1000). The provider
 connects eagerly at startup, so a server that cannot be reached aborts

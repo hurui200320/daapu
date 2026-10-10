@@ -650,7 +650,7 @@
         "initializationTimeoutSeconds": {
           "type": "integer",
           "minimum": 1,
-          "description": "Timeout of the MCP initialize handshake."
+          "description": "Timeout of the MCP initialize handshake in seconds. Omitted = no timeout; always set it for stdio servers — one that never answers the handshake otherwise blocks connections (and eager startup) indefinitely."
         },
         "toolExecutionTimeoutSeconds": {
           "type": "integer",

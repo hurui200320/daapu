@@ -3,7 +3,12 @@ package info.skyblond.daapu.mcp
 import info.skyblond.daapu.agent.tool.ToolTransportException
 
 /**
- * The MCP transport itself failed (connect refused, stdio process died, ...).
+ * The MCP transport itself failed (connect refused, stdio process died, ...),
+ * or the entry is closed — [ClientEntry.close] raises a gate that fails
+ * further connects fast (a closed entry's handshake scope is cancelled, so
+ * a connect could never finish; see [ClientEntry]'s KDoc) — hence the
+ * optional cause: a closed entry has no causal exception.
+ *
  * Thrown by [McpToolProvider.connectAll] at startup — a server that cannot
  * be reached aborts startup — and from [McpToolProvider.specifications] when the
  * tool-list refresh cannot restore a dropped connection: the model cannot
@@ -18,5 +23,5 @@ import info.skyblond.daapu.agent.tool.ToolTransportException
  * `tool_transport` failure a round later.
  */
 class McpTransportException(
-    message: String, cause: Throwable
+    message: String, cause: Throwable? = null
 ) : ToolTransportException(message, cause)

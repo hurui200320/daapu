@@ -73,7 +73,7 @@ This inconsistency persists after refresh reports success; it is not merely the 
 
 **Fix:** Use optimistic content-version checking. Capture a row revision or content fingerprint, then lock and verify it before writing the vector. Re-embed changed rows rather than overwriting them. Add tests for concurrent attribute updates, refinements, and merges.
 
-### M5 — A stalled stdio MCP handshake can hang beyond its initialization timeout
+### ~~M5 — A stalled stdio MCP handshake can hang beyond its initialization timeout~~ (fixed)
 
 **Location:** `src/main/kotlin/info/skyblond/daapu/mcp/ClientEntry.kt:111–132, 170–175`
 

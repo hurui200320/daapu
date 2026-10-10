@@ -90,15 +90,14 @@ class McpToolProvider(
      * failure every entry is dropped so no client is leaked.
      *
      * A [supervisorScope] (not a plain `coroutineScope`): one server's
-     * failure must not cancel a sibling's in-flight connect — a sibling
-     * cancelled after spawning its stdio process (or its HTTP session) but
-     * before publishing it into `clientRef` would orphan it (in neither
-     * `clientRef` nor the failure's `connected` set, so neither the drop
-     * nor a later `close()` destroys it). Every child runs to completion
-     * here; the first failure is rethrown after all entries are dropped.
-     * An outer cancellation also drops every entry (in [NonCancellable] —
-     * the dropping itself must not be cancelled) before propagating, so a
-     * cancelled boot never strands a half-connected client either.
+     * failure must not cancel a sibling's in-flight connect — a cancelled
+     * sibling unwinds through its own cleanup (its handshake await is
+     * cancellable; see [ClientEntry]'s KDoc) instead of being interrupted
+     * mid-connect. Every child runs to completion here; the first failure
+     * is rethrown after all entries are dropped. An outer cancellation
+     * also drops every entry (in [NonCancellable] — the dropping itself
+     * must not be cancelled) before propagating, so a cancelled boot never
+     * strands a half-connected client either.
      */
     suspend fun connectAll() {
         val failures = try {

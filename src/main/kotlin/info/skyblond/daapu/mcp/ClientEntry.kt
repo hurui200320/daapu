@@ -28,6 +28,8 @@ import kotlinx.io.asSource
 import kotlinx.io.buffered
 import kotlinx.serialization.json.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /** The connected client plus the stdio subprocess it reads from. */
@@ -47,11 +49,33 @@ internal class ConnectedClient(val client: Client, val process: Process?)
  *   The connect itself retries up to [McpServerConfig.reconnectAttempts]
  *   times, waiting [McpServerConfig.reconnectDelayMs] between attempts, then
  *   throws [McpTransportException].
- * - [dropConnection] discards and closes the current client (and the stdio
- *   subprocess it owns) — called on transport failure and on provider close.
- *   It busy-waits on the connect lock instead of blocking it, so a caller
- *   from a non-suspend context (`close()`) is safe while a concurrent
- *   connect is in progress.
+ * - [dropConnection] discards the current connection — for stdio it
+ *   destroys the subprocess BEFORE closing the client (why: the read-loop
+ *   freeze in the handshake bullet below) — called on transport failure
+ *   and on provider close. It waits
+ *   for the connect lock (an in-flight connect is never interrupted, it
+ *   runs to completion first), so a caller from a non-suspend context
+ *   (`close()`, which blocks its own thread on the same wait) is safe
+ *   while a concurrent connect is in progress.
+ * - stdio subprocesses are owned from spawn on: the current attempt's
+ *   process sits in an in-flight reference until it is published into
+ *   `clientRef` or destroyed by its (failed/cancelled/timed-out) attempt;
+ *   [close] first raises the closed gate ([closed]) — a retrying connect
+ *   loop must not spawn further attempts after its one-time sweep, and a
+ *   post-close connect must fail fast instead of hanging on the cancelled
+ *   handshakeScope — then sweeps whatever a stuck attempt could not clean
+ *   up itself, so no attempt ever leaks a live subprocess.
+ * - the stdio handshake runs as an ABANDONABLE job ([handshakeScope]) that
+ *   the connect coroutine merely awaits: on failure the SDK's close joins
+ *   the transport's read loop (non-cancellable), which is blocked in a
+ *   native pipe read that only EOF — the subprocess dying — unblocks, so
+ *   the handshake coroutine itself can freeze long past any deadline. The
+ *   await is cancellable: timeout, failure, and cancellation all reach the
+ *   connect's own catch promptly, which destroys the process — the very
+ *   thing that lets the abandoned job finish. With NO
+ *   [McpServerConfig.initializationTimeoutSeconds] a silent stdio server
+ *   can hold the await indefinitely — the documented meaning of "no
+ *   timeout" (README's config reference): configure it for stdio servers.
  *
  * Advertised names are `{namespace}__{toolName}`: `__` is the separator, so
  * server tool names containing it are sanitized to `_` ([listTools], the raw
@@ -67,6 +91,27 @@ class ClientEntry(
     private val clientRef: AtomicReference<ConnectedClient?> = AtomicReference(null)
     private val connectLock: Mutex = Mutex()
     private val toolNameMapping: ConcurrentHashMap<String, String> = ConcurrentHashMap()
+
+    // stdio handshakes run here as ABANDONABLE jobs: on failure the SDK's
+    // close can freeze the handshake coroutine until the subprocess dies,
+    // so the awaiting connect coroutine must not be its parent — a parent
+    // waits for its children (see the class KDoc); only [close] cancels
+    // this scope
+    private val handshakeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // the stdio subprocess owned by the current connect attempt, from
+    // spawn until publication (or destruction): the owner-of-last-resort
+    // reference (see the class KDoc) — the connect lock serializes
+    // attempts, so one slot is enough
+    private val inFlightStdioProcess = AtomicReference<Process?>(null)
+
+    // the closed gate, raised by close() before any teardown: stops the
+    // connect retry loop and fails post-close connects fast. The
+    // post-registration re-check in buildConnectedClient pairs with
+    // close()'s gate-then-sweep order so no subprocess can slip between
+    // the two — a process registered after the sweep implies the gate was
+    // already up at that check, so the attempt destroys the process itself
+    private val closed = AtomicBoolean(false)
 
     // one HTTP engine per entry: transports in the official SDK take a
     // ktor HttpClient (auth headers go through the per-request builder);
@@ -90,21 +135,14 @@ class ClientEntry(
 
     private suspend fun buildConnectedClient(): ConnectedClient = when (config.type) {
         McpTransportType.Http -> ConnectedClient(
-            client = config.initializationTimeoutSeconds?.let { seconds ->
-                withTimeout(seconds * 1_000L) {
-                    httpClient.mcpStreamableHttp(
-                        config.url!!,
-                        requestBuilder = {
-                            config.headers.forEach { (name, value) -> header(name, value) }
-                        },
-                    )
-                }
-            } ?: httpClient.mcpStreamableHttp(
-                config.url!!,
-                requestBuilder = {
-                    config.headers.forEach { (name, value) -> header(name, value) }
-                },
-            ),
+            client = withInitializationTimeout {
+                httpClient.mcpStreamableHttp(
+                    config.url!!,
+                    requestBuilder = {
+                        config.headers.forEach { (name, value) -> header(name, value) }
+                    },
+                )
+            },
             process = null,
         )
 
@@ -114,22 +152,114 @@ class ClientEntry(
                     .apply { environment().putAll(config.environment) }
                     .start()
             }
-            val transport = StdioClientTransport(
-                input = process.inputStream.asSource().buffered(),
-                output = process.outputStream.asSink().buffered(),
-                error = process.errorStream.asSource().buffered(),
-            )
-            val client = Client(
-                clientInfo = Implementation(name = "daapu", version = LIB_VERSION),
-            )
-            if (config.initializationTimeoutSeconds != null) {
-                withTimeout(config.initializationTimeoutSeconds * 1_000L) {
-                    client.connect(transport)
+            // owned from spawn on: until publication the in-flight
+            // reference is the owner of last resort (swept by close())
+            inFlightStdioProcess.set(process)
+            try {
+                // the closed gate, re-checked AFTER registration: this is
+                // the airtight half (see [closed]) — a process registered
+                // after close()'s one-time sweep implies the gate was
+                // already up here, so this attempt destroys the process
+                // itself through the catch below
+                if (closed.get()) throw McpTransportException("MCP server '$namespace' is closed")
+                val transport = StdioClientTransport(
+                    input = process.inputStream.asSource().buffered(),
+                    output = process.outputStream.asSink().buffered(),
+                    error = process.errorStream.asSource().buffered(),
+                )
+                val client = Client(
+                    clientInfo = Implementation(name = "daapu", version = LIB_VERSION),
+                )
+                // the handshake runs in a job we can ABANDON (see the class
+                // KDoc): the await below is cancellable, so OUR catch runs
+                // promptly on timeout/failure/cancellation and destroys the
+                // process — which is what unblocks the frozen job
+                val done = CompletableDeferred<Unit>()
+                handshakeScope.launch {
+                    try {
+                        client.connect(transport)
+                        done.complete(Unit)
+                    } catch (t: Throwable) {
+                        // nobody may be awaiting anymore (timeout or
+                        // cancellation already returned): still record how
+                        // the abandoned handshake ended
+                        logger.debug(t) { "MCP server '$namespace': stdio handshake job ended" }
+                        done.completeExceptionally(t)
+                    }
                 }
-            } else {
-                client.connect(transport)
+                withInitializationTimeout { done.await() }
+                // success: ownership transfers with the return value — the
+                // in-flight reference is cleared at publication time
+                ConnectedClient(client, process)
+            } catch (t: Throwable) {
+                // the attempt failed (timeout, handshake error, cancellation):
+                // destroy the process and give up ownership. NonCancellable:
+                // outer cancellation must not abort the cleanup itself
+                withContext(NonCancellable) {
+                    runCatching { destroyWithEscalation(process) }
+                }
+                inFlightStdioProcess.compareAndSet(process, null)
+                throw t
             }
-            ConnectedClient(client, process)
+        }
+    }
+
+    /**
+     * Runs [block] under [McpServerConfig.initializationTimeoutSeconds] —
+     * at BOTH call sites (the http connect and the stdio handshake await):
+     * OUR timeout is translated into [McpTransportException] so it flows
+     * through the reconnect policy — a bare [TimeoutCancellationException]
+     * would otherwise surface as cancellation, which [getConnectedClient]
+     * rethrows without retrying (an http initialization timeout therefore
+     * RETRIES too, instead of failing the connect on its first miss).
+     *
+     * An OUTER timeout or cancellation keeps propagating untouched: an
+     * outer [withTimeout]'s exception is delivered through this
+     * coroutine's job cancellation, so [ensureActive] re-surfaces it —
+     * and the same check catches a cancellation that raced OUR timer,
+     * which the translation must never swallow. (The abandonable-handshake
+     * watchdog that makes the timeout trustworthy for a silent stdio
+     * server is stdio-only — see the class KDoc; the http connect is
+     * cancelled in place and relies on the HTTP stack's own
+     * interruptibility.)
+     */
+    private suspend fun <T> withInitializationTimeout(block: suspend () -> T): T {
+        val seconds = config.initializationTimeoutSeconds ?: return block()
+        return try {
+            withTimeout(seconds * 1_000L) { block() }
+        } catch (e: TimeoutCancellationException) {
+            // cancellation wins over the translation: this covers both an
+            // outer timeout (re-surfaced here as the original exception,
+            // because it cancelled this job on its way in) and an outer
+            // cancellation that raced OUR timer. The unfixable remainder —
+            // a cancel landing between this check and the throw below —
+            // is microscopic and surfaces at the caller's next suspension
+            // point
+            currentCoroutineContext().ensureActive()
+            throw McpTransportException(
+                "MCP server '$namespace' initialization timed out after ${seconds}s", e
+            )
+        }
+    }
+
+    /**
+     * Destroys a stdio subprocess with bounded escalation: a graceful
+     * [Process.destroy], then [Process.destroyForcibly] if the process
+     * ignores it within [STDIO_KILL_GRACE_MS] — never wait forever on an
+     * unkillable process.
+     */
+    private suspend fun destroyWithEscalation(process: Process) = withContext(Dispatchers.IO) {
+        process.destroy()
+        if (!process.waitFor(STDIO_KILL_GRACE_MS, TimeUnit.MILLISECONDS)) {
+            logger.warn {
+                "MCP server '$namespace': stdio process ${process.pid()} ignored termination, force-killing"
+            }
+            process.destroyForcibly()
+            if (!process.waitFor(STDIO_KILL_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                logger.error {
+                    "MCP server '$namespace': stdio process ${process.pid()} survived a force kill"
+                }
+            }
         }
     }
 
@@ -141,9 +271,25 @@ class ClientEntry(
             clientRef.get()?.let { return@withLock it }
             var lastFailure: Throwable? = null
             for (attempt in 1..config.reconnectAttempts) {
+                // the closed gate, checked per attempt (see [closed]): a
+                // post-close connect fails fast — the cancelled
+                // handshakeScope could never complete a handshake, so
+                // without the gate it would only spawn doomed subprocesses
+                // until the retry budget is spent (or hang forever with no
+                // initialization timeout) — and a retry loop interrupted
+                // by close() stops instead of respawning processes its
+                // one-time sweep can no longer see
+                if (closed.get()) throw McpTransportException("MCP server '$namespace' is closed")
                 try {
                     val connected = withContext(Dispatchers.IO) { buildConnectedClient() }
-                    clientRef.set(connected)
+                    // publish even when cancellation lands on the
+                    // withContext boundary: a built client (with its
+                    // subprocess) must never be orphaned, and the in-flight
+                    // reference is cleared exactly at publication
+                    withContext(NonCancellable) {
+                        clientRef.set(connected)
+                        connected.process?.let { inFlightStdioProcess.compareAndSet(it, null) }
+                    }
                     return@withLock connected
                 } catch (e: CancellationException) {
                     throw e
@@ -166,18 +312,41 @@ class ClientEntry(
      * subprocess). No-op when the client is already gone. The HTTP engine
      * survives: a transport failure only needs a fresh MCP session, not a
      * fresh engine.
+     *
+     * Ordering for stdio: the subprocess is destroyed (bounded escalation)
+     * BEFORE the client is closed — closing first can hang the drop for as
+     * long as the process lives (why: the class KDoc's read-loop freeze).
      */
     suspend fun dropConnection() {
         connectLock.withLock {
             val connected = clientRef.getAndSet(null)
+            runCatching { connected?.process?.let { destroyWithEscalation(it) } }
             runCatching { connected?.client?.close() }
-            runCatching { connected?.process?.destroy() }
         }
     }
 
-    /** Closes the connection and the HTTP engine (provider shutdown). */
+    /**
+     * Closes the connection and the HTTP engine (provider shutdown). Also
+     * the owner of last resort: the closed gate goes up FIRST — a retrying
+     * connect loop must not spawn further attempts after the one-time
+     * sweep below, and a post-close connect must fail fast instead of
+     * hanging on the cancelled handshakeScope (see [closed]) — then the
+     * subprocess an in-flight connect still owns is destroyed FIRST, so
+     * the stuck connect unwinds on its own (why killing the process
+     * unblocks it: the class KDoc) and releases the connect lock
+     * [dropConnection] below needs.
+     */
     fun close() {
-        kotlinx.coroutines.runBlocking { dropConnection() }
+        closed.set(true)
+        kotlinx.coroutines.runBlocking {
+            inFlightStdioProcess.getAndSet(null)?.let { process ->
+                runCatching { destroyWithEscalation(process) }
+            }
+            dropConnection()
+        }
+        // no new handshake jobs; abandoned ones finish on their own once
+        // their process is dead
+        handshakeScope.cancel()
         runCatching { httpClient.close() }
     }
 
@@ -349,5 +518,13 @@ class ClientEntry(
 
     companion object {
         private val logger = KotlinLogging.logger { }
+
+        /**
+         * Grace period before a stdio subprocess that ignores
+         * [Process.destroy] is force-killed ([destroyWithEscalation]):
+         * generous for a well-behaved server to exit on its SIGTERM, far
+         * below any sane initialization budget.
+         */
+        private const val STDIO_KILL_GRACE_MS: Long = 2_000L
     }
 }
