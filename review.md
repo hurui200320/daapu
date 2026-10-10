@@ -59,7 +59,7 @@ If the preserved tail, current input, or injection is itself too large, recovery
 
 **Fix:** Make repeated recovery progressively reduce retained history, rather than repeatedly summarizing only the summary. Add a no-progress guard or bounded recovery budget. If mandatory input/injection still cannot fit, terminate with an actionable error instead of continuing indefinitely.
 
-### M4 — Re-embedding can overwrite a newer, correct entity vector
+### ~~M4 — Re-embedding can overwrite a newer, correct entity vector~~ (fixed)
 
 **Location:** `src/main/kotlin/info/skyblond/daapu/memory/eltm/EmbeddingRefreshService.kt:176–207`
 

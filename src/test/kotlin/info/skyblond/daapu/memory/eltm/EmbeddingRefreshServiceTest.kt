@@ -12,14 +12,19 @@ import info.skyblond.daapu.testutil.TestDb
 import info.skyblond.daapu.testutil.testAxisVector
 import info.skyblond.daapu.testutil.testEmbeddingModel
 import info.skyblond.daapu.testutil.testHandService
+import info.skyblond.daapu.testutil.testPostgresEltmService
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -29,6 +34,10 @@ import kotlin.test.assertTrue
  * the version counter bumps ONCE on a non-empty success and never on a
  * failure or an empty run, a failed run keeps its already-written batches
  * and is re-runnable, and the single-flight start refuses a second run.
+ * The guarded entity write-back (review.md's M4): a concurrent attribute
+ * write, refine or merge landing mid-run is re-embedded from the locked
+ * fresh state, never overwritten by the stale capture; merged-away rows
+ * are skipped; the re-embed path is observable through the embed inputs.
  */
 class EmbeddingRefreshServiceTest : DbTestBase() {
 
@@ -59,6 +68,38 @@ class EmbeddingRefreshServiceTest : DbTestBase() {
             delay(25)
         }
     }
+
+    /**
+     * Rendezvous state for a refresh whose FIRST embed call parks until
+     * released (the M4 regression harness): the page read precedes the
+     * embed, so [entered] firing proves the page text was already
+     * captured — a writer committing between [entered] and [allow] lands
+     * exactly in the read-to-write gap the guarded write-back must
+     * detect. Only the first call parks; later calls (the write-back's
+     * re-embed) pass straight through.
+     */
+    private class FirstEmbedGate {
+        val entered = CompletableDeferred<Unit>()
+        val allow = CompletableDeferred<Unit>()
+    }
+
+    private fun gatedRefresh(
+        embeddings: DeterministicEmbeddings,
+        gate: FirstEmbedGate,
+    ): EmbeddingRefreshService {
+        val calls = AtomicInteger(0)
+        return newService { request ->
+            if (calls.incrementAndGet() == 1) {
+                gate.entered.complete(Unit)
+                gate.allow.await()
+            }
+            embeddings.script(request)
+        }
+    }
+
+    /** The concurrent writer: a real Postgres service on the same embeddings registry. */
+    private fun concurrentWriter(embeddings: DeterministicEmbeddings) =
+        testPostgresEltmService(FakeHand(embedScript = embeddings.script))
 
     @Test
     fun `rewrites every vector through the model and bumps the version once`() = runBlocking {
@@ -171,5 +212,171 @@ class EmbeddingRefreshServiceTest : DbTestBase() {
         awaitUntil { refresh.status() !is ReembedStatus.Running }
         assertTrue(TestDb.allEltmEntityEmbeddings().single() != stale)
         assertEquals(entityId, TestDb.allEltmEntities().single().id)
+    }
+
+    @Test
+    fun `a concurrent attribute write committed mid-refresh is never overwritten by a stale vector`() = runBlocking {
+        val embeddings = DeterministicEmbeddings()
+        val preText = entityEmbeddingText("kindle", "device", emptyMap())
+        val postText = entityEmbeddingText("kindle", "device", mapOf("color" to "black"))
+        embeddings.register(preText, testAxisVector(0))
+        val postVector = testAxisVector(1)
+        embeddings.register(postText, postVector)
+        val gate = FirstEmbedGate()
+        val refresh = gatedRefresh(embeddings, gate)
+        val writer = concurrentWriter(embeddings)
+
+        val kindleId = TestDb.seedEltmEntity("kindle", "device", embedding = stale)
+        assertTrue(refresh.start())
+        // the park proves the page read captured the pre-write text; the
+        // writer's commit (with its own correct re-embed) lands inside the
+        // read-to-write gap
+        withTimeout(30_000) { gate.entered.await() }
+        assertTrue(writer.setEntityAttribute(kindleId, "color", "black"))
+        gate.allow.complete(Unit)
+        awaitUntil { refresh.status() !is ReembedStatus.Running }
+        assertIs<ReembedStatus.Finished>(refresh.status())
+
+        // the guard detected the changed text and re-embedded the fresh
+        // one: the stored vector matches the post-write content, never the
+        // stale pre-write text the page read captured
+        assertEquals(
+            listOf(padVector(postVector, MAX_VECTOR_DIMENSIONS)),
+            TestDb.allEltmEntityEmbeddings(),
+        )
+    }
+
+    @Test
+    fun `a concurrent refine committed mid-refresh is never overwritten by a stale vector`() = runBlocking {
+        val embeddings = DeterministicEmbeddings()
+        val preText = entityEmbeddingText("kindle", "device", emptyMap())
+        val postText = entityEmbeddingText("paperwhite", "device", emptyMap())
+        embeddings.register(preText, testAxisVector(0))
+        val postVector = testAxisVector(1)
+        embeddings.register(postText, postVector)
+        val gate = FirstEmbedGate()
+        val refresh = gatedRefresh(embeddings, gate)
+        val writer = concurrentWriter(embeddings)
+
+        val kindleId = TestDb.seedEltmEntity("kindle", "device", embedding = stale)
+        assertTrue(refresh.start())
+        withTimeout(30_000) { gate.entered.await() }
+        writer.refineEntity(kindleId, "paperwhite", null)
+        gate.allow.complete(Unit)
+        awaitUntil { refresh.status() !is ReembedStatus.Running }
+        assertIs<ReembedStatus.Finished>(refresh.status())
+
+        // the survivor's stored vector is the renamed content's, never the
+        // pre-rename capture's
+        assertEquals(
+            listOf(padVector(postVector, MAX_VECTOR_DIMENSIONS)),
+            TestDb.allEltmEntityEmbeddings(),
+        )
+    }
+
+    @Test
+    fun `a concurrent merge committed mid-refresh never overwrites the survivor and skips the folded row`() = runBlocking {
+        val embeddings = DeterministicEmbeddings()
+        // the page read captures both pre-merge texts; the merge folds the
+        // loser's attribute into the survivor and re-points its note
+        val winnerPre = entityEmbeddingText("apple", "company", emptyMap())
+        val loserPre = entityEmbeddingText("apple inc", "company", mapOf("founded" to "1976"))
+        val folded = entityEmbeddingText("apple", "company", mapOf("founded" to "1976"))
+        val noteText = noteEmbeddingText("the merger note")
+        embeddings.register(winnerPre, testAxisVector(0))
+        embeddings.register(loserPre, testAxisVector(1))
+        val foldedVector = testAxisVector(2)
+        embeddings.register(folded, foldedVector)
+        val noteVector = testAxisVector(3)
+        embeddings.register(noteText, noteVector)
+        val gate = FirstEmbedGate()
+        val refresh = gatedRefresh(embeddings, gate)
+        val writer = concurrentWriter(embeddings)
+
+        val winnerId = TestDb.seedEltmEntity("apple", "company", embedding = stale)
+        val loserId = TestDb.seedEltmEntity("apple inc", "company", mapOf("founded" to "1976"), stale)
+        TestDb.seedEltmNote(loserId, "the merger note", stale)
+
+        assertTrue(refresh.start())
+        withTimeout(30_000) { gate.entered.await() }
+        writer.mergeEntities(winnerId, loserId)
+        gate.allow.complete(Unit)
+        awaitUntil { refresh.status() !is ReembedStatus.Running }
+        // both page rows were processed — the folded loser was silently
+        // skipped at write time, never an error
+        val finished = assertIs<ReembedStatus.Finished>(refresh.status())
+        assertEquals(2L, finished.entities)
+
+        // the survivor keeps the folded content's vector (the pre-merge
+        // capture never overwrites the merge's write) and the re-pointed
+        // note embeds its own immutable text
+        assertEquals(
+            listOf(padVector(foldedVector, MAX_VECTOR_DIMENSIONS)),
+            TestDb.allEltmEntityEmbeddings(),
+        )
+        assertEquals(
+            listOf(padVector(noteVector, MAX_VECTOR_DIMENSIONS)),
+            TestDb.allEltmNoteEmbeddings(),
+        )
+        assertEquals(listOf(winnerId), TestDb.allEltmNotes().map { it.entityId })
+    }
+
+    @Test
+    fun `a write-back racing a locked attribute write re-derives the fresh text under the row lock`() = runBlocking {
+        val embeddings = DeterministicEmbeddings()
+        val preText = entityEmbeddingText("kindle", "device", emptyMap())
+        val postText = entityEmbeddingText("kindle", "device", mapOf("color" to "black"))
+        embeddings.register(preText, testAxisVector(0))
+        val postVector = testAxisVector(1)
+        embeddings.register(postText, postVector)
+
+        // the writer parks INSIDE its locked embed: the row is held FOR
+        // UPDATE from setEntityAttributes' start and nothing has committed
+        // yet, so the refresh's page read still captures the pre-write text
+        val enteredWriterEmbed = CompletableDeferred<Unit>()
+        val allowWriterEmbed = CompletableDeferred<Unit>()
+        val writerCalls = AtomicInteger(0)
+        val writer = testPostgresEltmService(FakeHand(embedScript = { request ->
+            if (writerCalls.incrementAndGet() == 1) {
+                enteredWriterEmbed.complete(Unit)
+                allowWriterEmbed.await()
+            }
+            embeddings.script(request)
+        }))
+
+        // the refresh's embeds pass straight through but are recorded —
+        // the first embed completing proves the page read already captured
+        // the pre-write text
+        val refreshEmbeds = Collections.synchronizedList(mutableListOf<String>())
+        val firstRefreshEmbedDone = CompletableDeferred<Unit>()
+        val refreshCalls = AtomicInteger(0)
+        val refresh = newService { request ->
+            refreshEmbeds.addAll(request.input)
+            if (refreshCalls.incrementAndGet() == 1) firstRefreshEmbedDone.complete(Unit)
+            embeddings.script(request)
+        }
+
+        val kindleId = TestDb.seedEltmEntity("kindle", "device", embedding = stale)
+        val writeJob = async { writer.setEntityAttribute(kindleId, "color", "black") }
+        withTimeout(30_000) { enteredWriterEmbed.await() }
+        assertTrue(refresh.start())
+        withTimeout(30_000) { firstRefreshEmbedDone.await() }
+
+        // the writer commits while the refresh is between its embed and its
+        // guarded write-back: the write-back either waits on the row lock
+        // and re-checks, or opens after the commit — either way the guard
+        // re-derives from the latest committed content
+        allowWriterEmbed.complete(Unit)
+        assertTrue(writeJob.await(), "the concurrent attribute write must succeed")
+        awaitUntil { refresh.status() !is ReembedStatus.Running }
+        assertIs<ReembedStatus.Finished>(refresh.status())
+
+        // the refresh embedded the captured pre-write text first, then
+        // re-embedded the post-write text inside the guarded write-back
+        assertEquals(listOf(preText, postText), refreshEmbeds)
+        assertEquals(
+            listOf(padVector(postVector, MAX_VECTOR_DIMENSIONS)),
+            TestDb.allEltmEntityEmbeddings(),
+        )
     }
 }
